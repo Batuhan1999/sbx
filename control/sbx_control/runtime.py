@@ -128,7 +128,11 @@ def run_now(job_id: str) -> str:
         repo = job_id.split(":", 1)[1]
         if not (repo == templates.BASE or templates.is_default(repo) or settings.trust(repo)):
             raise RuntimeError(f"{repo} is not served here")
-        if not template_builds.start(repo):
+        try:
+            started = template_builds.start(repo)
+        except template_builds.NoRoom as error:
+            raise RuntimeError(str(error)) from None
+        if not started:
             raise RuntimeError(f"{repo}'s template is already building")
         return f"building {repo}"
     raise RuntimeError(f"{job_id} is not something to run")

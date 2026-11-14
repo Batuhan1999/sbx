@@ -50,6 +50,19 @@ def api_template_build(email: str = Depends(admin_user), repo: str = Depends(rep
     return {"repo": repo, "status": "building"}
 
 
+@router.delete("/api/repos/{owner}/{name}/template")
+def api_template_remove(email: str = Depends(admin_user), repo: str = Depends(repo_path.named)):
+    """Delete the repo's templates from the runtime (but those sandboxes run
+    or are paused from) and its build record, a failed build's among them.
+    A repo whose recipe still asks for one builds it again within minutes."""
+    try:
+        return template_builds.remove(repo)
+    except template_builds.Busy as error:
+        raise HTTPException(409, str(error)) from None
+    except RuntimeError as error:  # the runtime did not list or delete
+        raise HTTPException(503, str(error)) from None
+
+
 @router.get("/api/repos/{owner}/{name}/template")
 def api_repo_template(email: str = Depends(api_user), repo: str = Depends(repo_path.named)):
     return {**readiness.template(repo), "log": views.build_log(repo) if is_admin(email) else []}

@@ -314,6 +314,22 @@ def install(repo: str, source, root: Path) -> int:
     return len(entries)
 
 
+def remove(repo: str) -> bool:
+    """Remove the operator's copy (sbx recipe apply); False when there is none.
+    The platform then reads the copy imported from the default branch, if any."""
+    parent = operator_dir(repo).parent
+    if not (parent / ".sbx").exists():
+        return False
+    with (parent / ".recipe.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        shutil.rmtree(parent / ".sbx")
+        shutil.rmtree(parent / ".recipe-previous", ignore_errors=True)
+    shutil.rmtree(parent, ignore_errors=True)
+    if not any(parent.parent.iterdir()):
+        parent.parent.rmdir()
+    return True
+
+
 def import_from(repo: str, entries: list) -> bool:
     """Keep the default branch's recipe as the imported copy; False when the
     branch has none."""

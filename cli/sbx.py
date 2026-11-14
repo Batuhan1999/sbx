@@ -637,6 +637,11 @@ def default_folder(explicit):
 
 def recipe_cmd(args):
     repo = this_repo(args.repo)
+    if args.action == "rm":
+        r = api("DELETE", f"/api/repos/{repo}/recipe")
+        print(f"{repo}: the recipe installed with sbx recipe apply is removed; "
+              + ("the default branch's .sbx/ applies now" if r["recipe"] == "imported" else "it needs a recipe now"))
+        return
     files, executable = recipe_files(default_folder(args.dir))
     if args.action == "apply":
         r = api("PUT", f"/api/repos/{repo}/recipe", {"files": files, "executable": executable})
@@ -730,6 +735,12 @@ def repo_cmd(args):
 def template_cmd(args):
     repo = this_repo(args.repo)
     path = f"/api/repos/{repo}/template"
+    if args.action == "rm":
+        r = api("DELETE", path)
+        print(f"{repo}: deleted {', '.join(r['deleted']) or 'no template'}"
+              + (f"; kept {', '.join(r['kept_in_use'])} (sandboxes use it)" if r["kept_in_use"] else "")
+              + ("; its recipe still asks for one, so it builds again" if r["rebuilds"] else ""))
+        return
     if args.action == "build":
         api("POST", path)
         if not args.wait:
@@ -1009,13 +1020,14 @@ def parser():
                    help="connect: let this agent CLI (default claude; codex, ...) finish and verify the recipe")
     p.add_argument("--prebuild", action="store_true", help="connect: draft a recipe with a template of its own")
     p = command("recipe", recipe_cmd, "apply: install the checkout's .sbx/ on the server (admins); "
-                "pr: propose it as a draft PR through the GitHub App")
-    p.add_argument("action", choices=["apply", "pr"])
+                "rm: remove what apply installed (admins); pr: propose it as a draft PR through the GitHub App")
+    p.add_argument("action", choices=["apply", "rm", "pr"])
     p.add_argument("dir", nargs="?", help="the checkout or its .sbx folder (default: the checkout you are in)")
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--title", default="Set up dev sandboxes", help="pr: its title")
-    p = command("template", template_cmd, "build the repo's template from its default branch, or its build's status")
-    p.add_argument("action", choices=["build", "status"])
+    p = command("template", template_cmd, "build the repo's template from its default branch, its build's status, "
+                "or rm: delete its templates and build record (admins)")
+    p.add_argument("action", choices=["build", "status", "rm"])
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--wait", action="store_true", help="until the build finishes")
     p.add_argument("--timeout", type=int, default=1800)

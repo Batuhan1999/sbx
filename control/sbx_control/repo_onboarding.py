@@ -159,6 +159,34 @@ def api_apply_recipe(body: Recipe, email: str = Depends(admin_user), repo: str =
         raise HTTPException(400, str(error)) from None
 
 
+def remove_recipe(repo: str) -> dict:
+    """Remove the operator's recipe; refused while sandboxes of the repo exist
+    (their services were made from it). A repo left without a template of
+    its own has its templates and build record removed too."""
+    from . import core
+    from e2b.sandbox.sandbox_api import SandboxState
+    using = sorted((i.metadata or {}).get("sbx") or i.sandbox_id
+                   for i in core.sandboxes(state=[SandboxState.RUNNING, SandboxState.PAUSED])
+                   if (i.metadata or {}).get("repo") == repo)
+    if using:
+        raise HTTPException(409, f"{repo} has sandboxes ({', '.join(using)}); delete them first (sbx down NAME)")
+    if not recipes.remove(repo):
+        raise HTTPException(404, f"{repo} has no recipe installed with sbx recipe apply")
+    out = {"repo": repo, "removed": True, "recipe": "imported" if recipes.load(repo).has_recipe else "none"}
+    if not template_builds.own(repo):
+        try:
+            out["template"] = template_builds.remove(repo)
+        except RuntimeError as error:  # building, or the runtime refused: the scheduler prunes it later
+            out["template"] = {"error": str(error)}
+    return out
+
+
+@router.delete("/api/repos/{owner}/{name}/recipe")
+def api_remove_recipe(email: str = Depends(admin_user), repo: str = Depends(repo_path.named)):
+    """Remove the recipe sbx recipe apply installed; the repo stays served."""
+    return remove_recipe(repo)
+
+
 # A first recipe from what a checkout looks like. The client sends its file
 # paths; the answer names the files to read (READ), and once it has them,
 # the recipe. Best effort: the agent or the developer edits it.

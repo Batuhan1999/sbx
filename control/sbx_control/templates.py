@@ -139,6 +139,47 @@ def slug(key: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:40].strip("-") or "template"
 
 
+def named_for(name: str, keys) -> bool:
+    """Whether name is one the platform gives a template of one of keys:
+    <slug(key)>-<8 hex digits> (Plan.name)."""
+    head, _, digest = name.rpartition("-")
+    return bool(re.fullmatch(r"[0-9a-f]{8}", digest)) and head in {slug(key) for key in keys}
+
+
+@dataclasses.dataclass(frozen=True)
+class Built:
+    """A template in the runtime, as listing() reports it."""
+    name: str
+    status: str   # Embed's build status: building, waiting, ready or error
+
+
+def listing() -> list:
+    """Every template the runtime holds, by name (its alias)."""
+    from e2b.api.client.api.templates import get_templates
+    from e2b.api.client_sync import get_api_client
+    from e2b.connection_config import ConnectionConfig
+    response = get_templates.sync_detailed(client=get_api_client(ConnectionConfig()))
+    if response.status_code >= 300 or not isinstance(response.parsed, list):
+        raise RuntimeError(f"the runtime did not list its templates (HTTP {response.status_code})")
+    return [Built(alias, str(t.build_status)) for t in response.parsed for alias in t.aliases]
+
+
+def delete(name: str) -> bool:
+    """Delete a template from the runtime; False when it has none of that name.
+    Its layers stay until the storage GC finds nothing reads them (a sandbox
+    still running from it, a pause snapshot made from it)."""
+    from e2b.api.client.api.templates import delete_templates_template_id
+    from e2b.api.client_sync import get_api_client
+    from e2b.connection_config import ConnectionConfig
+    response = delete_templates_template_id.sync_detailed(name, client=get_api_client(ConnectionConfig()))
+    if response.status_code == 404:
+        return False
+    if response.status_code >= 300:
+        raise RuntimeError(f"the runtime refused to delete {name} (HTTP {response.status_code}): "
+                           f"{response.content[:300].decode(errors='replace')}")
+    return True
+
+
 @dataclasses.dataclass(frozen=True)
 class Plan:
     key: str                         # BASE, a default key (default_key) or owner/repo

@@ -210,8 +210,8 @@ def slugify(branch: str, limit: int = 40) -> str:
     return slug
 
 
-def sandboxes(metadata=None):
-    pages = Sandbox.list(query=SandboxQuery(metadata=metadata))
+def sandboxes(metadata=None, state=None):
+    pages = Sandbox.list(query=SandboxQuery(metadata=metadata, state=state))
     items = pages.next_items()
     while pages.has_next:
         items += pages.next_items()

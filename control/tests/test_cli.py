@@ -178,6 +178,18 @@ class CliTests(unittest.TestCase):
                                                                ".sbx/sbx.yaml": "previews: {web: 3000}\n"},
                                                      "executable": [".sbx/setup"]})
 
+    def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
+        self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
+            "repo": "owner/app", "removed": True, "recipe": "none"}
+        self.routes[("DELETE", "/api/repos/owner/app/template")] = lambda q, body: {
+            "key": "owner/app", "deleted": ["owner-app-aaaaaaaa"], "kept_in_use": [], "rebuilds": False}
+        code, out, err = self.run_cli("recipe", "rm", "--repo", "owner/app")
+        self.assertEqual(code, 0, err)
+        self.assertIn("it needs a recipe now", out)
+        code, out, err = self.run_cli("template", "rm", "--repo", "owner/app")
+        self.assertEqual(code, 0, err)
+        self.assertIn("deleted owner-app-aaaaaaaa", out)
+
     def test_agent_logins_go_into_the_sandbox_where_the_server_says(self):
         (self.home / ".codex").mkdir()
         (self.home / ".codex/auth.json").write_text('{"token": "codex"}')
@@ -394,6 +406,48 @@ class CliApiTests(Server):
         bad = self.client.put("/api/repos/owner/app/recipe", json={"files": {".sbx/sbx.yaml": "services: []\n"}})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(recipes.load("owner/app").spec["previews"]["web"], 3000)
+
+    def test_an_applied_recipe_is_removed_once_its_sandboxes_are_gone(self):
+        from types import SimpleNamespace
+        from sbx_control import core, recipes, settings, template_builds
+        self.repo_admin()
+        body = {"files": {".sbx/sbx.yaml": "template: yes\n", ".sbx/build": "#!/bin/sh\n"}, "executable": [".sbx/build"]}
+        self.assertEqual(self.client.put("/api/repos/owner/app/recipe", json=body).status_code, 200)
+        running = SimpleNamespace(sandbox_id="vm-1", metadata={"sbx": "try-a", "repo": "owner/app"})
+        with patch.object(core, "sandboxes", return_value=[running]):
+            refused = self.client.delete("/api/repos/owner/app/recipe")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn("try-a", refused.text)
+        self.assertTrue(recipes.load("owner/app").has_recipe)
+        removed_template = {"key": "owner/app", "deleted": ["owner-app-aaaaaaaa"], "kept_in_use": [], "rebuilds": False}
+        with patch.object(core, "sandboxes", return_value=[]), \
+                patch.object(template_builds, "remove", return_value=removed_template) as remove:
+            response = self.client.delete("/api/repos/owner/app/recipe")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"repo": "owner/app", "removed": True, "recipe": "none",
+                                           "template": removed_template})
+        remove.assert_called_once_with("owner/app")
+        self.assertFalse(recipes.load("owner/app").has_recipe)
+        self.assertFalse(recipes.operator_dir("owner/app").parent.exists())
+        self.assertEqual(settings.trust("owner/app"), "trusted")   # still served: it needs a recipe now
+        with patch.object(core, "sandboxes", return_value=[]):
+            self.assertEqual(self.client.delete("/api/repos/owner/app/recipe").status_code, 404)
+
+    def test_removing_a_template_while_it_builds_is_refused(self):
+        from sbx_control import template_builds
+        self.repo_admin()
+        with patch.object(template_builds, "remove", side_effect=template_builds.Busy("owner/app's template is building")):
+            self.assertEqual(self.client.delete("/api/repos/owner/app/template").status_code, 409)
+        with patch.object(template_builds, "remove", side_effect=RuntimeError("the runtime did not list its templates")):
+            self.assertEqual(self.client.delete("/api/repos/owner/app/template").status_code, 503)
+
+    def test_a_build_without_room_is_refused_with_what_is_missing(self):
+        from sbx_control import template_builds
+        self.repo_admin()
+        self.assertEqual(self.client.put("/api/repos/owner/app/recipe", json={"files": {".sbx/sbx.yaml": "template: yes\n"}}).status_code, 200)
+        with patch.object(template_builds, "start", side_effect=template_builds.NoRoom("needs 16.0 GB of free disk")):
+            response = self.client.post("/api/repos/owner/app/template")
+        self.assertEqual((response.status_code, response.json()["detail"]), (503, "needs 16.0 GB of free disk"))
 
     def test_a_recipe_with_an_unknown_service_key_is_refused_naming_connections(self):
         self.repo_admin()

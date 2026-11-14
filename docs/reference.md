@@ -61,6 +61,12 @@ sbx up first-check --repo owner/repo --branch COMMIT --json
 sbx sandbox resources first-check
 ```
 
+`sbx recipe rm --repo owner/repo` (`DELETE /api/repos/OWNER/NAME/recipe`, or
+`sbx-admin recipe rm OWNER/REPO` on the host) removes the operator's copy; it
+is refused while the repository has sandboxes. The repository stays served
+and reads its default branch's `.sbx/` again, or needs a recipe; a template
+it no longer has a use for is deleted with it.
+
 `sbx recipe pr` publishes reviewed `.sbx` files as a draft pull request through
 the GitHub App.
 
@@ -310,12 +316,47 @@ build and is refused with 503 ("the ... template is building", `Retry-After`);
 the repository's readiness shows the template as not built meanwhile. After a
 failed build the 503 names the failure and nothing restarts it on its own.
 
+A build starts only when the host has room for it, and is refused before
+anything starts otherwise, saying what is missing (`POST
+/api/repos/OWNER/NAME/template` and a create answer 503; the scheduler tries
+again on its next round):
+
+- free sandbox memory (hugepages) for twice the template's memory: each build
+  step starts from the previous step's snapshot while that one still holds
+  its memory;
+- free disk where Embed keeps templates (`/var/lib/e2b`) for two of its
+  largest steps, 2 × (memory + 4 GiB). Embed stores every step twice, in
+  `/var/lib/e2b/storage/templates` and in its orchestrator's
+  `/orchestrator/build`, so a large app's build needs far more while it runs:
+  n8n's (15 steps at 8 GiB) used over 60 GB.
+
+Embed cannot stop a build once it runs (deleting its template lets it run to
+the end), and a disk that fills during one crashes Embed's orchestrator and
+the sandboxes on it. A build that fails while the disk or the memory runs low
+says so in its error instead of Embed's "internal error" or a refused
+connection.
+
+Templates nothing starts from are deleted from Embed: an earlier build of a
+template (its replacement has another name), the default template at a size
+no served repository asks for any more, and the template of a repository
+that has none any more; never one a running or paused sandbox started from.
+The scheduler does this every round and after each build; `sbx-admin template
+prune` does it now. Their layers go with the storage cleanup
+(`e2b-storage-gc`), which runs hourly and after every build: layers nothing
+reads go at once while Embed writes no build or snapshot, else once they are
+two hours old. `sbx template rm` (`DELETE /api/repos/OWNER/NAME/template`, or
+`sbx-admin template rm KEY` for any key: `OWNER/REPO`, `default`,
+`default:<size>`, `sbx-base`) deletes a template's builds and its build
+record, a failed one's included; a repository whose recipe still asks for a
+template builds it again.
+
 ### Sandbox size
 
 The runtime sizes a VM by the template it starts from; creating a sandbox
 cannot change it. So the platform builds every template at the size of the
 sandboxes that start from it: a repository's own template at its recipe's
-size, and the default template once per size a served repository asks for
+size, and the default template once per size a served repository without
+a template of its own asks for
 (`default` at 2 vCPU, 4 GiB RAM and 8 GiB free disk; another size as
 `default:<cpu>cpu-<memory>mb-<disk>mb`). A recipe's `resources` therefore apply
 whether or not it sets `template:`. A changed size is a new template; the
@@ -412,9 +453,12 @@ it.
   first does not make it supported.
 - Backups cover configuration and secrets, not VM snapshots, templates or hosted
   data.
-- A deleted sandbox's pause snapshots stay on the host's disk for up to about
-  three hours: Embed has no API that deletes them, and the hourly storage
-  cleanup (`e2b-storage-gc`) removes only files older than two hours.
+- A deleted sandbox's pause snapshots stay on the host's disk until the next
+  storage cleanup (`e2b-storage-gc`, hourly): Embed has no API that deletes
+  them. While Embed writes a build or a snapshot, the cleanup keeps what is
+  younger than two hours.
+- Embed cannot stop a template build once it runs; sbx checks memory and disk
+  before it starts one.
 - The platform does not rewrite app code for previews, and it does not prove an
   app works beyond its configured health checks.
 - Claude Code sessions need a Claude environment with self-hosted runners; other

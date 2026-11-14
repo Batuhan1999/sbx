@@ -13,6 +13,9 @@
   sbx-admin setup-link               the one-time link that opens the first-run setup (a new token each time)
   sbx-admin setup-reset [--sign-in]  back to 'being set up' (keeps the domain and connections; --sign-in clears the sign-in and admins)
   sbx-admin jobs [run ID]            what runs on its own (timers, the keeper, builds), and start one now
+  sbx-admin recipe rm OWNER/REPO     remove the recipe `sbx recipe apply` installed (refused while it has sandboxes)
+  sbx-admin template rm KEY          delete a template (OWNER/REPO, default, default:<size>, sbx-base) and its build record
+  sbx-admin template prune           delete the templates nothing starts from any more (the scheduler does it too)
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
   sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
@@ -140,6 +143,40 @@ def _connected(connect) -> int:
     return 0
 
 
+def do_recipe_rm(repo: str) -> int:
+    from fastapi import HTTPException
+    from . import platform, repo_onboarding, repo_path
+    try:
+        repo = repo_path.normalize(repo)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    platform.connect()
+    try:
+        print(json.dumps(repo_onboarding.remove_recipe(repo)))
+    except HTTPException as error:
+        print(error.detail, file=sys.stderr)
+        return 1
+    return 0
+
+
+def do_template(a) -> int:
+    from . import platform, template_builds
+    platform.connect()
+    try:
+        if a.action == "prune":
+            print(json.dumps({"deleted": template_builds.prune()}))
+        else:
+            if not a.key:
+                print("template rm KEY", file=sys.stderr)
+                return 2
+            print(json.dumps(template_builds.remove(a.key.lower())))
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list) -> int:
     from . import extensions
     connector = extensions.get(argv[0]) if argv else None
@@ -172,6 +209,12 @@ def main(argv: list) -> int:
     sub.add_parser("setup-infer")
     sub.add_parser("setup-reset").add_argument("--sign-in", action="store_true")
     jobs = sub.add_parser("jobs"); jobs.add_argument("verb", nargs="?", choices=["run"]); jobs.add_argument("id", nargs="?")
+    recipe = sub.add_parser("recipe")
+    recipe.add_argument("action", choices=["rm"])
+    recipe.add_argument("repo")
+    template = sub.add_parser("template")
+    template.add_argument("action", choices=["rm", "prune"])
+    template.add_argument("key", nargs="?")
     preview = sub.add_parser("preview", help="loopback-only app preview; forward its listener over SSH")
     preview.add_argument("name")
     preview.add_argument("--port", type=int)
@@ -278,6 +321,10 @@ def main(argv: list) -> int:
         return do_restore(a.file, a.key)
     if a.cmd == "doctor":
         return do_doctor()
+    if a.cmd == "recipe":
+        return do_recipe_rm(a.repo)
+    if a.cmd == "template":
+        return do_template(a)
     if a.cmd == "jobs":
         from . import runtime
         if a.verb == "run":

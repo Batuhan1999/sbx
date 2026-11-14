@@ -55,6 +55,10 @@ async def not_built(_request, error):
     return JSONResponse({"detail": str(error)}, status_code=503, headers={"Retry-After": "60"})
 
 
+async def no_room(_request, error):
+    return JSONResponse({"detail": str(error)}, status_code=503)
+
+
 async def refused(_request, error):
     return JSONResponse({"detail": str(error)}, status_code=503 if isinstance(error, core.NoCapacity) else 400)
 
@@ -65,6 +69,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(lifecycle.Conflict, lifecycle_conflict)
     app.add_exception_handler(core.SandboxError, refused)
     app.add_exception_handler(template_builds.NotBuilt, not_built)
+    app.add_exception_handler(template_builds.NoRoom, no_room)
     app.add_exception_handler(recipes.RecipeError, refused)
     app.add_exception_handler(secret_store.StoreError, infisical_api.store_failed)
     app.add_middleware(auth.Sessions)

@@ -22,11 +22,12 @@ at its sandboxes' size, which the row keeps for capacity (size_of).
       repo: the default template at that repo's size"""
 import argparse
 import os
+import subprocess
 import sys
 import threading
 import time
 
-from . import extensions, recipes, settings, templates
+from . import embed_storage, extensions, recipes, settings, templates
 from .state import Schema, db
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
@@ -43,6 +44,109 @@ _running: set = set()  # keys this process is building
 
 class NotBuilt(Exception):
     """No template a sandbox could start from is built yet."""
+
+
+class NoRoom(Exception):
+    """The host lacks the memory or disk a build needs now; nothing started."""
+
+
+class Busy(RuntimeError):
+    """The template is building; what was asked waits for the build to end."""
+
+
+# What a build of a size needs on this host, measured on the launch lab
+# (docs/reference.md, Templates):
+# - memory: each step's VM starts from the previous step's snapshot while
+#   that one still holds its hugepages, so a build needs about twice its
+#   memory free in the pool ("mmap memfd: cannot allocate memory" otherwise);
+# - disk: a step writes up to a memory snapshot and its disk changes, and
+#   Embed keeps each layer twice (its storage and the orchestrator's copy).
+#   A full disk crashes Embed's orchestrator (SIGBUS). Embed cannot stop a
+#   running build (deleting its template lets it run to the end), so the
+#   check is before it starts; a watch during it says why one failed.
+BUILD_MEMORY_FACTOR = 2
+WATCH_SECONDS = 2
+
+
+def build_needs(size: dict) -> dict:
+    """{memory_mb, disk_mb, reserve_mb} for a build at size: the free memory
+    and disk it starts with (room for two of its largest steps), and what one
+    step can write, below which a failed build is said to have failed for disk."""
+    step = size["memory_mb"] + 4096
+    return {"memory_mb": BUILD_MEMORY_FACTOR * size["memory_mb"], "disk_mb": 2 * step, "reserve_mb": step}
+
+
+def _gb(mb: int) -> str:
+    return f"{mb / 1024:.1f} GB"
+
+
+def check_room(key: str):
+    """NoRoom, saying what is missing, when key's build cannot fit now."""
+    from . import core
+    try:
+        size = plan(key).size
+    except (recipes.RecipeError, OSError):
+        return  # the build fails on the recipe and says so
+    needs = build_needs(size)
+    memory = core.capacity(size["memory_mb"])
+    if memory.get("known") and memory["free_mb"] < needs["memory_mb"]:
+        raise NoRoom(f"building the {key} template needs {_gb(needs['memory_mb'])} of free sandbox memory "
+                     f"(twice its {_gb(size['memory_mb'])}: each build step starts from the previous one's "
+                     f"snapshot), and {_gb(memory['free_mb'])} is free; pause or delete a sandbox, then build again")
+    free = embed_storage.free_mb()
+    if free is not None and free < needs["disk_mb"]:
+        raise NoRoom(f"building the {key} template needs {_gb(needs['disk_mb'])} of free disk for the runtime "
+                     f"({embed_storage.ROOT}), and {_gb(free)} is free; delete sandboxes or templates nobody uses "
+                     "(sbx-admin template rm), or add disk, then build again")
+
+
+class Watch:
+    """Free disk and sandbox memory while a build runs; why a failed build
+    failed is what it saw, where Embed reports "internal error" or, after
+    its orchestrator died of a full disk, a refused connection."""
+
+    def __init__(self, key: str, p: templates.Plan):
+        self.key, self.size = key, p.size
+        self.reserve = build_needs(p.size)["reserve_mb"]
+        self.lowest_disk = self.lowest_memory = None
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._done.set()
+        self._thread.join(timeout=10)
+
+    def sample(self):
+        from . import core
+        free = embed_storage.free_mb()
+        if free is not None:
+            self.lowest_disk = free if self.lowest_disk is None else min(self.lowest_disk, free)
+        memory = core.capacity(self.size["memory_mb"])
+        if memory.get("known"):
+            self.lowest_memory = memory["free_mb"] if self.lowest_memory is None else min(self.lowest_memory, memory["free_mb"])
+
+    def _run(self):
+        while not self._done.wait(WATCH_SECONDS):
+            try:
+                self.sample()
+            except Exception as error:  # a reading that fails must not end the watch
+                print(f"template build {self.key}: watch: {error!r}", flush=True)
+
+    def why(self) -> str:
+        """What the watch saw that explains a failure; "" when nothing did."""
+        reasons = []
+        if self.lowest_disk is not None and self.lowest_disk < self.reserve:
+            reasons.append(f"the runtime's disk ({embed_storage.ROOT}) fell to {_gb(self.lowest_disk)} free during "
+                           f"the build (one step at {self.size['memory_mb']} MB can write {_gb(self.reserve)}); "
+                           "delete sandboxes or templates nobody uses (sbx-admin template rm), or add disk")
+        if self.lowest_memory is not None and self.lowest_memory < self.size["memory_mb"]:
+            reasons.append(f"free sandbox memory fell to {_gb(self.lowest_memory)} while a step needed "
+                           f"{_gb(self.size['memory_mb'])}; pause or delete a sandbox")
+        return "; ".join(reasons)
 
 
 def _utc() -> str:
@@ -189,7 +293,10 @@ def _building(key: str, row: dict | None) -> str:
         return (f"the {key} template is not built: its last build failed ({(row['error'] or '').strip()[-300:]}); "
                 f"fix it and build again: sbx-admin template build {key}")
     if status(key, row) != "building":
-        start(key)
+        try:
+            start(key)
+        except NoRoom as error:
+            return f"the {key} template is not built yet and cannot build now: {error}"
     return f"the {key} template is building; try again in a few minutes"
 
 
@@ -217,7 +324,8 @@ def build_now(key: str):
 
 
 def start(key: str) -> bool:
-    """build_now on a thread; False when one is already running for key."""
+    """build_now on a thread; False when one is already running for key,
+    NoRoom when the host cannot hold it now."""
     try:
         _begin(key)
     except RuntimeError:
@@ -226,6 +334,7 @@ def start(key: str) -> bool:
     def run():
         try:
             _build(key)
+            prune()
         except BaseException as error:  # recorded as the build's error
             print(f"template build {key}: {error!r}", flush=True)
     threading.Thread(target=run, daemon=True).start()
@@ -233,6 +342,8 @@ def start(key: str) -> bool:
 
 
 def _begin(key: str):
+    if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
+        check_room(key)
     with _lock:
         try:
             if key in _running:
@@ -271,14 +382,110 @@ def _build(key: str):
                 return
             p = plan(key)
             print(f"template build {key}: {p.name}", flush=True)
-            templates.build(p, git_dir)
+            with Watch(key, p) as watch:
+                try:
+                    templates.build(p, git_dir)
+                except Exception as error:
+                    if watch.why():
+                        raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
+                    raise
             _transition(key, "built", finished_at=_utc(), fingerprint=p.fingerprint, built_fingerprint=p.fingerprint,
                         built_template=p.name, built_memory_mb=p.size["memory_mb"])
         except BaseException as error:
             _transition(key, "failed", finished_at=_utc(), error=str(error)[-2000:], fingerprint=p and p.fingerprint)
+            if p is not None:
+                collect_storage()  # a failed build's layers: tens of GB for a large app
             raise
     finally:
         _running.discard(key)
+
+
+def collect_storage():
+    """Start the storage GC (e2b-storage-gc) now, on a host that runs Embed."""
+    if not embed_storage.ROOT.exists():
+        return
+    try:
+        subprocess.run(["systemctl", "start", "--no-block", "e2b-storage-gc.service"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"storage GC: {error!r}", flush=True)
+
+
+def in_use() -> set:
+    """The templates running and paused sandboxes started from."""
+    from e2b.sandbox.sandbox_api import SandboxState
+    from . import core
+    return {(info.metadata or {}).get("template")
+            for info in core.sandboxes(state=[SandboxState.RUNNING, SandboxState.PAUSED])} - {None, ""}
+
+
+def known_keys() -> list:
+    """Every template key the platform may have built for: the served ones,
+    those with a build row, and repos with a recipe."""
+    with db() as conn:
+        rows = [row[0] for row in conn.execute("select repo from template_builds")]
+    return sorted({*keys(), *rows, *recipes.with_recipe()})
+
+
+def prune() -> list:
+    """Delete from the runtime the templates the platform built that nothing
+    starts from any more: an earlier build of a template (a changed input is
+    a new name), a size no served repo asks for, a repo that has no template
+    any more. Kept: each served key's template built last, what running or
+    paused sandboxes started from, and builds still running. A key nothing
+    serves loses its row once its template is gone. Returns what was deleted."""
+    wanted = keys()
+    with db() as conn:
+        rows = {key: _read(conn, key) for key in [r[0] for r in conn.execute("select repo from template_builds")]}
+    used = in_use()
+    keep = used | {row["built_template"] for key, row in rows.items() if key in wanted and row["built_template"]}
+    names = known_keys()
+    deleted = []
+    for t in templates.listing():
+        if t.name in keep or t.status in ("building", "waiting") or not templates.named_for(t.name, names):
+            continue
+        try:
+            if templates.delete(t.name):
+                deleted.append(t.name)
+        except RuntimeError as error:
+            print(f"template prune: {error}", flush=True)
+    for key, row in rows.items():
+        if key not in wanted and key not in _running and status(key, row) != "building" \
+                and row["built_template"] not in used:
+            with db() as conn:
+                conn.execute("delete from template_builds where repo = ?", (key,))
+    if deleted:
+        print(f"template prune: deleted {', '.join(sorted(deleted))}", flush=True)
+        collect_storage()
+    return sorted(deleted)
+
+
+def remove(key: str) -> dict:
+    """Delete key's templates from the runtime and its build record (the
+    last build, a failure among them). A template a sandbox still runs or is
+    paused from stays until it is gone. A key still served builds again on
+    the scheduler's next round."""
+    if key in _running or status(key, state_row(key)) == "building":
+        raise Busy(f"{key}'s template is building; remove it once the build ends")
+    used = in_use()
+    deleted, kept = [], []
+    for t in templates.listing():
+        if not templates.named_for(t.name, [key]):
+            continue
+        if t.name in used:
+            kept.append(t.name)
+        elif templates.delete(t.name):
+            deleted.append(t.name)
+    with db() as conn:
+        conn.execute("delete from template_builds where repo = ?", (key,))
+    if deleted:
+        collect_storage()
+    return {"key": key, "deleted": sorted(deleted), "kept_in_use": sorted(kept),
+            "rebuilds": key in keys()}
+
+
+def state_row(key: str) -> dict | None:
+    with db() as conn:
+        return _read(conn, key)
 
 
 def keys() -> list:
@@ -342,6 +549,8 @@ def _unmark(repo: str):
 def _build_quietly(key: str):
     try:
         build_now(key)
+    except NoRoom as error:  # nothing started; tried again next round
+        print(f"template build {key}: not now: {error}", flush=True)
     except Exception as error:
         print(f"template build {key}: {error!r}", flush=True)
 
@@ -363,6 +572,7 @@ def schedule(stop: threading.Event):
                     _unmark(repo)
                     if repo in keys():
                         _build_quietly(repo)
+            prune()
         except Exception as error:  # one bad round must not stop the scheduler
             print(f"template scheduler: {error!r}", flush=True)
 
@@ -386,7 +596,11 @@ def main(argv=None) -> int:
     if args.if_stale and _current(row, plan(key).fingerprint):
         print(f"CURRENT {row['built_template'] or key}", file=sys.stderr)
         return 0
-    build_now(key)
+    try:
+        build_now(key)
+    except NoRoom as error:
+        print(f"NOT BUILT {key}: {error}", file=sys.stderr)
+        return 1
     print(f"BUILT {state(key).get('template') or key}", file=sys.stderr)
     return 0
 

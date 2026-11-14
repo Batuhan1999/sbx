@@ -63,8 +63,11 @@ async def github_webhook(request: Request):
         if payload.get("ref") != default:
             return {"ignored": "not the default branch"}
         if any(p.startswith(".sbx/") for p in touched):
-            if template_builds.start(repo):
-                return {"template": "building"}
+            try:
+                if template_builds.start(repo):
+                    return {"template": "building"}
+            except template_builds.NoRoom as error:  # the scheduler builds it once there is room
+                return {"template": f"not now: {error}"}
             template_builds.mark_moved(repo)  # the running build may predate this push
             return {"template": f"already building; again at {template_builds.NIGHTLY_REBUILD_HOUR:02}:00"}
         if recipes.load(repo).prebuilt:
