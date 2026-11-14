@@ -23,14 +23,33 @@ Repository to run in sandboxes: <owner/name on GitHub>
 1. Clone the sbx repository and read docs/agent-install.md, then follow it step by step.
 2. Install sbx on the server with its normal installer; don't change its code.
 3. Connect my repository: find out how it is built and started and which services
-   and secrets it needs, from the repository itself. Write the .sbx/ recipe the
-   setup brief asks for, declare every value you can't generate as a secret, and
-   ask me for those values instead of guessing.
+   and secrets it needs, from the repository itself. Choose services with
+   docs/service-selection.md, write the .sbx/ recipe in the format of
+   docs/reference.md (examples/ has complete ones), and size it with
+   control/sbx_control/template_files/resource-guide.md. Declare every value you
+   can't generate as a secret, and ask me for those values instead of guessing.
 4. Use only the sbx CLI/API and the documented sbx-admin host commands.
 5. Finish with the acceptance checklist in docs/agent-install.md: two independent
    sandboxes, their own data, a restart, and cleanup of everything they created.
    Report what passed and what you could not verify.
 ```
+
+What the agent reads along the way, if you want the details yourself:
+
+- [Installation guide](docs/agent-install.md): the install and onboarding
+  steps, and the [acceptance checklist](docs/agent-install.md#acceptance-checklist)
+  that decides when the setup is done.
+- [Service selection](docs/service-selection.md): how to work out what the
+  repository depends on and pick a catalog package or local service for each.
+- [Reference](docs/reference.md): the [recipe](docs/reference.md#recipe),
+  [env and secrets](docs/reference.md#environment-and-secrets),
+  [services](docs/reference.md#services), [lifecycle](docs/reference.md#lifecycle),
+  [templates](docs/reference.md#templates) and [previews](docs/reference.md#previews).
+- [Resource guide](control/sbx_control/template_files/resource-guide.md): how
+  much CPU, RAM, disk and swap a sandbox gets, from evidence.
+- [Examples](examples/): complete recipes for Memos, Umami and Maple.
+- [Amp](docs/amp-orbs.md) and [Extensions](docs/extensions.md): optional agent
+  connectors, and how to add your own connector or catalog package.
 
 ## How it is built
 
