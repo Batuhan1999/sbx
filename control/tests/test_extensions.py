@@ -316,6 +316,16 @@ class ExtensionTests(Installation):
             template_builds.template_for("owner/app")
         start.assert_not_called()
 
+    def test_no_default_template_is_planned_at_the_size_of_a_repo_with_its_own(self):
+        # The launch lab built default:4cpu-8192mb-* beside n8n's own template: nobody starts from it.
+        from sbx_control import settings, template_builds, templates
+        self.recipe("owner/app", "template: yes\nresources: {cpu: 4, memory_mb: 8192}\n")
+        settings.add_repo("owner/app", by="test")
+        self.assertTrue(template_builds.own("owner/app"))
+        self.assertEqual(template_builds.keys(), [templates.BASE, templates.DEFAULT, "owner/app"])
+        self.recipe("owner/app", "resources: {cpu: 4, memory_mb: 8192}\n")   # the same size, no template
+        self.assertEqual(template_builds.keys(), [templates.BASE, templates.DEFAULT, "default:4cpu-8192mb-8192mb"])
+
     def test_a_recipe_size_applies_with_or_without_a_template_of_its_own(self):
         from sbx_control import recipes, template_builds, templates
         self.recipe("owner/app", "resources: {cpu: 4, memory_mb: 8192, swap_mb: 1024}\n")

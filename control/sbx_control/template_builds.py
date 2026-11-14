@@ -282,16 +282,22 @@ def _build(key: str):
 
 
 def keys() -> list:
+    """Every template some sandbox starts from: the base, the default one,
+    the default one at the size of each served repo without a template of
+    its own (a repo with one never starts from a default one), and each
+    repo's own."""
     served = [r for r in recipes.with_recipe() if settings.trust(r)]
-    sizes = set()
+    sizes, owned = set(), []
     for repo in served:
         try:
-            sizes.add(templates.default_key(recipes.load(repo).size))
+            if own(repo):
+                owned.append(repo)
+            else:
+                sizes.add(templates.default_key(recipes.load(repo).size))
         except recipes.RecipeError as error:
             print(f"template keys: {repo}: {error}", flush=True)
     sizes.discard(templates.DEFAULT)
-    return [templates.BASE, templates.DEFAULT, *sorted(sizes),
-            *(r for r in served if own(r))]
+    return [templates.BASE, templates.DEFAULT, *sorted(sizes), *owned]
 
 
 def stale() -> list:
