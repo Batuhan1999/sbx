@@ -9,6 +9,8 @@ These follow the vendored Embed release (vendor/e2b-embed): its storage
 layout, header version 3, its tables and Redis keys."""
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import pathlib
@@ -24,6 +26,7 @@ STORAGE = ROOT / "storage/templates"           # one directory per build
 INDEX = ROOT / "storage/build-cache"
 LOCAL_COPIES = pathlib.Path("/orchestrator/build")
 USAGE = ROOT / "storage-usage.json"            # sandbox id -> {gb, snapshots}, from the GC
+LOCK = ROOT / ".storage.lock"                  # held by whoever writes a build outside Embed (compaction)
 COMPOSE = host.EMBED / "compose.yaml"
 FILES = ("memfile", "rootfs.ext4")
 HEADER_VERSION = 3
@@ -44,6 +47,28 @@ def disk() -> dict | None:
     except OSError:
         return None
     return {"percent": round(100 * usage.used / usage.total), "free_gb": usage.free // 2**30}
+
+
+@contextlib.contextmanager
+def lock(wait: bool = True):
+    """Yields whether this process holds the storage lock: compaction holds it
+    from putting its build in place until the database names it, and the GC
+    deletes nothing while another process has it (wait=False)."""
+    with open(LOCK, "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
+def free_mb() -> int | None:
+    """Free MiB where Embed keeps templates and snapshots; None on a host without them."""
+    try:
+        return shutil.disk_usage(ROOT).free // 2**20
+    except OSError:
+        return None
 
 
 def read_header(data: bytes):

@@ -135,9 +135,14 @@ def main():
     except BaseException:
         shutil.rmtree(out)
         raise
-    out.rename(STORAGE / new)
-    print(f"wrote {new}: {copied // 2**20} MB, checked block for block")
+    with storage.lock():  # the GC must not see the new build before the database names it
+        out.rename(STORAGE / new)
+        print(f"wrote {new}: {copied // 2**20} MB, checked block for block")
+        replace(sandbox, env, build, new)
 
+
+def replace(sandbox: str, env: str, build: str, new: str):
+    """Make new the sandbox's newest snapshot unless it was resumed or paused meanwhile."""
     columns = [r[0] for r in query("select column_name from information_schema.columns "
                                    "where table_name = 'env_builds' and column_name not in "
                                    "('id', 'created_at', 'updated_at', 'finished_at') order by ordinal_position")]

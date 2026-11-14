@@ -9,6 +9,11 @@ every template (pause snapshots are templates too), the build every live
 sandbox runs from, builds still running, and every layer those reference
 through their headers, and deletes the rest with their build-cache index
 entries. Run hourly (e2b-storage-gc.timer): rebuilding a large app on every push fills a disk in days.
+sbx-control also starts it after each template build, so a failed build's
+layers (tens of GB for a large app) go at once, not hours later.
+
+While Embed writes a build or a pause snapshot, the layers it has written
+are in no header yet: then only what is older than MIN_AGE_HOURS goes.
 
 Prints what it would delete; --delete deletes it.
 """
@@ -28,6 +33,18 @@ from sbx_control.embed_storage import STORAGE, query  # noqa: E402
 
 # Leaves running builds alone: their layers are not in any header yet.
 MIN_AGE_HOURS = 2
+
+
+def writing() -> list[str]:
+    """The builds Embed is writing now: template builds and pause snapshots not yet settled."""
+    return [row[0] for row in query("select id from env_builds where status not in ('uploaded', 'success', 'failed')")]
+
+
+def doomed_builds(builds: set[str], keep: set[str], mtime, busy: bool, now: float) -> list[str]:
+    """What nothing keeps: all of it while nothing is written, else only
+    what is older than MIN_AGE_HOURS (mtime: a build's modification time)."""
+    cutoff = now - MIN_AGE_HOURS * 3600 if busy else now
+    return sorted(b for b in builds - keep if mtime(b) < cutoff)
 
 
 def live() -> list[list[str]]:
@@ -75,10 +92,10 @@ def roots() -> tuple[set[str], set[str]]:
     newest = query("select distinct on (b.env_id) b.id, b.created_at > now() - interval '%d hours' "
                    "from env_builds b join envs e on e.id = b.env_id where e.deleted_at is null "
                    "and b.status in ('uploaded', 'success') order by b.env_id, b.created_at desc" % MIN_AGE_HOURS)
-    building = query("select id from env_builds where status not in ('uploaded', 'success', 'failed')")
+    building = writing()
     referenced = retained_reference_roots()
     recent = {row[0] for row in newest + referenced if row[1] == "t"}
-    return {row[0] for row in newest + referenced + building + live()}, recent
+    return {row[0] for row in newest + referenced + live()} | set(building), recent
 
 
 def referenced(build: str, layers: dict[bytes, str]) -> tuple[set[str], set[str]]:
@@ -112,7 +129,15 @@ def write_usage():
 
 
 def main():
-    delete = "--delete" in sys.argv[1:]
+    with storage.lock(wait=False) as mine:
+        if not mine:
+            print("snapshot compaction is putting a build in place; deleting nothing this time")
+            return
+        collect("--delete" in sys.argv[1:])
+
+
+def collect(delete: bool):
+    busy = bool(writing())
     builds = {p.name for p in STORAGE.iterdir() if p.is_dir()}
     layers = {uuid.UUID(name).bytes: name for name in builds}
     kept, recent = roots()
@@ -131,8 +156,7 @@ def main():
             todo += mapped - keep
             bases |= base
     keep |= bases
-    cutoff = time.time() - MIN_AGE_HOURS * 3600
-    doomed = sorted(b for b in builds - keep if (STORAGE / b).stat().st_mtime < cutoff)
+    doomed = doomed_builds(builds, keep, lambda b: (STORAGE / b).stat().st_mtime, busy, time.time())
 
     stale_index = []
     for entry in storage.INDEX.glob("*/index/*"):
@@ -148,6 +172,9 @@ def main():
     print(f"builds {len(builds)}, keep {len(keep)}, delete {len(doomed)} "
           f"({len(copies)} local copies, {len(stale_index)} cache entries), frees {freed // 1024} GB")
     if not delete:
+        return
+    if not busy and writing():
+        print("a build started meanwhile; deleting nothing this time")
         return
     for entry in stale_index:
         entry.unlink()
