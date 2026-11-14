@@ -728,6 +728,23 @@ class LifecycleTests(Installation):
             self.assertTrue(response.json()["lifecycle"]["services_ready"])
             background.assert_called_once()
 
+    def test_a_ready_check_is_judged_by_its_exit_status_not_its_output(self):
+        # Amp's check starts with `command -v amp`, which prints the path.
+        from sbx_control import contributions
+        def run(_sandbox, command, **kwargs):
+            return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        for command, ready in (("command -v sh && echo noise && true", True), ("echo noise && false", False)):
+            with self.subTest(command=command):
+                connector = Mock(contribution=Mock(return_value=contributions.Contribution(
+                    "fixture", ready=contributions.Check(command))))
+                with patch.object(self.core.extensions, "connector_of", return_value=connector), \
+                        patch.object(self.core, "target_of"), patch.object(self.core, "run_in", side_effect=run):
+                    if ready:
+                        self.core.verify_ready(Mock(), self.info)
+                    else:
+                        with self.assertRaises(self.core.NotReady):
+                            self.core.verify_ready(Mock(), self.info)
+
     def test_a_new_sandbox_moves_over_what_its_template_s_build_changed(self):
         # The template's setup rewrote a tracked file (a generated route tree); nobody has edited yet.
         checkout = checkout_of(Path(self.enterContext(tempfile.TemporaryDirectory())))

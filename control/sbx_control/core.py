@@ -697,7 +697,8 @@ def verify_ready(sbx, info):
     contributes (metadata connector): NotReady when its template lacks it."""
     connector = extensions.connector_of(info)
     c = connector.contribution(target_of(info)) if connector else None
-    if c and c.ready and run_in(sbx, f"{c.ready.command} && echo ready || true",
+    # Judged by its exit status: a check may print (command -v does).
+    if c and c.ready and run_in(sbx, f"{{ {c.ready.command}; }} >/dev/null 2>&1 && echo ready || true",
                                 timeout=c.ready.timeout).stdout.strip() != "ready":
         raise NotReady(f"this sandbox's template has no working {c.name} (its ready check failed); "
                        "build its template again")
