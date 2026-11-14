@@ -1023,7 +1023,7 @@ def open_desktop_browser(sbx, a: recipes.App, web_url):
                      ">/tmp/chromium.log 2>&1 < /dev/null & echo $! > /tmp/chromium.pid")
 
 
-# A sandbox's /run is a tmpfs of a tenth of its memory: sbx's env, the
+# A sandbox's /run is a tmpfs of a fifth of its memory: sbx's env, the
 # shipped recipe and the process supervisor's state live there, and what
 # fills it (an agent's files) stops the supervisor and fails every write.
 RUN_FULL_PERCENT = 95
@@ -1032,8 +1032,9 @@ NO_SPACE = ("No space left on device", "not enough disk space")
 
 def run_space(sbx) -> str | None:
     """Why the sandbox's /run refuses writes, with what fills it; None while it has room."""
-    out = sbx.commands.run("df -Pk /run | tail -1; du -xsk /run/* /run/sbx/* 2>/dev/null | sort -n | tail -3",
-                           timeout=30).stdout.split("\n")
+    # Two du runs: one du counts a file once, so /run/sbx/* after /run would read empty.
+    out = sbx.commands.run("df -Pk /run | tail -1; { du -xsk /run/* 2>/dev/null; du -xsk /run/sbx/* 2>/dev/null; } "
+                           "| sort -n | tail -4", timeout=30).stdout.split("\n")
     fields = out[0].split()
     try:
         size_kb, used_percent = int(fields[1]), int(fields[4].rstrip("%"))

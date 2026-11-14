@@ -5,7 +5,7 @@ copies into the sandbox's tmpfs.
 Only the login is in the tmpfs. CODEX_HOME is on the sandbox's disk, with
 auth.json there a link to the login: Codex keeps packages, plugins, caches,
 logs and sessions in CODEX_HOME, hundreds of MB within an hour, and the
-tmpfs (/run, a tenth of the VM's memory) also holds sbx's env and its
+tmpfs (/run, a fifth of the VM's memory) also holds sbx's env and its
 process supervisor's state, which a full /run stops. Codex reads and
 replaces auth.json through the link (codex-rs login/src/auth/storage_file.rs:
 "Symlinks retain their target"), so a refreshed login stays in the tmpfs."""
