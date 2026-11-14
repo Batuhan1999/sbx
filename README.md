@@ -15,7 +15,7 @@ Copy this into Claude Code, Codex, Amp or any coding agent that can run shell
 commands, and fill in the two values in angle brackets:
 
 ```text
-Set up sbx (https://github.com/SBX_REPOSITORY) for me.
+Set up sbx (https://github.com/Batuhan1999/sbx) for me.
 
 Server: <ssh user@host of an Ubuntu 24.04 machine with /dev/kvm>
 Repository to run in sandboxes: <owner/name on GitHub>
