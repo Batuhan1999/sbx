@@ -100,6 +100,43 @@ class SharedPiecesTests(unittest.TestCase):
         self.assertIn("sbx-guest processes: processes must map simple names", result.stderr)
 
 
+class FullTmpfsTests(unittest.TestCase):
+    def test_a_state_write_the_disk_refuses_does_not_stop_the_app(self):
+        # memos-demo on the launch lab: Codex filled /run, the supervisor died writing
+        # state.json, and its cleanup stopped Memos.
+        with tempfile.TemporaryDirectory(prefix="sbx-full-run-") as directory:
+            root = Path(directory)
+            (root / "spec.json").write_text(json.dumps({"sbxtest_full": "sleep 30"}))
+            env = root / "env"
+            env.write_text("")
+            handlers, rounds, writes, seen = {}, [], [], []
+
+            def write(path, value):
+                writes.append(value)
+                if len(writes) > 1:
+                    raise OSError(28, "No space left on device")
+
+            def tick(_):
+                if len(rounds) == 5:
+                    return   # the supervisor stopping: its cleanup waits for the child
+                rounds.append(1)
+                child = writes[0]["processes"]["sbxtest_full"]["pid"]
+                seen.append(os.waitpid(child, os.WNOHANG) == (0, 0))   # still running
+                if len(rounds) == 5:
+                    handlers[signal.SIGTERM]()
+            with patch.object(sbx_guest, "write_json", side_effect=write), \
+                    patch.object(sbx_guest.signal, "signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)), \
+                    patch.object(sbx_guest.time, "sleep", side_effect=tick), \
+                    patch.object(sbx_guest, "log_path", return_value=str(root / "app.log")), \
+                    patch.object(sbx_guest, "marked", return_value=[]), \
+                    patch.object(sbx_guest, "say") as said:
+                sbx_guest.supervise(root, str(root), str(env))
+        self.assertEqual(len(rounds), 5)
+        self.assertEqual(seen, [True] * 5)
+        said.assert_called_once()
+        self.assertIn("the processes keep running", said.call_args.args[0])
+
+
 class IdentityTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
     def test_generated_host_public_keys_are_readable_under_private_umask(self):

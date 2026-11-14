@@ -141,6 +141,14 @@ def read_json(path):
         return {}
 
 
+def say(message):
+    """A line in the supervisor's log, which a full disk may refuse too."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
 def write_json(path, value):
     path = Path(path)
     descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
@@ -174,6 +182,7 @@ def supervise(root, workdir, env_file):
     children, processes = {}, {}
     manager = record(os.getpid())
     spec = read_json(root / "spec.json")
+    unwritten = False
     try:
         while not stopping:
             now = time.monotonic()
@@ -209,7 +218,16 @@ def supervise(root, workdir, env_file):
                 children[name] = child
                 processes[name] = {**record(child.pid), "status": "running", "started": now,
                                    "failures": previous.get("failures", 0), "scope": scope}
-            write_json(root / "state.json", {**manager, "processes": processes})
+            try:
+                write_json(root / "state.json", {**manager, "processes": processes})
+                unwritten = False
+            except OSError as error:
+                # A full tmpfs (an agent's files filled /run) must not stop the
+                # app: keep supervising with the last state written, say so once.
+                if not unwritten:
+                    say(f"sbx-guest supervise: could not write {root / 'state.json'} ({error}); "
+                        "the processes keep running")
+                unwritten = True
             time.sleep(0.2)
     finally:
         def signal_all(sig):
