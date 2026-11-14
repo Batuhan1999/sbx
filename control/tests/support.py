@@ -44,7 +44,11 @@ class Installation(unittest.TestCase):
         cls.directory.cleanup()
 
     def setUp(self):
-        from sbx_control import settings, state
+        from unittest.mock import patch
+        from sbx_control import recipes, settings, state
+        # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
+        self.remote_head = recipes.remote_head
+        self.enterContext(patch.object(recipes, "remote_head", return_value=None))
         with state.db() as conn:
             present = state.tables(conn)
             for table in self.RESET:

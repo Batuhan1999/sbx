@@ -131,3 +131,44 @@ class TemplateRoomTests(Installation):
         self.runtime([])
         with self.assertRaisesRegex(self.builds.Busy, "is building"):
             self.builds.remove("owner/app")
+
+
+class DefaultBranchTests(Installation):
+    """A repo on the default template has no mirror: after a restart of the
+    control service, or when added with sbx recipe apply, its default branch
+    was taken to be main (octocat/hello-world on the launch lab: master)."""
+
+    def test_a_repo_without_a_mirror_asks_its_remote_once(self):
+        import contextlib
+        import subprocess
+        from sbx_control import extensions, recipes
+        remote_head = self.remote_head
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        remote = directory / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(remote)], check=True)
+        work = directory / "work"
+        subprocess.run(["git", "clone", "-q", str(remote), str(work)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "one"], check=True)
+        subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "HEAD:master"], check=True, capture_output=True)
+        asked = []
+
+        @contextlib.contextmanager
+        def access(repo):
+            asked.append(repo)
+            yield str(remote), None
+        recipes._reported.pop("owner/plain", None)
+        self.addCleanup(recipes._reported.pop, "owner/plain", None)
+        with patch.object(recipes, "remote_head", new=remote_head), patch.object(extensions, "git_access", side_effect=access):
+            self.assertEqual(recipes.default_branch("owner/plain"), "master")
+            self.assertEqual(recipes.default_branch("owner/plain"), "master")
+        self.assertEqual(asked, ["owner/plain"])
+
+    def test_a_remote_that_cannot_be_asked_still_gives_main(self):
+        from sbx_control import extensions, recipes
+        remote_head = self.remote_head
+        recipes._reported.pop("owner/unreachable", None)
+        with patch.object(recipes, "remote_head", new=remote_head), \
+                patch.object(extensions, "git_access", side_effect=LookupError("no extension reaches it")):
+            self.assertEqual(recipes.default_branch("owner/unreachable"), "main")
+        self.assertNotIn("owner/unreachable", recipes._reported)

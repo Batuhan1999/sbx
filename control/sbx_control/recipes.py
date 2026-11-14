@@ -372,8 +372,9 @@ _reported: dict = {}  # repo -> default branch GitHub reported
 
 
 def default_branch(repo: str | None, reported: str | None = None) -> str:
-    """The repo's default branch as far as this installation knows it: what
-    GitHub reported (passed in, or earlier), else its mirror's HEAD, else main."""
+    """The repo's default branch: what GitHub reported (passed in, or
+    earlier), else its mirror's HEAD, else what its remote says its HEAD is
+    (asked once; a repo on the default template has no mirror), else main."""
     repo = (repo or settings.current().default_repo).lower()
     if reported:
         _reported[repo] = reported
@@ -381,4 +382,23 @@ def default_branch(repo: str | None, reported: str | None = None) -> str:
         return _reported[repo]
     head = subprocess.run(["git", "-C", mirrors() / f"{repo}.git", "symbolic-ref", "--short", "HEAD"],
                           capture_output=True, text=True) if (mirrors() / f"{repo}.git").is_dir() else None
-    return head.stdout.strip() if head and head.returncode == 0 and head.stdout.strip() else "main"
+    if head and head.returncode == 0 and head.stdout.strip():
+        return head.stdout.strip()
+    found = remote_head(repo)
+    if found:
+        _reported[repo] = found
+    return found or "main"
+
+
+def remote_head(repo: str) -> str | None:
+    """The branch the repo's remote HEAD names (git ls-remote --symref), as
+    git on this host reaches it; None when it cannot be asked."""
+    from . import extensions
+    try:
+        with extensions.git_access(repo) as (url, env):
+            out = subprocess.run(["git", "ls-remote", "--symref", url, "HEAD"], env=env, capture_output=True,
+                                 text=True, timeout=30).stdout
+    except (LookupError, OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"^ref: refs/heads/(\S+)\tHEAD$", out, re.MULTILINE)
+    return match.group(1) if match else None
