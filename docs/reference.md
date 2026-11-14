@@ -248,7 +248,7 @@ preparation.
 | create | `POST /api/sandboxes` (`sbx up`) | Allocate the VM, provision services, prepare the checkout; returns when SSH works. Setup and start continue in the background unless `start_app=false`. |
 | prepare | `POST /api/sandboxes/NAME/prepare` | Refresh the recipe and env, rerun setup and start; source edits are kept. |
 | restart | `POST /api/sandboxes/NAME/restart` (`sbx sandbox restart`) | Restart the app; files and service state are kept. |
-| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. |
+| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
 | delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Remove the VM and its owned resources. |
 | env_update | (on a variable change) | Rewrite the env files; restart the app when a value changed, unless the change asked for no restart. |
 

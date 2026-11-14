@@ -49,6 +49,17 @@ class NoCapacity(SandboxError):
     pass
 
 
+class PauseRefused(SandboxError):
+    """The runtime refused to pause a sandbox, which keeps running."""
+
+
+# Embed refuses a pause it cannot take now (503, "node is busy"): it is still
+# saving the sandbox's parent, or the disk cannot hold a snapshot of the
+# sandbox's whole memory plus its headroom. The sandbox keeps running; retry.
+PAUSE_RETRY_SECONDS = (5, 15)
+PAUSE_DISK_HEADROOM_MB = 1024  # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml)
+
+
 def runtime_failure(error: BaseException) -> bool:
     """Whether the error is the sandbox runtime's (E2B Embed) or the
     connection to it: it answered with an error or not at all, as while
@@ -1036,6 +1047,38 @@ def _delete(name, slug, operation):
         ip_previews.remove(slug or name)
 
 
+def _pause_vm(info):
+    """Pause the VM, retrying while the runtime says it is busy; the last
+    refusal when it never took the pause, else None."""
+    from e2b.exceptions import ServiceBusyException
+    for wait in (*PAUSE_RETRY_SECONDS, None):
+        try:
+            Sandbox.pause(info.sandbox_id)
+            return None
+        except ServiceBusyException as error:
+            if wait is None:
+                return error
+            time.sleep(wait)
+
+
+def pause_refusal(info, error) -> str:
+    """Why the runtime would not pause the sandbox, in words a person can act on."""
+    from . import embed_storage
+    memory = getattr(info, "memory_mb", None)
+    free = embed_storage.free_mb()
+    tries = len(PAUSE_RETRY_SECONDS) + 1
+    retries = f"{tries} tries over {sum(PAUSE_RETRY_SECONDS)} s" if tries > 1 else "once"
+    if memory and free is not None and free < memory + PAUSE_DISK_HEADROOM_MB:
+        cause = (f"the runtime's disk has {free / 1024:.1f} GB free and a pause needs room for the sandbox's whole "
+                 f"memory ({memory / 1024:.1f} GB) plus {PAUSE_DISK_HEADROOM_MB // 1024} GB; free disk "
+                 "(delete sandboxes or templates nobody uses, sbx-admin template prune) and pause again")
+    else:
+        cause = ("the runtime is still saving the template or snapshot the sandbox started from, or another "
+                 "sandbox's snapshot; pause again in a minute")
+    return (f"the runtime refused the pause ({retries}): {cause}. The sandbox keeps running. "
+            f"Runtime: {str(error)[-300:]}")
+
+
 def pause(name: str, info=None, *, before_pause=None):
     """Pause the VM, then run its services' pause hooks while the operation
     still holds the sandbox (nothing resumes it meanwhile). In a running VM,
@@ -1052,7 +1095,16 @@ def pause(name: str, info=None, *, before_pause=None):
             extensions.before_pause(info)
         if before_pause:
             before_pause()
-        Sandbox.pause(info.sandbox_id)
+        refused = _pause_vm(info)
+        if refused:
+            now = find(name)
+            if runtime_state(now) != "running":
+                raise refused  # the VM did not survive the refusal: the operation fails
+            why = pause_refusal(info, refused)
+            operation.advance(before if before in lifecycle.TERMINAL - {"deleted"} else "unknown",
+                              finish=True, sandbox_id=info.sandbox_id, runtime="running")
+            state.event(name, "pause refused", why)
+            raise PauseRefused(why)
         for failed in extensions.packages().paused(name):
             state.event(name, "service pause hook deferred", failed, internal=True)
         operation.advance(before if before in lifecycle.TERMINAL - {"deleted"} else "unknown",

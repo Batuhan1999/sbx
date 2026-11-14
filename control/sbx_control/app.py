@@ -60,6 +60,8 @@ async def no_room(_request, error):
 
 
 async def refused(_request, error):
+    if isinstance(error, core.PauseRefused):
+        return JSONResponse({"detail": str(error)}, status_code=503, headers={"Retry-After": "60"})
     return JSONResponse({"detail": str(error)}, status_code=503 if isinstance(error, core.NoCapacity) else 400)
 
 

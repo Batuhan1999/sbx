@@ -161,6 +161,62 @@ class LifecycleTests(Installation):
         self.assertEqual(self.lifecycle.get('fixture')['phase'], 'app_ready')
         self.assertIn(('service pause hook deferred', True), [(kind, internal) for _, kind, _, internal in self.state.events('fixture')])
 
+    def busy(self):
+        from e2b.exceptions import ServiceBusyException
+        return ServiceBusyException("503: Sandbox 'fixture-vm' cannot be paused right now because its node is busy, please retry")
+
+    def test_a_pause_the_runtime_refuses_for_a_moment_is_retried(self):
+        self.healthy()
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", (0, 0)), \
+                patch.object(self.core.Sandbox, "pause", side_effect=[self.busy(), None]) as pause:
+            self.core.pause("fixture", self.info)
+        self.assertEqual(pause.call_count, 2)
+        self.assertEqual(self.lifecycle.get("fixture")["runtime"], "paused")
+
+    def test_a_refused_pause_leaves_a_running_healthy_sandbox_ready_and_says_why(self):
+        # The launch lab: five refused pauses left n8n sandboxes 'failed' while the app ran fine.
+        self.healthy()
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", (0, 0)), \
+                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()) as pause, \
+                patch.object(self.core, "find", return_value=self.info), \
+                self.assertRaisesRegex(self.core.PauseRefused, "refused the pause .* keeps running") as refused:
+            self.core.pause("fixture", self.info)
+        self.assertEqual(pause.call_count, 3)
+        record = self.lifecycle.get("fixture")
+        self.assertEqual((record["phase"], record["runtime"], record["active"]), ("app_ready", "running", False))
+        self.assertIn("still saving the template or snapshot", str(refused.exception))
+        self.assertIn("pause refused", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_a_refusal_for_disk_says_how_much_a_pause_needs(self):
+        self.healthy()
+        self.info.memory_mb = 4096
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
+                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core, "find", return_value=self.info), \
+                patch("sbx_control.embed_storage.free_mb", return_value=3 * 1024), \
+                self.assertRaisesRegex(self.core.PauseRefused, r"disk has 3\.0 GB free .* memory \(4\.0 GB\) plus 1 GB"):
+            self.core.pause("fixture", self.info)
+
+    def test_a_refused_pause_that_lost_the_vm_fails(self):
+        self.healthy()
+        gone = SimpleNamespace(**{**vars(self.info), "state": "killed"})
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
+                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core, "find", return_value=gone), self.assertRaises(Exception):
+            self.core.pause("fixture", self.info)
+        self.assertEqual(self.lifecycle.get("fixture")["phase"], "failed")
+
+    def test_the_api_answers_a_refused_pause_with_503_and_retry_after(self):
+        self.healthy()
+        self.client.cookies.clear()
+        with patch.object(self.auth, "require_owned", return_value=self.info), \
+                patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
+                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core, "find", return_value=self.info):
+            response = self.client.post("/api/sandboxes/fixture/pause")
+        self.assertEqual((response.status_code, response.headers.get("retry-after")), (503, "60"), response.text)
+        self.assertIn("keeps running", response.json()["detail"])
+
     def amp_vm(self, state="running"):
         """The fixture as one of Amp's orbs, its bootstrap stops recorded in calls."""
         from sbx_control.connectors.amp import orbs
