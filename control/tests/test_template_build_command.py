@@ -37,5 +37,26 @@ class BuildCommand(Installation):
             self.assertEqual([c.args[0].key for c in build.call_args_list], [templates.BASE] * 2 + [templates.DEFAULT])
 
 
+    def test_an_upgrade_keeps_a_stale_template_the_host_has_no_room_to_rebuild(self):
+        # The launch lab: Amp was enabled, the default template went stale, and with 3 GB of
+        # sandbox memory free the installer failed on its rebuild although the old one served.
+        from sbx_control import template_builds, templates
+        with mock.patch.object(templates, "build"), contextlib.redirect_stderr(io.StringIO()):
+            template_builds.main(["base"])
+        no_room = template_builds.NoRoom("building the default template needs 8.0 GB of free sandbox memory")
+        stderr = io.StringIO()
+        with mock.patch.object(template_builds, "build_now", side_effect=no_room), contextlib.redirect_stderr(stderr):
+            self.assertEqual(template_builds.main(["--if-stale", "default"]), 1)   # none to start from: a first install fails
+        self.assertIn("NOT BUILT default", stderr.getvalue())
+        with mock.patch.object(templates, "build"), contextlib.redirect_stderr(io.StringIO()):
+            template_builds.main(["default"])
+        built = template_builds.built(templates.DEFAULT)
+        stderr = io.StringIO()
+        with mock.patch.object(template_builds.templates, "DEFAULT_STEPS", ("echo changed",)), \
+                mock.patch.object(template_builds, "build_now", side_effect=no_room), contextlib.redirect_stderr(stderr):
+            self.assertEqual(template_builds.main(["--if-stale", "default"]), 0)
+        self.assertIn(f"KEPT {built}: default is stale", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

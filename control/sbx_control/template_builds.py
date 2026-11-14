@@ -599,6 +599,10 @@ def main(argv=None) -> int:
     try:
         build_now(key)
     except NoRoom as error:
+        if row and row["built_template"]:   # an upgrade: the template built before serves until there is room
+            print(f"KEPT {row['built_template']}: {key} is stale and not rebuilt now: {error}; the scheduler "
+                  "builds it once there is room", file=sys.stderr)
+            return 0
         print(f"NOT BUILT {key}: {error}", file=sys.stderr)
         return 1
     print(f"BUILT {state(key).get('template') or key}", file=sys.stderr)
