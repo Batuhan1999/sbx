@@ -48,8 +48,9 @@ What the agent reads along the way, if you want the details yourself:
 - [Resource guide](control/sbx_control/template_files/resource-guide.md): how
   much CPU, RAM, disk and swap a sandbox gets, from evidence.
 - [Examples](examples/): complete recipes for Memos, Umami and Maple.
-- [Amp](docs/amp-orbs.md) and [Extensions](docs/extensions.md): optional agent
-  connectors, and how to add your own connector or catalog package.
+- [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md) and
+  [Extensions](docs/extensions.md): optional agent connectors, and how to add
+  your own connector or catalog package.
 
 ## How it is built
 
@@ -149,7 +150,7 @@ sbx is early software.
 | Desktop CLI | macOS only ([details](docs/reference.md#limits)). Host administration uses `sbx-admin` as root. |
 | Previews | With a domain, named HTTPS hosts. IP-only, HTTPS on assigned ports (21000–21255 by default). |
 | Development data | Per-sandbox databases, branches or namespaces through catalog packages; you verify isolation per repository. |
-| Claude Code | Optional; needs a Claude environment that supports self-hosted runners. |
+| Claude Code | Optional; cloud sessions through self-hosted runners (Team/Enterprise); see the [Claude Code guide](docs/claude-code.md). |
 | Amp | Optional self-hosted orb provider; see the [Amp guide](docs/amp-orbs.md). |
 | Other agents | Work over SSH and the CLI; no native "new session" integration. |
 | PR previews | Through the GitHub App's `preview` label; verify updates, links and cleanup per repository. |
@@ -167,6 +168,7 @@ examples, not a compatibility guarantee.
 | [Service selection](docs/service-selection.md) | Matching what a repository uses to catalog packages. |
 | [Reference](docs/reference.md) | Recipe format, env and secrets, services, lifecycle, templates, previews, limits. |
 | [Extensions](docs/extensions.md) | Writing an agent connector or a catalog package. |
+| [Claude Code](docs/claude-code.md) | Running Claude Code cloud sessions in sandboxes. |
 | [Amp](docs/amp-orbs.md) | Running Amp threads in sandboxes. |
 | [Resource allocation](control/sbx_control/template_files/resource-guide.md) | CPU, RAM, disk and swap: requested, allocated and observed. |
 | [Development](docs/development.md) | Working on sbx itself: checks, builds, releases. |

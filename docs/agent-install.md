@@ -32,8 +32,7 @@ failed step before presenting it as done.
    (`sbx-admin doctor`, `sbx-admin store status`).
 3. **Repository access.** Connect GitHub on the web app's **Extensions** page
    and let the owner select a repository. A public repository URL works
-   without a GitHub App. Connect an agent connector (Claude Code,
-   [Amp](amp-orbs.md)) only if the owner wants it.
+   without a GitHub App.
 4. **Desktop CLI.** On the machine with a checkout of the repository, install
    `sbx` from the server's **CLI & access** page and run `sbx login`. The
    desktop CLI runs on macOS only; on Linux or in CI, use the
@@ -52,7 +51,15 @@ failed step before presenting it as done.
    and launches it. For preloaded development data, see
    [development baselines](reference.md#development-baselines).
 6. **Acceptance.** Run the [acceptance checklist](#acceptance-checklist).
-7. **Handoff.** Give the owner working preview links and the commands to start
+7. **Coding agents.** Ask the owner which coding agents the team uses. For
+   Claude Code cloud sessions, follow [Claude Code](claude-code.md); for Amp
+   threads, follow [Amp](amp-orbs.md). Each needs a key only the owner can copy
+   (from claude.ai, or from Amp's settings) and paste on the **Extensions**
+   page; never ask for it in chat. Check that the card shows the connector as
+   connected and start one session or thread to confirm its sandbox comes up.
+   Other agents need nothing here: they reach sandboxes over SSH (`sbx
+   ssh-config`) or with `sbx open NAME AGENT`.
+8. **Handoff.** Give the owner working preview links and the commands to start
    another sandbox (`sbx up`), read logs (`sbx logs`), change variables
    (`sbx env`) and delete a sandbox (`sbx down`). Offer a setup PR
    (`sbx recipe pr`), PR previews or a prebuilt template once the basic launch
