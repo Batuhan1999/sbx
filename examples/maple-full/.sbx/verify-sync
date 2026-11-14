@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+"$HOME/.local/bin/bun" - <<'JS'
+import pg from 'pg';
+const database = new pg.Client(process.env.MAPLE_PG_URL);
+await database.connect();
+const marker = 'sbx-sync-check-' + crypto.randomUUID();
+try {
+  await database.query(`INSERT INTO dashboards
+    (org_id,id,name,payload_json,created_at,updated_at,created_by,updated_by)
+    VALUES ('default',$1,$1,'{}',now(),now(),'check','check')`, [marker]);
+  const login = await fetch('http://127.0.0.1:54567/api/auth/login', {
+    method: 'POST', headers: {'content-type':'application/json'},
+    body: JSON.stringify({password:process.env.MAPLE_ROOT_PASSWORD}),
+  });
+  if (!login.ok) throw Error('login failed, HTTP '+login.status);
+  const {token} = await login.json();
+  const response = await fetch('http://127.0.0.1:57270/api/sync/shape?shape=dashboards&offset=-1', {
+    headers: {Authorization:'Bearer '+token}, signal:AbortSignal.timeout(45000),
+  });
+  if (!response.ok) throw Error('shape proxy failed, HTTP '+response.status);
+  const rows = await response.json();
+  const handle = response.headers.get('electric-handle');
+  let offset = response.headers.get('electric-offset');
+  if (!handle || !offset) throw Error('shape response did not expose its handle and offset');
+  async function waitFor(predicate, initial=[]) {
+    if (initial.some(predicate)) return;
+    const deadline = Date.now()+60000;
+    while (Date.now()<deadline) {
+      const params = new URLSearchParams({shape:'dashboards',handle,offset,live:'true'});
+      const next = await fetch('http://127.0.0.1:57270/api/sync/shape?'+params, {
+        headers:{Authorization:'Bearer '+token}, signal:AbortSignal.timeout(45000),
+      });
+      if (!next.ok) throw Error('live sync failed, HTTP '+next.status);
+      const changes = await next.json();
+      offset = next.headers.get('electric-offset') || offset;
+      if (changes.some(predicate)) return;
+    }
+    throw Error('committed Postgres change missing from live Electric stream');
+  }
+  await waitFor(row => row.value?.id === marker, rows);
+  await database.query('UPDATE dashboards SET name=$1, version=version+1 WHERE id=$2',[marker+'-updated',marker]);
+  await waitFor(row => row.value?.id === marker && row.value?.name === marker+'-updated');
+  const unauthenticated = await fetch(process.env.ELECTRIC_URL+'/v1/shape?table=dashboards&offset=-1', {signal:AbortSignal.timeout(10000)});
+  if (unauthenticated.status !== 401) throw Error('Electric source accepted missing secret, HTTP '+unauthenticated.status);
+  console.log(JSON.stringify({postgres_to_electric_to_authenticated_proxy:true,live_update:true,source_requires_secret:true}));
+} finally {
+  await database.query('DELETE FROM dashboards WHERE id=$1',[marker]);
+  await database.end();
+}
+JS

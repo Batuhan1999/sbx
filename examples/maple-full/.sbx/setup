@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.local/go/bin:$PATH"
+mkdir -p "$HOME/.local/bin"
+if command -v go >/dev/null && [ "$(df --output=avail -k / | tail -1)" -lt 1048576 ]; then
+  go clean -cache
+fi
+bash /run/sbx/app/docker
+if ! command -v cc >/dev/null || ! command -v pkg-config >/dev/null; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+fi
+
+# Dependencies can also be prepared in a template; setup remains safe on a base VM.
+bun_version=$(python3 -c 'import json; print(json.load(open("package.json"))["packageManager"].removeprefix("bun@"))')
+if ! command -v bun >/dev/null || [ "$(bun --version)" != "$bun_version" ]; then
+  temporary=$(mktemp -d)
+  curl -fsSL --retry 3 "https://github.com/oven-sh/bun/releases/download/bun-v$bun_version/bun-linux-x64.zip" -o "$temporary/bun.zip"
+  unzip -oq "$temporary/bun.zip" -d "$temporary"
+  install -m755 "$temporary/bun-linux-x64/bun" "$HOME/.local/bin/bun"
+  rm -rf "$temporary"
+fi
+bun install --frozen-lockfile
+bun run alchemy:build-deps
+
+rust_version=$(python3 -c 'import tomllib; print(tomllib.load(open("mise.toml","rb"))["tools"]["rust"])')
+if ! command -v rustup >/dev/null; then
+  temporary=$(mktemp)
+  curl -fsSL --retry 3 https://sh.rustup.rs -o "$temporary"
+  sh "$temporary" -y --profile minimal --default-toolchain "$rust_version"
+  rm -f "$temporary"
+else
+  rustup toolchain install "$rust_version" --profile minimal
+  rustup override set "$rust_version"
+fi
+(cd apps/ingest && cargo build --locked -j 2)
+
+if ! command -v go >/dev/null; then
+  python3 - <<'PY'
+import hashlib, json, os, tarfile, tempfile, urllib.request
+from pathlib import Path
+releases = json.load(urllib.request.urlopen('https://go.dev/dl/?mode=json&include=all'))
+release = next(row for row in releases if row['stable'] and row['version'].startswith('go1.25.'))
+archive = next(row for row in release['files'] if row['os']=='linux' and row['arch']=='amd64' and row['kind']=='archive')
+with tempfile.TemporaryDirectory() as temporary:
+    target = Path(temporary)/archive['filename']
+    urllib.request.urlretrieve('https://go.dev/dl/'+archive['filename'], target)
+    if hashlib.sha256(target.read_bytes()).hexdigest()!=archive['sha256']:
+        raise SystemExit('Go archive checksum did not match the official release manifest')
+    with tarfile.open(target) as bundle:
+        bundle.extractall(Path.home()/'.local', filter='data')
+PY
+fi
+export GOMAXPROCS=2 GOMEMLIMIT=2GiB
+if [ ! -x "$HOME/.local/bin/builder" ]; then
+  GOBIN="$HOME/.local/bin" go install go.opentelemetry.io/collector/cmd/builder@v0.151.0
+fi
+if [ ! -x "$HOME/.local/bin/otel-collector-maple" ]; then
+  builder --config=otel/builder-config.yaml
+  install -m755 bin/otel-collector-maple "$HOME/.local/bin/otel-collector-maple"
+fi
+
+if [ "$(df --output=avail -k / | tail -1)" -lt 1048576 ]; then
+  go clean -cache
+fi
+
+# The collector and the full application consume exactly this applied environment.
+python3 /run/sbx/app/configure.py
+bun node_modules/portless/dist/cli.js trust
+bun run --cwd packages/db db:migrate
+MAPLE_CH_URL="$CLICKHOUSE_URL" MAPLE_CH_USER="$CLICKHOUSE_USER" \
+MAPLE_CH_PASSWORD="$CLICKHOUSE_PASSWORD" MAPLE_CH_DATABASE="$CLICKHOUSE_DATABASE" \
+  bun packages/clickhouse-cli/src/cli.ts apply
+printf 'Full Maple source dependencies and schemas are ready\n'

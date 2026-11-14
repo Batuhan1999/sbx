@@ -1,0 +1,12 @@
+template: memos-source
+resources: {cpu: 2, memory_mb: 4096, disk_mb: 8192, swap_mb: 1024}
+previews:
+  "": 5230
+env:
+  MEMOS_ADMIN_PASSWORD: ${random:32}
+  MEMOS_DATA: /home/user/.memos
+processes:
+  memos: ./build/memos --port 5230 --config-dir /run/sbx/app/config
+health:
+  - http://127.0.0.1:5230/
+health_timeout: 120

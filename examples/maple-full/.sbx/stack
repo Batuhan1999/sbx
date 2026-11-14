@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.local/go/bin:$PWD/node_modules/.bin:$PATH"
+bun node_modules/portless/dist/cli.js proxy start
+exec bun run scripts/dev.ts api ai alerting chat-bot electric-sync status

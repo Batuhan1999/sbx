@@ -1,0 +1,58 @@
+# Full Maple source development, with isolated resources on shared servers.
+template: maple-source
+resources: {cpu: 4, memory_mb: 8192, disk_mb: 8192, swap_mb: 2048}
+previews:
+  "": 3471
+services:
+  db:
+    uses: postgres-clone
+    connections: {server: postgres}
+    with: {template: template0, createrole: 'true', replication: 'true'}
+  warehouse:
+    uses: clickhouse-database
+    connections: {server: clickhouse}
+  sync:
+    uses: electric-source
+    with:
+      database_url: ${services.db.url}
+env:
+  MAPLE_PG_URL: ${services.db.url}
+  DATABASE_URL: ${services.db.url}
+  CLICKHOUSE_URL: http://${services.warehouse.host}:${services.warehouse.port}
+  CLICKHOUSE_USER: ${services.warehouse.user}
+  CLICKHOUSE_PASSWORD: ${services.warehouse.password}
+  CLICKHOUSE_DATABASE: ${services.warehouse.database}
+  CLICKHOUSE_PROVIDER: clickhouse
+  TINYBIRD_HOST: ${CLICKHOUSE_URL}
+  TINYBIRD_TOKEN: ${services.warehouse.password}
+  MAPLE_AUTH_MODE: self_hosted
+  MAPLE_DEFAULT_ORG_ID: default
+  MAPLE_INTERNAL_ORG_ID: default
+  MAPLE_ROOT_PASSWORD: ${random:32}
+  MAPLE_INGEST_KEY_ENCRYPTION_KEY: ${random:base64:32}
+  MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: ${random:hex64}
+  MAPLE_SHARE_TOKEN_HMAC_KEY: ${random:hex64}
+  SD_INTERNAL_TOKEN: ${random:hex64}
+  INTERNAL_SERVICE_TOKEN: ${random:hex64}
+  TURBO_TELEMETRY_DISABLED: '1'
+  INGEST_KEY_STORE_BACKEND: postgres
+  INGEST_WRITE_MODE: forward
+  INGEST_FORWARD_OTLP_ENDPOINT: http://127.0.0.1:4318
+  INGEST_REQUIRE_TLS: 'false'
+  INGEST_CLICKHOUSE_ALLOW_PRIVATE_ENDPOINTS: 'true'
+  INGEST_QUEUE_DIR: /home/user/.maple-ingest/wal
+  MAPLE_ORG_ID_OVERRIDE: default
+processes:
+  maple-stack: /run/sbx/app/stack
+  maple-collector: $HOME/.local/bin/otel-collector-maple --config /tmp/maple-sbx-collector.yaml
+  maple-ingest: INGEST_PORT=3474 ./apps/ingest/target/debug/maple-ingest
+  maple-scraper: PORT=3475 MAPLE_API_URL=https://api.localhost MAPLE_INGEST_URL=http://127.0.0.1:3474 $HOME/.local/bin/bun apps/scraper/src/main.ts
+  maple-web: cd apps/web && HOST=0.0.0.0 PORT=3471 $HOME/.local/bin/bun run dev --config /run/sbx/app/vite.config.mts
+health:
+  - http://127.0.0.1:3471/
+  - http://127.0.0.1:13133/
+  - http://127.0.0.1:54567/health
+  - http://127.0.0.1:53375/health
+  - http://127.0.0.1:3474/health
+  - http://127.0.0.1:3475/health
+health_timeout: 240

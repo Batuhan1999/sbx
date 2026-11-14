@@ -1,0 +1,5 @@
+--- a/packages/shared/pkg/featureflags/flags.go
++++ b/packages/shared/pkg/featureflags/flags.go
+@@ -242 +242 @@
+-	FilesystemOnlyCheckpointFlag = NewBoolFlag("filesystem-only-checkpoint", false)
++	FilesystemOnlyCheckpointFlag = NewBoolFlag("filesystem-only-checkpoint", envBoolOr("FILESYSTEM_ONLY_CHECKPOINT_ENABLED", false))

@@ -1,0 +1,29 @@
+kind: provision
+name: aws-profile
+title: AWS profile (per sandbox)
+description: >
+  Connect the repository's normal AWS CLI/SDK and secret loader to an existing
+  development role. Credentials refresh through sbx; no SSO login is needed inside
+  each sandbox. This grants AWS access; it does not isolate shared AWS data.
+requires:
+  role: {kind: aws-role, expose: {region: AWS_PROFILE_REGION}}
+inputs:
+  profile:
+    default: sbx
+    help: profile name the repository expects, for example dev
+outputs:
+  profile: {}
+  region: {}
+runs: {create: create.py}
+timeout: 30s
+# The sandbox's AWS config and credential_process helper, and the action it
+# calls for a session with the token sbx issues the resource; attaching it
+# reaches existing sandboxes on prepare.
+runtime: aws.py
+actions: {credentials: aws.py}
+live: true
+scrub: [$HOME/.aws]
+env:
+  AWS_PROFILE: ${outputs.profile}
+  AWS_REGION: ${outputs.region}
+  AWS_DEFAULT_REGION: ${outputs.region}

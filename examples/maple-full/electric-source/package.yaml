@@ -1,0 +1,15 @@
+kind: provision
+name: electric-source
+title: ElectricSQL source (per sandbox)
+description: A private Electric source on the installation's service network, using one sandbox's Postgres database and its own source secret.
+inputs:
+  database_url: {required: true, secret: true}
+  image: {default: 'electricsql/electric@sha256:efb6fa43859d67cb8c73439e0c8bc0f7a3daa467500fb06f2a924bcb2070c139'}
+outputs:
+  url: {}
+  secret: {sensitive: true}
+env:
+  ELECTRIC_URL: ${outputs.url}
+  ELECTRIC_SECRET: ${outputs.secret}
+runs: {create: lifecycle.py, delete: lifecycle.py, list: lifecycle.py}
+timeout: 5m

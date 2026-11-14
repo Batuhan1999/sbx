@@ -1,0 +1,48 @@
+kind: provision
+name: postgres-clone
+title: Postgres clone (per sandbox)
+description: 'A database per sandbox, sbx_<name>, copied from a template database, with a login of the
+  same name that owns it. Copy-on-write depends on the connected server and its storage; this
+  provisioner does not enable it. PG_ADMIN_URL is a postgresql:// URL of a role
+  that may create roles and databases; the sandbox reaches the database on that URL''s host. Resource IDs are recorded per service; cleanup uses that saved ownership.'
+requires:
+  server:
+    kind: postgres-server
+    expose:
+      url: PG_ADMIN_URL
+inputs:
+  connection_limit:
+    default: '20'
+    description: maximum concurrent connections for this sandbox login; size application pools below this budget
+  template:
+    required: true
+    description: the template database
+  owner_role:
+    default: ''
+    description: a role the login is a member of, such as the owner of the template's objects
+  createrole:
+    default: 'false'
+    description: 'true: the login may create roles (migrations that create them)'
+  replication:
+    default: 'false'
+    description: 'true: the login may stream its database for services such as ElectricSQL'
+outputs:
+  url:
+    sensitive: true
+  password:
+    sensitive: true
+  user: {}
+  database: {}
+  host: {}
+  port: {}
+env:
+  DATABASE_URL: ${outputs.url}
+runs:
+  create: create.sh
+  delete: delete.sh
+  list: list.sh
+hooks:
+  pause: pause.sh
+timeout: 5m
+host_tools:
+  psql: apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql-client

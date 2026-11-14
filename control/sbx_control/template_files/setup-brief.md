@@ -1,0 +1,211 @@
+# Set up {repo} on {control}
+
+You are in a checkout of `{repo}`, and the `sbx` CLI is signed in to
+{control}. Your job: write the repository's `.sbx/` recipe so that
+`sbx up NAME` starts the application its owner actually uses, with
+development data of its own, and prove that with two sandboxes. Appended
+after the last step: worked examples (how real recipes were made), the service
+selection guide, the acceptance checklist and the resource guide.
+
+## How to work
+
+- Do the steps in order. Before a step, say what you are about to do; after it,
+  run its check and show the result. Do not move on from a failed check.
+- Do routine work without asking. Ask the owner only for a decision (product
+  mode, starting data, a provider or plan that costs money) or for access, and
+  wait for the answer before work that depends on it.
+- Work through `sbx` and `ssh sbx-NAME` (run `sbx ssh-config` once so ssh
+  knows the `sbx-` hosts). When something fails, fix the recipe and retry the
+  same command. Do not patch a sandbox by hand and call it done.
+- Never print, paste, commit or ask for a secret value in chat. The owner types
+  values into `sbx env set` themselves.
+
+## What the server knows
+
+Catalog packages on this server: {services}
+
+`{repo}` on this server:{env_now}
+
+(Nothing after the colon means no values or connections are set yet.)
+
+## 1. Check access
+
+Run `sbx repo status`.
+
+Check: `trust` is `trusted`. If it is anything else, stop and tell the owner: an
+admin connects the repository in the web app first, and an untrusted
+repository gets no services or secret values. Note `configured`: whether the
+server already has a recipe for it.
+
+## 2. Find out what the app needs
+
+Read the README and docs, dependency manifests, Compose files, `.env.example`
+and similar, ORM and migration config, seed and reset scripts, start scripts
+and the wrappers around them, CI and deployment workflows. Write down:
+
+- the product mode the owner runs and the command a developer starts it with.
+  A lighter demo mode is not the same app; ask if the mode is unclear;
+- every service it talks to, with the file that shows it;
+- every environment variable it reads, and where each value comes from today:
+  generated, a service's URL, an external account, or a secret loader.
+
+If startup loads values through a secret manager (AWS Secrets Manager, Vault,
+Doppler, ...), keep that loader and connect its identity; do not copy its
+values into sbx. For AWS that is an `aws-role` connection plus the
+`aws-profile` package.
+
+Check: you have a list of services and a list of variables, each with evidence.
+
+## 3. Choose services
+
+Choose with the service selection guide appended below. Show the owner its
+table before you change anything, and use the saved connections listed above
+before asking for a new one. Never create a hosted account, pick a paid plan or
+copy production data unless the owner says so.
+
+Declare each service in `.sbx/sbx.yaml`:
+
+```yaml
+services:
+  db:
+    uses: postgres-clone            # the package
+    connections: {server: CONNECTION} # the saved connection, by key
+    with: {template: template0}   # the package's inputs
+```
+
+A package input that is a secret goes to the server, never into the file:
+`sbx attach PACKAGE --key db` asks for it hidden. If `sbx attach` reports
+`needs_connection`, an admin adds that connection in the web app first.
+
+Start each sandbox empty and let the repository's own migrations and seeds
+fill it, unless the owner wants preloaded development data; that baseline is
+prepared once on the shared server, never by `.sbx/setup`.
+
+Check: the owner agreed to the table, and every provision package it names has
+a connection.
+
+## 4. Give every variable a source
+
+Write each variable from step 2 into `env:` in `.sbx/sbx.yaml`:
+
+| The value is | Write |
+| --- | --- |
+| A secret the app can generate | `SESSION_SECRET: ${random:32}` (also `${random:hex64}`, `${random:base64:32}`); stable per sandbox |
+| A service output | `DATABASE_URL: ${services.db.url}` |
+| A preview URL (origins, callbacks, CORS) | `${SBX_URL}`, or `${SBX_URL_<PREVIEW>}` for a named preview |
+| Per-sandbox naming, such as a cookie prefix | `${SBX_NAME}` |
+| A fixed setting | `NODE_ENV: development` |
+| Something only the owner has (an API key, an account token) | declare it: list the name under `secrets:`, or use `${secret:NAME}` inside another value |
+
+Declare **every** value that sbx cannot generate or provision. The declaration
+is how sbx knows a value is missing: `sbx repo status` lists declared names
+without a value under `secrets_missing`, and the web app flags them on the
+repository's Environment page. A value the app reads but the recipe never
+declares is invisible to that check and only fails at runtime.
+
+```yaml
+secrets: [STRIPE_SECRET_KEY, OPENAI_API_KEY]   # injected under their own names
+env:
+  SMTP_URL: smtp://mailer:${secret:SMTP_PASSWORD}@smtp.example.com:587
+```
+
+A `${secret:NAME}` without a value stops a launch; a name under `secrets:`
+does not, the app just starts without it.
+
+Check: every variable from step 2 has a source in `sbx.yaml`, and no value in
+the file is a real secret.
+
+## 5. Write the recipe
+
+First read the appended worked example closest to this repository: its
+decisions and pitfalls apply to apps like it.
+
+```yaml
+# .sbx/sbx.yaml
+previews:
+  "": 3000                      # the port that gets the main link
+processes:
+  web: npm run dev -- --host 0.0.0.0
+health:
+  - http://127.0.0.1:3000/
+env:
+  SESSION_SECRET: ${random:32}
+```
+
+- `.sbx/setup` installs or reconciles dependencies and runs the normal
+  migrations and development seeds. It runs on create and on every prepare, so
+  it must be executable and safe to repeat.
+- `processes:` holds the repository's ordinary start commands. Bind web servers
+  to `0.0.0.0`. Use `.sbx/start` only when a script is simpler; it starts its
+  servers detached and returns.
+- `health:` lists URLs that only answer when the app works. Without them a
+  started app counts as unverified.
+- Leave out `template:` and `resources:` on the first pass. Sandboxes then get
+  the default size (2 vCPU, 4 GiB RAM). Add `resources:` only when
+  measurements show the default is too small, and `template:` only when
+  repeated setup dominates launch time (resource guide below). A size applies
+  with or without `template:`, to sandboxes started after `sbx template build`.
+- Add `lifecycle: {resume: restart}` only if the app's connections break
+  after a pause.
+- The recipe stays below 128 files and 1 MiB, with no symlinks.
+
+The full format is in `docs/reference.md` (section Recipe) in the sbx source.
+
+Check: `.sbx/setup` and any `.sbx/start` are executable, and running setup
+twice in a row would leave the same state.
+
+## 6. Put the recipe on the server
+
+The server runs `sbx.yaml` from its own copy of the recipe: an operator copy,
+else the one imported from the default branch. Your checkout's `sbx.yaml` is
+not read until it gets there.
+
+- If you are an admin on the server, run `sbx recipe apply` in the checkout.
+  Repeat after every edit.
+- Otherwise, publish it with `sbx recipe pr`; once the owner merges
+  the pull request, `sbx template build` imports the default branch's recipe.
+
+Then run `sbx repo status` again. For each name under `secrets_missing`, ask
+the owner to run `sbx env set NAME` (it asks for the value, hidden) or
+`sbx env import FILE`.
+
+Check: `configured` is `True`, `recipe_sha256` changed after your last apply,
+and `secrets_missing` is empty or holds only values the owner chose to skip.
+
+## 7. First launch
+
+Run `sbx up try-a`. It returns with the preview links once health passes.
+
+If it fails, read `sbx logs try-a` and look inside with `ssh sbx-try-a`
+(`/tmp/sbx-setup.log`, `/tmp/sbx-<process>.log`). After a recipe edit, apply it
+again (step 6) and rerun setup and start on the same sandbox, keeping its
+source edits, with `sbx sandbox prepare try-a`.
+`sbx sandbox restart try-a` only restarts the processes. A changed service, package or
+resource size needs a new sandbox.
+
+Before changing `resources:`, read what the sandbox actually got with
+`sbx sandbox resources try-a`.
+
+Check: open the preview link and do one thing the app exists for, such as
+signing in and creating a record. A home page that answers 200 is not enough.
+Where possible, script the action (`ssh sbx-try-a '...'`) so you can run it
+again in step 8, and keep its output.
+
+## 8. Prove independence
+
+Work through the acceptance checklist appended below with two disposable
+sandboxes, `try-a` and `try-b` (`sbx up try-b`). Reuse the action you scripted
+in step 7 on both, and keep the output of every check.
+
+Then `sbx down try-b`.
+
+## 9. Hand over
+
+Tell the owner, with evidence: the preview links, what you verified and what
+you did not (optional providers left unconfigured, for example), and the
+everyday commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`,
+`sbx down NAME`. Offer `sbx recipe pr` to publish `.sbx/` if it is not merged
+yet. PR previews and a prebuilt template come later, and only when asked.
+
+Done means every item of the acceptance checklist below is checked and
+reported.

@@ -1,0 +1,24 @@
+kind: provision
+name: clickhouse-database
+title: ClickHouse database (per sandbox)
+description: >
+  A database per sandbox, sbx_<name>, on a ClickHouse server you connect,
+  with its own user. A development template can supply empty schemas or
+  native data-sharing clones of local MergeTree tables.
+requires:
+  server: { kind: clickhouse-server, expose: { url: CH_URL, user: CH_USER, password: CH_PASSWORD } }
+inputs:
+  template: { default: "", description: development database to copy schemas or clone local MergeTree data from }
+  mode: { default: schema, description: 'schema: empty tables; clone: seeded CoW copies of supported local MergeTree tables' }
+outputs:
+  url: { sensitive: true }
+  http_url: { sensitive: true }
+  host: {}
+  port: {}
+  user: {}
+  password: { sensitive: true }
+  database: {}
+runs: { create: provider.py, delete: provider.py, list: provider.py }
+timeout: 2m
+env:
+  CLICKHOUSE_URL: ${outputs.url}

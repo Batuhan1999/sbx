@@ -1,0 +1,20 @@
+kind: connection
+name: postgres-server
+title: Postgres server
+description: >
+  A Postgres you run, reachable from sandboxes (its address in the ranges
+  sandboxes may reach). Provisioners such as postgres-clone make a database
+  per sandbox on it with the admin role given here.
+docs: https://www.postgresql.org/docs/current/sql-createrole.html
+inputs:
+  url:
+    required: true
+    secret: true
+    help: "postgresql://role:password@host:5432/postgres, a role that may create roles and databases"
+check: |
+  command -v psql >/dev/null || { echo "psql is not installed on this host"; exit 1; }
+  PGCONNECT_TIMEOUT=10 psql "$INPUT_URL" -X -q -tAc "select 1" >/dev/null 2>&1 || { echo "could not connect as that role"; exit 1; }
+  PGCONNECT_TIMEOUT=10 psql "$INPUT_URL" -X -q -tAc "select rolcreatedb and rolcreaterole from pg_roles where rolname = current_user" | grep -q t \
+    || { echo "the role may not create databases and roles"; exit 1; }
+host_tools:
+  psql: apt-get -o DPkg::Lock::Timeout=300 install -y -qq postgresql-client

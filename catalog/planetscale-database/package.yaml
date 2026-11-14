@@ -1,0 +1,40 @@
+kind: connection
+name: planetscale-database
+title: PlanetScale Postgres database
+description: >
+  An existing PlanetScale PostgreSQL database. planetscale-branch creates a
+  separate development branch per sandbox. Connect a database-scoped service
+  token with branch read/create/delete and development role create/connect access.
+  This connection does not create databases or alter the production branch.
+docs: https://planetscale.com/docs/api/service-tokens
+inputs:
+  organization:
+    required: true
+    help: Organization slug
+  database:
+    required: true
+    help: PostgreSQL database slug; Vitess/MySQL and Neki need different adapters
+  service_token_id:
+    required: true
+    secret: true
+    help: ID of a database-scoped service token
+  service_token:
+    required: true
+    secret: true
+    help: Database-scoped token with read_database, read_branch, create_branch, delete_branch and connect_branch; never put it in the recipe
+check: |
+  python3 - <<'CHECK'
+  import json, os, sys
+  from urllib.parse import quote
+  from urllib.request import Request, urlopen
+  base = 'https://api.planetscale.com/v1/organizations/'
+  path = quote(os.environ['INPUT_ORGANIZATION'], safe='') + '/databases/' + quote(os.environ['INPUT_DATABASE'], safe='')
+  auth = os.environ['INPUT_SERVICE_TOKEN_ID'] + ':' + os.environ['INPUT_SERVICE_TOKEN']
+  try:
+      with urlopen(Request(base + path, headers={'Authorization': auth}), timeout=10) as response:
+          database = json.load(response)
+      if database.get('kind') != 'postgresql':
+          sys.exit('Choose a PlanetScale PostgreSQL database; this adapter does not provision Vitess/MySQL or Neki')
+  except Exception:
+      sys.exit('PlanetScale database check failed; check its slugs and database-scoped service token access')
+  CHECK

@@ -1,0 +1,33 @@
+# Managed secret store, started by infisical/enable.sh and sbx-infisical.service.
+# On 127.0.0.1 only; forward over SSH for direct administration. Bootstrap in
+# /etc/sbx/infisical.env (root only); data in the named volumes.
+name: sbx-infisical
+services:
+  backend:
+    image: infisical/infisical:v0.167.4
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_started}
+    env_file: ${INFISICAL_ENV:-/etc/sbx/infisical.env}
+    environment:
+      NODE_ENV: production
+      TELEMETRY_ENABLED: "false"
+    ports: ["127.0.0.1:${INFISICAL_PORT:-8190}:8080"]
+  redis:
+    image: redis:7.4.6
+    restart: unless-stopped
+    volumes: [redis:/data]
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: ${INFISICAL_ENV:-/etc/sbx/infisical.env}
+    volumes: [db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  db:
+  redis:

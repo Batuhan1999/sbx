@@ -1,0 +1,4 @@
+Source: https://github.com/e2b-dev/runtime
+Commit: 67b318240f4b6acc497411aa968b817b338f62e6
+Paths: embed/compose/ (the upstream Terraform modules are not vendored)
+LICENSE is from the same upstream commit at the repository root.

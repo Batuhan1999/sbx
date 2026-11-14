@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible sbx problem.
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include the command or page, steps, and a small repository or recipe when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: sbx revision, host OS, install method, and relevant logs with private values removed.
+    validations:
+      required: true

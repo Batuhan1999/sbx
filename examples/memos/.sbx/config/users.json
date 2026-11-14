@@ -1,0 +1,1 @@
+{"users":[{"name":"users/sbx-admin","username":"sbx-admin","role":"ADMIN","password":"${env:MEMOS_ADMIN_PASSWORD}"}]}

@@ -1,0 +1,13 @@
+kind: connection
+name: temporal-server
+title: Temporal server
+description: A Temporal you run; temporal-namespace makes a namespace per sandbox on it.
+inputs:
+  address:
+    required: true
+    help: "the frontend, host:7233"
+check: |
+  command -v temporal >/dev/null || { echo "the temporal CLI is not installed on this host"; exit 1; }
+  temporal operator cluster health --address "$INPUT_ADDRESS" >/dev/null 2>&1 || { echo "no Temporal at $INPUT_ADDRESS"; exit 1; }
+host_tools:
+  temporal: curl -sSf https://temporal.download/cli.sh | sh -s -- --dir /usr/local

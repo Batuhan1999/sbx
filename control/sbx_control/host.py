@@ -1,0 +1,508 @@
+"""The host's layout and every systemd unit the platform runs, from one list.
+
+  /opt/sbx-control/releases/<id>/   a release (control/release.sh), with its own venv
+  /opt/sbx-control/current          the active release (host-install.sh switches it)
+  /usr/local/sbin/sbx-admin, sbx-apply, sbx-host-guard, e2b-storage-gc,
+  e2b-compact-snapshot              commands into the active release
+
+Every unit and command below runs the active release from CURRENT, so
+switching releases is one symlink and a restart. Host scripts (tls.sh,
+host-guard.sh, the connectors' own) run with CURRENT as their working
+directory.
+
+  python -m sbx_control.host install   write every unit and command, then (re)start them
+  python -m sbx_control.host apply KEY a settings change's root-side effect (sbx-apply KEY)
+  python -m sbx_control.host list      the units and whether each is wanted
+  python -m sbx_control.host embed-env [--hugepages N] [--pins FILE]
+                                       write the keys sbx owns in Embed's .env (install.sh)
+  python -m sbx_control.host tools     install the host tools catalog packages declare
+  python -m sbx_control.host upgrade-backup
+                                       before an upgrade's migration (host-install.sh): stop
+                                       what writes sbx.db, back up the state, write rollback.sh
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import pathlib
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from typing import Callable
+
+HOME = pathlib.Path("/opt/sbx-control")
+CURRENT = HOME / "current"
+RELEASES = HOME / "releases"
+KEEP_RELEASES = 3                       # the active one and two to roll back to
+SBIN = pathlib.Path("/usr/local/sbin")
+EMBED = pathlib.Path("/opt/e2b")        # Embed's compose project (install.sh)
+INFISICAL_COMPOSE = CURRENT / "infisical/compose.yaml"
+# Embed's own compose files: the vendored one and sbx's settings over it.
+EMBED_COMPOSE = ("compose.yaml", "compose.override.yaml")
+EMBED_PINS = r"^(E2B_[A-Z_]+_(IMAGE|VERSION)|RUNTIME_COMMIT)$"   # the runtime's image pins (vendor/e2b-embed)
+
+
+def systemd_dir() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("SBX_SYSTEMD_DIR") or "/etc/systemd/system")
+
+
+@dataclass(frozen=True)
+class Unit:
+    """A unit file and what install does with it: restart (a service that
+    must run this release), start (enable --now, leave a running one alone),
+    enable (at boot only), or "" (started by a timer or path unit)."""
+    name: str
+    text: str
+    action: str = "restart"
+    wanted: bool = True                 # else disabled and stopped
+    prepare: str = ""                   # shell run as root before it starts (a connector's install)
+    ready: Callable[[], None] | None = None   # waits until it serves, before the next unit starts
+
+
+def _service(description, service, *, after="network-online.target", install=True, unit_extra="") -> str:
+    return (f"[Unit]\nDescription={description}\nAfter={after}\n{unit_extra}"
+            f"[Service]\n{service.strip()}\n" + ("[Install]\nWantedBy=multi-user.target\n" if install else ""))
+
+
+def _timer(description, timer) -> str:
+    return f"[Unit]\nDescription={description}\n[Timer]\n{timer.strip()}\n[Install]\nWantedBy=timers.target\n"
+
+
+def _python(module_args: str) -> str:
+    return f"WorkingDirectory={CURRENT}\nExecStart={CURRENT}/venv/bin/python -m {module_args}"
+
+
+def _apply_units(key: str) -> list[Unit]:
+    """A settings change asks for key by touching /run/sbx/apply/<key>
+    (settings.request_effects); its path unit runs sbx-apply KEY as root."""
+    from . import paths
+    return [Unit(f"sbx-apply-{key}.path", f"[Unit]\nDescription=Apply the {key} effect of a settings change\n"
+                 f"[Path]\nPathExists={paths.run()}/apply/{key}\nUnit=sbx-apply-{key}.service\n"
+                 "[Install]\nWantedBy=multi-user.target\n", action="start"),
+            Unit(f"sbx-apply-{key}.service", _service(f"Apply the {key} effect of a settings change",
+                                                       f"Type=oneshot\nExecStart={SBIN}/sbx-apply {key}", install=False),
+                 action="")]
+
+
+def platform_effects() -> list:
+    """The platform's effects that have a path unit (settings.HostUnit);
+    extensions' keys re-render their services. embed-network has none: it
+    stays pending until `sbx-admin network apply`, which may refuse with
+    sandboxes running."""
+    from .settings import HostUnit
+    return [unit.value for unit in HostUnit if unit != HostUnit.EMBED_NETWORK]
+
+
+def shell() -> dict:
+    """The settings as the host scripts read them (settings.shell_lines)."""
+    from . import extensions, settings
+    lines = settings.shell_lines(settings.current(), {c.kind: c.settings() for c in extensions.connectors() if c.section})
+    return dict(shlex.split(line)[0].split("=", 1) for line in lines)
+
+
+def units() -> list[Unit]:
+    """Every unit, in the order install starts them: Embed and the host's
+    guard first, sbx-control before the connectors that call it."""
+    from . import extensions, settings
+    from .secret_store.infisical import env_file
+    s = shell()
+    infisical, port = env_file().exists(), settings.current().store.port
+    found = [
+        Unit("e2b-embed.service", _service(
+            "E2B Embed stack", f"Type=oneshot\nRemainAfterExit=yes\nWorkingDirectory={EMBED}\n"
+            "ExecStart=/usr/bin/docker compose up -d --wait\nTimeoutStartSec=30min",
+            after="docker.service network-online.target",
+            unit_extra="Requires=docker.service\nWants=network-online.target\n"), action="enable"),
+        # Sandboxes' TCP leaves through Embed's egress proxy (host-guard.sh says what it allows).
+        Unit("sbx-host-guard.service", _service(
+            "Keep sandboxes off the host and the cloud metadata service; close the public interface",
+            f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-host-guard",
+            after="e2b-embed.service", unit_extra="Requires=e2b-embed.service\n")),
+        Unit("sbx-firewall.service", _service(
+            "Keep sandboxes off the host's own ports",
+            f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-firewall",
+            after="docker.service network-online.target"), wanted=bool(s["sandbox_cidr"])),
+        Unit("e2b-storage-gc.service", _service(
+            "Delete template layers no build needs", f"Type=oneshot\nExecStart={SBIN}/e2b-storage-gc --delete",
+            install=False), action=""),
+        Unit("e2b-storage-gc.timer", _timer("Hourly template storage cleanup", "OnCalendar=hourly\nPersistent=true"),
+             action="start"),
+        Unit("sbx-infisical.service", _service(
+            "Infisical managed secret store",
+            f"Type=oneshot\nRemainAfterExit=yes\nEnvironment=INFISICAL_ENV={env_file()} INFISICAL_PORT={port}\n"
+            f"ExecStart=/usr/bin/docker compose -f {INFISICAL_COMPOSE} up -d --wait\n"
+            "ExecStartPost=/usr/bin/curl --fail --silent --retry 60 --retry-connrefused --retry-all-errors "
+            f"--retry-delay 2 --max-time 10 http://127.0.0.1:{port}/api/status\nTimeoutStartSec=10min",
+            after="docker.service network-online.target", unit_extra="Requires=docker.service\n"),
+             action="start", wanted=infisical),
+        # The installation's backup bundle, whatever the secret store (backup.py).
+        Unit("sbx-backup.service", _service(
+            "Back up the installation", "Type=oneshot\n" + _python("sbx_control.backup scheduled"),
+            after="sbx-infisical.service" if infisical else "network-online.target", install=False), action=""),
+        Unit("sbx-backup.timer", _timer(
+            f"Back up the installation every {s['backup_every_hours']} hours",
+            f"OnBootSec=1h\nOnUnitActiveSec={s['backup_every_hours'] or 24}h\nPersistent=true"),
+             action="start", wanted=bool(s["backup_every_hours"])),
+        # Answers _acme-challenge.<domain> for the delegated certificate mode (acme_dns.py).
+        Unit("sbx-acme-dns.service", _service(
+            "Authoritative DNS for _acme-challenge.<domain> (sbx)",
+            _python("sbx_control.acme_dns serve") + "\nRuntimeDirectory=sbx/acme\nRuntimeDirectoryPreserve=yes\n"
+            "Restart=always\nRestartSec=5"), wanted=s["dns"] == "delegated" and bool(s["domain"])),
+        *[unit for key in platform_effects() for unit in _apply_units(key)],
+        Unit("sbx-control.service", _service(
+            "sbx-control",
+            f"WorkingDirectory={CURRENT}\nExecStart={CURRENT}/venv/bin/uvicorn sbx_control.app:app --host 127.0.0.1 "
+            f"--port {_control_port()} --proxy-headers --forwarded-allow-ips 127.0.0.1\n"
+            "StateDirectory=sbx\nRuntimeDirectory=sbx\nRuntimeDirectoryPreserve=yes\nRestart=always",
+            after="network-online.target" + (" sbx-infisical.service" if infisical else ""),
+            unit_extra="Requires=sbx-infisical.service\n" if infisical else ""), ready=wait_ready),
+    ]
+    for service in extensions.host_services():
+        found.append(Unit(f"{service.name}.service", _service(service.description, service.service,
+                                                              after="network-online.target sbx-control.service"),
+                          wanted=service.enabled, prepare=service.prepare))
+        if service.apply:
+            found += _apply_units(service.apply)
+    return found
+
+
+def _control_port() -> int:
+    from . import platform
+    return platform.CONTROL_PORT
+
+
+def commands() -> dict[str, str]:
+    """/usr/local/sbin's commands into the active release."""
+    def into(command):
+        return f"#!/bin/sh\nset -eu\ncd {CURRENT}\nexec {command}\n"
+    s = shell()
+    host_ports = " ".join(s["host_ports"].split())
+    return {
+        "sbx-admin": into('venv/bin/python -m sbx_control.admin "$@"'),
+        "sbx-apply": into('venv/bin/python -m sbx_control.host apply "$@"'),
+        "sbx-host-guard": into("sh host-guard.sh"),
+        "e2b-storage-gc": into('venv/bin/python embed/storage-gc.py "$@"'),
+        "e2b-compact-snapshot": into('venv/bin/python embed/compact-snapshot.py "$@"'),
+        # Sandboxes may reach the host's nginx (the gate) and nothing else of it.
+        "sbx-firewall": (
+            "#!/bin/sh\nset -eu\n"
+            "iptables -w -N SBX-HOST 2>/dev/null || iptables -w -F SBX-HOST\n"
+            "iptables -w -A SBX-HOST -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n"
+            "iptables -w -A SBX-HOST -p udp --dport 53 -j RETURN\n"
+            f"for port in {host_ports}; do iptables -w -A SBX-HOST -p tcp --dport $port -j RETURN; done\n"
+            "iptables -w -A SBX-HOST -j DROP\n"
+            f"iptables -w -C INPUT -s {s['sandbox_cidr']} -j SBX-HOST 2>/dev/null || "
+            f"iptables -w -I INPUT 1 -s {s['sandbox_cidr']} -j SBX-HOST\n"
+            f"iptables -w -C FORWARD -s {s['sandbox_cidr']} -d 169.254.169.254 -j DROP 2>/dev/null ||\n"
+            f"  iptables -w -I FORWARD 1 -s {s['sandbox_cidr']} -d 169.254.169.254 -j DROP\n")
+        if s["sandbox_cidr"] else None,
+    }
+
+
+def _systemctl(*args, check=False):
+    subprocess.run(["systemctl", *args], check=check)
+
+
+def _activate(unit: Unit):
+    if not unit.action:
+        return
+    if not unit.wanted:
+        _systemctl("disable", "--now", "-q", unit.name)
+        return
+    if unit.prepare:
+        subprocess.run(["sh", "-c", unit.prepare], check=True, cwd=CURRENT)
+    if unit.action == "restart":
+        _systemctl("enable", "-q", unit.name)
+        _systemctl("restart", unit.name, check=True)
+    elif unit.action == "start":
+        _systemctl("enable", "-q", "--now", unit.name)
+    else:
+        _systemctl("enable", "-q", unit.name)
+    if unit.ready:
+        unit.ready()
+
+
+def wait_ready(timeout: float = 120):
+    """Until sbx-control answers: its lifespan (migrations, the platform's
+    connection) has finished once uvicorn serves a request."""
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{_control_port()}/"
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=5)
+            return
+        except urllib.error.HTTPError:
+            return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"sbx-control did not answer on {url}; journalctl -u sbx-control")
+            time.sleep(0.5)
+
+
+def write(found: list[Unit]):
+    directory = systemd_dir()
+    for name, text in commands().items():
+        path = SBIN / name
+        if text is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.write_text(text)
+        path.chmod(0o755)
+    for unit in found:
+        (directory / unit.name).write_text(unit.text)
+    _systemctl("daemon-reload")
+
+
+def install(names: list[str] | None = None):
+    from . import paths
+    (paths.run() / "apply").mkdir(parents=True, exist_ok=True)
+    found = units()
+    write(found)
+    for unit in found:
+        if not names or unit.name in names:
+            _activate(unit)
+
+
+def apply(key: str) -> int:
+    """sbx-apply KEY, as root. The request goes first, so one made while
+    this runs triggers it again."""
+    from . import paths
+    (paths.run() / "apply" / key).unlink(missing_ok=True)
+    if key == "tls":
+        acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
+        write([acme])
+        _activate(acme)
+        return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
+    if key == "host-guard":
+        _systemctl("restart", "sbx-host-guard", check=True)
+    elif key == "control":
+        _systemctl("restart", "sbx-control", check=True)
+    elif key == "embed-env":
+        # Only the domain: the rest (embed-network, extensions) recreates the
+        # runtime, which host_network.apply refuses under running sandboxes.
+        write_embed_env(keys=DOMAIN_KEYS)
+        subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=EMBED, check=True)
+    else:
+        from . import extensions
+        names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
+        if not names:
+            print(f"unknown effect {key}", file=sys.stderr)
+            return 2
+        found = [u for u in units() if u.name in names]
+        write(found)
+        for unit in found:
+            _activate(unit)
+    return 0
+
+
+DOMAIN_KEYS = ("E2B_PUBLIC_DOMAIN", "E2B_PUBLIC_SANDBOX_URL")
+
+
+def embed_env() -> dict[str, str]:
+    """Every key sbx owns in Embed's .env, from the settings and the
+    extensions (Connector.embed); "" removes a key. Embed needs a name for
+    its sandbox URLs: a placeholder until the setup's Domain step."""
+    from . import extensions, host_network, settings
+    s = settings.current()
+    domain = s.domain.name or "sbx.invalid"
+    layers = extensions.embed()
+    compose = [*EMBED_COMPOSE, *(f"{layer.name}/{path.name}" for layer in layers for path in layer.compose)]
+    return {"ALLOW_SANDBOX_INTERNAL_CIDRS": ",".join(host_network.allowed_cidrs()),
+            "E2B_PUBLIC_DOMAIN": domain, "E2B_PUBLIC_SANDBOX_URL": f"https://sandbox.{domain}",
+            "COMPOSE_FILE": ":".join(compose) if len(compose) > len(EMBED_COMPOSE) else "",
+            **{key: value for layer in layers for key, value in layer.env.items()}}
+
+
+def render_embed_env(text: str, values: dict[str, str]) -> str:
+    """text with values set over it, in place where a key is there already,
+    appended where not, removed where the value is ""."""
+    import re
+    lines, seen = [], set()
+    for line in text.splitlines():
+        key = line.partition("=")[0]
+        if re.fullmatch(r"#?[A-Z0-9_]+", key) and key.lstrip("#") in values:
+            key = key.lstrip("#")
+            if key in seen or values[key] == "":
+                continue
+            seen.add(key)
+            line = f"{key}={values[key]}"
+        lines.append(line)
+    lines += [f"{key}={value}" for key, value in values.items() if key not in seen and value != ""]
+    return "\n".join(lines) + "\n"
+
+
+def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None = None,
+                    keys: tuple[str, ...] | None = None) -> tuple[str, str]:
+    """The one writer of Embed's .env: the keys sbx owns (embed_env, only
+    `keys` of them when given), the hugepages (install.sh) and the runtime's
+    image pins (the vendored .env) when given; the rest stays as Embed wrote
+    it. Also lays the extensions' compose files into Embed's project, unless
+    limited to `keys`. (text before, text after)."""
+    import re
+    from . import extensions
+    path = EMBED / ".env"
+    before = path.read_text() if path.exists() else ""
+    values = embed_env()
+    if keys is not None:
+        values = {key: values[key] for key in keys}
+    if hugepages is not None:
+        values["HUGEPAGES"] = str(hugepages)
+    if pins is not None:
+        values.update((k, v) for k, _, v in (line.partition("=") for line in pins.read_text().splitlines())
+                      if re.fullmatch(EMBED_PINS, k))
+    for layer in extensions.embed() if keys is None else ():
+        for source in layer.compose + layer.files:
+            (EMBED / layer.name).mkdir(mode=0o755, exist_ok=True)
+            shutil.copy(source, EMBED / layer.name / source.name)
+    after = render_embed_env(before, values)
+    if after != before:
+        temporary = path.with_suffix(".sbx-new")
+        temporary.touch(mode=0o600)
+        temporary.write_text(after)
+        temporary.replace(path)
+    return before, after
+
+
+def install_tools():
+    """The host tools the catalog's packages declare (host_tools: name ->
+    install command), each installed unless it is on PATH already."""
+    from . import catalog
+    for name, command in sorted(catalog.host_tools().items()):
+        if shutil.which(name) is None:
+            print(f"installing {name} (catalog host tool)", flush=True)
+            subprocess.run(["sh", "-c", command], check=True, stdout=subprocess.DEVNULL)
+
+
+def writers() -> list[str]:
+    """The running long-lived services that run the platform (sbx-control
+    and the connectors' host services): what writes sbx.db. Read from the
+    unit files, not the settings, so an older release's database is not
+    read by this one before its migration; any unit that runs code from
+    under HOME counts, whichever release directory it names."""
+    found = []
+    for unit in sorted(systemd_dir().glob("*.service")):
+        text = unit.read_text()
+        if (str(CURRENT.parent) in text and "\nRestart=" in text
+                and subprocess.run(["systemctl", "is-active", "--quiet", unit.name]).returncode == 0):
+            found.append(unit.name)
+    return sorted(found, key=lambda name: (name != "sbx-control.service", name))
+
+
+def upgrade_backup() -> pathlib.Path | None:
+    """Before an upgrade migrates sbx.db (host-install.sh): stop its writers,
+    then keep the state as it was in UPGRADE_BACKUPS/<time>/: a copy of
+    sbx.db, the platform's unit files, the active release's link and a
+    backup bundle made by that release (sbx-admin backup: the secret
+    stores' data too), with rollback.sh to go back. None on a first install.
+    The writers stay stopped; the install starts them again."""
+    from . import paths
+    if not paths.database().exists():
+        return None
+    stopped = writers()
+    if stopped:
+        _systemctl("stop", *stopped)
+    out = paths.state_dir() / "upgrade-backups" / time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    try:
+        out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        out.parent.chmod(0o700)
+        for attempt in range(1, 100):
+            try:
+                out.mkdir(mode=0o700)
+                break
+            except FileExistsError:   # another upgrade within the second
+                out = out.with_name(f"{out.name.partition('.')[0]}.{attempt}")
+        _copy_database(paths.database(), out / "sbx.db")
+        units = out / "systemd"
+        units.mkdir(mode=0o700)
+        directory = systemd_dir()
+        for path in sorted(directory.iterdir()):
+            if path.name.startswith(("sbx-", "e2b-")) or path.name.removesuffix(".d") in stopped:
+                (shutil.copytree if path.is_dir() else shutil.copy2)(path, units / path.name)
+        previous = CURRENT.resolve() if CURRENT.is_symlink() else None
+        bundle = out / "bundle.tar.gz"
+        # The release that made the state backs it up (sbx-admin is the active release's).
+        made = subprocess.run([str(SBIN / "sbx-admin"), "backup", "--out", str(bundle)], capture_output=True, text=True)
+        if made.returncode != 0:
+            raise SystemExit(f"sbx-admin backup failed: {(made.stderr or made.stdout).strip()[-500:]}")
+    except BaseException:
+        if stopped:
+            _systemctl("start", *stopped)   # nothing changed yet: the active release runs on
+        print(f"the upgrade stopped before changing anything; partial backup in {out}", file=sys.stderr, flush=True)
+        raise
+    rollback = out / "rollback.sh"
+    rollback.write_text(_rollback_script(out, previous, stopped, paths.database()))
+    rollback.chmod(0o700)
+    print(f"upgrade backup: {out} (sbx.db, unit files, bundle.tar.gz; stopped {' '.join(stopped)})", flush=True)
+    print(f"rollback: sh {rollback}", flush=True)
+    return out
+
+
+def _copy_database(source: pathlib.Path, target: pathlib.Path):
+    """A consistent copy of sbx.db, its write-ahead log included."""
+    import sqlite3
+    from contextlib import closing
+    target.touch(mode=0o600)
+    with closing(sqlite3.connect(source)) as conn, closing(sqlite3.connect(target)) as copy:
+        conn.backup(copy)
+
+
+def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: list, database: pathlib.Path) -> str:
+    units, q = " ".join(stopped) or "sbx-control.service", shlex.quote
+    switch = (f"ln -sfn {q(str(previous))} {q(str(CURRENT))}.new && mv -Tf {q(str(CURRENT))}.new {q(str(CURRENT))}\n"
+              if previous else "")
+    return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
+            f"# active, its unit files and sbx.db. Sandboxes and Embed are left as they are.\nset -eu\n"
+            f"systemctl stop {units} || true\n{switch}"
+            f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n"
+            f"rm -f {q(str(database))}-wal {q(str(database))}-shm\n"
+            f"install -m 600 {q(str(out / 'sbx.db'))} {q(str(database))}\n"
+            f"systemctl daemon-reload\nsystemctl start {units}\n"
+            f"echo 'rolled back to {previous or 'the release before'}'\n")
+
+
+def prune_releases(keep: int = KEEP_RELEASES):
+    active = CURRENT.resolve()
+    found = sorted((p for p in RELEASES.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in found[keep:]:
+        if path.resolve() != active:
+            shutil.rmtree(path)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("install").add_argument("names", nargs="*")
+    sub.add_parser("apply").add_argument("key")
+    sub.add_parser("list")
+    sub.add_parser("prune")
+    sub.add_parser("tools")
+    sub.add_parser("upgrade-backup")
+    embed = sub.add_parser("embed-env")
+    embed.add_argument("--hugepages", type=int)
+    embed.add_argument("--pins", type=pathlib.Path)
+    args = parser.parse_args(argv)
+    if args.action == "embed-env":
+        write_embed_env(hugepages=args.hugepages, pins=args.pins)
+    elif args.action == "tools":
+        install_tools()
+    elif args.action == "upgrade-backup":
+        upgrade_backup()
+    elif args.action == "list":
+        for unit in units():
+            print(f"{unit.name}\t{'wanted' if unit.wanted else 'off'}\t{unit.action or '-'}")
+    elif args.action == "install":
+        install(args.names)
+    elif args.action == "prune":
+        prune_releases()
+    else:
+        return apply(args.key)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

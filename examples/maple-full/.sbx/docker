@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  exit 0
+fi
+if ! command -v docker >/dev/null; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io
+fi
+if ! sudo docker info >/dev/null 2>&1; then
+  if [ -d /run/systemd/system ]; then
+    sudo systemctl start docker
+  else
+    sudo setsid dockerd --group user > /tmp/sbx-docker.log 2>&1 < /dev/null &
+  fi
+fi
+for _ in $(seq 60); do
+  if sudo docker info >/dev/null 2>&1; then
+    # Access belongs only to this VM's sandbox user; no host socket is mounted.
+    sudo chgrp user /var/run/docker.sock
+    sudo chmod 660 /var/run/docker.sock
+    docker info >/dev/null
+    exit 0
+  fi
+  sleep 1
+done
+echo 'The sandbox Docker daemon did not start; inspect /tmp/sbx-docker.log or journalctl -u docker.' >&2
+exit 1

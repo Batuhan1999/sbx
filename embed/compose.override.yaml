@@ -1,0 +1,17 @@
+# sbx's settings over the vendored Embed compose (vendor/e2b-embed stays as
+# upstream ships it); install.sh puts it in /opt/e2b. Values come from
+# /opt/e2b/.env (host.py writes the keys sbx owns there). Extensions add
+# compose files of their own (extensions.EmbedLayer).
+services:
+  orchestrator:
+    environment:
+      ALLOW_SANDBOX_INTERNAL_CIDRS: ${ALLOW_SANDBOX_INTERNAL_CIDRS:-}
+      # How long a resume waits for the sandbox's envd. Embed's default (10s)
+      # is too short for a cold paused snapshot: resuming reads the whole
+      # memory snapshot from disk. The api allows up to 70s.
+      ENVD_TIMEOUT: ${SBX_ENVD_TIMEOUT:-50s}
+  dashboard:
+    environment:
+      PUBLIC_E2B_DOMAIN: ${E2B_PUBLIC_DOMAIN:-localhost}
+      PUBLIC_SANDBOX_URL: ${E2B_PUBLIC_SANDBOX_URL:-http://${E2B_DASHBOARD_HOST:-localhost}:3002}
+      DASHBOARD_COOKIE_SECURE: ${E2B_DASHBOARD_COOKIE_SECURE:-false}

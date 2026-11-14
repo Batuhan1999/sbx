@@ -1,0 +1,40 @@
+kind: connection
+name: tinybird-workspace
+title: Tinybird Forward workspace
+description: >
+  An existing Tinybird Forward workspace. tinybird-branch creates an isolated
+  branch and branch token for each sandbox. This is Tinybird's API, not a
+  native ClickHouse connection.
+docs: https://www.tinybird.co/docs/forward/core-concepts/branches
+inputs:
+  url:
+    default: https://api.tinybird.co
+    help: The workspace region's HTTPS API base URL
+  workspace:
+    required: true
+    help: The main workspace ID, available from tb workspace current or the Tinybird API
+  token:
+    required: true
+    secret: true
+    help: Workspace admin token with permission to create and delete branches; not a branch token
+check: |
+  python3 - <<'CHECK'
+  import json, os, sys
+  from urllib.parse import urlsplit
+  from urllib.request import Request, urlopen
+  try:
+      base = os.environ['INPUT_URL'].rstrip('/')
+      parsed = urlsplit(base)
+      if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.query or parsed.fragment or parsed.path:
+          raise ValueError('invalid API URL')
+      headers = {'Authorization': 'Bearer ' + os.environ['INPUT_TOKEN']}
+      with urlopen(Request(base + '/v1/workspace', headers=headers), timeout=7) as response:
+          workspace = json.load(response)
+      if workspace.get('id') != os.environ['INPUT_WORKSPACE'] or workspace.get('main'):
+          raise ValueError('not the selected main workspace')
+      with urlopen(Request(base + '/v1/environments', headers=headers), timeout=7) as response:
+          if not isinstance(json.load(response).get('environments'), list):
+              raise ValueError('unexpected branch response')
+  except Exception:
+      sys.exit('Tinybird could not verify the selected Forward main workspace; check its region, ID and workspace admin token')
+  CHECK

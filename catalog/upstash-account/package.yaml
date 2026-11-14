@@ -1,0 +1,30 @@
+kind: connection
+name: upstash-account
+title: Upstash Redis account
+description: >
+  An existing Upstash account. upstash-redis creates a separate development
+  Redis database per sandbox, with its own Redis and REST credentials.
+docs: https://upstash.com/docs/devops/developer-api/authentication
+inputs:
+  email:
+    required: true
+    help: The email used for Upstash Developer API authentication.
+  api_key:
+    required: true
+    secret: true
+    help: Developer API key with database create, read credentials, and delete access.
+check: |
+  python3 - <<'CHECK'
+  import base64, json, os, sys
+  from urllib.request import Request, urlopen
+  try:
+      credential = base64.b64encode((os.environ['INPUT_EMAIL'] + ':' + os.environ['INPUT_API_KEY']).encode()).decode()
+      request = Request('https://api.upstash.com/v2/redis/databases', headers={
+          'Authorization': 'Basic ' + credential, 'User-Agent': 'sbx',
+      })
+      with urlopen(request, timeout=10) as response:
+          if not isinstance(json.load(response), list):
+              raise ValueError('unexpected response')
+  except Exception:
+      sys.exit('Upstash account could not list Redis databases; check Developer API credentials and access')
+  CHECK

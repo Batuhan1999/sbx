@@ -1,0 +1,31 @@
+kind: connection
+name: neon-project
+title: Neon project
+description: >
+  An existing Postgres project on Neon. neon-branch provisions a separate
+  branch and writable compute endpoint for each sandbox; no local server is needed.
+docs: https://neon.com/docs/manage/api-keys
+inputs:
+  api_key:
+    required: true
+    secret: true
+    help: a project-scoped key that can manage branches/endpoints and read role passwords
+  project:
+    required: true
+    help: the existing project ID from Neon project settings
+check: |
+  python3 - <<'CHECK'
+  import json, os, sys
+  from urllib.parse import quote
+  from urllib.request import Request, urlopen
+  try:
+      project = os.environ['INPUT_PROJECT']
+      url = 'https://console.neon.tech/api/v2/projects/' + quote(project, safe='')
+      request = Request(url, headers={'Authorization': 'Bearer ' + os.environ['INPUT_API_KEY']})
+      with urlopen(request, timeout=10) as response:
+          found = json.load(response).get('project', {})
+      if found.get('id') != project:
+          raise ValueError('unexpected project response')
+  except Exception:
+      sys.exit('Neon project check failed; check the project ID and scoped key access')
+  CHECK

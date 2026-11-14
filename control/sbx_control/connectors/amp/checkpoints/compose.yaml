@@ -1,0 +1,17 @@
+# The Amp connector's filesystem-only snapshots, over Embed's compose: the
+# API image and orchestrator binary build.sh made with the option, which
+# FILESYSTEM_ONLY_CHECKPOINT_ENABLED turns on. host.py lays this file and the
+# launcher into /opt/e2b/amp/ and adds it to COMPOSE_FILE while the amp
+# settings name both (checkpoint_api_image, orchestrator_binary).
+services:
+  api:
+    image: ${SBX_CHECKPOINT_API_IMAGE}
+    environment:
+      FILESYSTEM_ONLY_CHECKPOINT_ENABLED: "true"
+  orchestrator:
+    command: ["/bin/bash", "/opt/e2b/scripts/sbx-orchestrator-launch.sh"]
+    volumes:
+      - ./amp/orchestrator-launch.sh:/opt/e2b/scripts/sbx-orchestrator-launch.sh:ro
+    environment:
+      FILESYSTEM_ONLY_CHECKPOINT_ENABLED: "true"
+      SBX_ORCHESTRATOR_BINARY: ${SBX_ORCHESTRATOR_BINARY}

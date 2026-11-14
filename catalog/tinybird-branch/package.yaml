@@ -1,0 +1,30 @@
+kind: provision
+name: tinybird-branch
+title: Tinybird branch (per sandbox)
+description: >
+  A Tinybird Forward branch and independent token per sandbox. Copies workspace
+  resources without data by default; last_partition explicitly includes the
+  latest eligible partition. Uses Tinybird HTTP APIs, not native ClickHouse SQL.
+docs: https://www.tinybird.co/docs/forward/core-concepts/branches
+requires:
+  workspace:
+    kind: tinybird-workspace
+    expose:
+      url: TINYBIRD_URL
+      workspace: TINYBIRD_WORKSPACE
+      token: TINYBIRD_ADMIN_TOKEN
+inputs:
+  data:
+    default: schema
+    description: 'schema: resources without data; last_partition: explicitly attach the latest eligible source partitions'
+outputs:
+  url: {}
+  workspace: {}
+  branch: {}
+  token: { sensitive: true }
+env:
+  TINYBIRD_URL: ${outputs.url}
+  TINYBIRD_TOKEN: ${outputs.token}
+  TINYBIRD_BRANCH_TOKEN: ${outputs.token}
+runs: { create: provider.py, delete: provider.py, list: provider.py }
+timeout: 4m

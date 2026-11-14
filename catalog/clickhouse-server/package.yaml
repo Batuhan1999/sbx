@@ -1,0 +1,33 @@
+kind: connection
+name: clickhouse-server
+title: ClickHouse server
+description: >
+  A ClickHouse you run, reachable from sandboxes. A provisioner makes a
+  database per sandbox on it with the admin user given here.
+inputs:
+  url:
+    required: true
+    help: "HTTP(S) endpoint, such as http://host:8123"
+  user:
+    default: default
+  password:
+    secret: true
+    required: false
+check: |
+  python3 - <<'CHECK'
+  import base64, os, sys
+  from urllib.parse import urlsplit
+  from urllib.request import Request, urlopen
+  try:
+      endpoint = os.environ['INPUT_URL']
+      parsed = urlsplit(endpoint)
+      if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+          raise ValueError('invalid endpoint')
+      credentials = base64.b64encode((os.environ['INPUT_USER'] + ':' + os.environ.get('INPUT_PASSWORD', '')).encode()).decode()
+      request = Request(endpoint, data=b'SELECT 1', headers={'Authorization': 'Basic ' + credentials})
+      with urlopen(request, timeout=10) as response:
+          if response.read().strip() != b'1':
+              raise ValueError('unexpected response')
+  except Exception:
+      sys.exit('ClickHouse did not answer SELECT 1; check the HTTP(S) endpoint and credentials')
+  CHECK

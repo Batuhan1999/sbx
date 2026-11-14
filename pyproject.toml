@@ -1,0 +1,6 @@
+[tool.ruff]
+target-version = "py312"
+extend-exclude = ["vendor", ".claude"]
+
+[tool.ruff.lint]
+select = ["F"]

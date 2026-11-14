@@ -1,0 +1,41 @@
+kind: connection
+name: aws-role
+title: AWS development role
+description: >
+  Connect a development AWS role with an access key pair that stays on the server.
+  Sandboxes receive renewable temporary role credentials through a named AWS
+  profile. An existing host profile is available for advanced authentication.
+docs: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
+inputs:
+  role_arn:
+    required: true
+    help: ARN of the existing development role; its trust policy must admit the host identity
+  region:
+    required: true
+    help: AWS region for STS and the sandbox profile, for example eu-central-1
+  auth_method:
+    default: ""
+    help: access_key (normal setup) or host_profile (advanced)
+  access_key_id:
+    default: ""
+    secret: true
+    help: dedicated IAM access key ID; sbx uses it only to assume the development role
+  secret_access_key:
+    default: ""
+    secret: true
+    help: secret access key kept on the server; never injected into a sandbox
+  session_token:
+    default: ""
+    secret: true
+    help: only for temporary source credentials; these expire and are not unattended access
+  source_profile:
+    default: ""
+    help: advanced existing host profile; supports credential_process or Roles Anywhere, while SSO requires reauthorization
+  external_id:
+    default: ""
+    secret: true
+    help: external ID required by the role trust policy, if any
+check: aws.py
+connect: aws.py
+# Changing these while sandboxes use the connection would change what they reach.
+identity: [role_arn, region]

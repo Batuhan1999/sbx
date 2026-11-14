@@ -1,0 +1,29 @@
+kind: provision
+name: temporal-namespace
+title: Temporal namespace (per sandbox)
+description: A namespace per sandbox, sbx-<name>, on a shared Temporal server (the temporal CLI on this
+  host).
+requires:
+  server:
+    kind: temporal-server
+    expose:
+      address: TEMPORAL_SERVER_ADDRESS
+inputs:
+  address:
+    required: false
+    description: the server's frontend, host:port (else the connected temporal-server's)
+  retention:
+    default: 72h
+outputs:
+  address: {}
+  namespace: {}
+env:
+  TEMPORAL_ADDRESS: ${outputs.address}
+  TEMPORAL_NAMESPACE: ${outputs.namespace}
+runs:
+  create: create.sh
+  delete: delete.sh
+  list: list.sh
+timeout: 1m
+host_tools:
+  temporal: curl -sSf https://temporal.download/cli.sh | sh -s -- --dir /usr/local

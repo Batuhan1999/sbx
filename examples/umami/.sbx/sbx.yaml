@@ -1,0 +1,22 @@
+template: umami-source
+resources: {cpu: 4, memory_mb: 8192, disk_mb: 8192, swap_mb: 1024}
+lifecycle: {resume: restart}
+previews:
+  "": 3000
+services:
+  db:
+    uses: postgres-clone
+    connections: {server: postgres}
+    with: {template: template0}
+env:
+  DATABASE_URL: ${services.db.url}
+  APP_SECRET: ${random:hex64}
+  UMAMI_ADMIN_PASSWORD: ${random:32}
+  DISABLE_TELEMETRY: '1'
+  NEXT_TELEMETRY_DISABLED: '1'
+  PORT: '3000'
+processes:
+  umami: PATH="$HOME/.local/bin:$HOME/.local/node/bin:$PATH" $HOME/.local/bin/pnpm start --hostname 0.0.0.0
+health:
+  - http://127.0.0.1:3000/login
+health_timeout: 180

@@ -1,0 +1,2 @@
+# Source lives in web/src; these built files make installation possible without Node.
+control/sbx_control/web_dist/** -diff linguist-generated=true

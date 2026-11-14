@@ -1,0 +1,45 @@
+kind: provision
+name: upstash-redis
+title: Upstash Redis database (per sandbox)
+description: >
+  A separate, initially empty Redis database per sandbox on an existing Upstash
+  account. Reuses that database on retry and deletes it with the sandbox. It
+  does not share a Redis database index or key prefix, clone production data,
+  create an anonymous account, or upgrade a plan automatically. Confirm provider
+  limits and paid-plan choices before provisioning.
+docs: https://upstash.com/docs/devops/developer-api/redis/create_database_global
+requires:
+  account:
+    kind: upstash-account
+    expose:
+      email: UPSTASH_EMAIL
+      api_key: UPSTASH_API_KEY
+inputs:
+  region:
+    required: true
+    description: Provider primary_region, such as eu-central-1; select from the account's supported regions.
+  platform:
+    default: aws
+    description: Cloud platform, aws or gcp; the selected region must belong to it.
+  plan:
+    default: free
+    description: Explicit Upstash plan; free does not silently fall back to a paid plan.
+  budget:
+    default: '1'
+    description: Positive integer provider monthly budget sent at creation; confirm provider billing semantics.
+outputs:
+  url: { sensitive: true }
+  rest_url: {}
+  rest_token: { sensitive: true }
+  host: {}
+  port: {}
+  user: {}
+  password: { sensitive: true }
+  database: {}
+  database_id: {}
+runs: { create: provider.py, delete: provider.py, list: provider.py }
+timeout: 3m
+env:
+  REDIS_URL: ${outputs.url}
+  UPSTASH_REDIS_REST_URL: ${outputs.rest_url}
+  UPSTASH_REDIS_REST_TOKEN: ${outputs.rest_token}
