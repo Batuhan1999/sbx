@@ -445,6 +445,22 @@ class LifecycleTests(Installation):
         self.assertNotIn("template-key", response.text)
         self.assertFalse(self.lifecycle.get("failed-key")["workspace_ready"])
 
+    def test_public_keys_may_be_authorized_keys_text_or_a_list(self):
+        checkout = checkout_of(Path(self.enterContext(tempfile.TemporaryDirectory())))
+        recipe = self.recipes.App("owner/repo", checkout.parent / "recipe", {"workdir": str(checkout)})
+        for name, keys in (("keys-list", ["ssh-ed25519 AAAA one", " ssh-ed25519 BBBB two ", ""]),
+                           ("keys-text", "ssh-ed25519 AAAA one\nssh-ed25519 BBBB two\n")):
+            vm, written = FakeVM(f"{name}-vm"), {}
+            vm.files = SimpleNamespace(write=lambda path, content, **_: written.__setitem__(path, content))
+            with self.creating(recipe, vm):
+                response = self.client.post("/api/sandboxes?start_app=false",
+                                            json={"name": name, "repo": "owner/repo", "public_keys": keys})
+            self.assertEqual(response.status_code, 200, response.text)
+            authorized = next(v for k, v in written.items() if k.endswith("/.ssh/authorized_keys"))
+            self.assertEqual(authorized, "ssh-ed25519 AAAA one\nssh-ed25519 BBBB two\n")
+        response = self.client.post("/api/sandboxes", json={"name": "keys-bad", "public_keys": [1, 2]})
+        self.assertEqual(response.status_code, 422)
+
     def test_preview_urls_never_replace_the_sandbox_s_own_fields(self):
         checkout = checkout_of(Path(self.enterContext(tempfile.TemporaryDirectory())))
         recipe = self.recipes.App("owner/repo", checkout.parent / "recipe", {"workdir": str(checkout)})

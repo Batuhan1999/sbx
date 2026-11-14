@@ -21,7 +21,7 @@ SLUG_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 class CreateSandbox(BaseModel):
     name: str
     branch: str | None = None  # defaults to the repo's default branch
-    public_keys: str
+    public_keys: str = ""  # SSH public keys for the sandbox's user: authorized_keys text, or a list of keys
     slug: str | None = None  # defaults to the name
     repo: str | None = None  # owner/repo; defaults to the installation's first
     source_commit: str | None = Field(default=None, pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
@@ -30,6 +30,14 @@ class CreateSandbox(BaseModel):
     @classmethod
     def normalized(cls, repo: str | None) -> str | None:
         return repo_path.normalize(repo) if repo else repo
+
+    @field_validator("public_keys", mode="before")
+    @classmethod
+    def key_lines(cls, keys):
+        """A list of keys is the same authorized_keys text, one key per line."""
+        if isinstance(keys, list) and all(isinstance(key, str) for key in keys):
+            return "".join(key.strip() + "\n" for key in keys if key.strip())
+        return keys
 
 
 def registered_owner(name: str) -> str | None:
