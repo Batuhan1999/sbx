@@ -376,6 +376,16 @@ class ManagedServerTests(Server):
                 self.hosted.execute("foreign-exec", None, None)
             run.assert_not_called()
 
+    def test_the_managed_postgres_url_and_its_clones_say_the_server_has_no_tls(self):
+        from urllib.parse import parse_qs, urlsplit
+        from catalog_scripts import load
+        url = self.hosted.connection_inputs("postgres", "172.29.50.10", "fixture")["url"]
+        self.assertEqual(parse_qs(urlsplit(url).query), {"sslmode": ["disable"]})
+        with patch.dict("os.environ", {"PG_ADMIN_URL": url}):
+            clone = load("postgres-clone", "connection.py").connection("sbx_fixture", "fixture-password")
+        self.assertEqual(parse_qs(urlsplit(clone["url"]).query), {"sslmode": ["disable"]})
+        self.assertNotIn("sslmode", self.hosted.connection_inputs("clickhouse", "172.29.50.11", "fixture")["url"])
+
     def test_shared_extents_must_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             a, b = Path(directory) / "a", Path(directory) / "b"

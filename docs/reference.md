@@ -188,7 +188,10 @@ copy-on-write. Before registering the connection sbx checks that a copy shares
 physical extents and that migrating the copy leaves the source unchanged;
 `sbx-admin server check NAME` repeats that check. The image is preallocated and
 not resized; budget it and the server's memory separately from sandbox
-resources. A PostgreSQL 17 data volume is never reused: create a new server and
+resources. The server speaks plain TCP on that private network, so its
+connection URL, and each `postgres-clone` URL made from it, carries
+`sslmode=disable`; clients that default to TLS (Go's `lib/pq`) need nothing
+else. A PostgreSQL 17 data volume is never reused: create a new server and
 migrate with `pg_dump`/`pg_restore`.
 
 `clickhouse-database` creates empty schemas by default; with `mode: clone` and a

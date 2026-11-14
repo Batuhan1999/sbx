@@ -256,8 +256,7 @@ def _up(server: Server, data_root=None, storage_gb=None):
     elif details:
         docker("start", server.container)
     address = values["address"]
-    inputs = ({"url": f"postgresql://{ADMIN}:{values['password']}@{address}:5432/postgres"} if server.kind == "postgres"
-              else {"url": f"http://{address}:8123", "user": ADMIN, "password": values["password"]})
+    inputs = connection_inputs(server.kind, address, values["password"])
     deadline = time.monotonic() + 120
     if server.kind == "postgres":
         _status(server.name, "checking")
@@ -279,6 +278,16 @@ def _up(server: Server, data_root=None, storage_gb=None):
             "address": address, "port": DRIVERS[server.kind]["port"], "public_ports": [],
             "storage": values.get("storage"), "cow": values.get("cow"),
             "next": "sbx-admin network apply (once, before sandboxes use a new private network)"}
+
+
+def connection_inputs(kind: str, address: str, password: str) -> dict:
+    """The saved connection's inputs. The managed Postgres speaks plain TCP on
+    the private service network (the image has no certificate), so its URL
+    says sslmode=disable: clients whose default is require (Go's lib/pq) would
+    refuse it, and postgres-clone hands the same options to each sandbox."""
+    if kind == "postgres":
+        return {"url": f"postgresql://{ADMIN}:{password}@{address}:5432/postgres?sslmode=disable"}
+    return {"url": f"http://{address}:8123", "user": ADMIN, "password": password}
 
 
 def _matches(server: Server, details: dict, values: dict) -> bool:

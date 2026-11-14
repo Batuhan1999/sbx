@@ -48,7 +48,9 @@ if not password:
     raise ValueError('the database connection needs a password')
 secret = hmac.new(password.encode(), f'electric:{name}'.encode(), hashlib.sha256).hexdigest()
 if found.returncode:
-    env = {'DATABASE_URL': url + ('&' if '?' in url else '?') + 'sslmode=disable',
+    # The managed server's URL says sslmode=disable already; another server's may not.
+    database_url = url if 'sslmode=' in url else url + ('&' if '?' in url else '?') + 'sslmode=disable'
+    env = {'DATABASE_URL': database_url,
            'ELECTRIC_SECRET': secret, 'ELECTRIC_MANUAL_TABLE_PUBLISHING': 'true',
            'CLEANUP_REPLICATION_SLOTS_ON_SHUTDOWN': 'true',
            'ELECTRIC_TEMPORARY_REPLICATION_SLOT_USE_RANDOM_NAME': 'true',
