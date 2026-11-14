@@ -179,6 +179,31 @@ class InstallSettingsTests(unittest.TestCase):
         self.assertNotIn('ignored', out)
 
 
+class UpgradeFailureTests(unittest.TestCase):
+    """An upgrade stops sbx-control before Embed starts. On the launch lab
+    Embed's preflight refused (18 GiB free of the 20 it wants) and the
+    install ended with sbx-control stopped and every preview down."""
+
+    def test_a_failure_before_the_new_release_runs_rolls_back_and_one_after_does_not(self):
+        text = INSTALL.read_text()
+        start = text.index('  if [ -n "$rollback" ]; then')
+        guard = text[start:text.index('  fi\n', start) + 5]
+        activated = next(line for line in text.splitlines() if line.startswith('die() {') and 'nothing to roll back' in line)
+        with tempfile.TemporaryDirectory(prefix='sbx-install-rollback-') as directory:
+            marker, rollback = Path(directory) / 'rolled-back', Path(directory) / 'rollback.sh'
+            rollback.write_text(f'touch {shlex.quote(str(marker))}\n')
+            for after, rolls_back in (('', True), (activated + '\n', False)):
+                with self.subTest(after_activation=bool(after)):
+                    marker.unlink(missing_ok=True)
+                    script = (f'rollback={shlex.quote(str(rollback))}\n' + guard + after
+                              + 'die "Embed did not come up"\necho not reached\n')
+                    result = subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertNotIn('not reached', result.stdout)
+                    self.assertIn('FAILED: Embed did not come up', result.stderr)
+                    self.assertEqual(marker.exists(), rolls_back)
+
+
 class SetupInferTests(Installation):
     """What install-report.sh and host-install.sh read: the exit status."""
 

@@ -490,7 +490,9 @@ building or has no room), with `Retry-After` when waiting helps.
   prints `rollback: sh /var/lib/sbx/upgrade-backups/<time>/rollback.sh`, which
   switches back to that release, its units and `sbx.db`; it leaves Embed and
   sandboxes as they are and does not undo the secret store (restore the bundle
-  for that). The services start again with the new release; running sandboxes
+  for that). An upgrade that fails before the new release runs (Embed does not
+  start, for instance below its 20 GiB of free disk) runs it itself, so
+  sbx-control and the previews come back. The services start again with the new release; running sandboxes
   keep running. `sbx.db` and its write-ahead files are kept at mode `0600`.
 - `sbx-admin config get [SECTION]` and `sbx-admin config set SECTION JSON` read and change installation settings.
 

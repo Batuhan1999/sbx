@@ -147,6 +147,17 @@ if configured; then
   sh "$release/host-install.sh" --migrate >> /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "the upgrade's backup or migration failed; see /tmp/sbx-install.log"; }
   grep -E '^(upgrade backup|rollback):' /tmp/sbx-install.log || true
   rollback=$(sed -n 's/^rollback: sh //p' /tmp/sbx-install.log | tail -1)
+  # Until this release runs, a failure goes back to the one that ran (its
+  # release, unit files and sbx.db) and starts sbx-control and the
+  # connectors again: a failed Embed start must not leave previews down.
+  if [ -n "$rollback" ]; then
+    die() {
+      printf '\nFAILED: %s\n' "$*" >&2
+      echo "rolling back to the release that ran before: sh $rollback" >&2
+      sh "$rollback" >&2 || echo "the rollback failed too; run it by hand: sh $rollback" >&2
+      exit 1
+    }
+  fi
 else
   release_admin migrate >/dev/null || die "could not prepare /var/lib/sbx/sbx.db (above)"
 fi
@@ -235,6 +246,7 @@ umask 022
 
 say "sbx-control, the host's guard, nginx, connector services"
 SBX_UPGRADE_BACKUP=done sh "$release/host-install.sh" >> /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "see /tmp/sbx-install.log"; }
+die() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }   # this release runs now: nothing to roll back to
 echo "ok: sbx-control $version"
 
 # Managed secret storage is part of a normal installation (infisical/enable.sh).
