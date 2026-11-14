@@ -76,6 +76,32 @@ def mint_token(email: str, label: str) -> str:
 def revoke_token(token: str):
     with db() as conn:
         conn.execute("delete from tokens where hash = ?", (hashlib.sha256(token.encode()).hexdigest(),))
+    _tokens.clear()
+
+
+TOKEN_ID_LENGTH = 12  # a token's id: the start of its hash, which is all sbx keeps
+
+
+def tokens(email: str | None = None) -> list:
+    """Every API token (one email's), without values: {id, email, label, created_at, last_used_at}."""
+    with db() as conn:
+        rows = conn.execute("select hash, email, label, created_at, last_used_at from tokens "
+                            "where ? is null or email = ? order by created_at", (email, email)).fetchall()
+    return [{"id": row[0][:TOKEN_ID_LENGTH], "email": row[1], "label": row[2], "created_at": row[3],
+             "last_used_at": row[4]} for row in rows]
+
+
+def revoke_token_id(token_id: str) -> dict:
+    """Revoke the one token whose id (tokens()) is token_id; ValueError for none or several."""
+    if len(token_id) < 8 or any(c not in "0123456789abcdef" for c in token_id):
+        raise ValueError("a token id is the hex shown by sbx-admin token ls")
+    with db() as conn:
+        rows = conn.execute("select hash, email, label from tokens where hash like ?", (token_id + "%",)).fetchall()
+        if len(rows) != 1:
+            raise ValueError(f"{'no' if not rows else 'more than one'} token has the id {token_id}")
+        conn.execute("delete from tokens where hash = ?", (rows[0][0],))
+    _tokens.clear()
+    return {"id": rows[0][0][:TOKEN_ID_LENGTH], "email": rows[0][1], "label": rows[0][2]}
 
 
 _tokens: dict = {}  # sha256 -> (email or None, fetched_at)

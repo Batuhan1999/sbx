@@ -13,6 +13,9 @@
   sbx-admin setup-link               the one-time link that opens the first-run setup (a new token each time)
   sbx-admin setup-reset [--sign-in]  back to 'being set up' (keeps the domain and connections; --sign-in clears the sign-in and admins)
   sbx-admin jobs [run ID]            what runs on its own (timers, the keeper, builds), and start one now
+  sbx-admin token create EMAIL --label L   an API token for EMAIL, printed once (Linux, CI: no sbx login)
+  sbx-admin token ls [EMAIL]         API tokens: id, email, label, when made and last used; never values
+  sbx-admin token revoke ID          revoke one by the id token ls shows
   sbx-admin recipe rm OWNER/REPO     remove the recipe `sbx recipe apply` installed (refused while it has sandboxes)
   sbx-admin template rm KEY          delete a template (OWNER/REPO, default, default:<size>, sbx-base) and its build record
   sbx-admin template prune           delete the templates nothing starts from any more (the scheduler does it too)
@@ -31,7 +34,8 @@
 
 What the host alone can do. Repositories, recipes, templates and sandboxes
 go through the API, with the desktop CLI (`sbx recipe apply`, `sbx sandbox
-...`, `sbx template build`) or any HTTP client.
+...`, `sbx template build`) or any HTTP client with a token from
+`sbx-admin token create` (docs/reference.md, API).
 """
 from __future__ import annotations
 
@@ -143,6 +147,30 @@ def _connected(connect) -> int:
     return 0
 
 
+def do_token(a) -> int:
+    from . import auth
+    if a.action == "create":
+        email = (a.email or "").strip().lower()
+        if "@" not in email or not a.label:
+            print("token create EMAIL --label LABEL", file=sys.stderr)
+            return 2
+        token = auth.mint_token(email, a.label)
+        print(f"API token for {email} ({a.label}); shown once, keep it in a secret store:", file=sys.stderr)
+        print(token)
+        return 0
+    if a.action == "revoke":
+        try:
+            gone = auth.revoke_token_id((a.email or "").strip().lower())
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print(f"revoked {gone['id']} ({gone['email']}, {gone['label']})")
+        return 0
+    for t in auth.tokens(a.email.lower() if a.email else None):
+        print(f"{t['id']}  {t['email']:32} {t['label']:16} made {t['created_at']}  used {t['last_used_at'] or 'never'}")
+    return 0
+
+
 def do_recipe_rm(repo: str) -> int:
     from fastapi import HTTPException
     from . import platform, repo_onboarding, repo_path
@@ -209,6 +237,10 @@ def main(argv: list) -> int:
     sub.add_parser("setup-infer")
     sub.add_parser("setup-reset").add_argument("--sign-in", action="store_true")
     jobs = sub.add_parser("jobs"); jobs.add_argument("verb", nargs="?", choices=["run"]); jobs.add_argument("id", nargs="?")
+    token = sub.add_parser("token")
+    token.add_argument("action", choices=["create", "ls", "revoke"])
+    token.add_argument("email", nargs="?", help="create, ls: an email; revoke: the token's id")
+    token.add_argument("--label", help="create: what the token is for (ci, laptop, ...)")
     recipe = sub.add_parser("recipe")
     recipe.add_argument("action", choices=["rm"])
     recipe.add_argument("repo")
@@ -321,6 +353,8 @@ def main(argv: list) -> int:
         return do_restore(a.file, a.key)
     if a.cmd == "doctor":
         return do_doctor()
+    if a.cmd == "token":
+        return do_token(a)
     if a.cmd == "recipe":
         return do_recipe_rm(a.repo)
     if a.cmd == "template":

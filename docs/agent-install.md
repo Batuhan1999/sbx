@@ -35,7 +35,10 @@ failed step before presenting it as done.
    without a GitHub App. Connect an agent connector (Claude Code,
    [Amp](amp-orbs.md)) only if the owner wants it.
 4. **Desktop CLI.** On the machine with a checkout of the repository, install
-   `sbx` from the server's **CLI & access** page and run `sbx login`.
+   `sbx` from the server's **CLI & access** page and run `sbx login`. The
+   desktop CLI runs on macOS only; on Linux or in CI, use the
+   [HTTP API](reference.md#http-api) with a token the owner makes on the host
+   (`sbx-admin token create EMAIL --label LABEL`, shown once).
 5. **Set up the repository.** In the checkout, `sbx repo connect --agent`
    starts Claude Code (or `--agent codex`) with the server's setup brief.
    Without that agent installed, it prints the brief for another agent to

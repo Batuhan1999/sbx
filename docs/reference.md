@@ -411,6 +411,52 @@ update it; removing the label or closing the pull request deletes it. Verify
 creation, updates, working links and cleanup per repository before relying on
 it.
 
+## HTTP API
+
+The desktop CLI and the web app use the control service's HTTP API at the
+installation's address (its base URL); any HTTP client can. Requests carry
+`Authorization: Bearer <token>`. A token acts as the email it was made for:
+admin routes need one of the installation's admins (`access.admins`).
+
+- `sbx login` (the desktop CLI, macOS) keeps a token in the Keychain.
+- On the host, for Linux, CI or an agent without the desktop CLI:
+
+  ```sh
+  sbx-admin token create you@example.com --label ci   # prints the token once
+  sbx-admin token ls                                  # id, email, label, last use; never values
+  sbx-admin token revoke ID
+  ```
+
+  Keep the token in a secret store, never in a repository. A revoked token
+  stops working for the API at once and for previews within a minute.
+
+```sh
+curl -fsS -H "Authorization: Bearer $SBX_TOKEN" https://sbx.example.com/api/me
+```
+
+Errors are JSON `{"detail": "..."}`: 400 a bad request, 401 no valid token, 403
+not allowed, 404 none such, 409 a conflicting operation (another one runs,
+the template is building), 503 not now (the runtime is starting, a template is
+building or has no room), with `Retry-After` when waiting helps.
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /api/me` | anyone | The token's email, whether it is an admin, the installation's repositories. |
+| `GET /api/repos`, `GET /api/repos/OWNER/NAME/readiness` | anyone | The repositories and one's setup checklist: what is missing and who acts. |
+| `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
+| `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
+| `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |
+| `GET /api/repos/OWNER/NAME/files` | anyone | The recipe the platform reads, and where from. |
+| `POST /api/repos/OWNER/NAME/template` | admin | `sbx template build`, in the background; 409 while it builds, 503 without room. |
+| `GET /api/repos/OWNER/NAME/template` | anyone | Its status (`building`, `built`, `failed`), `stale`, the error, and for admins the build's last log lines. |
+| `DELETE /api/repos/OWNER/NAME/template` | admin | `sbx template rm`. |
+| `GET /api/repos/OWNER/NAME/env`, `PUT /api/repos/OWNER/NAME/env/VAR` | admin (anyone with `"mine": true`) | `sbx env ls`, `sbx env set`; body `{"value": "...", "secret": true}`. |
+| `POST /api/sandboxes` | anyone | `sbx up`: body `{"name": "...", "repo": "OWNER/NAME", "branch": "...", "public_keys": ...}`; `branch` defaults to the default branch, `public_keys` is `authorized_keys` text or a list of keys (optional). Returns when SSH works; `?start_app=false` stops before setup. |
+| `GET /api/sandboxes`, `GET /api/sandboxes/NAME?wait=SECONDS` | owner | Your sandboxes; one, with its lifecycle record and preview URLs. `wait` (at most 60) returns once its operation moves on. |
+| `POST /api/sandboxes/NAME/exec` | owner | Run a script as the sandbox's user: body `{"script": "...", "timeout": 120}`, answers `exit_code`, `stdout`, `stderr`. |
+| `GET /api/sandboxes/NAME/inspect?lines=N` | owner | The checkout's commit and the tails of the setup and process logs. |
+| `POST /api/sandboxes/NAME/restart`, `/prepare`, `/pause`, `/resume`; `DELETE /api/sandboxes/NAME` | owner | The [lifecycle](#lifecycle) operations. |
+
 ## Operating the host
 
 - `sbx-admin backup` writes a bundle with SQLite, the local Infisical database,
@@ -447,7 +493,8 @@ it.
 ## Limits
 
 - The desktop CLI (`sbx`) runs on macOS only: it keeps its tokens in the
-  Keychain and its installer refuses other systems. The host must be Ubuntu
+  Keychain and its installer refuses other systems. Elsewhere use the
+  [HTTP API](#http-api) with a token from `sbx-admin token create`. The host must be Ubuntu
   24.04 with KVM.
 - Recreating the runtime with existing sandboxes is not supported; pausing them
   first does not make it supported.

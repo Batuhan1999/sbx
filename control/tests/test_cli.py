@@ -449,6 +449,32 @@ class CliApiTests(Server):
             response = self.client.post("/api/repos/owner/app/template")
         self.assertEqual((response.status_code, response.json()["detail"]), (503, "needs 16.0 GB of free disk"))
 
+    def test_sbx_admin_mints_a_token_shown_once_lists_it_without_its_value_and_revokes_it(self):
+        import contextlib
+        import io
+        from sbx_control import admin
+        self.repo_admin()
+        self.client.cookies.clear()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(admin.main(["token", "create", "CI@Example.com", "--label", "ci"]), 0)
+        token = out.getvalue().strip()
+        self.assertTrue(token.startswith("sbx_"))
+        self.assertIn("shown once", err.getvalue())
+        me = self.client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertIn("ci@example.com", me.text)
+        listed = io.StringIO()
+        with contextlib.redirect_stdout(listed):
+            self.assertEqual(admin.main(["token", "ls"]), 0)
+        self.assertNotIn(token, listed.getvalue())
+        line = next(line for line in listed.getvalue().splitlines() if "ci@example.com" in line)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(admin.main(["token", "revoke", line.split()[0]]), 0)
+        self.assertEqual(self.client.get("/api/sandboxes", headers={"Authorization": f"Bearer {token}"}).status_code, 401)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(admin.main(["token", "revoke", line.split()[0]]), 1)
+
     def test_a_recipe_with_an_unknown_service_key_is_refused_naming_connections(self):
         self.repo_admin()
         recipe = "services:\n  db:\n    uses: postgres-clone\n    servers: {server: dev-pg}\n"
