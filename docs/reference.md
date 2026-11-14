@@ -304,7 +304,11 @@ A template is composed from three layers:
    `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
    template).
 
-The fingerprint covers all three layers. The platform names a template
+The fingerprint covers all three layers; of the recipe, what the build
+reads: `.sbx/Dockerfile`, `.sbx/build`, `workdir` and the size. Editing
+`setup`, `start`, helper scripts, configs or checks rebuilds nothing; they run
+in sandboxes. What a build script runs from the checkout is the repository's
+content, which the nightly rebuild follows. The platform names a template
 `<repo-slug>-<fingerprint[:8]>`, so a changed input produces a new template and
 never overwrites one that sandboxes use. A template is stale when the plan it
 would build now has a different fingerprint from the last build; the scheduler

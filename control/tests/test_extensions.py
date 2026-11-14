@@ -134,7 +134,18 @@ class ExtensionTests(Installation):
         self.assertTrue(first.name.startswith("owner-app-"))
         self.assertNotEqual(first.name, templates.plan("owner/other", []).name)
         (recipe / "build").write_text("#!/bin/sh\nmake\n")
-        self.assertNotEqual(templates.plan("owner/app", []).fingerprint, first.fingerprint)
+        built = templates.plan("owner/app", []).fingerprint
+        self.assertNotEqual(built, first.fingerprint)
+        # What runs in sandboxes, not in the build, rebuilds nothing (a verify script edit rebuilt n8n's 15 steps).
+        (recipe / "setup").write_text("#!/bin/sh\npnpm install\n")
+        (recipe / "verify.py").write_text("print('ok')\n")
+        (recipe / "sbx.yaml").write_text("template: anything\nprevious: 1\nenv: {A: b}\nhealth: [http://127.0.0.1:1/]\n")
+        self.assertEqual(templates.plan("owner/app", []).fingerprint, built)
+        (recipe / "Dockerfile").write_text("FROM sbx-base\nRUN true\n")
+        with_dockerfile = templates.plan("owner/app", []).fingerprint
+        self.assertNotEqual(with_dockerfile, built)
+        (recipe / "sbx.yaml").write_text("template: anything\nworkdir: /home/user/elsewhere\n")
+        self.assertNotEqual(templates.plan("owner/app", []).fingerprint, with_dockerfile)
         (recipe / "sbx.yaml").write_text("previews: {web: 3000}\n")
         self.assertIsNone(templates.plan("owner/app", []).recipe)   # the default layer, for its packages' layers
 

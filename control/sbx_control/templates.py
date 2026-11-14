@@ -210,8 +210,17 @@ def plan(key: str, extras: list) -> Plan:
     if not a.prebuilt:  # the default layer, for the template layers of the packages it attaches
         return Plan(key, _digest(base.fingerprint, contributions.fingerprint(extras), DEFAULT_STEPS, a.size),
                     base, extras, size=a.size)
-    return Plan(key, _digest(base.fingerprint, contributions.fingerprint(extras), recipes.fingerprint(a),
+    return Plan(key, _digest(base.fingerprint, contributions.fingerprint(extras), recipe_inputs(a),
                              a.size, settings.current().git_email), base, extras, a, a.size)
+
+
+def recipe_inputs(a: recipes.App) -> list:
+    """What a prebuilt template's build reads from the recipe (recipe_layer):
+    .sbx/Dockerfile, .sbx/build and the workdir. The other files (setup,
+    start, helpers, configs, checks) run in sandboxes, not in the build, so
+    editing them rebuilds nothing; what the build itself runs from the
+    checkout is the repo's content, which the nightly rebuild follows."""
+    return [a.text("Dockerfile"), a.text("build"), a.workdir]
 
 
 def base_template() -> Template:
@@ -257,6 +266,7 @@ def contribute(t: Template, extras, served: list) -> Template:
 
 
 def recipe_layer(t: Template, a: recipes.App, fetch: str) -> Template:
+    """The recipe's part of a prebuilt template; what it reads is recipe_inputs."""
     dockerfile, build = a.text("Dockerfile"), a.text("build")
     if dockerfile and any(line.split()[:1] in (["COPY"], ["ADD"]) for line in dockerfile.upper().splitlines()):
         raise recipes.RecipeError(".sbx/Dockerfile: COPY and ADD are not supported; fetch files with RUN curl or in .sbx/build")
