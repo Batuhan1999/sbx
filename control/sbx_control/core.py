@@ -589,6 +589,20 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
     return host_key
 
 
+def check_app(info) -> str | None:
+    """For a running sandbox whose app was last seen ready: why its processes
+    no longer run (the supervisor or a process gave up, often because /run
+    filled), or None when they run or the recipe has none."""
+    a = app_of(info)
+    if not a.spec.get("processes"):
+        return None
+    sbx = Sandbox.connect(info.sandbox_id)
+    if sbx.commands.run(f"{guest('processes', 'probe')} 2>/dev/null || true", timeout=30).stdout.strip() != "exited":
+        return None
+    return (run_space(sbx) or f"its processes are not running; see {sbx_guest.SUPERVISOR_LOG} and the process logs "
+            "(sbx logs NAME)")
+
+
 def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
     """(the sandbox's env as sbx-control would write it now, the names only
     its app gets, the extensions' runtime layers)."""
@@ -887,7 +901,7 @@ def prepare_and_start(name: str, branch: str, checkout=False, operation=None, *,
     """Runs in the background after create. checkout: move the checkout to
     branch's head first, which refuses a tree with local edits unless force
     (a sandbox nobody edits in, as a PR preview)."""
-    with lifecycle.operation(name, "prepare", operation) as current:
+    with lifecycle.operation(name, "prepare", operation) as current, explained(name):
         return _prepare_and_start(name, branch, checkout, force, current)
 
 
@@ -1009,8 +1023,52 @@ def open_desktop_browser(sbx, a: recipes.App, web_url):
                      ">/tmp/chromium.log 2>&1 < /dev/null & echo $! > /tmp/chromium.pid")
 
 
+# A sandbox's /run is a tmpfs of a tenth of its memory: sbx's env, the
+# shipped recipe and the process supervisor's state live there, and what
+# fills it (an agent's files) stops the supervisor and fails every write.
+RUN_FULL_PERCENT = 95
+NO_SPACE = ("No space left on device", "not enough disk space")
+
+
+def run_space(sbx) -> str | None:
+    """Why the sandbox's /run refuses writes, with what fills it; None while it has room."""
+    out = sbx.commands.run("df -Pk /run | tail -1; du -xsk /run/* /run/sbx/* 2>/dev/null | sort -n | tail -3",
+                           timeout=30).stdout.split("\n")
+    fields = out[0].split()
+    try:
+        size_kb, used_percent = int(fields[1]), int(fields[4].rstrip("%"))
+    except (IndexError, ValueError):
+        return None
+    if used_percent < RUN_FULL_PERCENT:
+        return None
+    largest = [line.split("\t") for line in out[1:] if "\t" in line]
+    biggest = ", ".join(f"{path} {int(kb) // 1024} MB" for kb, path in reversed(largest)
+                        if path != "/run/sbx" and kb.isdigit() and int(kb) >= 1024)
+    return (f"the sandbox's /run is full ({used_percent}% of {size_kb // 1024} MB, a tmpfs in its memory that holds "
+            f"sbx's env and its process supervisor's state); largest there: {biggest or 'unknown'}. Remove what an "
+            "agent left there, or create the sandbox again")
+
+
+@contextlib.contextmanager
+def explained(name: str, info=None):
+    """A failed write says when the sandbox's /run is full and what fills it."""
+    try:
+        yield
+    except Exception as error:
+        if not any(text in str(error) for text in NO_SPACE):
+            raise
+        try:
+            info = info or find(name)
+            why = run_space(Sandbox.connect(info.sandbox_id)) if info else None
+        except Exception:  # the explanation is best effort; the failure stands
+            why = None
+        if why:
+            raise SandboxError(f"{error}: {why}") from error
+        raise
+
+
 def restart(name: str, operation=None):
-    with lifecycle.operation(name, "restart", operation) as current:
+    with lifecycle.operation(name, "restart", operation) as current, explained(name):
         return _restart(name, current)
 
 

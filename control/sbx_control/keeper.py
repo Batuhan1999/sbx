@@ -8,7 +8,7 @@ import time
 
 from e2b import Sandbox
 
-from . import core, extensions, gate, github_app, platform, routing, sandboxes, settings, state, views
+from . import core, extensions, gate, github_app, lifecycle, platform, routing, sandboxes, settings, state, views
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -32,6 +32,23 @@ def probe(sandbox_id) -> extensions.Probe:
         f"ss -Htn state established '( sport = :{platform.SSH_PORT} )' | wc -l; {transcripts}; {processes}",
         timeout=15).stdout.split()
     return extensions.Probe(int(ssh), int(agents), int(running))
+
+
+def notice_stopped_app(info):
+    """A ready sandbox's app whose processes no longer run is no longer
+    reported ready: readiness is a checkpoint, so without this a supervisor
+    stopped by a full /run left the sandbox app_ready."""
+    name = (info.metadata or {}).get("sbx")
+    record = lifecycle.get(name) if name else None
+    if not record or record["active"] or record["application"] != "healthy":
+        return
+    try:
+        why = core.check_app(info)
+    except Exception as error:  # the sandbox did not answer this round
+        print(f"keeper: checking {name}'s app: {error!r}", flush=True)
+        return
+    if why and lifecycle.app_stopped(name, info.sandbox_id, why):
+        state.event(name, "app stopped", why)
 
 
 def use_of(info, running: bool) -> extensions.Use:
@@ -105,6 +122,7 @@ def look_once():
         if vm != "running":
             continue
         running.add((info.metadata or {}).get("sbx"))
+        notice_stopped_app(info)
         if settings.current().sandboxes.detected_previews != "off":
             routing.detect_ports(info.sandbox_id, core.app_of(info))
         use = use_of(info, running=True)

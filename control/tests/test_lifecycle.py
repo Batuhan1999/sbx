@@ -217,6 +217,55 @@ class LifecycleTests(Installation):
         self.assertEqual((response.status_code, response.headers.get("retry-after")), (503, "60"), response.text)
         self.assertIn("keeps running", response.json()["detail"])
 
+    def full_run_vm(self, probe="exited"):
+        """A VM whose /run tmpfs is full of Codex's files, its supervisor gone (probe)."""
+        def run(command, **_):
+            if "processes probe" in command:
+                return done(probe)
+            if command.startswith("df -Pk /run"):
+                return done("tmpfs 806032 803600 2432 100% /run\n196\t/run/e2b\n802816\t/run/sbx/codex\n803400\t/run/sbx\n")
+            return done()
+        vm = Mock()
+        vm.commands.run.side_effect = run
+        return vm
+
+    def test_the_keeper_notices_an_app_whose_supervisor_a_full_run_stopped(self):
+        from sbx_control import keeper
+        self.healthy()
+        self.info.metadata["repo"] = "owner/repo"
+        recipe = self.recipes.App("owner/repo", Path("/unused"), {"processes": {"web": "serve"}})
+        with patch.object(self.core, "app_of", return_value=recipe), \
+                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm()):
+            keeper.notice_stopped_app(self.info)
+        record = self.lifecycle.get("fixture")
+        self.assertEqual((self.lifecycle.status(record), record["readiness"]), ("failed", "services_ready"))
+        self.assertIn("/run is full (100% of 787 MB", record["error"])
+        self.assertIn("/run/sbx/codex 784 MB", record["error"])
+        self.assertTrue(self.lifecycle.actions(record, "failed", "running")["restart"])
+        self.assertIn("app stopped", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_the_keeper_leaves_a_running_app_and_a_busy_sandbox_alone(self):
+        from sbx_control import keeper
+        self.healthy()
+        recipe = self.recipes.App("owner/repo", Path("/unused"), {"processes": {"web": "serve"}})
+        with patch.object(self.core, "app_of", return_value=recipe), \
+                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm(probe="alive")):
+            keeper.notice_stopped_app(self.info)
+        self.assertEqual(self.lifecycle.get("fixture")["readiness"], "app_ready")
+        self.lifecycle.begin("fixture", "restart")
+        with patch.object(self.core, "check_app") as check:
+            keeper.notice_stopped_app(self.info)
+        check.assert_not_called()
+
+    def test_a_write_that_fails_on_a_full_run_says_what_fills_it(self):
+        self.healthy()
+        failure = RuntimeError("attempted to write 323 bytes: not enough disk space available")
+        with patch.object(self.core, "_restart", side_effect=failure), patch.object(self.core, "find", return_value=self.info), \
+                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm()), \
+                self.assertRaisesRegex(self.core.SandboxError, r"not enough disk space available: the sandbox's /run is full"):
+            self.core.restart("fixture")
+        self.assertEqual(self.lifecycle.get("fixture")["phase"], "failed")
+
     def amp_vm(self, state="running"):
         """The fixture as one of Amp's orbs, its bootstrap stops recorded in calls."""
         from sbx_control.connectors.amp import orbs

@@ -335,6 +335,20 @@ def observe(name: str, sandbox_id: str, runtime: str) -> str | None:
         return before
 
 
+def app_stopped(name: str, sandbox_id: str, why: str) -> bool:
+    """Record that the app of a settled sandbox, last seen ready, is no longer
+    running (the keeper found its process supervisor gone): its status is
+    failed, which restart clears. False when that is not what the record says."""
+    with transaction() as conn:
+        record = _read(conn, name)
+        if (record is None or record["active"] or record["sandbox_id"] != sandbox_id
+                or record["runtime"] != "running" or record["application"] not in ("healthy", "unverified")):
+            return False
+        record.update(application="failed", error=f"the app stopped: {why}"[:1500])
+        _save(conn, name, record, "application_stopped")
+        return True
+
+
 def abandon_all(conn, reason: str):
     """On a database moved to another host: none of its sandboxes exist there."""
     for name, raw in conn.execute("select name, record from sandbox_lifecycle").fetchall():

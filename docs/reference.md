@@ -284,8 +284,13 @@ Derived from the record:
 | `status` | `creating`, `starting`, `paused` (no operation runs and the VM is paused), `up`, `workspace_ready`, `failed`, `deleted`, `unknown` |
 | `readiness` | `not_ready`, `workspace_ready`, `services_ready`, `app_ready` (on the bound, running VM) |
 
-Readiness is a checkpoint, not continuous monitoring. When the control service
-restarts, unfinished operations become `interrupted`; their checkpoints and
+Readiness is a checkpoint: the health URLs are checked when an operation
+starts the app, not after. What the keeper checks every minute is that a ready
+sandbox's `processes` still run under sbx's supervisor; when they do not, the
+sandbox's status becomes `failed` with the reason (for example its `/run`, a
+small tmpfs that holds sbx's env and the supervisor's state, is full, and what
+fills it), and `restart` starts the app again. An operation that fails on a
+full `/run` names it the same way. When the control service restarts, unfinished operations become `interrupted`; their checkpoints and
 owned resources are kept, and nothing is replayed. Inspect the record and retry
 `prepare` or `restart`; setup holds a lock in the VM, so a retry cannot overlap a
 command that survived the crash.
