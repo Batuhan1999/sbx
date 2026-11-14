@@ -1,9 +1,18 @@
 """The Codex connector: the `codex` CLI in every template, at the version
 its settings pin, run on each developer's own login, which `sbx open codex`
-copies into the sandbox's tmpfs."""
+copies into the sandbox's tmpfs.
+
+Only the login is in the tmpfs. CODEX_HOME is on the sandbox's disk, with
+auth.json there a link to the login: Codex keeps packages, plugins, caches,
+logs and sessions in CODEX_HOME, hundreds of MB within an hour, and the
+tmpfs (/run, a tenth of the VM's memory) also holds sbx's env and its
+process supervisor's state, which a full /run stops. Codex reads and
+replaces auth.json through the link (codex-rs login/src/auth/storage_file.rs:
+"Symlinks retain their target"), so a refreshed login stays in the tmpfs."""
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from pydantic import field_validator
 
@@ -11,7 +20,8 @@ from .. import extensions, platform, settings
 from ..connections.base import Check, Field, Refused, Status
 from ..contributions import Check as Ready, Contribution, RuntimeLayer, TemplateLayer
 
-HOME = f"{platform.RUN}/codex"   # CODEX_HOME: the developer's login and Codex's sessions, in the tmpfs
+HOME = f"{platform.HOME}/.codex"          # CODEX_HOME, on disk
+LOGIN = f"{platform.RUN}/codex/auth.json"  # the developer's login, in the tmpfs only
 
 
 class Settings(settings.ExtensionSection):
@@ -34,15 +44,18 @@ class Codex(extensions.Connector):
     shown = ("version",)
     section = Settings
     activity = (f"{HOME}/sessions",)
-    login = extensions.Login(f"{HOME}/auth.json", "codex", get=("codex", "login"), file="~/.codex/auth.json")
+    login = extensions.Login(LOGIN, "codex", get=("codex", "login"), file="~/.codex/auth.json")
 
     def contribution(self, target) -> Contribution:
         version = self.settings().version
         return Contribution(
             "codex",
             template=TemplateLayer(root=(f"npm install -g --prefix /usr/local @openai/codex@{version} >/dev/null",)),
-            runtime=RuntimeLayer(env={"CODEX_HOME": HOME}, dirs=(HOME,)),
-            ready=Ready("codex --version"))
+            runtime=RuntimeLayer(env={"CODEX_HOME": HOME}, dirs=(HOME, str(PurePosixPath(LOGIN).parent)),
+                                 links={f"{HOME}/auth.json": LOGIN}),
+            ready=Ready("codex --version"),
+            # Its sessions and history (source, secrets) and the link to the login.
+            scrub_paths=("$HOME/.codex",))
 
     def status(self) -> Status:
         version = self.settings().version

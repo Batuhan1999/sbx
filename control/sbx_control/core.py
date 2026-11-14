@@ -574,6 +574,10 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
     modes = "".join(f"&& chmod {f.mode:o} {shlex.quote(f'{ext}/{path}')} " for path, f in layer.files.items())
     git = "".join(f"&& git config --global {shlex.quote(k)} {shlex.quote(v)} " for k, v in layer.git_config.items())
     dirs = "".join(f"&& mkdir -p -m 700 {shlex.quote(d)} " for d in layer.dirs)
+    # A link replaces what is at its path: a file there from before (an
+    # agent's login on disk) is gone, and the link points into the tmpfs.
+    dirs += "".join(f"&& mkdir -p -m 700 {shlex.quote(str(pathlib.PurePosixPath(path).parent))} "
+                    f"&& ln -sfn {shlex.quote(target)} {shlex.quote(path)} " for path, target in layer.links.items())
     host_key = sbx.commands.run(
         f"chmod 600 {staging}/sbx-env {staging}/sbx-app-env {modes}"
         f"&& mv {staging}/sbx-env {RUN}/env && mv {staging}/sbx-app-env {RUN}/app-env "

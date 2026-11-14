@@ -63,6 +63,7 @@ class RuntimeLayer:
     sources: tuple[str, ...] = ()     # files under platform.RUN that shells source when present
     dirs: tuple[str, ...] = ()        # directories made (and kept) for others to write into
     git_config: Mapping[str, str] = field(default_factory=dict)
+    links: Mapping[str, str] = field(default_factory=dict)       # absolute path -> the symlink's target
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ def fingerprint(contributions) -> str:
 def merged_runtime(contributions) -> RuntimeLayer:
     """The runtime layers as one: env and git config in order (a later one
     wins), files under each contribution's folder."""
-    env, files, sources, dirs, git = {}, {}, [], [], {}
+    env, files, sources, dirs, git, links = {}, {}, [], [], {}, {}
     for c in contributions:
         if not c.runtime:
             continue
@@ -105,4 +106,5 @@ def merged_runtime(contributions) -> RuntimeLayer:
         sources += [s for s in c.runtime.sources if s not in sources]
         dirs += [d for d in c.runtime.dirs if d not in dirs]
         git.update(c.runtime.git_config)
-    return RuntimeLayer(env, files, tuple(sources), tuple(dirs), git)
+        links.update(c.runtime.links)
+    return RuntimeLayer(env, files, tuple(sources), tuple(dirs), git, links)

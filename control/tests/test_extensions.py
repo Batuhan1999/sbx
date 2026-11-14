@@ -410,6 +410,25 @@ class ExtensionTests(Installation):
         sandbox.commands.run.return_value.stdout = f"{written['sbx-env']}{core.ENV_SPLIT}\n{written['sbx-app-env']}"
         self.assertEqual(core.written_env(sandbox), envs)
 
+    def test_codex_keeps_only_the_login_in_the_tmpfs(self):
+        # memos-demo on the launch lab: CODEX_HOME in /run grew to 784 MB and filled it.
+        from sbx_control import core, extensions, platform
+        from sbx_control.connectors.codex import Codex
+        from sbx_control.contributions import merged_runtime
+        made = Codex().contribution(extensions.Target(repo="owner/app", name="fixture", trusted=True))
+        home = f"{platform.HOME}/.codex"
+        self.assertEqual(made.runtime.env, {"CODEX_HOME": home})
+        self.assertEqual(made.runtime.links, {f"{home}/auth.json": f"{platform.RUN}/codex/auth.json"})
+        self.assertEqual(Codex.login.path, f"{platform.RUN}/codex/auth.json")   # where sbx open codex writes it
+        self.assertIn("$HOME/.codex", made.scrub_paths)
+        self.assertEqual(Codex.activity, (f"{home}/sessions",))
+        sandbox = Mock()
+        sandbox.commands.run.return_value.stdout = "ssh-ed25519 key"
+        core.write_runtime(sandbox, "fixture", {}, merged_runtime([made]))
+        command = sandbox.commands.run.call_args_list[-1].args[0]
+        self.assertIn(f"mkdir -p -m 700 {platform.RUN}/codex ", command)
+        self.assertIn(f"ln -sfn {platform.RUN}/codex/auth.json {home}/auth.json", command)
+
     def test_the_claude_runner_starts_without_the_agents_hidden_credentials(self):
         from sbx_control import core, recipes
         from sbx_control.connectors.claude_code import ClaudeCode, runner
