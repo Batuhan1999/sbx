@@ -33,11 +33,14 @@ check: |
           sys.exit('OpenRouter refused the key: enter a management key that has not expired, not an inference API key')
       if code != 200 or not isinstance((listed or {}).get('data'), list):
           sys.exit(f'OpenRouter could not list API keys with it (HTTP {code})')
-      # Writes are refused before the key is looked up, so changing nothing on a
-      # key that cannot exist tells a read-only management key from one that can.
-      code, _ = status(KEYS + '/' + '0' * 64, 'PATCH', {})
+      # Writes are refused before the key is looked up, so updating a key that
+      # cannot exist tells a read-only management key (403) from one that can
+      # write (404) without changing anything.
+      code, _ = status(KEYS + '/' + '0' * 64, 'PATCH', {'disabled': False})
       if code in (401, 403):
           sys.exit('the management key is read-only (or scoped to another workspace); it can list API keys but not create them')
+      if code != 404:
+          sys.exit(f'OpenRouter did not say whether the key can create API keys (HTTP {code}); try the check again')
   except (OSError, ValueError):
       sys.exit('OpenRouter did not answer; check the key and try again')
   CHECK

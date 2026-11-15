@@ -205,8 +205,11 @@ class OpenRouterAccountCheckTests(unittest.TestCase):
         seen = []
 
         def urlopen(request, timeout=None):
-            seen.append((request.get_method(), urlsplit(request.full_url).path, request.headers))
+            seen.append((request.get_method(), urlsplit(request.full_url).path, request.headers,
+                         json.loads(request.data) if request.data else None))
             code, body = answers[len(seen) - 1]
+            if code is None:
+                raise TimeoutError('timed out')
             if code >= 400:
                 raise HTTPError(request.full_url, code, 'fixture', {}, io.BytesIO(b'fixture-private-response'))
             response = io.BytesIO(json.dumps(body).encode())
@@ -224,16 +227,26 @@ class OpenRouterAccountCheckTests(unittest.TestCase):
     def test_a_read_write_key_passes_without_changing_anything(self):
         why, seen = self.run_check([(200, {'data': []}), (404, None)])
         self.assertEqual(why, '')
-        self.assertEqual([(m, p) for m, p, _ in seen], [('GET', '/api/v1/keys'), ('PATCH', '/api/v1/keys/' + '0' * 64)])
+        self.assertEqual([(m, p, b) for m, p, _, b in seen], [
+            ('GET', '/api/v1/keys', None), ('PATCH', '/api/v1/keys/' + '0' * 64, {'disabled': False})])
         self.assertEqual(seen[0][2]['Authorization'], 'Bearer fixture-management-key')
 
     def test_read_only_wrong_or_expired_keys_say_which(self):
         for answers, expected in (([(200, {'data': []}), (403, None)], 'read-only'),
+                                  ([(200, {'data': []}), (401, None)], 'read-only'),
                                   ([(401, None)], 'not an inference API key'),
                                   ([(200, {'error': 'fixture'})], 'could not list'),
-                                  ([(500, None)], 'HTTP 500')):
+                                  ([(500, None)], 'HTTP 500'),
+                                  ([(None, None)], 'did not answer')):
             with self.subTest(expected=expected):
                 self.assertIn(expected, self.run_check(answers)[0])
+
+    def test_an_inconclusive_write_probe_fails_and_asks_for_a_retry(self):
+        for code in (200, 400, 429, 500, 503):
+            with self.subTest(code=code):
+                why, _ = self.run_check([(200, {'data': []}), (code, {'data': {}})])
+                self.assertIn(f'(HTTP {code}); try the check again', why)
+        self.assertIn('did not answer', self.run_check([(200, {'data': []}), (None, None)])[0])
 
 
 if __name__ == '__main__':
