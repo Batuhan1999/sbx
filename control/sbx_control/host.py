@@ -258,12 +258,15 @@ def install(names: list[str] | None = None):
     found = units()
     if not names:
         remove_stale_effects(found)
+    # A request carried over to its new name, and the path unit that watches it.
+    moved = set()
     for old, new in RENAMED_EFFECTS.items():
         if (requests / old).exists():
             (requests / old).replace(requests / new)
+            moved.add(f"sbx-apply-{new}.path")
     write(found)
     for unit in found:
-        if not names or unit.name in names:
+        if not names or unit.name in names or unit.name in moved:
             _activate(unit)
 
 
@@ -399,13 +402,21 @@ def _copy_database(source: pathlib.Path, target: pathlib.Path):
 
 
 def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: list, database: pathlib.Path) -> str:
+    from . import paths
     units, q = " ".join(stopped) or "sbx-control.service", shlex.quote
     switch = (f"ln -sfn {q(str(previous))} {q(str(CURRENT))}.new && mv -Tf {q(str(CURRENT))}.new {q(str(CURRENT))}\n"
               if previous else "")
+    # A release that watched its effects under the old names (its unit files
+    # say) reads pending requests under those names.
+    requests, saved = paths.run() / "apply", out / "systemd"
+    older = " || ".join(f"[ -e {q(str(saved / f'sbx-apply-{old}.path'))} ]" for old in RENAMED_EFFECTS)
+    moves = "".join(f"  [ ! -e {q(str(requests / new))} ] || mv -f {q(str(requests / new))} {q(str(requests / old))}\n"
+                    for old, new in RENAMED_EFFECTS.items())
+    renamed_back = f"if {older}; then\n{moves}fi\n"
     return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
             f"# active, its unit files and sbx.db. Sandboxes and Embed are left as they are.\nset -eu\n"
             f"systemctl stop {units} || true\n{switch}"
-            f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n"
+            f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n{renamed_back}"
             f"rm -f {q(str(database))}-wal {q(str(database))}-shm\n"
             f"install -m 600 {q(str(out / 'sbx.db'))} {q(str(database))}\n"
             f"systemctl daemon-reload\n"

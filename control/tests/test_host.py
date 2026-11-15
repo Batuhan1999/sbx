@@ -217,10 +217,15 @@ class HostTests(Installation):
         self.assertLess(calls.index(dropped), calls.index(["daemon-reload"]))
         self.assertLess(calls.index(dropped), calls.index(["enable", "-q", "--now", "sbx-apply-runtime-env.path"]))
         self.assertEqual(self.effects(), ["runtime-env", "runtime-network"])
-        # A partial install touches only the units it names.
+        # A partial install touches only the units it names, and the watcher of a request it carried over.
         (self.systemd / "sbx-apply-gone.path").write_text("[Unit]\n")
+        (paths.run() / "apply/embed-env").write_text("1\n")
+        self.run.reset_mock()
         self.host.install(["sbx-control.service"])
         self.assertTrue((self.systemd / "sbx-apply-gone.path").exists())
+        self.assertEqual(self.effects(), ["runtime-env"])
+        self.assertIn(["enable", "-q", "--now", "sbx-apply-runtime-env.path"], self.systemctl())
+        self.assertNotIn(["enable", "-q", "--now", "sbx-apply-tls.path"], self.systemctl())
 
     def test_host_tools_are_the_ones_catalog_packages_declare(self):
         from sbx_control import catalog
@@ -296,6 +301,18 @@ class HostTests(Installation):
         self.assertIn(f"for unit in {out / 'systemd'}/sbx-apply-*.path; do\n", rollback)
         self.assertNotIn("start", [c[0] for c in self.systemctl()])   # they stay stopped for the migration
         self.assertIn("systemctl start sbx-control.service claude-orchestrator.service sbx-acme-dns.service\n", rollback)
+        # Back to a release from before the effects' rename, a pending request takes its old name again.
+        start = rollback.index("if [ -e")
+        end = rollback.index("\nfi\n", start) + 4
+        requests = paths.run() / "apply"
+        requests.mkdir(parents=True, exist_ok=True)
+        (requests / "runtime-network").write_text("1\n")
+        subprocess.check_call(["sh", "-c", rollback[start:end]])   # run is the systemctl recorder here
+        self.assertTrue((requests / "runtime-network").exists())     # the restored release knows runtime-*
+        (out / "systemd/sbx-apply-embed-env.path").write_text("[Unit]\n")
+        subprocess.check_call(["sh", "-c", rollback[start:end]])
+        self.assertTrue((requests / "embed-network").exists())
+        self.assertFalse((requests / "runtime-network").exists())
 
     def test_an_upgrade_stops_platform_services_that_run_from_another_release_directory(self):
         from types import SimpleNamespace
