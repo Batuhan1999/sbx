@@ -43,8 +43,10 @@ def missing(repo: str, person: str | None = None) -> list:
     a name in sbx.yaml's `secrets:` is there when the repo has a value of that
     name, person has one of their own there (in their sandboxes), or an
     installation variable whose pattern matches the repo gives it; a
-    ${secret:NAME} in sbx.yaml's env or a service's with: resolves from the
-    repo's values only. An untrusted repo's sandboxes get none of these."""
+    ${secret:NAME} in sbx.yaml's env or an enabled service's with: (sbx.yaml's,
+    under the values set on the server for it, as sandboxes are made with)
+    resolves from the repo's values only. An untrusted repo's sandboxes get
+    none of these."""
     a = recipes.load(repo)
     declared = a.spec.get("secrets") or []
     trusted = settings.trust(repo) == "trusted"
@@ -57,8 +59,12 @@ def missing(repo: str, person: str | None = None) -> list:
     referenced = set()
     for value in (a.spec.get("env") or {}).values():
         referenced |= secret_refs(value)
-    for use in (a.spec.get("services") or {}).values():
-        for value in ((use or {}).get("with") or {}).values() if isinstance(use, dict) else ():
+    try:
+        services = attached.merged(repo)
+    except secret_store.StoreError:
+        services = attached.merged(repo, values=False)
+    for _, _, with_, _, disabled, *_ in services:
+        for value in () if disabled else with_.values():
             referenced |= secret_refs(value)
     return sorted((set(declared) - have - own - installation) | (referenced - have))
 

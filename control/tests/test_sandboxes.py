@@ -865,6 +865,27 @@ class MissingValuesTests(Server):
         self.assertEqual(env.missing("owner/app"), ["APP_SECRET"])   # the repo list: the repo's values only
         self.assertEqual(repos.info("owner/app")["services"], ["db"])
 
+    def test_a_service_s_values_set_on_the_server_go_over_sbx_yaml_s(self):
+        # Sandboxes are made with a service's server-set values over sbx.yaml's with:, and not with
+        # a disabled service at all, so neither leaves a ${secret:} to ask for.
+        from sbx_control import env
+        from sbx_control.catalog import attachments
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch("sbx_control.paths.apps", return_value=directory))
+        (directory / "owner/app/.sbx").mkdir(parents=True)
+        (directory / "owner/app/.sbx/sbx.yaml").write_text(
+            "services:\n"
+            "  api:\n    uses: static\n    with: {base_url: '${secret:API_BASE_URL}'}\n"
+            "  metrics:\n    uses: static\n    with: {token: '${secret:METRICS_TOKEN}'}\n")
+        self.assertEqual(env.missing("owner/app"), ["API_BASE_URL", "METRICS_TOKEN"])
+        attachments.attach("owner/app", "static", "api", {"base_url": "https://api.example.test"}, {},
+                           by="test", run_check=False)
+        attachments.detach("owner/app", "metrics", by="test")
+        self.assertEqual(attachments.for_create("owner/app"),
+                         [("api", "static", {"base_url": "https://api.example.test"}, {})])
+        self.assertEqual(env.missing("owner/app"), [])
+        self.assertEqual(env.repo_env("owner/app", "operator@example.com")["missing"], [])
+
     def test_installation_variables_are_the_server_s_and_audiences_come_from_me(self):
         from sbx_control import env, settings
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
