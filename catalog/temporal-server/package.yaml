@@ -1,6 +1,7 @@
 kind: connection
 name: temporal-server
 title: Temporal server
+logo: logo.svg
 description: A Temporal you run; temporal-namespace makes a namespace per sandbox on it.
 inputs:
   address:

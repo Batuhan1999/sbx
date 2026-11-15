@@ -1,6 +1,7 @@
 """Catalog packages through their boundaries: package folders on disk (the
 operator's catalog), real scripts that log what they were run with, the
 connections and attachments tables, and the HTTP API."""
+import base64
 import json
 import os
 import shutil
@@ -196,6 +197,8 @@ class CatalogTests(Server):
     def test_every_shipped_package_parses_and_binds_to_a_shipped_connection(self):
         shipped = {p.name: p for p in self.catalog.shipped()}
         self.assertIn("postgres-clone", shipped)
+        self.assertEqual(shipped["postgres-clone"].files["logo.svg"], shipped["postgres-server"].files["logo.svg"])
+        self.assertEqual(shipped["static"].logo, "")
         for package in shipped.values():
             with self.subTest(package=package.name):
                 for requirement in package.requires.values():
@@ -222,6 +225,44 @@ class CatalogTests(Server):
         files = self.catalog.get("fixture").files
         self.assertIn("run.sh", files)
         self.assertFalse({"._run.sh", ".DS_Store"} & set(files))
+
+    def test_a_packages_logo_reaches_its_listing_attachments_and_connections_as_an_image(self):
+        from sbx_control import paths
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><path d="M0 0h1v1z"/></svg>\n'
+        for name in ("fixture", "fixture-server"):
+            (paths.packages() / name / "logo.svg").write_text(svg)
+            with (paths.packages() / name / "package.yaml").open("a") as spec:
+                spec.write("logo: logo.svg\n")
+        self.repo_admin()
+        self.recipe("owner/app", "services:\n  db:\n    uses: fixture\n")
+        self.connect()
+        listed = {p["name"]: p for p in self.client.get("/api/catalog").json()["packages"]}
+        prefix = "data:image/svg+xml;base64,"
+        self.assertTrue(listed["fixture"]["logo"].startswith(prefix))
+        self.assertEqual(base64.b64decode(listed["fixture"]["logo"].removeprefix(prefix)).decode(), svg)
+        entry = self.client.get("/api/catalog/fixture").json()
+        self.assertEqual(entry["logo"], listed["fixture"]["logo"])
+        self.assertNotIn("logo.svg", entry["scripts"])
+        attachment = self.client.get("/api/repos/owner/app/attachments").json()["attachments"][0]
+        self.assertEqual(attachment["logo"], listed["fixture"]["logo"])
+        connection = self.client.get("/api/catalog/connections").json()["connections"][0]
+        self.assertEqual(connection["logo"], listed["fixture-server"]["logo"])
+        self.assertEqual(self.catalog.parse("plain", {"package.yaml": "kind: connection\n"}, "repo").as_dict()["logo"], "")
+
+    def test_a_logo_is_a_small_svg_in_the_packages_folder(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+        refused = {
+            "a missing file": {},
+            "a file that is not .svg": {"logo.png": svg},
+            "text that is not SVG": {"logo.svg": "<html></html>"},
+            "an SVG over the limit": {"logo.svg": svg + " " * self.catalog.LOGO_BYTES},
+        }
+        for why, files in refused.items():
+            with self.subTest(why), self.assertRaisesRegex(self.catalog.PackageError, "logo|SVG"):
+                logo = next(iter(files), "logo.svg")
+                self.catalog.parse("brand", {"package.yaml": f"kind: connection\nlogo: {logo}\n", **files}, "repo")
+        package = self.catalog.parse("brand", {"package.yaml": "kind: connection\nlogo: logo.svg\n", "logo.svg": svg}, "repo")
+        self.assertEqual(package.logo, "logo.svg")
 
     def recipe(self, repo, text):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))

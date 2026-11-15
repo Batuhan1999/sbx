@@ -1,6 +1,7 @@
 kind: provision
 name: postgres-clone
 title: Postgres clone (per sandbox)
+logo: logo.svg
 description: 'A database per sandbox, sbx_<name>, copied from a template database, with a login of the
   same name that owns it. Copy-on-write depends on the connected server and its storage; this
   provisioner does not enable it. PG_ADMIN_URL is a postgresql:// URL of a role

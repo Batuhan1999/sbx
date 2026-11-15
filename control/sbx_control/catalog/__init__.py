@@ -14,6 +14,7 @@ trusted repo may carry its own in .sbx/services/<name>/ (repo_package).
   connections.py  saving and removing connections (in use: refused)"""
 from __future__ import annotations
 
+import base64
 import dataclasses
 import hashlib
 import importlib.util
@@ -33,10 +34,12 @@ KINDS = ("connection", "provision")
 ACTIONS = ("create", "delete", "list")
 HOOKS = ("pause",)
 KEYS = {"kind", "name", "title", "description", "docs", "inputs", "outputs", "env", "requires", "runs", "hooks",
-        "actions", "runtime", "template", "check", "connect", "identity", "live", "scrub", "timeout", "host_tools"}
+        "actions", "runtime", "template", "check", "connect", "identity", "live", "scrub", "timeout", "host_tools",
+        "logo"}
 TEMPLATE_KEYS = ("apt", "files", "root", "user")
 RESERVED = {"connections"}   # a route of its own under /api/catalog
 MAX_BYTES = 1 << 20
+LOGO_BYTES = 32 << 10        # every listing carries its packages' logos
 CHECK_TIMEOUT = 20
 REPO_USES = re.compile(r"^\./\.sbx/services/([a-z0-9][a-z0-9_-]*)/?$")
 SHIPPED = paths.shipped("catalog")
@@ -94,6 +97,7 @@ class Package:
     # Commands its scripts or check run on the host: name -> the root shell
     # command that installs it (host.install_tools, at install and upgrade).
     host_tools: dict = dataclasses.field(default_factory=dict)
+    logo: str = ""               # an .svg file in the folder: the provider's mark
 
     def with_defaults(self, given: dict, label: str) -> dict:
         """The inputs its scripts get: the given values over the defaults. A
@@ -123,11 +127,18 @@ class Package:
         found = json.loads(text)
         return parse(found["name"], found["files"], found["source"], found.get("repo", ""))
 
+    def logo_url(self) -> str:
+        """The logo as a data: URL, or "". Clients show it as an image, where
+        an SVG runs no script and loads nothing."""
+        if not self.logo:
+            return ""
+        return "data:image/svg+xml;base64," + base64.b64encode(self.files[self.logo].encode()).decode()
+
     def as_dict(self, used_by=()) -> dict:
         return {"name": self.name, "kind": self.kind, "title": self.title, "description": self.description,
                 "source": self.source, "inputs": self.inputs, "outputs": self.outputs, "env": self.env,
                 "requires": self.requires, "runs": self.runs, "checks": bool(self.check), "docs": self.docs,
-                "used_by": list(used_by)}
+                "logo": self.logo_url(), "used_by": list(used_by)}
 
 
 def _input(name, v) -> dict:
@@ -203,6 +214,11 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
         raise PackageError(f"{name}: host_tools maps a command's name to the shell that installs it")
     if source == "repo" and tools:
         raise PackageError(f"{name}: a repo's own package installs nothing on the host (host_tools)")
+    logo = spec.get("logo") or ""
+    if logo and (not isinstance(logo, str) or not logo.endswith(".svg") or logo not in files):
+        raise PackageError(f"{name}: logo names an .svg file in its folder")
+    if logo and (len(files[logo].encode()) > LOGO_BYTES or "<svg" not in files[logo]):
+        raise PackageError(f"{name}: {logo} is not an SVG of at most {LOGO_BYTES >> 10} KiB")
     outputs = {}
     for out, v in (spec.get("outputs") or {}).items():
         if not VAR_RE.match(str(out)) or not isinstance(v or {}, dict):
@@ -217,7 +233,7 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
                    connect=connect, identity=tuple(str(f) for f in spec.get("identity") or ()),
                    live=bool(spec.get("live")), scrub=tuple(str(p) for p in spec.get("scrub") or ()),
                    timeout=seconds(spec.get("timeout", "5m")), repo=repo,
-                   host_tools={str(k): v.strip() for k, v in tools.items()})
+                   host_tools={str(k): v.strip() for k, v in tools.items()}, logo=logo)
 
 
 def _template(name: str, value, kind: str) -> dict:

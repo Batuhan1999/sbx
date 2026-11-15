@@ -81,6 +81,7 @@ timeout: 5m
 | Key | Kinds | Meaning |
 | --- | --- | --- |
 | `kind`, `name`, `title`, `description`, `docs` | all | Identity and help. The name is lowercase letters, digits, `-` and `_`. |
+| `logo` | all | An `.svg` file in the folder (at most 32 KiB): the provider's official mark, in its version for light backgrounds. The web app shows it small on a white tile in both themes; without one it shows a generic icon. A copy made with `--from` keeps the example's logo: replace it, or remove the file and the key. |
 | `inputs` | all | `NAME: {required, default, secret, help}`. Scripts get `INPUT_<NAME>`; `secret: true` values are never shown. |
 | `check` | connection | Shell text run with the inputs (exit 0 means usable), or a `.py` file whose `check(values)` returns an error message or `""`. |
 | `connect` | connection | A `.py` file whose `connect(before, given)` returns the inputs to save on an update. |

@@ -1,6 +1,7 @@
 kind: connection
 name: planetscale-database
 title: PlanetScale Postgres database
+logo: logo.svg
 description: >
   An existing PlanetScale PostgreSQL database. planetscale-branch creates a
   separate development branch per sandbox. Connect a database-scoped service

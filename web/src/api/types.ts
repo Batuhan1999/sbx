@@ -244,6 +244,7 @@ export type Attachment = {
   package: string
   kind: PackageKind
   title: string
+  logo: string
   origin: 'sbx.yaml' | 'here' | 'both'
   inputs: Record<string, string>
   secret_inputs: Record<string, boolean>
@@ -283,6 +284,8 @@ export type CatalogPackage = {
   runs: Record<string, string>
   checks: boolean
   docs: string
+  /** data: URL of the SVG the package names as its logo, or "". */
+  logo: string
   used_by: string[]
 }
 export type CatalogEntry = CatalogPackage & { readme: string; connections: SharedConnection[]; scripts: string[] }
@@ -292,6 +295,7 @@ export type SharedConnection = {
   key: string
   package: string
   title: string
+  logo: string
   /** Non-secret values; secret ones read "(set)". */
   inputs: Record<string, string>
   check_status?: string | null

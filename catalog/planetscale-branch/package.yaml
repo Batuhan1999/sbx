@@ -1,6 +1,7 @@
 kind: provision
 name: planetscale-branch
 title: PlanetScale Postgres branch (per sandbox)
+logo: logo.svg
 description: >
   An empty PS_DEV PostgreSQL branch and migration-capable login per sandbox.
   Run the repository's migrations and development seeds in setup. The parent

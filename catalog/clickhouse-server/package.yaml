@@ -1,6 +1,7 @@
 kind: connection
 name: clickhouse-server
 title: ClickHouse server
+logo: logo.svg
 description: >
   A ClickHouse you run, reachable from sandboxes. A provisioner makes a
   database per sandbox on it with the admin user given here.
