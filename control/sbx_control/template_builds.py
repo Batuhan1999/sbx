@@ -412,10 +412,9 @@ def collect_storage():
 
 def in_use() -> set:
     """The templates running and paused sandboxes started from."""
-    from e2b.sandbox.sandbox_api import SandboxState
-    from . import core
+    from . import core, runtime
     return {(info.metadata or {}).get("template")
-            for info in core.sandboxes(state=[SandboxState.RUNNING, SandboxState.PAUSED])} - {None, ""}
+            for info in core.sandboxes(state=[runtime.RUNNING, runtime.PAUSED])} - {None, ""}
 
 
 def known_keys() -> list:

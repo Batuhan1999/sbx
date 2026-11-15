@@ -374,22 +374,17 @@ class ExtensionTests(Installation):
                               root=("echo root",), user=("echo user",),
                               artifacts=(Artifact("tools v1", lambda: b"tarball", "/opt"),))
         p = templates.plan(templates.DEFAULT, [Contribution("tool", template=layer, ready=Check("tool --version"))])
-        steps = []
-
-        class Recorder:
-            def __getattr__(self, name):
-                return lambda *args, **kwargs: (steps.append((name, args[0] if args else None)), self)[1]
-        with patch.object(templates, "Template", return_value=Recorder()) as template, \
+        with patch.object(templates.runtime, "build_template") as build, \
                 patch.object(templates, "bundles", return_value=Path(self.enterContext(tempfile.TemporaryDirectory()))):
-            template.build = Mock()
             templates.build(p)
-        commands = [value for name, value in steps if name == "run_cmd"]
+        steps = build.call_args.args[0].steps
+        commands = [value for what, value in steps if what == "run"]
         self.assertTrue(any("apt-get install" in c and " gh " in c for c in commands))
         self.assertTrue(any("/usr/local/bin/tool" in c and "chmod 755" in c for c in commands))
         self.assertTrue(any("tar -xz -C /opt" in c for c in commands))
         self.assertEqual(commands[-1], "tool --version")
-        self.assertEqual(("from_template", p.base.name), steps[0])
-        self.assertEqual(template.build.call_args.kwargs["alias"], p.name)
+        self.assertEqual(("template", p.base.name), steps[0])
+        self.assertEqual(build.call_args.kwargs["alias"], p.name)
         self.assertEqual(list(templates.bundles().glob("*")), [])  # the artifact was served once
 
     # A sandbox's runtime.

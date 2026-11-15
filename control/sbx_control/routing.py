@@ -6,9 +6,7 @@ by the keeper every minute and by the gate when a request names a port it
 doesn't know yet, so a server started a moment ago works within seconds."""
 import time
 
-from e2b import Sandbox
-
-from . import addressing, core, ip_previews, recipes, settings
+from . import addressing, core, ip_previews, recipes, runtime, settings
 
 DETECT_AGAIN_SECONDS = 10
 
@@ -65,7 +63,7 @@ def detect_ports(sandbox_id: str, a: recipes.App) -> dict:
     resumes a paused one. On failure, what was known before."""
     _detected_at[sandbox_id] = time.time()
     try:
-        listening = Sandbox.connect(sandbox_id).commands.run(core.LISTENING, timeout=10).stdout
+        listening = runtime.connect(sandbox_id).commands.run(core.LISTENING, timeout=10).stdout
         _detected[sandbox_id] = core.detected_ports(listening, a)
         if addressing.mode() == "ip":
             ip_previews.observe(sandbox_id, addressing.ports(a).values(), _detected[sandbox_id])

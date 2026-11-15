@@ -120,7 +120,7 @@ class WorkspaceTests(Server):
                          "values ('test-resume','operator@example.com','main')")
         vm = VM("resume-vm")
         info = self.resumable("test-resume", vm)
-        with patch.object(core, "find", return_value=info), patch.object(core.Sandbox, "connect", return_value=vm), \
+        with patch.object(core, "find", return_value=info), patch.object(core.runtime, "connect", return_value=vm), \
                 patch.object(core.time, "sleep"):
             response = self.client.post("/api/sandboxes/test-resume/resume")
         self.assertEqual(response.status_code, 200, response.text)
@@ -133,7 +133,7 @@ class WorkspaceTests(Server):
         info = self.resumable("preview-fixture", vm)
         self.addCleanup(gate.forget_preview_resume, "preview-vm")
         with patch.object(core, "sandboxes", return_value=[info]), patch.object(core, "find", return_value=info), \
-                patch.object(core.Sandbox, "connect", return_value=vm), patch.object(core.time, "sleep"):
+                patch.object(core.runtime, "connect", return_value=vm), patch.object(core.time, "sleep"):
             gate.ensure_running("preview-vm")
         self.assertTrue(gate.resumed_for_preview("preview-vm"))
         self.assertTrue(vm.shipped_before_started(self.START))
@@ -144,8 +144,8 @@ class WorkspaceTests(Server):
         actual = Mock(state='paused', cpu_count=2, memory_mb=4096, template_id='small')
         recipe = recipes.App('owner/app', Path('/unused'), {'resources': {'cpu': 4, 'memory_mb': 8192}})
         with patch.object(core, 'find', return_value=info), patch.object(core, 'app_of', return_value=recipe), \
-                patch.object(core.Sandbox, 'get_info', return_value=actual), \
-                patch.object(core.Sandbox, 'connect') as connect, patch.object(core, 'capacity', return_value={}):
+                patch.object(core.runtime, 'info', return_value=actual), \
+                patch.object(core.runtime, 'connect') as connect, patch.object(core, 'capacity', return_value={}):
             result = resources.snapshot('test-vm', live=True)
         connect.assert_not_called()
         self.assertIsNone(result['usage'])
@@ -162,8 +162,8 @@ class WorkspaceTests(Server):
         runtime.commands.run.return_value.stdout = json.dumps({'disk': {'total_bytes': 20 * 1024**3,
                                                                          'available_bytes': 300 * 1024**2}})
         with patch.object(core, 'find', return_value=Mock(sandbox_id='test-vm')), \
-                patch.object(core, 'app_of', return_value=recipe), patch.object(core.Sandbox, 'get_info', return_value=actual), \
-                patch.object(core.Sandbox, 'connect', return_value=runtime), patch.object(core, 'capacity', return_value={}):
+                patch.object(core, 'app_of', return_value=recipe), patch.object(core.runtime, 'info', return_value=actual), \
+                patch.object(core.runtime, 'connect', return_value=runtime), patch.object(core, 'capacity', return_value={}):
             result = resources.snapshot('test-vm', live=True)
         self.assertEqual({issue['code'] for issue in result['issues']}, {'low_disk_space', 'disk_request_not_applied'})
 
@@ -175,7 +175,7 @@ class WorkspaceTests(Server):
         })
         with patch.object(core, 'find', return_value=Mock(sandbox_id='vm')), \
                 patch.object(core, 'app_of', return_value=recipe), patch.object(core, 'capacity', return_value={}), \
-                patch.object(core.Sandbox, 'get_info', return_value=Mock(state='running', cpu_count=4, memory_mb=8192, template_id='test')):
+                patch.object(core.runtime, 'info', return_value=Mock(state='running', cpu_count=4, memory_mb=8192, template_id='test')):
             result = resources.snapshot('test')
         self.assertEqual(result['recipe']['allocation_source'], 'build_resources')
         self.assertEqual(result['recipe']['memory_mb'], 16384)
@@ -210,7 +210,7 @@ class WorkspaceTests(Server):
             conn.execute("insert or replace into sandboxes (name, owner, branch, slug) values ('test-pause', 'operator@example.com', 'main', 'test-pause')")
         lifecycle.begin('test-pause', 'prepare')
         info = Mock(sandbox_id='vm', metadata={'sbx': 'test-pause', 'owner': 'operator@example.com'})
-        with patch.object(core, 'find', return_value=info), patch.object(core.Sandbox, 'pause') as pause:
+        with patch.object(core, 'find', return_value=info), patch.object(core.runtime, 'pause') as pause:
             response = self.client.post('/api/sandboxes/test-pause/pause')
         self.assertEqual(response.status_code, 409)
         pause.assert_not_called()
@@ -315,7 +315,7 @@ class WorkspaceTests(Server):
                    'Authorization': f"Bearer {auth.mint_token('operator@example.com', 'test')}"}
         with patch.object(core, 'sandboxes', return_value=[info]), patch.object(core, 'app_of', return_value=app):
             self.assertEqual(self.client.get('/gate', headers=headers).status_code, 200)
-            with patch.object(core, 'find', return_value=info), patch.object(core.Sandbox, 'kill'), \
+            with patch.object(core, 'find', return_value=info), patch.object(core.runtime, 'kill'), \
                     patch('sbx_control.catalog.resources.delete_all', return_value=[]):
                 core.delete('gone-fixture')
             response = self.client.get('/gate', headers=headers)  # the runtime still lists the VM
@@ -339,7 +339,7 @@ class WorkspaceTests(Server):
         url = ip_previews.origin(name, 3000)
         info = Mock(sandbox_id='delete-fixture-vm', metadata={'sbx': name, 'slug': name, 'repo': app.repo})
         with patch.object(core, 'find', return_value=info), patch.object(recipes, 'load', return_value=app), \
-                patch.object(core.Sandbox, 'kill') as kill, patch('sbx_control.catalog.resources.delete_all', return_value=[]):
+                patch.object(core.runtime, 'kill') as kill, patch('sbx_control.catalog.resources.delete_all', return_value=[]):
             core.delete(name)
         kill.assert_called_once_with('delete-fixture-vm')
         from urllib.parse import urlsplit

@@ -16,11 +16,8 @@ import threading
 import time
 import uuid
 
-from e2b import Sandbox
-from e2b.sandbox.sandbox_api import SandboxQuery
-
 from . import (addressing, contributions, delivery, extensions, ip_previews, lifecycle, paths, platform, recipes,
-               secret_store, settings, state, variables)
+               runtime, secret_store, settings, state, variables)
 from .template_files import sbx_guest
 
 RUN = platform.RUN
@@ -61,10 +58,10 @@ PAUSE_DISK_HEADROOM_MB = 1024  # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vend
 
 
 def runtime_failure(error: BaseException) -> bool:
-    """Whether the error is the sandbox runtime's (E2B Embed) or the
-    connection to it: it answered with an error or not at all, as while
-    `sbx-admin network apply` or an upgrade recreates it."""
-    return type(error).__module__.split(".")[0] in ("e2b", "httpx", "httpcore")
+    """Whether the error is the sandbox runtime's or the connection to it:
+    it answered with an error or not at all, as while `sbx-admin network
+    apply` or an upgrade recreates it."""
+    return runtime.failure(error)
 
 
 class NotReady(SandboxError):
@@ -222,11 +219,8 @@ def slugify(branch: str, limit: int = 40) -> str:
 
 
 def sandboxes(metadata=None, state=None):
-    pages = Sandbox.list(query=SandboxQuery(metadata=metadata, state=state))
-    items = pages.next_items()
-    while pages.has_next:
-        items += pages.next_items()
-    return items
+    """What the runtime lists; state: runtime.RUNNING and PAUSED, None for its default."""
+    return runtime.sandboxes(metadata, state)
 
 
 def find(name):
@@ -409,7 +403,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=result["sandbox_id"], runtime="running")
             # A new sandbox's checkout is its template's: what the template's setup changed is nobody's edit.
-            prepare_workspace(Sandbox.connect(result["sandbox_id"]), a, branch, checkout=True, force=True,
+            prepare_workspace(runtime.connect(result["sandbox_id"]), a, branch, checkout=True, force=True,
                               source_commit=source_commit)
             operation.advance("workspace_ready", finish=True)
             result["lifecycle"] = lifecycle.get(name)
@@ -419,7 +413,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         if checkpoint and (checkpoint.get("sandbox_id") or checkpoint.get("phase") == "allocating"):
             raise
         if result and result.get("sandbox_id"):
-            Sandbox.kill(result["sandbox_id"])
+            runtime.kill(result["sandbox_id"])
         ip_previews.remove(slug)
         if trusted:
             extensions.packages().release(name)
@@ -486,11 +480,11 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
     # The cloud metadata service: Embed denies it in the slot already, and
     # install.sh's guard for what its egress proxy dials. Embed can't deny
     # private ranges per sandbox.
-    sbx = Sandbox.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
-                         network={"deny_out": ["169.254.169.254/32"]},
+    sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
+                         deny_out=["169.254.169.254/32"],
                          metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
                                    "repo": a.repo},
-                         lifecycle={"on_timeout": "pause", "auto_resume": True})
+                         on_timeout="pause", auto_resume=True)
     try:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=sbx.sandbox_id, runtime="running")
@@ -499,7 +493,7 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
         host_key = write_runtime(sbx, name, envs, layer, public_keys, hidden)
     except Exception:
         if not operation:
-            Sandbox.kill(sbx.sandbox_id)
+            runtime.kill(sbx.sandbox_id)
         raise
     return {"name": name, "sandbox_id": sbx.sandbox_id, "host_key": " ".join(host_key), "branch": env["SBX_BRANCH"],
             "repo": a.workdir, "ssh_url": addressing.ssh_url(slug, a, sbx.sandbox_id), "urls": addressing.urls(slug, a)}
@@ -596,7 +590,7 @@ def check_app(info) -> str | None:
     a = app_of(info)
     if not a.spec.get("processes"):
         return None
-    sbx = Sandbox.connect(info.sandbox_id)
+    sbx = runtime.connect(info.sandbox_id)
     if sbx.commands.run(f"{guest('processes', 'probe')} 2>/dev/null || true", timeout=30).stdout.strip() != "exited":
         return None
     return (run_space(sbx) or f"its processes are not running; see {sbx_guest.SUPERVISOR_LOG} and the process logs "
@@ -659,7 +653,7 @@ def connect(name: str, why: str, info=None):
     paused = runtime_state(info) == "paused"
     began = time.time()
     try:
-        sbx = Sandbox.connect(info.sandbox_id, timeout=TIMEOUT_SECONDS)
+        sbx = runtime.connect(info.sandbox_id, timeout=TIMEOUT_SECONDS)
     except Exception as error:
         if paused:
             state.event(name, "resume failed", f"{why}, after {time.time() - began:.0f}s: {error}")
@@ -1060,7 +1054,7 @@ def explained(name: str, info=None):
             raise
         try:
             info = info or find(name)
-            why = run_space(Sandbox.connect(info.sandbox_id)) if info else None
+            why = run_space(runtime.connect(info.sandbox_id)) if info else None
         except Exception:  # the explanation is best effort; the failure stands
             why = None
         if why:
@@ -1088,7 +1082,7 @@ def delete(name: str, slug: str | None = None):
     if current and current["phase"] == "deleted" and not current["active"]:
         info = find(name)  # the runtime lists a killed VM for a while
         if info:
-            Sandbox.kill(info.sandbox_id)
+            runtime.kill(info.sandbox_id)
         return
     with lifecycle.operation(name, "delete") as operation:
         operation.advance("deleting")
@@ -1100,7 +1094,7 @@ def _delete(name, slug, operation):
     info = find(name)
     if info:
         lifecycle.assert_binding(name, info.sandbox_id)
-        Sandbox.kill(info.sandbox_id)  # connect would resume a paused one first
+        runtime.kill(info.sandbox_id)  # connect would resume a paused one first
         slug = slug_of(info)
     operation.advance("deleting", runtime="missing")
     # What delete_all can't remove stays recorded for the reconciler.
@@ -1113,12 +1107,11 @@ def _delete(name, slug, operation):
 def _pause_vm(info):
     """Pause the VM, retrying while the runtime says it is busy; the last
     refusal when it never took the pause, else None."""
-    from e2b.exceptions import ServiceBusyException
     for wait in (*PAUSE_RETRY_SECONDS, None):
         try:
-            Sandbox.pause(info.sandbox_id)
+            runtime.pause(info.sandbox_id)
             return None
-        except ServiceBusyException as error:
+        except runtime.Busy as error:
             if wait is None:
                 return error
             time.sleep(wait)

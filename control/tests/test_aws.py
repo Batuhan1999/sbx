@@ -218,7 +218,7 @@ class AwsTests(Server):
         from sbx_control import core
         self.aws_fixture()
         self.session.side_effect = NoCredentialsError()
-        with patch.object(core, 'find', return_value=None), patch.object(core.Sandbox, 'create') as create:
+        with patch.object(core, 'find', return_value=None), patch.object(core.runtime, 'create') as create:
             with self.assertRaisesRegex(ValueError, 'AWS connection required'):
                 core.create('aws-c', 'aws-c', 'operator@example.com', 'main', '',
                             'owner/awsapp', template='fixture')

@@ -16,9 +16,7 @@ import time
 from pathlib import Path
 
 import httpx
-from e2b import Sandbox, SandboxQuery, SandboxState
-
-from ... import addressing, core, lifecycle, platform, recipes, sandboxes, settings, vault
+from ... import addressing, core, lifecycle, platform, recipes, runtime, sandboxes, settings, vault
 from . import snapshots
 from .common import CLI, KIND, TOKEN, JobError, current, orb_lock
 
@@ -32,11 +30,7 @@ def sandboxes_of(orb_id: str | None = None):
     metadata = {"connector": KIND}
     if orb_id is not None:
         metadata["orbId"] = orb_id
-    pages = Sandbox.list(query=SandboxQuery(metadata=metadata, state=[SandboxState.RUNNING, SandboxState.PAUSED]))
-    items = pages.next_items()
-    while pages.has_next:
-        items += pages.next_items()
-    return items
+    return runtime.sandboxes(metadata, [runtime.RUNNING, runtime.PAUSED])
 
 
 def stop_bootstrap(sbx):
@@ -255,7 +249,7 @@ def main(argv=None):
             build(args.repo)
         else:
             print(json.dumps([{"orb_id": i.metadata["orbId"], "sandbox_id": i.sandbox_id,
-                               "state": i.state.value} for i in sandboxes_of()]))
+                               "state": i.state} for i in sandboxes_of()]))
         return 0
     except JobError as error:
         print(str(error), file=sys.stderr)

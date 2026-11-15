@@ -22,9 +22,7 @@ import socket
 import subprocess
 import sys
 
-from e2b import Sandbox
-
-from . import platform, settings
+from . import platform, runtime, settings
 
 METADATA = "169.254.169.254"
 
@@ -83,7 +81,7 @@ def main():
     # On a cloud VM the public address is not on an interface; the domain names it.
     addresses = set(host_addresses()) | {socket.gethostbyname(f"{settings.current().domain.login_host}.{settings.current().domain.name}")}
     ports = listening_ports()
-    sbx = Sandbox.create(args.template, timeout=600, metadata={"sbx": "netcheck"})
+    sbx = runtime.create(args.template, timeout=600, metadata={"sbx": "netcheck"})
     try:
         gateway = sbx.commands.run("ip route | awk '/^default/ {print $3}'").stdout.strip()
         if gateway:

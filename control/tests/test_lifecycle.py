@@ -133,12 +133,12 @@ class LifecycleTests(Installation):
 
     @contextlib.contextmanager
     def creating(self, recipe, vm):
-        """A new sandbox of recipe (a repo this installation serves publicly) on vm; yields Sandbox.create."""
+        """A new sandbox of recipe (a repo this installation serves publicly) on vm; yields runtime.create."""
         with patch.object(self.core, "find", return_value=None), \
                 patch.object(self.recipes, "load", return_value=recipe), \
                 patch.object(self.core.settings, "trust", return_value="public"), \
-                patch.object(self.core.Sandbox, "connect", return_value=vm), \
-                patch.object(self.core.Sandbox, "create", return_value=vm) as create:
+                patch.object(self.core.runtime, "connect", return_value=vm), \
+                patch.object(self.core.runtime, "create", return_value=vm) as create:
             yield create
 
     def test_pause_runs_the_services_pause_hooks_after_the_vm_is_paused(self):
@@ -146,7 +146,7 @@ class LifecycleTests(Installation):
         self.pause_hook(f"#!/bin/sh\necho \"$SBX_ID\" > {marker}\n")
         self.healthy()
         seen = []
-        with patch.object(self.core.Sandbox, 'pause', side_effect=lambda _: seen.append(marker.exists())):
+        with patch.object(self.core.runtime, 'pause', side_effect=lambda _: seen.append(marker.exists())):
             self.core.pause('fixture', self.info)
         self.assertEqual(seen, [False])
         self.assertEqual(marker.read_text(), "fixture-db\n")
@@ -155,20 +155,19 @@ class LifecycleTests(Installation):
     def test_pause_hook_failure_is_deferred_without_losing_the_pause(self):
         self.pause_hook("#!/bin/sh\necho unavailable >&2\nexit 1\n")
         self.healthy()
-        with patch.object(self.core.Sandbox, 'pause'):
+        with patch.object(self.core.runtime, 'pause'):
             self.core.pause('fixture', self.info)
         self.assertEqual(self.lifecycle.get('fixture')['runtime'], 'paused')
         self.assertEqual(self.lifecycle.get('fixture')['phase'], 'app_ready')
         self.assertIn(('service pause hook deferred', True), [(kind, internal) for _, kind, _, internal in self.state.events('fixture')])
 
     def busy(self):
-        from e2b.exceptions import ServiceBusyException
-        return ServiceBusyException("503: Sandbox 'fixture-vm' cannot be paused right now because its node is busy, please retry")
+        return self.core.runtime.Busy("503: Sandbox 'fixture-vm' cannot be paused right now because its node is busy, please retry")
 
     def test_a_pause_the_runtime_refuses_for_a_moment_is_retried(self):
         self.healthy()
         with patch.object(self.core, "PAUSE_RETRY_SECONDS", (0, 0)), \
-                patch.object(self.core.Sandbox, "pause", side_effect=[self.busy(), None]) as pause:
+                patch.object(self.core.runtime, "pause", side_effect=[self.busy(), None]) as pause:
             self.core.pause("fixture", self.info)
         self.assertEqual(pause.call_count, 2)
         self.assertEqual(self.lifecycle.get("fixture")["runtime"], "paused")
@@ -177,7 +176,7 @@ class LifecycleTests(Installation):
         # The launch lab: five refused pauses left n8n sandboxes 'failed' while the app ran fine.
         self.healthy()
         with patch.object(self.core, "PAUSE_RETRY_SECONDS", (0, 0)), \
-                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()) as pause, \
+                patch.object(self.core.runtime, "pause", side_effect=self.busy()) as pause, \
                 patch.object(self.core, "find", return_value=self.info), \
                 self.assertRaisesRegex(self.core.PauseRefused, "refused the pause .* keeps running") as refused:
             self.core.pause("fixture", self.info)
@@ -191,7 +190,7 @@ class LifecycleTests(Installation):
         self.healthy()
         self.info.memory_mb = 4096
         with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
-                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core.runtime, "pause", side_effect=self.busy()), \
                 patch.object(self.core, "find", return_value=self.info), \
                 patch("sbx_control.embed_storage.free_mb", return_value=3 * 1024), \
                 self.assertRaisesRegex(self.core.PauseRefused, r"disk has 3\.0 GB free .* memory \(4\.0 GB\) plus 1 GB"):
@@ -201,7 +200,7 @@ class LifecycleTests(Installation):
         self.healthy()
         gone = SimpleNamespace(**{**vars(self.info), "state": "killed"})
         with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
-                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core.runtime, "pause", side_effect=self.busy()), \
                 patch.object(self.core, "find", return_value=gone), self.assertRaises(Exception):
             self.core.pause("fixture", self.info)
         self.assertEqual(self.lifecycle.get("fixture")["phase"], "failed")
@@ -211,7 +210,7 @@ class LifecycleTests(Installation):
         self.client.cookies.clear()
         with patch.object(self.auth, "require_owned", return_value=self.info), \
                 patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
-                patch.object(self.core.Sandbox, "pause", side_effect=self.busy()), \
+                patch.object(self.core.runtime, "pause", side_effect=self.busy()), \
                 patch.object(self.core, "find", return_value=self.info):
             response = self.client.post("/api/sandboxes/fixture/pause")
         self.assertEqual((response.status_code, response.headers.get("retry-after")), (503, "60"), response.text)
@@ -235,7 +234,7 @@ class LifecycleTests(Installation):
         self.info.metadata["repo"] = "owner/repo"
         recipe = self.recipes.App("owner/repo", Path("/unused"), {"processes": {"web": "serve"}})
         with patch.object(self.core, "app_of", return_value=recipe), \
-                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm()):
+                patch.object(self.core.runtime, "connect", return_value=self.full_run_vm()):
             keeper.notice_stopped_app(self.info)
         record = self.lifecycle.get("fixture")
         self.assertEqual((self.lifecycle.status(record), record["readiness"]), ("failed", "services_ready"))
@@ -249,7 +248,7 @@ class LifecycleTests(Installation):
         self.healthy()
         recipe = self.recipes.App("owner/repo", Path("/unused"), {"processes": {"web": "serve"}})
         with patch.object(self.core, "app_of", return_value=recipe), \
-                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm(probe="alive")):
+                patch.object(self.core.runtime, "connect", return_value=self.full_run_vm(probe="alive")):
             keeper.notice_stopped_app(self.info)
         self.assertEqual(self.lifecycle.get("fixture")["readiness"], "app_ready")
         self.lifecycle.begin("fixture", "restart")
@@ -261,7 +260,7 @@ class LifecycleTests(Installation):
         self.healthy()
         failure = RuntimeError("attempted to write 323 bytes: not enough disk space available")
         with patch.object(self.core, "_restart", side_effect=failure), patch.object(self.core, "find", return_value=self.info), \
-                patch.object(self.core.Sandbox, "connect", return_value=self.full_run_vm()), \
+                patch.object(self.core.runtime, "connect", return_value=self.full_run_vm()), \
                 self.assertRaisesRegex(self.core.SandboxError, r"not enough disk space available: the sandbox's /run is full"):
             self.core.restart("fixture")
         self.assertEqual(self.lifecycle.get("fixture")["phase"], "failed")
@@ -273,13 +272,13 @@ class LifecycleTests(Installation):
         self.info.state = state
         calls = []
         self.enterContext(patch.object(orbs, "stop_bootstrap", side_effect=lambda *_: calls.append("bootstrap stopped")))
-        self.enterContext(patch.object(self.core.Sandbox, "connect", return_value=Mock()))
+        self.enterContext(patch.object(self.core.runtime, "connect", return_value=Mock()))
         return calls
 
     def test_amp_pause_stops_the_bootstrap_before_the_checkpoint_and_the_vm_pause(self):
         self.healthy()
         calls = self.amp_vm()
-        with patch.object(self.core.Sandbox, "pause", side_effect=lambda _: calls.append("paused")):
+        with patch.object(self.core.runtime, "pause", side_effect=lambda _: calls.append("paused")):
             self.core.pause("fixture", self.info, before_pause=lambda: calls.append("checkpoint"))
         self.assertEqual(calls, ["bootstrap stopped", "checkpoint", "paused"])
 
@@ -288,7 +287,7 @@ class LifecycleTests(Installation):
         self.healthy()
         self.amp_vm()
         with patch.object(orbs, "stop_bootstrap", side_effect=RuntimeError("transport unavailable")), \
-                patch.object(self.core.Sandbox, "pause") as pause:
+                patch.object(self.core.runtime, "pause") as pause:
             with self.assertRaisesRegex(RuntimeError, "transport unavailable"):
                 self.core.pause("fixture", self.info)
         pause.assert_not_called()
@@ -296,7 +295,7 @@ class LifecycleTests(Installation):
     def test_amp_pause_of_a_paused_vm_does_not_wake_it(self):
         self.healthy()
         calls = self.amp_vm(state="paused")
-        with patch.object(self.core.Sandbox, "pause"):
+        with patch.object(self.core.runtime, "pause"):
             self.core.pause("fixture", self.info)
         self.assertEqual(calls, [])
 
@@ -314,7 +313,7 @@ class LifecycleTests(Installation):
     def test_other_sandboxes_pause_without_a_connector_hook(self):
         from sbx_control.connectors.amp import orbs
         self.healthy()
-        with patch.object(orbs, "stop_bootstrap") as stop, patch.object(self.core.Sandbox, "pause"):
+        with patch.object(orbs, "stop_bootstrap") as stop, patch.object(self.core.runtime, "pause"):
             self.core.pause("fixture", self.info)
         stop.assert_not_called()
 
@@ -373,7 +372,7 @@ class LifecycleTests(Installation):
 
     def test_failed_port_probe_never_reclaims_routes(self):
         from sbx_control import ip_previews, routing
-        with patch.object(self.core.Sandbox, "connect", side_effect=RuntimeError("unavailable")), \
+        with patch.object(self.core.runtime, "connect", side_effect=RuntimeError("unavailable")), \
                 patch.object(ip_previews, "observe") as observe:
             routing.detect_ports("fixture-vm", self.recipes.App("owner/repo", Path("/unused"), {}))
         observe.assert_not_called()
@@ -525,7 +524,7 @@ class LifecycleTests(Installation):
                 patch("sbx_control.sandboxes.describe", side_effect=lambda info: {"name": info.metadata["sbx"]}):
             self.assertEqual(self.client.get("/api/sandboxes").json(), [{"name": "fixture"}])
         with patch.object(self.core, "find", return_value=foreign) as find, \
-                patch.object(self.core, "delete") as delete, patch.object(self.core.Sandbox, "kill") as kill:
+                patch.object(self.core, "delete") as delete, patch.object(self.core.runtime, "kill") as kill:
             for method, path in (("get", ""), ("post", "/prepare"), ("delete", "")):
                 response = getattr(self.client, method)("/api/sandboxes/foreign-controller" + path)
                 self.assertEqual(response.status_code, 404, response.text)
@@ -662,7 +661,7 @@ class LifecycleTests(Installation):
         # The runtime lists a killed VM for a while (gate.gone).
         from sbx_control import sandboxes
         self.workspace()
-        with patch.object(self.core, "find", return_value=self.info), patch.object(self.core.Sandbox, "kill") as kill, \
+        with patch.object(self.core, "find", return_value=self.info), patch.object(self.core.runtime, "kill") as kill, \
                 patch.object(self.core.extensions.packages(), "release", return_value=[]) as cleanup:
             sandboxes.delete("fixture")
             sandboxes.delete("fixture")
@@ -676,7 +675,7 @@ class LifecycleTests(Installation):
     def test_a_sandbox_whose_name_became_reserved_can_still_be_deleted(self):
         self.workspace()
         with patch.object(self.core, "preview_suffixes", return_value={"ture"}), \
-                patch.object(self.core, "find", return_value=self.info), patch.object(self.core.Sandbox, "kill") as kill, \
+                patch.object(self.core, "find", return_value=self.info), patch.object(self.core.runtime, "kill") as kill, \
                 patch.object(self.core.extensions.packages(), "release", return_value=[]):
             response = self.client.delete("/api/sandboxes/fixture")
         self.assertEqual(response.status_code, 200, response.text)
@@ -693,7 +692,7 @@ class LifecycleTests(Installation):
     def test_a_paused_sandbox_reports_paused(self):
         self.healthy()
         paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
-        with patch.object(self.core, "find", return_value=self.info), patch.object(self.core.Sandbox, "pause"):
+        with patch.object(self.core, "find", return_value=self.info), patch.object(self.core.runtime, "pause"):
             self.assertEqual(self.client.post("/api/sandboxes/fixture/pause").status_code, 200)
         with patch.object(self.core, "find", return_value=paused):
             self.assertEqual(self.client.get("/api/sandboxes/fixture").json()["status"], "paused")
@@ -711,7 +710,7 @@ class LifecycleTests(Installation):
                                   {"workdir": str(checkout), "health": ["http://localhost:3000/"]})
         with patch.object(self.core, "find", return_value=self.info), \
                 patch.object(self.recipes, "load", return_value=recipe), \
-                patch.object(self.core.Sandbox, "connect", return_value=FakeVM()), \
+                patch.object(self.core.runtime, "connect", return_value=FakeVM()), \
                 patch.object(self.core.time, "sleep"):
             self.core.prepare_and_start("fixture", "main")
         self.assertEqual((checkout / "example.txt").read_text(), "the agent's edit\n")
@@ -733,7 +732,7 @@ class LifecycleTests(Installation):
                              side_effect=lambda name, kind, work: work(self.lifecycle.begin(name, kind))), \
                 patch.object(self.core, "find", return_value=self.info), \
                 patch.object(self.recipes, "load", return_value=recipe), \
-                patch.object(self.core.Sandbox, "connect", return_value=FakeVM()), \
+                patch.object(self.core.runtime, "connect", return_value=FakeVM()), \
                 patch.object(self.core.time, "sleep"):
             github_api.upsert(7, "main", "owner/repo")
         self.assertEqual((checkout / "example.txt").read_text(), "pushed\n")
@@ -756,7 +755,7 @@ class LifecycleTests(Installation):
                              side_effect=lambda name, kind, work: work(self.lifecycle.begin(name, kind))), \
                 patch.object(self.core, "find", return_value=self.info), \
                 patch.object(self.recipes, "load", return_value=recipe), \
-                patch.object(self.core.Sandbox, "connect", return_value=FakeVM()), \
+                patch.object(self.core.runtime, "connect", return_value=FakeVM()), \
                 patch.object(self.core.time, "sleep"):
             github_api.upsert(7, "main", "owner/repo")
         self.assertEqual((checkout / "example.txt").read_text(), "pushed\n")
@@ -894,12 +893,11 @@ class LifecycleTests(Installation):
 
     def test_a_runtime_that_does_not_take_the_sandbox_asks_for_the_same_request_again(self):
         # As while `sbx-admin network apply` recreates Embed: no VM is made, so a retry may succeed.
-        from e2b.exceptions import SandboxException
         checkout = checkout_of(Path(self.enterContext(tempfile.TemporaryDirectory())))
         recipe = self.recipes.App("owner/repo", checkout.parent / "recipe", {"workdir": str(checkout)})
         body = {"name": "runtime-restart", "repo": "owner/repo", "public_keys": ""}
         with self.creating(recipe, FakeVM()) as create:
-            create.side_effect = SandboxException("500: failed to create sandbox: orchestrator unavailable")
+            create.side_effect = self.core.runtime.Failed("500: failed to create sandbox: orchestrator unavailable")
             response = self.client.post("/api/sandboxes?start_app=false", json=body)
             self.assertEqual(response.status_code, 503, response.text)
             self.assertEqual(response.headers["retry-after"], "30")
@@ -909,11 +907,10 @@ class LifecycleTests(Installation):
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_a_failure_after_the_vm_exists_is_no_retry(self):
-        from e2b.exceptions import SandboxException
         recipe = self.recipes.App("owner/repo", Path("/unused"), {})
         vm = FakeVM("kept-vm")
         with self.creating(recipe, vm), \
-                patch.object(self.core, "ensure_started", side_effect=SandboxException("envd did not answer")):
+                patch.object(self.core, "ensure_started", side_effect=self.core.runtime.Failed("envd did not answer")):
             response = self.client.post("/api/sandboxes?start_app=false", json={
                 "name": "kept-vm", "repo": "owner/repo", "public_keys": ""})
         self.assertEqual(response.status_code, 502, response.text)

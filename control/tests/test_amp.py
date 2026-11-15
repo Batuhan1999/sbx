@@ -6,10 +6,8 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-from e2b import SandboxState
 
 from support import Server
 
@@ -81,7 +79,7 @@ sudo() {
         self.repo_admin()
         token = "aop_live_disposable_test_only"
         with patch("sbx_control.connectors.amp.active", return_value=False), \
-                patch.object(orbs, "Sandbox") as runtime:
+                patch.object(orbs, "runtime") as runtime:
             response = self.client.put("/api/connections/amp", json={"values": {
                 "provider_token": token, "enabled": "true",
             }})
@@ -115,7 +113,7 @@ sudo() {
         from sbx_control import core, keeper
         from types import SimpleNamespace
         info = SimpleNamespace(metadata={"connector": "amp", "sbx": "amp-paused"}, sandbox_id="amp-paused-vm")
-        with patch.object(core.Sandbox, "kill") as kill:
+        with patch.object(core.runtime, "kill") as kill:
             keeper.delete_paused(info)
         kill.assert_not_called()
 
@@ -142,7 +140,7 @@ sudo() {
             self.assertEqual(snapshots.cached(key, 'owner/app'), 'prepared-cache-id')
             with self.assertRaises(orbs.JobError):
                 snapshots.cached(key, 'other/repo')
-            with patch.object(snapshots.Sandbox, 'delete_snapshot') as delete:
+            with patch.object(snapshots.runtime, 'delete_snapshot') as delete:
                 snapshots.delete(key)
                 snapshots.delete(key)
             delete.assert_called_once_with('prepared-cache-id')
@@ -158,19 +156,19 @@ sudo() {
             recipe = recipes.App('owner/app', Path(directory), {})
             source = SimpleNamespace(sandbox_id='source-vm', metadata={'sbx': 'source-name', 'repo': 'owner/app'})
             sdk = Mock()
-            sdk.get_info.return_value.memory_mb = 8192
-            sdk.create_snapshot.side_effect = lambda sandbox_id, **kwargs: SimpleNamespace(
+            sdk.info.return_value.memory_mb = 8192
+            sdk.snapshot.side_effect = lambda sandbox_id, name: SimpleNamespace(
                 snapshot_id={'source-vm': 'private-checkpoint', 'temporary-cache-vm': 'clean-project-cache'}[sandbox_id])
             staging = sdk.create.return_value
             staging.sandbox_id = 'temporary-cache-vm'
             with patch.object(core, 'find', return_value=source), patch.object(core, 'app_of', return_value=recipe), \
                     patch.object(core, 'reserve_capacity', return_value=contextlib.nullcontext()), \
                     patch.object(recipes, 'ship'), patch.object(core, 'run_in'), \
-                    patch.object(prepared_snapshots, 'Sandbox', sdk):
+                    patch.object(prepared_snapshots, 'runtime', sdk):
                 self.assertEqual(prepared_snapshots.export('source-name', 'cache-label'), 'clean-project-cache')
             # The clone starts without the workspace's env or any network.
             self.assertEqual(sdk.create.call_args.kwargs['envs'], {})
-            self.assertEqual(sdk.create.call_args.kwargs['network']['deny_out'], ['0.0.0.0/0'])
+            self.assertEqual(sdk.create.call_args.kwargs['deny_out'], ['0.0.0.0/0'])
             sdk.connect.assert_not_called()
             sdk.kill.assert_called_once_with('temporary-cache-vm')
             sdk.delete_snapshot.assert_called_once_with('private-checkpoint')
@@ -190,23 +188,23 @@ sudo() {
             hook.write_text('#!/bin/sh\nexit 1\n'); hook.chmod(0o700)
             recipe = recipes.App('owner/app', Path(directory), {})
             sdk = Mock()
-            sdk.get_info.return_value.memory_mb = 8192
-            sdk.create_snapshot.return_value.snapshot_id = 'private-checkpoint'
+            sdk.info.return_value.memory_mb = 8192
+            sdk.snapshot.return_value.snapshot_id = 'private-checkpoint'
             with patch.object(core, 'find', return_value=SimpleNamespace(sandbox_id='source-vm', metadata={})), \
                     patch.object(core, 'app_of', return_value=recipe), \
                     patch.object(core, 'reserve_capacity', return_value=contextlib.nullcontext()), \
                     patch.object(recipes, 'ship'), \
                     patch.object(core, 'run_in', side_effect=RuntimeError('cleanup failed')), \
-                    patch.object(prepared_snapshots, 'Sandbox', sdk):
+                    patch.object(prepared_snapshots, 'runtime', sdk):
                 with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
                     prepared_snapshots.export('source-name', 'cache-label')
-            sdk.create_snapshot.assert_called_once()
+            sdk.snapshot.assert_called_once()
             sdk.kill.assert_called_once_with(sdk.create.return_value.sandbox_id)
             sdk.delete_snapshot.assert_called_once_with('private-checkpoint')
 
     def amp_fixture(self):
         from fastapi.testclient import TestClient
-        from sbx_control import addressing, core, lifecycle, recipes, template_builds
+        from sbx_control import addressing, core, lifecycle, recipes, runtime, template_builds
         from sbx_control.connectors.amp import orbs as amp_orbs
         self.repo_admin()
         self.settings.add_repo("owner/app", by="amp-test")
@@ -230,11 +228,13 @@ sudo() {
         self.enterContext(patch.object(core, "run_in")).return_value.stdout = "ready"
         self.enterContext(patch.object(addressing, "urls", return_value={"web": "https://preview.example.test"}))
         self.started = self.enterContext(patch.object(lifecycle, "in_background"))
-        self.sdk = self.enterContext(patch.object(amp_orbs, "Sandbox"))
-        self.enterContext(patch.object(core, "Sandbox", self.sdk))
+        # The runtime, for core and the connector alike.
+        self.sdk = Mock()
+        for call in ("create", "connect", "sandboxes", "info", "kill", "pause", "set_timeout"):
+            self.enterContext(patch.object(runtime, call, getattr(self.sdk, call)))
         self.enterContext(patch.object(core, "restore_runtime", return_value=False))
         def created(*args, **kwargs):
-            self.items.append(SimpleNamespace(sandbox_id="amp-test-vm", state=SandboxState.RUNNING,
+            self.items.append(SimpleNamespace(sandbox_id="amp-test-vm", state=runtime.RUNNING,
                 metadata={**(kwargs.get("metadata") or {}), "sbx": args[0], "owner": args[2], "repo": "owner/app"}))
             return {"name": args[0], "sandbox_id": "amp-test-vm"}
         self.created = self.enterContext(patch.object(core, "create", side_effect=created))
@@ -270,7 +270,7 @@ sudo() {
     def test_amp_repeated_spawn_and_pause_reuse_core_lifecycle(self):
         self.amp_fixture()
         self.assertEqual(self.amp_job(self.env).status_code, 200)
-        self.items[0].state = SandboxState.PAUSED
+        self.items[0].state = "paused"
         from sbx_control import lifecycle
         response = self.amp_job({**self.env, "ORB_TOKEN": "test-only-new-token"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -278,11 +278,11 @@ sudo() {
         self.created.assert_called_once()
         envs = self.sdk.connect.return_value.commands.run.call_args.kwargs["envs"]
         self.assertEqual(envs["ORB_TOKEN"], "test-only-new-token")
-        self.items[0].state = SandboxState.RUNNING
+        self.items[0].state = "running"
         from sbx_control import core
         with patch.object(core, "pause") as pause:
             self.assertEqual(self.amp_job({"ORB_OPERATION": "pause", "ORB_ID": self.env["ORB_ID"]}).status_code, 200)
-            self.items[0].state = SandboxState.PAUSED
+            self.items[0].state = "paused"
             self.assertEqual(self.amp_job({"ORB_OPERATION": "pause", "ORB_ID": self.env["ORB_ID"]}).status_code, 200)
         pause.assert_called_once()
         self.sdk.pause.assert_not_called()
@@ -404,11 +404,7 @@ sudo() {
 
     def test_lookup_scopes_both_running_and_paused_vms_and_reads_all_pages(self):
         from sbx_control.connectors.amp import orbs as amp_orbs
-        pages = Mock()
-        pages.next_items.side_effect = [["first"], ["second"]]
-        type(pages).has_next = unittest.mock.PropertyMock(side_effect=[True, False])
-        with patch.object(amp_orbs.Sandbox, "list", return_value=pages) as listing:
+        from sbx_control import runtime
+        with patch.object(runtime, "sandboxes", return_value=["first", "second"]) as listing:
             self.assertEqual(amp_orbs.sandboxes_of("amp-test"), ["first", "second"])
-        query = listing.call_args.kwargs["query"]
-        self.assertEqual(query.metadata, {"connector": "amp", "orbId": "amp-test"})
-        self.assertEqual(query.state, [SandboxState.RUNNING, SandboxState.PAUSED])
+        listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])

@@ -36,9 +36,7 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import quote
 
-from e2b import Sandbox, TimeoutException
-
-from .. import contributions as contrib, paths, secret_store, settings, state
+from .. import contributions as contrib, paths, runtime, secret_store, settings, state
 from . import NAME_RE, VAR_RE, Package, PackageError, attachments, code, resolve, resource_names
 
 RUNNER_DIR = "/tmp/sbx-service"
@@ -142,8 +140,8 @@ def _in_runner(package: Package, action: str, env: dict, label: str) -> tuple[in
     happened. The script sees its env file and nothing of the sandbox's."""
     from .. import template_builds, templates
     try:
-        sbx = Sandbox.create(template_builds.built(templates.BASE), timeout=package.timeout + 300,
-                             network={"deny_out": ["169.254.169.254/32"]},
+        sbx = runtime.create(template_builds.built(templates.BASE), timeout=package.timeout + 300,
+                             deny_out=["169.254.169.254/32"],
                              metadata={"sbx-service": package.name, "repo": package.repo})
     except Exception as error:
         raise PackageError(f"{label}: {action}: its runner sandbox did not start: {error}") from error
@@ -162,7 +160,7 @@ def _in_runner(package: Package, action: str, env: dict, label: str) -> tuple[in
         result = sbx.commands.run(f"bash -c {shlex.quote(command)}", timeout=package.timeout)
         returncode = int(sbx.files.read(f"{root}/rc").strip() or 1)
         return returncode, result.stdout, result.stderr, sbx.files.read(f"{root}/output")
-    except TimeoutException:
+    except runtime.Timeout:
         raise PackageError(f"{label}: {action} timed out after {package.timeout}s")
     except Exception as error:
         raise PackageError(f"{label}: {action}: its runner sandbox failed: {error!r}") from error
@@ -423,14 +421,14 @@ def contributions(target) -> list:
             Resource(key, outputs, attachments.resolve(package, bound, f"service {key}")[0]))
     out = []
     for name, (package, found) in grouped.items():
-        runtime = None
+        layer = None
         if package.runtime:
             context = RuntimeContext(target.name, target.repo, dict(target.env), contrib.folder(name), tuple(found),
                                      settings.current().base_url, package.files)
             given = code(package, package.runtime).runtime(context) or {}
             files = {path: contrib.File(text) for path, text in (given.get("files") or {}).items()}
-            runtime = contrib.RuntimeLayer(env=given.get("env") or {}, files=files)
-        out.append(contrib.Contribution(name, template=_template_layer(package), runtime=runtime,
+            layer = contrib.RuntimeLayer(env=given.get("env") or {}, files=files)
+        out.append(contrib.Contribution(name, template=_template_layer(package), runtime=layer,
                                         scrub_paths=tuple(package.scrub)))
     return out
 

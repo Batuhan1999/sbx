@@ -163,10 +163,9 @@ def remove_recipe(repo: str) -> dict:
     """Remove the operator's recipe; refused while sandboxes of the repo exist
     (their services were made from it). A repo left without a template of
     its own has its templates and build record removed too."""
-    from . import core
-    from e2b.sandbox.sandbox_api import SandboxState
+    from . import core, runtime
     using = sorted((i.metadata or {}).get("sbx") or i.sandbox_id
-                   for i in core.sandboxes(state=[SandboxState.RUNNING, SandboxState.PAUSED])
+                   for i in core.sandboxes(state=[runtime.RUNNING, runtime.PAUSED])
                    if (i.metadata or {}).get("repo") == repo)
     if using:
         raise HTTPException(409, f"{repo} has sandboxes ({', '.join(using)}); delete them first (sbx down NAME)")
