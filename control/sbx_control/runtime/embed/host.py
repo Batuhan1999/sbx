@@ -164,9 +164,10 @@ def commands(into) -> dict[str, str]:
 
 def apply(key: str) -> bool:
     """A settings change's effect on Embed; False when key is not Embed's."""
-    if key != "embed-env":
+    from ... import settings
+    if key != settings.HostUnit.RUNTIME_ENV:
         return False
-    # Only the domain: the rest (embed-network, extensions) recreates the
+    # Only the domain: the rest (runtime-network, extensions) recreates the
     # runtime, which runtime.apply_network refuses under running sandboxes.
     write_embed_env(keys=DOMAIN_KEYS)
     subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=EMBED, check=True)

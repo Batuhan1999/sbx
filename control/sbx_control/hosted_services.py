@@ -126,8 +126,8 @@ def networks() -> list[str]:
 
 def _network_changed():
     """The managed network joined or left what sandboxes reach: the host's
-    routes now (the guard), Embed's slot firewall at the next network apply."""
-    settings.request_effects(settings.HostUnit.HOST_GUARD, settings.HostUnit.EMBED_NETWORK)
+    routes now (the guard), the runtime's at the next network apply."""
+    settings.request_effects(settings.HostUnit.HOST_GUARD, settings.HostUnit.RUNTIME_NETWORK)
 
 
 @settings.check("access")

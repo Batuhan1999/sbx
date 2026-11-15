@@ -87,7 +87,12 @@ def placing():
 
 
 def apply_network() -> dict:
-    return current().apply_network()
+    """sbx-admin network apply: done, it is no longer pending
+    (settings.HostUnit.RUNTIME_NETWORK)."""
+    from .. import paths, settings
+    result = current().apply_network()
+    (paths.run() / "apply" / settings.HostUnit.RUNTIME_NETWORK).unlink(missing_ok=True)
+    return result
 
 
 def disk() -> dict | None:

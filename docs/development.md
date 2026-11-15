@@ -170,11 +170,15 @@ are where nginx sends a preview. It also names what it reads from
 enable seals) and what it needs from the host (`capabilities`: managed
 servers need `private_networks`, Amp's project caches need `snapshots`).
 
-A second runtime implements the `Runtime` protocol in its own package, and
-`runtime.current()` chooses it. Two places still assume Embed:
+Two settings effects are the runtime's. `runtime-env` follows a domain
+change: `sbx-apply runtime-env` calls `apply_host`, and Embed writes the
+domain into its `.env`. `runtime-network` follows a change to what sandboxes
+reach or to an extension's runtime layer. It has no path unit and stays
+pending until `sbx-admin network apply` calls `apply_network`.
 
-- `install.sh` installs it;
-- the settings effects are named `embed-env` and `embed-network`.
+A second runtime implements the `Runtime` protocol in its own package, and
+`runtime.current()` chooses it. One place still assumes Embed: `install.sh`
+installs it.
 
 ### Embed's configuration
 

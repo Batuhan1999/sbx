@@ -179,7 +179,7 @@ class HostTests(Installation):
         self.assertIn("could not compare this release with Embed's running containers", said.getvalue())
 
     def test_a_domain_change_writes_only_the_domain_keys(self):
-        # A pending embed-network change recreates the runtime, which only
+        # A pending runtime-network change recreates the runtime, which only
         # runtime.apply_network may do (it refuses under running sandboxes).
         from sbx_control import settings
         from sbx_control.runtime.embed import host as embed_host
@@ -189,11 +189,43 @@ class HostTests(Installation):
         settings.update("network", {"internal_cidrs": ["10.9.0.0/24"]}, by="test")
         settings.update("domain", {"name": "sbx.example.com"}, by="test")
         connector_settings("amp", checkpoint_api_image="sbx-checkpoint-api:1", orchestrator_binary="/opt/amp/orchestrator")
-        self.assertEqual(self.host.apply("embed-env"), 0)
+        self.assertEqual(self.host.apply("runtime-env"), 0)
         env = dict(line.split("=", 1) for line in (embed / ".env").read_text().splitlines())
         self.assertEqual(env, {"ALLOW_SANDBOX_INTERNAL_CIDRS": "10.0.0.0/24", "E2B_PUBLIC_DOMAIN": "sbx.example.com",
                                "E2B_PUBLIC_SANDBOX_URL": "https://sandbox.sbx.example.com"})
         self.assertFalse((embed / "amp").exists())
+
+    def test_an_upgrade_drops_effect_units_it_no_longer_has_and_keeps_their_requests(self):
+        # v0.1 named the runtime's effects embed-env and embed-network.
+        from sbx_control import paths
+        self.effects()
+        for name in ("sbx-apply-embed-env.path", "sbx-apply-embed-env.service"):
+            (self.systemd / name).write_text("[Unit]\n")
+        (self.systemd / "sbx-something-else.service").write_text("[Unit]\n")
+        (paths.run() / "apply/embed-env").write_text("1\n")
+        (paths.run() / "apply/embed-network").write_text("1\n")
+        self.host.install()
+        self.assertEqual(sorted(p.name for p in self.systemd.glob("sbx-apply-embed-*")), [])
+        self.assertTrue((self.systemd / "sbx-something-else.service").exists())   # only the effects' units
+        self.assertTrue((self.systemd / "sbx-apply-runtime-env.path").exists())
+        self.assertFalse((self.systemd / "sbx-apply-runtime-network.path").exists())   # network apply's
+        # The web app's Update runs install.sh inside sbx-apply-upgrade.service: never a stale unit.
+        self.assertTrue((self.systemd / "sbx-apply-upgrade.service").exists())
+        self.assertFalse(any("sbx-apply-upgrade" in " ".join(c) for c in self.systemctl() if c[:2] == ["disable", "--now"]))
+        calls = self.systemctl()
+        dropped = ["disable", "--now", "-q", "sbx-apply-embed-env.path", "sbx-apply-embed-env.service"]
+        self.assertLess(calls.index(dropped), calls.index(["daemon-reload"]))
+        self.assertLess(calls.index(dropped), calls.index(["enable", "-q", "--now", "sbx-apply-runtime-env.path"]))
+        self.assertEqual(self.effects(), ["runtime-env", "runtime-network"])
+        # A partial install touches only the units it names, and the watcher of a request it carried over.
+        (self.systemd / "sbx-apply-gone.path").write_text("[Unit]\n")
+        (paths.run() / "apply/embed-env").write_text("1\n")
+        self.run.reset_mock()
+        self.host.install(["sbx-control.service"])
+        self.assertTrue((self.systemd / "sbx-apply-gone.path").exists())
+        self.assertEqual(self.effects(), ["runtime-env"])
+        self.assertIn(["enable", "-q", "--now", "sbx-apply-runtime-env.path"], self.systemctl())
+        self.assertNotIn(["enable", "-q", "--now", "sbx-apply-tls.path"], self.systemctl())
 
     def test_host_tools_are_the_ones_catalog_packages_declare(self):
         from sbx_control import catalog
@@ -264,8 +296,23 @@ class HostTests(Installation):
         self.assertIn(f"ln -sfn {(releases / 'old').resolve()} {self.current}.new", rollback)
         self.assertIn(f"install -m 600 {out / 'sbx.db'} {paths.database()}", rollback)
         subprocess.run(["sh", "-n", str(out / "rollback.sh")], check=True)
+        # The release's effect paths come back on, whatever the upgrade disabled.
+        self.assertTrue((out / "systemd/sbx-apply-tls.path").is_file())
+        self.assertIn(f"for unit in {out / 'systemd'}/sbx-apply-*.path; do\n", rollback)
         self.assertNotIn("start", [c[0] for c in self.systemctl()])   # they stay stopped for the migration
         self.assertIn("systemctl start sbx-control.service claude-orchestrator.service sbx-acme-dns.service\n", rollback)
+        # Back to a release from before the effects' rename, a pending request takes its old name again.
+        start = rollback.index("if [ -e")
+        end = rollback.index("\nfi\n", start) + 4
+        requests = paths.run() / "apply"
+        requests.mkdir(parents=True, exist_ok=True)
+        (requests / "runtime-network").write_text("1\n")
+        subprocess.check_call(["sh", "-c", rollback[start:end]])   # run is the systemctl recorder here
+        self.assertTrue((requests / "runtime-network").exists())     # the restored release knows runtime-*
+        (out / "systemd/sbx-apply-embed-env.path").write_text("[Unit]\n")
+        subprocess.check_call(["sh", "-c", rollback[start:end]])
+        self.assertTrue((requests / "embed-network").exists())
+        self.assertFalse((requests / "runtime-network").exists())
 
     def test_an_upgrade_stops_platform_services_that_run_from_another_release_directory(self):
         from types import SimpleNamespace

@@ -354,7 +354,7 @@ class WorkspaceTests(Server):
         env = folder / '.env'
         env.write_text(text)
         self.enterContext(patch.object(host, 'EMBED', folder))
-        marker = self.root / 'run/apply/embed-network'
+        marker = self.root / 'run/apply/runtime-network'
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.touch()
         self.addCleanup(marker.unlink, missing_ok=True)
@@ -365,25 +365,27 @@ class WorkspaceTests(Server):
         return any(call.args[0][:3] == ['docker', 'compose', 'up'] for call in run.call_args_list)
 
     def test_network_change_cannot_restart_a_runtime_with_existing_workspaces(self):
+        from sbx_control import runtime
         from sbx_control.runtime.embed import network as host_network
         original = 'OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=172.29.20.0/24\n'
         env, marker = self.embed_env(original)
         with patch.object(host_network.core, 'sandboxes', return_value=[Mock()]), \
                 patch.object(host_network.subprocess, 'run') as run:
             with self.assertRaisesRegex(ValueError, 'before creating sandboxes'):
-                host_network.apply()
+                runtime.apply_network()
         self.assertFalse(self.restarted_embed(run))
         self.assertEqual(env.read_text(), original)
         self.assertTrue(marker.exists())
 
     def test_network_apply_restarts_embed_with_the_new_ranges_and_clears_the_pending_marker(self):
+        from sbx_control import runtime
         from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
         env, marker = self.embed_env('OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=\n')
         with patch.object(host_network.core, 'sandboxes', return_value=[]), \
                 patch.object(host_network.subprocess, 'run') as run:
-            result = host_network.apply()
+            result = runtime.apply_network()
         self.assertEqual(result['status'], 'applied')
         self.assertTrue(self.restarted_embed(run))
         self.assertFalse(marker.exists())
@@ -391,6 +393,7 @@ class WorkspaceTests(Server):
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', env.read_text())
 
     def test_network_apply_clears_the_pending_marker_when_configuration_is_current(self):
+        from sbx_control import runtime
         from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
@@ -399,7 +402,7 @@ class WorkspaceTests(Server):
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', original)
         env, marker = self.embed_env(original)
         with patch.object(host_network.subprocess, 'run') as run:
-            result = host_network.apply()
+            result = runtime.apply_network()
         self.assertEqual(result['status'], 'unchanged')
         self.assertFalse(self.restarted_embed(run))
         self.assertFalse(marker.exists())
@@ -465,7 +468,7 @@ class WorkspaceTests(Server):
         self.assertEqual(result['status'], 'ready')
         self.assertEqual(self.settings.current().network.internal_cidrs, ('10.0.0.0/24',))
         self.assertEqual(self.settings.current().revision, revision)
-        self.assertEqual(self.effects(), ['embed-network', 'host-guard'])
+        self.assertEqual(self.effects(), ['host-guard', 'runtime-network'])
         self.assertEqual(hosted_services.networks(), [hosted_services.CIDR])
 
     def test_base64_encryption_key_is_saved_per_sandbox_and_has_requested_byte_length(self):
