@@ -12,6 +12,10 @@ specific to an agent product or a service provider is an extension:
 
 Where secret values are kept is not an extension but an installation setting,
 chosen when sbx is installed ([secret storage](reference.md#secret-storage-and-live-updates)).
+Neither is the sandbox runtime, the compute under the lifecycle, which is
+today E2B Embed on the host. Extensions reach it only through
+`sbx_control.runtime`, never through a runtime's SDK
+([sandbox runtime](development.md#sandbox-runtime)).
 
 The core never names an extension. It asks the registry
 (`control/sbx_control/extensions.py`) for contributions, keeper policies,
@@ -83,13 +87,17 @@ are plain values rather than part of the contribution:
 | `keeper_policy(info, use)` | For its own sandboxes: `Policy(keep_awake, decided, keep_paused)`. `use` holds the gate's last access, whether a preview resumed it, and a probe (SSH sessions, agent activity, busy processes) taken only when read. |
 | `origin(info)` | How views label its sandboxes: `{kind, label, detail, href}`. |
 | `host_services()` | systemd services it runs on the host (`HostService`), rendered by the installer. |
-| `embed()` | An `EmbedLayer`: keys it adds to Embed's `.env` and compose files merged over Embed's. |
+| `embed()` | An `EmbedLayer` (`runtime/embed/host.py`), used only when the runtime is Embed: keys it adds to Embed's `.env` and compose files merged over Embed's. |
 | `git_access(repo)` | For the extension through which the installation reaches repositories (GitHub): a context giving host-side git its URL and environment. |
 
 Rules:
 
 - Create, pause and delete sandboxes through the public domain API, and tag them
   with `metadata.connector=<kind>`. Keep session state in your own tables.
+- Reach VMs only through `sbx_control.runtime` (`runtime.connect`,
+  `runtime.sandboxes`, ...); `on_resume(sbx, info)` gets a `runtime.Handle`.
+  Check `runtime.capabilities()` before relying on what not every runtime has,
+  such as filesystem snapshots.
 - Put the agent's binary in the template layer and per-sandbox credentials in the
   runtime layer; never write secrets into a template.
 - Name transcript directories in `activity` and private paths in `scrub_paths`.

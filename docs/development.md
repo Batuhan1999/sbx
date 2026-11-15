@@ -137,16 +137,51 @@ and backs it up with a `rollback.sh` (`python -m sbx_control.host
 upgrade-backup`), then migrates. Review host changes without running the installer on your
 workstation.
 
-## Runtime configuration
+## Sandbox runtime
+
+The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
+runs commands and writes files in them, builds their templates, and is the
+last hop of a preview. Like the secret store, it is an installation's choice,
+not an extension. Today it is E2B Embed on the host.
+
+- `control/sbx_control/runtime/base.py` is the interface: the `Runtime` and
+  `Handle` protocols, plain results (`Info`, whose `state` is `running` or
+  `paused`), the errors (`Failed`, `CommandFailed`, `Timeout`, `Busy`,
+  `NoRoom`), `Capabilities` and `TemplateSpec`.
+- `control/sbx_control/runtime/__init__.py` is the one way in. The core and
+  the extensions call `runtime.create`, `runtime.connect`,
+  `runtime.sandboxes`, and so on, never a runtime's SDK.
+  `test_runtime.py` fails if any module outside `runtime/embed/` imports `e2b`.
+- `control/sbx_control/runtime/embed/` is everything that knows Embed: the SDK
+  calls (`__init__.py`), room for sandboxes (`capacity.py`), how it enforces
+  `hosted_services.allowed_cidrs` (`network.py`), its storage (`storage.py`,
+  read by `embed/storage-gc.py` and `embed/compact-snapshot.py`), its project
+  on the host (`host.py`), its settings card (`connection.py`), and the
+  loopback preview (`proxy.py`).
+
+The rules stay in the core. Those are what sandboxes may reach, preview names,
+login and access, and when to pause or delete. A runtime only carries them
+out: it enforces the network ranges, and its `ingress` and `upstream_host`
+are where nginx sends a preview.
+
+A second runtime implements the `Runtime` protocol in its own package, and
+`runtime.current()` chooses it. Some places still assume Embed:
+
+- `install.sh` installs it;
+- `host-guard.sh` writes rules for its egress proxy;
+- `runtime.env` holds `E2B_*` keys;
+- the settings effects are named `embed-env` and `embed-network`.
+
+### Embed's configuration
 
 `vendor/e2b-embed/UPSTREAM` records the vendored runtime revision; the files
 there stay unmodified ([notices](../THIRD_PARTY_NOTICES.md)). sbx's Compose
-settings belong in `embed/compose.override.yaml`; an extension adds compose
-files of its own (`extensions.EmbedLayer`, such as the Amp connector's
-`connectors/amp/checkpoints/compose.yaml`). `/opt/e2b/.env` has one writer,
-`write_embed_env` in `control/sbx_control/host.py`: the keys sbx owns come
-from the settings and the extensions, the rest stays as Embed wrote it.
-Render the combined configuration without a running daemon:
+settings belong in `embed/compose.override.yaml`. An extension adds compose
+files of its own with an `EmbedLayer` (`runtime/embed/host.py`), such as the
+Amp connector's `connectors/amp/checkpoints/compose.yaml`. `/opt/e2b/.env`
+has one writer, `write_embed_env` in `runtime/embed/host.py`: the keys sbx
+owns come from the settings and the extensions, and the rest stays as Embed
+wrote it. Render the combined configuration without a running daemon:
 
 ```sh
 docker compose --env-file vendor/e2b-embed/compose/.env \

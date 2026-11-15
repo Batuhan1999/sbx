@@ -16,8 +16,10 @@ neither is switching the app to a lighter mode than its owner uses.
    platform behavior or in the recipe, then retry the same way.
 2. **Put code where it belongs.** The core is the sandbox lifecycle. Behavior
    for one agent product or service provider goes in its
-   [extension](docs/extensions.md); app-specific steps go in the recipe. Add a
-   platform primitive only when several repositories need it.
+   [extension](docs/extensions.md); anything that knows E2B Embed goes in the
+   [runtime backend](docs/development.md#sandbox-runtime); app-specific steps
+   go in the recipe. Add a platform primitive only when several repositories
+   need it.
 3. **Use ordinary commands.** Recipes use the app's normal setup and start
    commands, injected env and health checks.
 4. **Size from evidence.** Read the
