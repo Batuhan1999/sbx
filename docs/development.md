@@ -37,9 +37,10 @@ Every test class gets a throwaway installation of its own (settings, state
 database and runtime directory under a temporary directory; see
 `control/tests/support.py`), so the whole suite runs in one process. Checks
 that need Linux process handling skip on macOS; CI
-(`.github/workflows/check.yml`) runs everything on Ubuntu and also checks shell
-syntax, release packaging and that the committed web bundle matches
-`web/src`. The desktop CLI's tests are in `control/tests/test_cli.py`.
+(`.github/workflows/check.yml`, the `check` job) runs everything on Ubuntu for
+every pull request and every push to `main`, and also checks shell syntax,
+release packaging and that the committed web bundle matches `web/src`. The
+desktop CLI's tests are in `control/tests/test_cli.py`.
 
 Unit tests do not prove a fresh installation, runtime recovery or a working app.
 For lifecycle and service changes, run the
@@ -52,7 +53,76 @@ Edit `web/src`, never the generated bundle, and commit the rebuilt
 `npm --prefix web run dev` proxies the API and sign-in routes to a control
 service on port 8080. Form conventions are in [web/README.md](../web/README.md).
 
+## Pull requests
+
+`main` changes only through pull requests. Its ruleset
+([`.github/rulesets/main.json`](../.github/rulesets/main.json)) requires the
+`check` job to pass and open review threads to be resolved, squash-merges each
+PR into one commit, keeps the history linear and refuses direct and force
+pushes; an admin may still merge a PR whose checks fail. No approval is
+required while one maintainer merges, since GitHub does not let you approve
+your own PR; once others have write access, set
+`required_approving_review_count` to 1. Head branches are deleted on merge.
+
+- One change per PR, small enough to review and pass CI on its own. Split
+  larger work into several PRs; one may build on another by targeting its
+  branch, and merges after it.
+- The PR title becomes the commit subject on `main` and the change's line in
+  the release notes. Write it like `main`'s history: what sbx does now, in the
+  imperative, with no prefix. The squash commit's body is the PR's commit
+  messages.
+- Fill in the template. Label a PR `breaking` when an installation must act on
+  upgrading past it, or the API, CLI, settings or recipe format change
+  incompatibly; `no-release-notes` leaves it out of the notes.
+
+CodeRabbit reviews each PR ([`.coderabbit.yaml`](../.coderabbit.yaml); it
+reads [AGENTS](../AGENTS.md) and [CONTRIBUTING](../CONTRIBUTING.md)). Its
+comments are advice, but each one is a review thread that must be resolved
+before the PR merges: fix it or answer it, then resolve the thread
+(`@coderabbitai resolve` resolves all of its threads). Until the repository
+has 10 stars, CodeRabbit's open-source plan reviews only on request: comment
+`@coderabbitai review`.
+
+CI runs the full check on every PR, whatever its base; a new push to a PR
+cancels its older run. Dependabot opens one PR a month that updates the pinned
+GitHub Actions (`.github/dependabot.yml`).
+
 ## Releases
+
+sbx is versioned with [SemVer](https://semver.org) tags on `main`:
+`vMAJOR.MINOR.PATCH`. A PATCH release fixes things, a MINOR one adds things,
+and a MAJOR one asks something of an installation that upgrades, or changes
+the API, CLI, settings or recipe format incompatibly. Before 1.0 a MINOR
+release may do that too; its notes then list those PRs under Breaking changes.
+
+To release, tag a commit on `main` whose `check` passed, with an annotated tag,
+and push the tag:
+
+```sh
+git fetch origin && git tag -a v0.2.0 origin/main -m "sbx v0.2.0"
+git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` runs the checks on the tag, builds
+`sbx-v0.2.0.tar.gz` (the source tree with a `VERSION` file) and its `.sha256`,
+lays a release out from the unpacked archive with `control/release.sh` to
+check it, and publishes the GitHub release. Its notes list the titles of the
+PRs merged since the previous release (grouped by
+[`.github/release.yml`](../.github/release.yml)). When an upgrade needs steps,
+write them in the tag's message below its first line (a second `-m`, or
+`git tag -a` without `-m` for an editor); they go above the list. A tag with a
+suffix (`v0.2.0-rc.1`) publishes a pre-release to try on a test installation;
+the next full release's notes still start from the release before it.
+Running the workflow by hand (**Actions → Release → Run workflow**) with a
+version builds and checks the archive of any branch and publishes nothing. A
+published tag never moves: fix a bad release with the next patch.
+
+An installation [pins a release](reference.md#operating-the-host) by
+installing from that tag's checkout or archive; `install.sh` names its release
+after the archive's `VERSION`, or the checkout's nearest tag (`v0.2.0`, or
+`v0.2.0-3-g<commit>` for `main` past it), and the web app shows it.
+
+### Release layout
 
 `sh control/release.sh DIR [VERSION]` lays out a release: the control service,
 catalog, CLI, host scripts, the docs the setup brief carries and third-party

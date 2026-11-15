@@ -1,0 +1,85 @@
+name: Release
+
+# Pushing a tag vMAJOR.MINOR.PATCH (or vX.Y.Z-rc.N, a pre-release) on main
+# publishes a GitHub release: the checks, then sbx-<tag>.tar.gz (the source
+# tree with a VERSION file, what install.sh installs) and its .sha256, with
+# notes GitHub generates from the PRs merged since the last tag
+# (.github/release.yml). Run it by hand for a dry run: it builds and checks
+# the archive of any branch and publishes nothing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build without publishing, such as v0.2.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  release:
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+      PUBLISH: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: The version is SemVer, and a tag is on main
+        run: |
+          echo "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' || {
+            echo "::error::$VERSION is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE"; exit 1; }
+          if [ "$PUBLISH" = true ] && ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$VERSION points at a commit main does not contain: tag a commit on main"; exit 1
+          fi
+      - name: Archive
+        run: |
+          name=sbx-$VERSION
+          git archive --format=tar.gz --prefix="$name/" --add-virtual-file="$name/VERSION:$VERSION" \
+            -o "$RUNNER_TEMP/$name.tar.gz" HEAD
+          (cd "$RUNNER_TEMP" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - name: The archive lays out a release of this version
+        run: |
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP/unpacked"
+          sh "$RUNNER_TEMP/unpacked/$NAME/control/release.sh" "$RUNNER_TEMP/layout"
+          test "$(cat "$RUNNER_TEMP/layout/VERSION")" = "$VERSION"
+          test -f "$RUNNER_TEMP/layout/sbx_control/web_dist/index.html"
+          test -f "$RUNNER_TEMP/unpacked/$NAME/install.sh"
+          test -f "$RUNNER_TEMP/unpacked/$NAME/vendor/e2b-embed/compose/compose.yaml"
+          echo "$NAME.tar.gz: $(du -h "$RUNNER_TEMP/$NAME.tar.gz" | cut -f1), sha256 $(cut -d' ' -f1 "$RUNNER_TEMP/$NAME.tar.gz.sha256")" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -- "$RUNNER_TEMP/$NAME.tar.gz" "$RUNNER_TEMP/$NAME.tar.gz.sha256"
+          case "$VERSION" in *-*) set -- --prerelease "$@" ;; esac
+          # Notes from the release before on main, skipping pre-releases: a
+          # release lists everything since the last one, its candidates' PRs too.
+          if previous=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' HEAD^ 2>/dev/null); then
+            set -- --notes-start-tag "$previous" "$@"
+          fi
+          # Upgrade steps written in an annotated tag's message, below its
+          # first line, go above the generated notes.
+          git fetch -q --force origin "refs/tags/$VERSION:refs/tags/$VERSION"
+          if [ "$(git cat-file -t "$VERSION")" = tag ]; then
+            notes=$(git tag --list "$VERSION" --format='%(contents:body)')
+            [ -z "$notes" ] || set -- --notes "$notes" "$@"
+          fi
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "sbx $VERSION" \
+            --generate-notes "$@"

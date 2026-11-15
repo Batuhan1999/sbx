@@ -128,7 +128,11 @@ systemctl enable --now docker >/dev/null 2>&1
 say "sbx-control release"
 # A new directory per install (sbx_control/host.py: the layout); the running
 # release stays untouched until host-install.sh switches to this one.
-version=$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo local)
+# Its name: VERSION in a release archive, else the checkout's nearest tag
+# (v0.2.0, or v0.2.0-3-g<commit> on main past it).
+if [ -f "$src/VERSION" ]; then version=$(cat "$src/VERSION")
+else version=$(git -c safe.directory="$src" -C "$src" describe --tags --always 2>/dev/null || echo local)
+fi
 release=/opt/sbx-control/releases/$(date -u +%Y%m%d-%H%M%S)-$version
 sh "$src/control/release.sh" "$release" "$version" >/dev/null
 sh "$release/host-install.sh" --prepare > /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "see /tmp/sbx-install.log"; }

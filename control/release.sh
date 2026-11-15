@@ -4,11 +4,16 @@
 # installs and activates it from /opt/sbx-control/releases/<id>/ (install.sh
 # stages it there).
 #   control/release.sh DIR [VERSION]
+# VERSION defaults to the VERSION file of a release archive, else the
+# checkout's nearest tag (v0.2.0, or v0.2.0-3-g<commit> past it).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 out=${1:?usage: release.sh DIR [VERSION]}
-version=${2:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo dev)$(git -C "$root" diff --quiet 2>/dev/null || echo -dirty)}
+if [ -n "${2:-}" ]; then version=$2
+elif [ -f "$root/VERSION" ]; then version=$(cat "$root/VERSION")
+else version=$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)
+fi
 rm -rf "$out" && mkdir -p "$out/cli" "$out/licenses" "$out/embed" "$out/docs"
 cp -R "$here/sbx_control" "$root/catalog" "$root/infisical" "$out/"
 find "$out/sbx_control" "$out/catalog" -name __pycache__ -prune -exec rm -rf {} +
