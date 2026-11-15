@@ -25,7 +25,8 @@ Set up sbx (https://github.com/Batuhan1999/sbx) for me.
 Server: <ssh user@host of an Ubuntu 24.04 machine with /dev/kvm>
 Repository to run in sandboxes: <owner/name on GitHub>
 
-1. Clone the sbx repository and read docs/agent-install.md, then follow it step by step.
+1. Clone the sbx repository, check out its latest release tag, and read
+   docs/agent-install.md there, then follow it step by step.
 2. Install sbx on the server with its normal installer; don't change its code.
 3. Connect my repository: find out how it is built and started and which services
    and secrets it needs, from the repository itself. Choose services with
@@ -102,7 +103,18 @@ method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
 
 ## Install
 
-1. Clone this repository onto the server.
+1. Clone this repository onto the server and check out a
+   [release](https://github.com/Batuhan1999/sbx/releases), the latest one
+   unless you need another:
+
+   ```sh
+   git clone https://github.com/Batuhan1999/sbx.git && cd sbx
+   git checkout "$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' origin/main)"
+   ```
+
+   Each release also has an archive with a checksum
+   ([pinning a release](docs/reference.md#operating-the-host)); `main` itself
+   runs the newest, unreleased changes.
 2. Run `sh install.sh` from the checkout as root. It installs the runtime, the
    control service, Infisical and the base templates, then prints a setup link.
 3. Open the link, accept the temporary certificate, choose IP access or a

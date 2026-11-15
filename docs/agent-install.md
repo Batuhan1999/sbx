@@ -19,8 +19,9 @@ failed step before presenting it as done.
 
 1. **Server.** Check Ubuntu 24.04, `/dev/kvm`, memory, disk and network access
    against the [host requirements](../README.md#host-requirements). Explain any
-   prerequisite only the owner can fix. Run `sh install.sh` from the checkout as
-   root and keep its progress visible.
+   prerequisite only the owner can fix. Check out the latest release tag (or
+   the release the owner names) and run `sh install.sh` from the checkout as
+   root; keep its progress visible.
 2. **Control plane.** Open the printed setup link. Guide the owner through IP
    access or a domain and the admin login; let them type credentials themselves.
    With a domain, check the DNS records and ports the host requirements list

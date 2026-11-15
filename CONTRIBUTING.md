@@ -8,7 +8,8 @@ follow [AGENTS.md](AGENTS.md).
 
 Tell us:
 
-- the sbx revision, host OS and how you installed it;
+- the sbx version (`cat /opt/sbx-control/current/VERSION` on the server), host
+  OS and how you installed it;
 - the command, API call or page that failed;
 - what you expected and what happened;
 - logs, with credentials and private values removed.
@@ -21,7 +22,10 @@ app needs, and whether a fresh second sandbox fails the same way.
 ## Proposing a change
 
 - Solve one concrete problem per pull request, reproduced through the CLI or API
-  where possible.
+  where possible. Split larger work into several small PRs, each one
+  reviewable and passing CI on its own ([pull requests](docs/development.md#pull-requests)).
+- Title the PR with what sbx does now, in the imperative: it becomes the commit
+  on `main` and the line in the release notes.
 - Put the fix in the right layer: lifecycle in the core, agent- or
   provider-specific behavior in its [extension](docs/extensions.md), app setup
   in the recipe. An ordinary command beats a new abstraction or setting.
@@ -34,7 +38,11 @@ app needs, and whether a fresh second sandbox fails the same way.
 - Update the docs when commands or behavior change.
 
 The pull request template asks for the problem, the change and how you verified
-it, including what you could not test.
+it, including what you could not test, and what an installation must do when it
+upgrades past your change. CodeRabbit reviews it; resolve each of its comments
+with a fix or a reply. A PR merges once the `check` job passes and its review
+threads are resolved; it is squashed into one commit on `main`. [Releases](docs/development.md#releases)
+are tagged from `main`.
 
 ## License
 

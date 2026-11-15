@@ -484,6 +484,27 @@ building or has no room), with `Retry-After` when waiting helps.
   recreate the runtime while sandboxes exist. A sandbox created while the
   runtime is still starting gets `503` with `Retry-After`, and nothing of it is
   kept: send the same request again.
+- An installation runs the release it was installed from: a checkout of a
+  release tag (`v0.2.0`), the release's archive, or `main` for the newest,
+  unreleased changes. `/opt/sbx-control/current/VERSION` and the web app name
+  it. To upgrade to, or pin, another release, read its
+  notes on the [releases page](https://github.com/Batuhan1999/sbx/releases)
+  (Breaking changes and upgrade steps come first), then install from it:
+
+  ```sh
+  cd sbx && git fetch --tags origin && git checkout v0.2.0 && sudo sh install.sh
+  ```
+
+  or, without git history, from the archive:
+
+  ```sh
+  v=v0.2.0 url=https://github.com/Batuhan1999/sbx/releases/download
+  curl -fsSLO "$url/$v/sbx-$v.tar.gz" && curl -fsSL "$url/$v/sbx-$v.tar.gz.sha256" | sha256sum -c \
+    && tar -xzf "sbx-$v.tar.gz" && sudo sh "sbx-$v/install.sh"
+  ```
+
+  Going back to an older release is the rollback below, not an install of it:
+  a newer release may have migrated `sbx.db`.
 - Re-running `install.sh` upgrades the installation and keeps its settings:
   the settings options (`--domain`, `--repos`, `--internal`, ...) apply on a
   first install only and are ignored, with a note, on an upgrade.

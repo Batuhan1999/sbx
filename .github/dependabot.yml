@@ -1,0 +1,12 @@
+# Keeps the pinned GitHub Actions current: one grouped PR a month. The Python
+# and web dependencies are upgraded by hand, since a web change needs its
+# rebuilt bundle (control/sbx_control/web_dist) committed with it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']

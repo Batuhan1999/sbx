@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit's review of each pull request (docs/development.md#pull-requests).
+# It reads AGENTS.md on its own; the rest of the defaults stand.
+reviews:
+  path_filters:
+    - '!control/sbx_control/web_dist/**'   # built from web/src; CI checks it matches
+    - '!vendor/**'                         # the vendored E2B Embed stack, never edited here
+    - '!web/package-lock.json'
+  path_instructions:
+    - path: '**'
+      instructions: >-
+        Flag any secret value (key, token, password, private URL) in code,
+        recipes, templates, tests, docs or logs. Behavior for one agent
+        product or service provider belongs in its extension
+        (control/sbx_control/connectors, catalog), not in the sandbox
+        lifecycle core.
+    - path: 'install.sh'
+      instructions: >-
+        POSIX sh run as root on Ubuntu 24.04 hosts, under set -eu. Every step
+        must be safe to run again on an installed host, and an upgrade must
+        keep the installation's settings and data.
+    - path: 'control/*.sh'
+      instructions: >-
+        POSIX sh run as root on Ubuntu 24.04 hosts, under set -eu. Every step
+        must be safe to run again on an installed host, and an upgrade must
+        keep the installation's settings and data.
+knowledge_base:
+  code_guidelines:
+    filePatterns:
+      - CONTRIBUTING.md

@@ -1,0 +1,12 @@
+# How GitHub groups a release's generated notes (.github/workflows/release.yml):
+# one line per PR merged since the last release, its title. Label a PR
+# `breaking` when an installation must act on upgrading or the API, CLI,
+# settings or recipe format change incompatibly; `no-release-notes` leaves it out.
+changelog:
+  exclude:
+    labels: [no-release-notes, dependencies]
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: Changes
+      labels: ['*']
