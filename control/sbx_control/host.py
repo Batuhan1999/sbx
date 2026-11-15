@@ -11,7 +11,7 @@ host-guard.sh, the connectors' own) run with CURRENT as their working
 directory.
 
   python -m sbx_control.host install   write every unit and command, then (re)start them
-  python -m sbx_control.host apply KEY a settings change's root-side effect (sbx-apply KEY)
+  python -m sbx_control.host apply KEY a root-side effect sbx-control asked for (sbx-apply KEY)
   python -m sbx_control.host list      the units and whether each is wanted
   python -m sbx_control.host tools     install the host tools catalog packages declare
   python -m sbx_control.host upgrade-backup
@@ -72,13 +72,14 @@ def _python(module_args: str) -> str:
 
 
 def _apply_units(key: str) -> list[Unit]:
-    """A settings change asks for key by touching /run/sbx/apply/<key>
-    (settings.request_effects); its path unit runs sbx-apply KEY as root."""
+    """sbx-control asks for key by touching /run/sbx/apply/<key> (a settings
+    change, settings.request_effects; an upgrade, updates.request); its path
+    unit runs sbx-apply KEY as root."""
     from . import paths
-    return [Unit(f"sbx-apply-{key}.path", f"[Unit]\nDescription=Apply the {key} effect of a settings change\n"
+    return [Unit(f"sbx-apply-{key}.path", f"[Unit]\nDescription=Apply the {key} effect sbx-control asked for\n"
                  f"[Path]\nPathExists={paths.run()}/apply/{key}\nUnit=sbx-apply-{key}.service\n"
                  "[Install]\nWantedBy=multi-user.target\n", action="start"),
-            Unit(f"sbx-apply-{key}.service", _service(f"Apply the {key} effect of a settings change",
+            Unit(f"sbx-apply-{key}.service", _service(f"Apply the {key} effect sbx-control asked for",
                                                        f"Type=oneshot\nExecStart={SBIN}/sbx-apply {key}", install=False),
                  action="")]
 
@@ -257,8 +258,11 @@ def install(names: list[str] | None = None):
 
 def apply(key: str) -> int:
     """sbx-apply KEY, as root. The request goes first, so one made while
-    this runs triggers it again."""
+    this runs triggers it again; an upgrade's names its release (updates.py)."""
     from . import paths, runtime
+    if key == "upgrade":
+        from . import updates
+        return updates.install_requested()
     (paths.run() / "apply" / key).unlink(missing_ok=True)
     if key == "tls":
         acme = next(u for u in units() if u.name == "sbx-acme-dns.service")

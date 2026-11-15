@@ -31,7 +31,8 @@
 #                     (not with --internal: Embed lets every sandbox reach those)
 #   --admin EMAIL     may set secrets and build templates (default on a first
 #                     install: --email)
-#   --hugepages N     2 MiB pages for sandbox memory (default: from RAM)
+#   --hugepages N     2 MiB pages for sandbox memory (default: from RAM on a
+#                     first install; an upgrade keeps the installed count)
 #   --internal CIDRS  private ranges sandboxes may reach (default: none; the
 #                     networks of sbx-admin server up are added on their own)
 #   --skip-templates  don't build sbx-base and default now
@@ -43,6 +44,11 @@
 # (repos added in the web app, ranges, admins, sign-in). Change them with
 # sbx-admin config set SECTION JSON or sbx-admin connect. --hugepages and
 # --skip-templates apply on every run.
+#
+# An upgrade refuses, before it changes anything, when it would recreate
+# Embed's running services (a new runtime pin, sbx's compose override, a key
+# sbx owns in /opt/e2b/.env) while sandboxes exist: they do not survive that,
+# paused ones included. Delete them first.
 #
 # An upgrade stops sbx-control and the agent connectors' host services before
 # it migrates sbx.db, after backing up the state into
@@ -99,9 +105,15 @@ say "Preflight"
 [ -e /dev/net/tun ] || die "no /dev/net/tun"
 mem_mib=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 [ "$mem_mib" -ge 15000 ] || die "16 GiB of memory at least, this has $mem_mib MiB"
+# An upgrade keeps the count Embed runs with: a new one recreates its runtime.
+[ -n "$hugepages" ] || ! configured || hugepages=$(sed -n 's/^HUGEPAGES=//p' /opt/e2b/.env 2>/dev/null | tail -1)
 if [ -z "$hugepages" ] && [ "$mem_mib" -lt 23000 ]; then
   die "the default budget needs 24 GiB RAM (12 GiB host reserve, the rest for sandboxes at 4 GiB each unless a recipe asks for more); use a larger host or choose --hugepages explicitly after budgeting host services"
 fi
+# The memory sandboxes get: everything but 12 GiB for the host, sbx-control
+# and Embed's own services, in 2 MiB pages.
+[ -n "$hugepages" ] || hugepages=$(( (mem_mib - 12288) / 2 ))
+[ "$hugepages" -ge 2048 ] || hugepages=2048
 disk_gib=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
 # A first install needs room for Embed's images and the base templates; an
 # upgrade only for what changes.
@@ -139,7 +151,14 @@ sh "$release/host-install.sh" --prepare > /tmp/sbx-install.log 2>&1 || { tail -3
 # The new release's own commands, before it is the active one.
 release_admin() { (cd "$release" && venv/bin/python -m sbx_control.admin "$@"); }
 release_host() { (cd "$release" && venv/bin/python -m sbx_control.host "$@"); }
+release_embed() { (cd "$release" && venv/bin/python -m sbx_control.runtime.embed "$@"); }
 echo "ok: $release"
+if configured; then
+  # Before an upgrade stops or changes anything: what it lays into Embed's
+  # project must not recreate the runtime under sandboxes.
+  said=$(release_embed upgrade-check --source "$src" --hugepages "$hugepages" 2>&1) || die "$said Nothing was changed."
+  [ -z "$said" ] || echo "$said"
+fi
 
 say "Settings: /etc/sbx"
 install -d -m 700 /etc/sbx /etc/sbx/apps
@@ -203,10 +222,11 @@ echo "settings in sbx.db (sbx-admin config get)"
 release_host tools >> /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "could not install the catalog's host tools"; }
 
 say "E2B Embed"
-# The memory sandboxes get: everything but 12 GiB for the host, sbx-control
-# and Embed's own services, in 2 MiB pages.
-[ -n "$hugepages" ] || hugepages=$(( (mem_mib - 12288) / 2 ))
-[ "$hugepages" -ge 2048 ] || hugepages=2048
+if [ -z "$first" ]; then
+  # Again, now that sbx-control is stopped and creates no sandboxes; a
+  # refusal here goes back to the release that ran (die, above).
+  said=$(release_embed upgrade-check --source "$src" --hugepages "$hugepages" 2>&1) || die "$said"
+fi
 install -d -m 0755 /opt/e2b
 rsync -a --exclude .env "$src/vendor/e2b-embed/compose/" /opt/e2b/
 if [ ! -f /opt/e2b/.env ]; then
@@ -215,8 +235,7 @@ fi
 install -m 644 "$src/embed/compose.override.yaml" /opt/e2b/compose.override.yaml
 # Every key sbx owns there (the settings', the extensions', the hugepages and
 # the platform's image pins) has one writer: sbx_control/runtime/embed/host.py.
-(cd "$release" && venv/bin/python -m sbx_control.runtime.embed embed-env --hugepages "$hugepages" \
-  --pins "$src/vendor/e2b-embed/compose/.env") \
+release_embed embed-env --hugepages "$hugepages" --pins "$src/vendor/e2b-embed/compose/.env" \
   || die "could not write /opt/e2b/.env (above)"
 echo "starting (the first time pulls images and builds Embed's base template: several minutes)"
 (cd /opt/e2b && docker compose up -d --wait) > /tmp/e2b-up.log 2>&1 || { tail -30 /tmp/e2b-up.log; die "Embed did not come up; see /tmp/e2b-up.log"; }

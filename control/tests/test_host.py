@@ -116,6 +116,64 @@ class HostTests(Installation):
         self.assertNotIn("SBX_CHECKPOINT_API_IMAGE", after)
         self.assertEqual(embed_host.write_embed_env(), (after, after))
 
+    def test_an_upgrade_that_recreates_embed_under_sandboxes_is_refused_before_anything_changes(self):
+        """upgrade-check (Embed's backend) lays a release over a copy of
+        Embed's project; a fake compose hashes each service from the files it
+        reads there."""
+        import hashlib
+        import subprocess
+        from sbx_control.runtime.embed import __main__ as embed_cli, host as embed_host
+        embed = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-embed-"))) / "e2b"
+        release = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-release-")))
+        vendored = release / "vendor/e2b-embed/compose"
+        vendored.mkdir(parents=True)
+        (release / "embed").mkdir()
+        for project in (embed, vendored):
+            project.mkdir(exist_ok=True)
+            (project / "compose.yaml").write_text("services: {orchestrator: {}, api: {}}\n")
+        (embed / "compose.override.yaml").write_text("api: one\n")
+        (release / "embed/compose.override.yaml").write_text("api: one\n")
+        (embed / ".env").write_text("E2B_ORCHESTRATOR_IMAGE=orch:1\nHUGEPAGES=4096\nPOSTGRES_PASSWORD=runtime-own\n")
+        (vendored / ".env").write_text("E2B_ORCHESTRATOR_IMAGE=orch:1\nPOSTGRES_PASSWORD=vendor-default\n")
+        self.enterContext(patch.object(embed_host, "EMBED", embed))
+        embed_host.write_embed_env()     # Embed as install.sh left it
+
+        def hashes(folder):
+            env = (folder / ".env").read_text()
+            orchestrator = "".join(line for line in env.splitlines() if "ORCHESTRATOR" in line or "HUGEPAGES" in line)
+            return {"orchestrator": hashlib.sha256(orchestrator.encode()).hexdigest(),
+                    "api": hashlib.sha256((folder / "compose.override.yaml").read_bytes()).hexdigest()}
+
+        def docker(args, cwd=None, **_):
+            if args[:2] == ["docker", "ps"]:
+                out = "".join(f"{s} {h}\n" for s, h in hashes(embed).items())
+            else:
+                self.assertEqual(args, ["docker", "compose", "-p", "e2b", "config", "--hash", "*"])
+                self.assertNotEqual(Path(cwd), embed)
+                out = "".join(f"{s} {h}\n" for s, h in hashes(Path(cwd)).items())
+            return subprocess.CompletedProcess(args, 0, out, "")
+        self.run.side_effect = docker
+        before = (embed / ".env").read_text()
+        self.assertEqual(embed_host.recreates(release, 4096), [])
+        self.assertEqual(embed_host.recreates(release, 8192), ["orchestrator"])         # another hugepages count
+        (vendored / ".env").write_text("E2B_ORCHESTRATOR_IMAGE=orch:2\n")              # a new runtime pin
+        (release / "embed/compose.override.yaml").write_text("api: two\n")              # sbx's override
+        self.assertEqual(embed_host.recreates(release, 4096), ["api", "orchestrator"])
+        self.assertEqual((embed / ".env").read_text(), before)                          # Embed's own project untouched
+        self.assertEqual((embed / "compose.override.yaml").read_text(), "api: one\n")
+        check = ["upgrade-check", "--source", str(release), "--hugepages", "4096"]
+        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.sandboxes", return_value=[]):
+            self.assertEqual(embed_cli.main(check), 0)
+        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.sandboxes", return_value=["paused"]), \
+                patch("sys.stderr", new_callable=__import__("io").StringIO) as said:
+            self.assertEqual(embed_cli.main(check), 1)
+        self.assertIn("recreates Embed's api, orchestrator, which the 1 sandbox here", said.getvalue())
+        # Docker not answering is no answer: refused, not taken for "nothing changes".
+        self.run.side_effect = subprocess.TimeoutExpired(["docker", "ps"], 60)
+        with patch("sys.stderr", new_callable=__import__("io").StringIO) as said:
+            self.assertEqual(embed_cli.main(check), 1)
+        self.assertIn("could not compare this release with Embed's running containers", said.getvalue())
+
     def test_a_domain_change_writes_only_the_domain_keys(self):
         # A pending embed-network change recreates the runtime, which only
         # runtime.apply_network may do (it refuses under running sandboxes).

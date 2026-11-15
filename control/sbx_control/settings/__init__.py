@@ -34,6 +34,7 @@ class HostUnit(enum.StrEnum):
     EMBED_NETWORK = "embed-network"  # Embed's .env keys that recreate its runtime: sbx-admin network apply
     CONTROL = "control"              # sbx-control restart (what it reads at start: the cookie domain)
     EMBED_ENV = "embed-env"          # E2B_PUBLIC_DOMAIN and the sandbox URL in /opt/e2b/.env, then compose up
+    UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
 
 
 class Section(BaseModel):
@@ -201,6 +202,23 @@ class Backup(Section):
         return self
 
 
+class Updates(Section):
+    """Newer releases (updates.py): the published releases of `repository`
+    on GitHub (public, carrying the release archive), looked at every few
+    hours unless `check` is off (an air-gapped or private installation);
+    `prereleases` offers release candidates too (a staging installation)."""
+    check: bool = True
+    repository: str = "Batuhan1999/sbx"
+    prereleases: bool = False
+
+    @field_validator("repository")
+    @classmethod
+    def _repository(cls, value: str) -> str:
+        if not REPO_NAME.fullmatch(value):
+            raise ValueError("updates.repository is a GitHub owner/name, such as Batuhan1999/sbx")
+        return value
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     revision: int = 0
@@ -213,6 +231,7 @@ class Settings(BaseModel):
     store: Store = Store()
     proxied: Proxied = Proxied()
     backup: Backup = Backup()
+    updates: Updates = Updates()
     # Repos the installation serves (owner/repo, owner/*), in order; the first
     # exact one is the default repo. Kept in the `repos` table, read in here.
     repos: tuple[str, ...] = ()

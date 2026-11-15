@@ -123,6 +123,10 @@ method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
    domain, and create the admin login. `sbx-admin setup-link` makes a new link
    if it expires.
 
+Admins see a newer release in the web app (**Settings → Updates**: what
+changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host
+([upgrading](docs/reference.md#operating-the-host)).
+
 ## Connect a repository
 
 The intended path is agent-first: give your coding agent the prompt under

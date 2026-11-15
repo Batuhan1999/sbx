@@ -4,7 +4,7 @@ import type {
   AttachBody, Attachment, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
   GitHubRepository, Me, RecipeFiles, RepoInspection, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
-  SetupState, TemplateState, Audience,
+  SetupState, TemplateState, Updates, Audience,
 } from './types'
 
 const get = <T,>(url: string) => request<T>('GET', url)
@@ -85,6 +85,13 @@ export const api = {
     address: (address: string) => post<SetupState>('/api/setup/address', { address }),
     admin: (email: string, password: string) => post<SetupState>('/api/setup/admin', { email, password }),
     complete: () => post<SetupState>('/api/setup/complete'),
+  },
+
+  updates: {
+    get: () => get<Updates>('/api/updates'),
+    /** Admins only; the tag must be the newest release, which the server checks again. */
+    install: (tag: string) => post<Updates>('/api/updates', { tag }),
+    check: () => post<Updates>('/api/updates/check'),
   },
 
   settings: {

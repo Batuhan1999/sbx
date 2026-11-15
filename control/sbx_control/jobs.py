@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import core, infisical_api, keeper, runtime, settings, template_builds, templates
+from . import core, infisical_api, keeper, runtime, settings, template_builds, templates, updates
 
 @dataclass(frozen=True)
 class Job:
@@ -60,6 +60,10 @@ JOBS = (
     Job("secret-store-sync", "secrets", "Secret store sync",
         lambda: "Values edited in Infisical itself reach the sandboxes that use them.",
         lambda: f"{_every(infisical_api.POLL_SECONDS)}, and its webhook", enabled=lambda: _s().store.mode == "infisical"),
+    Job("release-check", "updates", "Release check",
+        lambda: f"Looks for a newer release of {_s().updates.repository} on GitHub, which admins can install from "
+                "the web app (settings updates: check, repository, prereleases).",
+        lambda: f"every {updates.CHECK_SECONDS // 3600} hours", enabled=lambda: _s().updates.check),
 )
 _started = time.time()
 
