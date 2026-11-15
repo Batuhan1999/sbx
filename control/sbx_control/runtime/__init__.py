@@ -3,11 +3,11 @@
 sbx's core and its extensions reach VMs only through these functions;
 only a runtime's own package names its SDK (a test enforces it). Today
 the runtime is E2B Embed on this host (runtime.embed)."""
-from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, Runtime, Snapshot,
-                   TemplateSpec, Timeout)
+from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, NoRoom, Runtime,
+                   Snapshot, TemplateSpec, Timeout)
 
-__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "Runtime",
-           "Snapshot", "TemplateSpec", "Timeout", "current"]
+__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "NoRoom",
+           "Runtime", "Snapshot", "TemplateSpec", "Timeout", "current"]
 
 _current: Runtime | None = None
 
@@ -76,6 +76,14 @@ def failure(error: BaseException) -> bool:
     """Whether the error is the runtime's or the connection's to it: it
     answered with an error or not at all, as while an upgrade recreates it."""
     return isinstance(error, Failed) or current().failure(error)
+
+
+def capacity(memory_mb: int) -> dict:
+    return current().capacity(memory_mb)
+
+
+def placing():
+    return current().placing()
 
 
 def capabilities() -> Capabilities:

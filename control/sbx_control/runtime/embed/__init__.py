@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import datetime
 
-from ..base import Busy, Capabilities, CommandFailed, Info, Snapshot, TemplateSpec, Timeout
+from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, Snapshot, TemplateSpec, Timeout
+from . import capacity
 
 
 def _state(value) -> str:
@@ -83,7 +84,12 @@ class Embed:
         if on_timeout is not None:
             options["lifecycle"] = {"on_timeout": on_timeout,
                                     **({"auto_resume": auto_resume} if auto_resume is not None else {})}
-        return _Handle(Sandbox.create(template, **options))
+        try:
+            return _Handle(Sandbox.create(template, **options))
+        except Exception as error:
+            if "Failed to place sandbox" in str(error):
+                raise NoRoom(str(error)) from error
+            raise
 
     def connect(self, sandbox_id, *, timeout=None):
         from e2b import Sandbox
@@ -154,6 +160,12 @@ class Embed:
 
     def failure(self, error):
         return type(error).__module__.split(".")[0] in ("e2b", "httpx", "httpcore")
+
+    def capacity(self, memory_mb):
+        return capacity.room(memory_mb)
+
+    def placing(self):
+        return capacity.placing()
 
 
 def template(spec: TemplateSpec):

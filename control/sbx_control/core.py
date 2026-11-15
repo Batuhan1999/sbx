@@ -8,7 +8,6 @@ import contextlib
 import fcntl
 import json
 import hashlib
-import os
 import pathlib
 import re
 import shlex
@@ -69,40 +68,9 @@ class NotReady(SandboxError):
 
 
 def capacity(memory_mb: int | None = None) -> dict:
-    """Room for sandboxes of memory_mb on this host: Embed backs each with
-    hugepages. Linux counts already-reserved pages in HugePages_Free until a
-    VM faults them in, so Free alone can overstate room."""
-    pages = {}
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("HugePages_") or line.startswith("Hugepagesize"):
-                    key, value = line.split(":")
-                    pages[key] = int(value.split()[0])
-    except OSError:
-        return {"known": False}
-    page_kb = pages.get("Hugepagesize", 2048)
-    total = pages.get("HugePages_Total", 0)
-    free = pages.get("HugePages_Free", 0)
-    reserved = pages.get("HugePages_Rsvd", 0)
-    allocatable = max(0, free - reserved)
-    size = memory_mb or recipes.DEFAULT_SIZE["memory_mb"]
-    need = size * 1024 // page_kb
-    if not total or not need:
-        return {"known": False}
-    physical_mb = 0
-    try:
-        with open("/proc/meminfo") as source:
-            physical_mb = next(int(line.split()[1]) // 1024 for line in source if line.startswith("MemTotal:"))
-    except (OSError, StopIteration):
-        pass
-    return {"known": True, "memory_mb": size, "slots_total": total // need,
-            "slots_free": allocatable // need,
-            "physical_memory_mb": physical_mb, "host_reserve_mb": physical_mb - total * page_kb // 1024,
-            "free_mb": allocatable * page_kb // 1024,
-            "hugepages_free_mb": free * page_kb // 1024,
-            "reserved_mb": reserved * page_kb // 1024,
-            "total_mb": total * page_kb // 1024}
+    """Room for sandboxes of memory_mb (the default size) as the runtime
+    reports it; {"known": False} when it can't say."""
+    return runtime.capacity(memory_mb or recipes.DEFAULT_SIZE["memory_mb"])
 
 
 def check_capacity(memory_mb: int | None = None) -> dict:
@@ -111,7 +79,7 @@ def check_capacity(memory_mb: int | None = None) -> dict:
     if room.get("known") and room["slots_free"] < 1:
         raise NoCapacity(
             f"no free capacity on the sandbox host for another {room['memory_mb'] // 1024} GB sandbox "
-            f"({room.get('free_mb', 0) // 1024} GB unreserved hugepages remain); one frees up when a sandbox "
+            f"({room.get('free_mb', 0) // 1024} GB of sandbox memory is free); one frees up when a sandbox "
             f"pauses after {TIMEOUT_SECONDS // 3600} hours idle, or when someone pauses or deletes one "
             f"({settings.current().base_url}/app/sandboxes)")
     return room
@@ -119,12 +87,9 @@ def check_capacity(memory_mb: int | None = None) -> dict:
 
 @contextlib.contextmanager
 def reserve_capacity(memory_mb: int):
-    """Hold until the runtime has reserved the new sandbox's hugepages, which
-    are host-global, so two creations can't both take the last slot."""
-    capacity_lock = pathlib.Path(os.environ.get("SBX_CAPACITY_LOCK") or paths.state_dir() / "sandbox-capacity.lock")
-    capacity_lock.parent.mkdir(parents=True, exist_ok=True)
-    with capacity_lock.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    """Hold until the runtime has placed the new sandbox, so two creations
+    can't both take the last room."""
+    with runtime.placing():
         yield check_capacity(memory_mb)
 
 
@@ -417,7 +382,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         ip_previews.remove(slug)
         if trusted:
             extensions.packages().release(name)
-        if "Failed to place sandbox" in str(error):
+        if isinstance(error, runtime.NoRoom):
             raise NoCapacity("no free capacity on the sandbox host; delete a sandbox (sbx ls, sbx down) "
                                "or try again later") from error
         if isinstance(error, extensions.packages().Error):

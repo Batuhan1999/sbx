@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, ContextManager, Protocol
 
 RUNNING, PAUSED = "running", "paused"
 
@@ -33,6 +33,10 @@ class Timeout(Failed):
 
 class Busy(Failed):
     """The runtime would not pause the sandbox now; it keeps running."""
+
+
+class NoRoom(Failed):
+    """The runtime has no room for another sandbox now."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,3 +169,11 @@ class Runtime(Protocol):
 
     def failure(self, error: BaseException) -> bool:
         """Whether an error is the runtime's or the connection's to it."""
+
+    def capacity(self, memory_mb: int) -> dict:
+        """Room for sandboxes of memory_mb: {"known": True, "memory_mb",
+        "slots_free", "free_mb", ...}, or {"known": False} when it can't say."""
+
+    def placing(self) -> ContextManager:
+        """Held while a sandbox is placed, so two creations can't both take
+        the last room."""
