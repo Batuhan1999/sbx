@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import (auth, catalog_api, connections_api, core, dist_api, env, extensions, gate, infisical_api, keeper,
-               lifecycle, platform, recipes, repo_onboarding, repos_api, sandboxes_api, secret_store, settings_api,
+               lifecycle, platform, recipes, repo_onboarding, repos_api, runtime, sandboxes_api, secret_store, settings_api,
                setup_api, setup_pr, spa,
                state, template_builds)
 
@@ -39,10 +39,10 @@ async def lifespan(_app):
 
 async def unexpected(request: Request, error: Exception):
     """Say what failed instead of a bare 500: most often it is the sandbox
-    runtime (Embed) not answering, or answering with an error."""
+    runtime not answering, or answering with an error."""
     traceback.print_exception(error)
     if core.runtime_failure(error):
-        return PlainTextResponse(f"the sandbox runtime (E2B Embed) failed: {type(error).__name__}: {error}",
+        return PlainTextResponse(f"the sandbox runtime ({runtime.title()}) failed: {type(error).__name__}: {error}",
                                  status_code=503)
     return PlainTextResponse(f"sbx-control failed: {type(error).__name__}: {error}", status_code=500)
 

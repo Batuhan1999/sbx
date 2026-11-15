@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
-from . import (addressing, auth, core, lifecycle, recipes, resources, sandboxes, settings, state, template_builds,
-    views)
+from . import (addressing, auth, core, lifecycle, recipes, resources, runtime, sandboxes, settings, state,
+               template_builds, views)
 from .auth import api_user, is_admin, may_view
 
 router = APIRouter()
@@ -40,7 +40,7 @@ def api_create(body: sandboxes.CreateSandbox, start_app: bool = True, email: str
     except Exception as error:
         # The runtime failed before a VM was made (none recorded): the same request may be sent again.
         if core.runtime_failure(error) and not (lifecycle.get(body.name) or {}).get("sandbox_id"):
-            raise HTTPException(503, f"the sandbox runtime (E2B Embed) did not take the sandbox: {error}. It may still "
+            raise HTTPException(503, f"the sandbox runtime ({runtime.title()}) did not take the sandbox: {error}. It may still "
                                      "be starting (sbx-admin network apply and upgrades recreate it); try again in a "
                                      "minute", headers={"Retry-After": str(RUNTIME_RETRY_SECONDS)}) from error
         raise HTTPException(502, str(error)) from error  # a service failed

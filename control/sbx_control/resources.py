@@ -1,14 +1,14 @@
 """Requested configuration, actual VM allocation, and live usage are different facts."""
 import json
 
-from . import core
+from . import core, runtime
 
 
 def snapshot(name, live=False):
     info = core.find(name)
     if not info:
         raise core.SandboxError(f"no sandbox {name}")
-    actual = core.Sandbox.get_info(info.sandbox_id)
+    actual = runtime.info(info.sandbox_id)
     app = core.app_of(info)
     size = app.size
     runtime_state = core.runtime_state(actual)
@@ -22,7 +22,7 @@ def snapshot(name, live=False):
         "usage": None, "host": core.capacity(actual.memory_mb), "issues": [],
     }
     if live and runtime_state == "running":
-        sandbox = core.Sandbox.connect(info.sandbox_id, timeout=core.TIMEOUT_SECONDS)
+        sandbox = runtime.connect(info.sandbox_id, timeout=core.TIMEOUT_SECONDS)
         core.ship_guest(sandbox)
         result["usage"] = json.loads(sandbox.commands.run(core.guest("usage"), timeout=20).stdout)
     elif live:

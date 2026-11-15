@@ -8,7 +8,6 @@ import contextlib
 import fcntl
 import json
 import hashlib
-import os
 import pathlib
 import re
 import shlex
@@ -16,11 +15,8 @@ import threading
 import time
 import uuid
 
-from e2b import Sandbox
-from e2b.sandbox.sandbox_api import SandboxQuery
-
 from . import (addressing, contributions, delivery, extensions, ip_previews, lifecycle, paths, platform, recipes,
-               secret_store, settings, state, variables)
+               runtime, secret_store, settings, state, variables)
 from .template_files import sbx_guest
 
 RUN = platform.RUN
@@ -57,14 +53,13 @@ class PauseRefused(SandboxError):
 # saving the sandbox's parent, or the disk cannot hold a snapshot of the
 # sandbox's whole memory plus its headroom. The sandbox keeps running; retry.
 PAUSE_RETRY_SECONDS = (5, 15)
-PAUSE_DISK_HEADROOM_MB = 1024  # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml)
 
 
 def runtime_failure(error: BaseException) -> bool:
-    """Whether the error is the sandbox runtime's (E2B Embed) or the
-    connection to it: it answered with an error or not at all, as while
-    `sbx-admin network apply` or an upgrade recreates it."""
-    return type(error).__module__.split(".")[0] in ("e2b", "httpx", "httpcore")
+    """Whether the error is the sandbox runtime's or the connection to it:
+    it answered with an error or not at all, as while `sbx-admin network
+    apply` or an upgrade recreates it."""
+    return runtime.failure(error)
 
 
 class NotReady(SandboxError):
@@ -72,40 +67,9 @@ class NotReady(SandboxError):
 
 
 def capacity(memory_mb: int | None = None) -> dict:
-    """Room for sandboxes of memory_mb on this host: Embed backs each with
-    hugepages. Linux counts already-reserved pages in HugePages_Free until a
-    VM faults them in, so Free alone can overstate room."""
-    pages = {}
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("HugePages_") or line.startswith("Hugepagesize"):
-                    key, value = line.split(":")
-                    pages[key] = int(value.split()[0])
-    except OSError:
-        return {"known": False}
-    page_kb = pages.get("Hugepagesize", 2048)
-    total = pages.get("HugePages_Total", 0)
-    free = pages.get("HugePages_Free", 0)
-    reserved = pages.get("HugePages_Rsvd", 0)
-    allocatable = max(0, free - reserved)
-    size = memory_mb or recipes.DEFAULT_SIZE["memory_mb"]
-    need = size * 1024 // page_kb
-    if not total or not need:
-        return {"known": False}
-    physical_mb = 0
-    try:
-        with open("/proc/meminfo") as source:
-            physical_mb = next(int(line.split()[1]) // 1024 for line in source if line.startswith("MemTotal:"))
-    except (OSError, StopIteration):
-        pass
-    return {"known": True, "memory_mb": size, "slots_total": total // need,
-            "slots_free": allocatable // need,
-            "physical_memory_mb": physical_mb, "host_reserve_mb": physical_mb - total * page_kb // 1024,
-            "free_mb": allocatable * page_kb // 1024,
-            "hugepages_free_mb": free * page_kb // 1024,
-            "reserved_mb": reserved * page_kb // 1024,
-            "total_mb": total * page_kb // 1024}
+    """Room for sandboxes of memory_mb (the default size) as the runtime
+    reports it; {"known": False} when it can't say."""
+    return runtime.capacity(memory_mb or recipes.DEFAULT_SIZE["memory_mb"])
 
 
 def check_capacity(memory_mb: int | None = None) -> dict:
@@ -114,7 +78,7 @@ def check_capacity(memory_mb: int | None = None) -> dict:
     if room.get("known") and room["slots_free"] < 1:
         raise NoCapacity(
             f"no free capacity on the sandbox host for another {room['memory_mb'] // 1024} GB sandbox "
-            f"({room.get('free_mb', 0) // 1024} GB unreserved hugepages remain); one frees up when a sandbox "
+            f"({room.get('free_mb', 0) // 1024} GB of sandbox memory is free); one frees up when a sandbox "
             f"pauses after {TIMEOUT_SECONDS // 3600} hours idle, or when someone pauses or deletes one "
             f"({settings.current().base_url}/app/sandboxes)")
     return room
@@ -122,12 +86,9 @@ def check_capacity(memory_mb: int | None = None) -> dict:
 
 @contextlib.contextmanager
 def reserve_capacity(memory_mb: int):
-    """Hold until the runtime has reserved the new sandbox's hugepages, which
-    are host-global, so two creations can't both take the last slot."""
-    capacity_lock = pathlib.Path(os.environ.get("SBX_CAPACITY_LOCK") or paths.state_dir() / "sandbox-capacity.lock")
-    capacity_lock.parent.mkdir(parents=True, exist_ok=True)
-    with capacity_lock.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    """Hold until the runtime has placed the new sandbox, so two creations
+    can't both take the last room."""
+    with runtime.placing():
         yield check_capacity(memory_mb)
 
 
@@ -169,7 +130,7 @@ def detectable(port: int, a: recipes.App) -> bool:
 
 def detectable_port(port: int) -> bool:
     return ((port == 80 or 1024 <= port <= 65535) and port not in platform.PLATFORM_PORTS
-            and port not in extensions.reserved_ports())
+            and port not in runtime.current().ports and port not in extensions.reserved_ports())
 
 
 def detected_ports(listening: str, a: recipes.App) -> dict:
@@ -222,11 +183,8 @@ def slugify(branch: str, limit: int = 40) -> str:
 
 
 def sandboxes(metadata=None, state=None):
-    pages = Sandbox.list(query=SandboxQuery(metadata=metadata, state=state))
-    items = pages.next_items()
-    while pages.has_next:
-        items += pages.next_items()
-    return items
+    """What the runtime lists; state: runtime.RUNNING and PAUSED, None for its default."""
+    return runtime.sandboxes(metadata, state)
 
 
 def find(name):
@@ -409,7 +367,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=result["sandbox_id"], runtime="running")
             # A new sandbox's checkout is its template's: what the template's setup changed is nobody's edit.
-            prepare_workspace(Sandbox.connect(result["sandbox_id"]), a, branch, checkout=True, force=True,
+            prepare_workspace(runtime.connect(result["sandbox_id"]), a, branch, checkout=True, force=True,
                               source_commit=source_commit)
             operation.advance("workspace_ready", finish=True)
             result["lifecycle"] = lifecycle.get(name)
@@ -419,11 +377,11 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         if checkpoint and (checkpoint.get("sandbox_id") or checkpoint.get("phase") == "allocating"):
             raise
         if result and result.get("sandbox_id"):
-            Sandbox.kill(result["sandbox_id"])
+            runtime.kill(result["sandbox_id"])
         ip_previews.remove(slug)
         if trusted:
             extensions.packages().release(name)
-        if "Failed to place sandbox" in str(error):
+        if isinstance(error, runtime.NoRoom):
             raise NoCapacity("no free capacity on the sandbox host; delete a sandbox (sbx ls, sbx down) "
                                "or try again later") from error
         if isinstance(error, extensions.packages().Error):
@@ -486,11 +444,11 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
     # The cloud metadata service: Embed denies it in the slot already, and
     # install.sh's guard for what its egress proxy dials. Embed can't deny
     # private ranges per sandbox.
-    sbx = Sandbox.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
-                         network={"deny_out": ["169.254.169.254/32"]},
+    sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
+                         deny_out=["169.254.169.254/32"],
                          metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
                                    "repo": a.repo},
-                         lifecycle={"on_timeout": "pause", "auto_resume": True})
+                         on_timeout="pause", auto_resume=True)
     try:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=sbx.sandbox_id, runtime="running")
@@ -499,7 +457,7 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
         host_key = write_runtime(sbx, name, envs, layer, public_keys, hidden)
     except Exception:
         if not operation:
-            Sandbox.kill(sbx.sandbox_id)
+            runtime.kill(sbx.sandbox_id)
         raise
     return {"name": name, "sandbox_id": sbx.sandbox_id, "host_key": " ".join(host_key), "branch": env["SBX_BRANCH"],
             "repo": a.workdir, "ssh_url": addressing.ssh_url(slug, a, sbx.sandbox_id), "urls": addressing.urls(slug, a)}
@@ -596,7 +554,7 @@ def check_app(info) -> str | None:
     a = app_of(info)
     if not a.spec.get("processes"):
         return None
-    sbx = Sandbox.connect(info.sandbox_id)
+    sbx = runtime.connect(info.sandbox_id)
     if sbx.commands.run(f"{guest('processes', 'probe')} 2>/dev/null || true", timeout=30).stdout.strip() != "exited":
         return None
     return (run_space(sbx) or f"its processes are not running; see {sbx_guest.SUPERVISOR_LOG} and the process logs "
@@ -659,7 +617,7 @@ def connect(name: str, why: str, info=None):
     paused = runtime_state(info) == "paused"
     began = time.time()
     try:
-        sbx = Sandbox.connect(info.sandbox_id, timeout=TIMEOUT_SECONDS)
+        sbx = runtime.connect(info.sandbox_id, timeout=TIMEOUT_SECONDS)
     except Exception as error:
         if paused:
             state.event(name, "resume failed", f"{why}, after {time.time() - began:.0f}s: {error}")
@@ -1060,7 +1018,7 @@ def explained(name: str, info=None):
             raise
         try:
             info = info or find(name)
-            why = run_space(Sandbox.connect(info.sandbox_id)) if info else None
+            why = run_space(runtime.connect(info.sandbox_id)) if info else None
         except Exception:  # the explanation is best effort; the failure stands
             why = None
         if why:
@@ -1088,7 +1046,7 @@ def delete(name: str, slug: str | None = None):
     if current and current["phase"] == "deleted" and not current["active"]:
         info = find(name)  # the runtime lists a killed VM for a while
         if info:
-            Sandbox.kill(info.sandbox_id)
+            runtime.kill(info.sandbox_id)
         return
     with lifecycle.operation(name, "delete") as operation:
         operation.advance("deleting")
@@ -1100,7 +1058,7 @@ def _delete(name, slug, operation):
     info = find(name)
     if info:
         lifecycle.assert_binding(name, info.sandbox_id)
-        Sandbox.kill(info.sandbox_id)  # connect would resume a paused one first
+        runtime.kill(info.sandbox_id)  # connect would resume a paused one first
         slug = slug_of(info)
     operation.advance("deleting", runtime="missing")
     # What delete_all can't remove stays recorded for the reconciler.
@@ -1113,12 +1071,11 @@ def _delete(name, slug, operation):
 def _pause_vm(info):
     """Pause the VM, retrying while the runtime says it is busy; the last
     refusal when it never took the pause, else None."""
-    from e2b.exceptions import ServiceBusyException
     for wait in (*PAUSE_RETRY_SECONDS, None):
         try:
-            Sandbox.pause(info.sandbox_id)
+            runtime.pause(info.sandbox_id)
             return None
-        except ServiceBusyException as error:
+        except runtime.Busy as error:
             if wait is None:
                 return error
             time.sleep(wait)
@@ -1126,18 +1083,9 @@ def _pause_vm(info):
 
 def pause_refusal(info, error) -> str:
     """Why the runtime would not pause the sandbox, in words a person can act on."""
-    from . import embed_storage
-    memory = getattr(info, "memory_mb", None)
-    free = embed_storage.free_mb()
     tries = len(PAUSE_RETRY_SECONDS) + 1
     retries = f"{tries} tries over {sum(PAUSE_RETRY_SECONDS)} s" if tries > 1 else "once"
-    if memory and free is not None and free < memory + PAUSE_DISK_HEADROOM_MB:
-        cause = (f"the runtime's disk has {free / 1024:.1f} GB free and a pause needs room for the sandbox's whole "
-                 f"memory ({memory / 1024:.1f} GB) plus {PAUSE_DISK_HEADROOM_MB // 1024} GB; free disk "
-                 "(delete sandboxes or templates nobody uses, sbx-admin template prune) and pause again")
-    else:
-        cause = ("the runtime is still saving the template or snapshot the sandbox started from, or another "
-                 "sandbox's snapshot; pause again in a minute")
+    cause = runtime.why_busy(getattr(info, "memory_mb", None))
     return (f"the runtime refused the pause ({retries}): {cause}. The sandbox keeps running. "
             f"Runtime: {str(error)[-300:]}")
 

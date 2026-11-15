@@ -11,7 +11,7 @@ import time
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, settings, state,
+from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, settings, state,
                template_builds, variables)
 from .state import db
 
@@ -287,11 +287,10 @@ def execute(name: str, info, script: str, timeout: int) -> dict:
     """A script in the sandbox with the env its SSH shells get (resuming a
     paused one): what its owner could run over SSH, for agents and tools
     that have only the API."""
-    from e2b.sandbox.commands.command_handle import CommandExitException
     sandbox = core.attach(name, "to run a command in it", info=info)
     try:
         result = sandbox.run(script, timeout=timeout)
-    except CommandExitException as error:
+    except runtime.CommandFailed as error:
         result = error
     return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr}
 

@@ -1,4 +1,5 @@
-"""Loopback-only app access for an operator connected to a domainless host."""
+"""Loopback-only app access for an operator connected to a domainless host,
+straight to Embed's client-proxy (sbx-admin preview)."""
 import json
 import ipaddress
 import select
@@ -8,7 +9,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from . import addressing, core, platform
+from ... import addressing, core, platform
+from . import CLIENT_PROXY_PORT, ENVD_PORT, INTERNAL_HOST_SUFFIX
 
 
 def fixed_routing_host(value):
@@ -33,7 +35,7 @@ def fixed_routing_host(value):
 class PreviewServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
-    def __init__(self, listen, sandbox_id, port, upstream=("127.0.0.1", platform.CLIENT_PROXY_PORT), ensure_running=lambda: None,
+    def __init__(self, listen, sandbox_id, port, upstream=("127.0.0.1", CLIENT_PROXY_PORT), ensure_running=lambda: None,
                  *, preserve_host=False):
         self.sandbox_id, self.port, self.upstream = sandbox_id, port, upstream
         self.ensure_running = ensure_running
@@ -70,7 +72,7 @@ class PreviewConnection(socketserver.BaseRequestHandler):
             lines = [lines[0], *(line for line in lines[1:] if line.partition(b":")[0].lower() not in excluded)]
             lines.extend([
                 b"Host: " + (original_host if self.server.preserve_host else
-                             f"{self.server.port}-{self.server.sandbox_id}.{platform.INTERNAL_HOST_SUFFIX}".encode()),
+                             f"{self.server.port}-{self.server.sandbox_id}.{INTERNAL_HOST_SUFFIX}".encode()),
                 f"E2b-Sandbox-Id: {self.server.sandbox_id}".encode(),
                 f"E2b-Sandbox-Port: {self.server.port}".encode(),
                 b"X-Forwarded-Host: " + original_host, b"X-Forwarded-Proto: http",
@@ -103,7 +105,7 @@ def serve(name, port, listen, *, preserve_host=False):
         raise ValueError(f"no sandbox {name}")
     app = core.app_of(info)
     port = port or addressing.ports(app).get("")
-    if port is None or port in platform.PLATFORM_PORTS or addressing.preview_on(app, port) is None:
+    if port is None or port in platform.PLATFORM_PORTS | {ENVD_PORT} or addressing.preview_on(app, port) is None:
         raise ValueError("choose a declared app preview port with --port")
     lock = threading.Lock()
     last_connected = 0

@@ -291,7 +291,7 @@ def main(argv: list) -> int:
                           'pending_sandboxes': sorted(delivery.waiting())}))
         return 0
     if a.cmd in ("server", "network"):
-        from . import hosted_services, host_network
+        from . import hosted_services, runtime
         try:
             if a.cmd == "server":
                 if a.action == 'ls':
@@ -305,14 +305,14 @@ def main(argv: list) -> int:
                 else:
                     result = hosted_services.up(a.name, a.kind, data_root=a.data_root, storage_gb=a.storage_gb)
             else:
-                result = host_network.apply()
+                result = runtime.apply_network()
             print(json.dumps(result))
             return 0
         except (ValueError, RuntimeError, OSError) as error:
             print(str(error), file=sys.stderr)
             return 1
     if a.cmd == "preview":
-        from .preview_proxy import serve
+        from .runtime.embed.proxy import serve
         if not 0 <= a.listen <= 65535 or (a.port is not None and not 1 <= a.port <= 65535):
             p.error("ports must be between 1 and 65535 (listen 0 chooses a free port)")
         try:
@@ -360,11 +360,11 @@ def main(argv: list) -> int:
     if a.cmd == "template":
         return do_template(a)
     if a.cmd == "jobs":
-        from . import runtime
+        from . import jobs
         if a.verb == "run":
-            print(runtime.run_now(a.id or ""))
+            print(jobs.run_now(a.id or ""))
             return 0
-        for j in runtime.jobs():
+        for j in jobs.jobs():
             when = f"last {j.get('last') or '-'}, next {j.get('next') or j.get('schedule') or '-'}" if j.get("available") else "not on this host"
             print(f"{j['group']:12} {j['title']:34} {when}{'  (run: sbx-admin jobs run ' + j['id'] + ')' if j.get('runnable') else ''}")
         return 0

@@ -72,29 +72,25 @@ class TemplateBundleTests(Installation):
         import re
         import time
         from unittest.mock import Mock
-        from sbx_control import extensions, template_builds
+        from sbx_control import extensions, runtime, template_builds
         from sbx_control.contributions import Artifact, Contribution, TemplateLayer
         from sbx_control.state import db
         tool = Contribution("tool", template=TemplateLayer(artifacts=(Artifact("tool v1", lambda: b"tarball", "/opt"),)))
         commands = []
 
-        class Recorder:
-            def __getattr__(self, name):
-                return lambda *args, **kwargs: (commands.append(str(args[0]) if args else ""), self)[1]
-
-        def refuse(*args, on_build_logs, **kwargs):
+        def refuse(spec, *, on_log, **kwargs):
+            commands.extend(str(value) for _, value in spec.steps)
             fetch = next(c for c in commands if "X-Sbx-Bundle" in c)
-            on_build_logs(f"running {fetch}")
+            on_log(f"running {fetch}")
             raise RuntimeError(f"the step failed: {fetch}")
         with db() as conn:
             conn.execute("insert into template_builds (repo, status, built_fingerprint, built_template) "
                          "values (?, 'built', ?, 'base-fixture')", (self.templates.BASE, template_builds.plan(self.templates.BASE).fingerprint))
         journal = io.StringIO()
         with patch.object(extensions, "contributions_for", return_value=[tool]), \
-                patch.object(self.templates, "Template", return_value=Recorder()) as template, \
+                patch.object(runtime, "build_template", Mock(side_effect=refuse)), \
                 patch.object(self.templates, "bundles", return_value=Path(self.enterContext(tempfile.TemporaryDirectory()))), \
                 contextlib.redirect_stdout(journal):
-            template.build = Mock(side_effect=refuse)
             self.assertTrue(template_builds.start(self.templates.DEFAULT))
             deadline = time.monotonic() + 10
             while template_builds.building(self.templates.DEFAULT) and time.monotonic() < deadline:

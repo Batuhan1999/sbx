@@ -142,22 +142,21 @@ class SecretStoreTests(Server):
     def test_every_value_a_sandbox_gets_is_masked_in_what_its_viewers_read(self):
         # A failing .sbx/start's stderr reaches the sandbox's events unredirected; a
         # preview's whole team reads them, and its inspect logs.
-        from e2b.sandbox.commands.command_handle import CommandExitException
-        from sbx_control import contributions, core, extensions, lifecycle, recipes
+        from sbx_control import contributions, core, extensions, lifecycle, recipes, runtime
         self.variables.put(APP, "OWN_TOKEN", "fixture-personal-value", "test", person=PERSON)
         generated = self.variables.random_value("fixture", "SESSION_KEY", False, 24)
-        runtime = contributions.Contribution("fixture-ext", runtime=contributions.RuntimeLayer(
+        extension = contributions.Contribution("fixture-ext", runtime=contributions.RuntimeLayer(
             env={"EXT_TOKEN": "fixture-extension-token"}))
         info = SimpleNamespace(sandbox_id="fixture-vm", state="running",
                                metadata={"sbx": "fixture", "repo": APP, "owner": PERSON})
         stderr = f"fixture-personal-value {generated} fixture-extension-token"
         op = lifecycle.begin("fixture", "prepare")
         with patch.object(core.recipes, "load", return_value=recipes.App(APP, Path("/unused"), {})), \
-                patch.object(extensions, "contributions_for", return_value=[runtime]), \
+                patch.object(extensions, "contributions_for", return_value=[extension]), \
                 patch.object(core, "connect", return_value=(Mock(), info)), \
                 patch.object(core, "_refresh_env"), patch.object(core, "apply_resources"), \
                 patch.object(core, "_prepare",
-                             side_effect=CommandExitException(stderr=stderr, stdout="", exit_code=1, error=None)):
+                             side_effect=runtime.CommandFailed(stderr=stderr, stdout="", exit_code=1)):
             with self.assertRaises(core.SandboxError) as raised:
                 core.prepare_and_start("fixture", "main", operation=op)
             inspected = core.mask(stderr, info)
@@ -468,7 +467,7 @@ class DeliveryTests(Server):
         self.vm = Mock()
         self.vm.commands.run.return_value.stdout = "ok"
         self.enterContext(patch.object(core, "find", return_value=self.info))
-        self.enterContext(patch.object(core.Sandbox, "connect", return_value=self.vm))
+        self.enterContext(patch.object(core.runtime, "connect", return_value=self.vm))
         self.enterContext(patch.object(core, "app_of", return_value=recipes.App(APP, Path("/unused"), {})))
         self.enterContext(patch.object(core, "open_desktop_browser"))
         self.enterContext(patch.object(core.recipes, "ship"))

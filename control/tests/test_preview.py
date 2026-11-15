@@ -4,7 +4,7 @@ import socket
 import threading
 import unittest
 
-from sbx_control.preview_proxy import PreviewServer, fixed_routing_host
+from sbx_control.runtime.embed.proxy import PreviewServer, fixed_routing_host
 
 
 class Backend(http.server.BaseHTTPRequestHandler):

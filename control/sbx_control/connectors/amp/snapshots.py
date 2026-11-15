@@ -13,9 +13,7 @@ import os
 import shlex
 import sqlite3
 
-from e2b import Sandbox
-
-from ... import core, extensions, platform, recipes, state
+from ... import core, extensions, platform, recipes, runtime, state
 from ...template_files import sbx_guest
 from .common import JobError, orb_lock
 
@@ -46,6 +44,8 @@ def scrub(info) -> str:
 
 
 def export(name: str, label: str) -> str:
+    if not runtime.capabilities().snapshots:
+        raise core.SandboxError(f"project snapshots need filesystem snapshots, which {runtime.title()} does not take")
     info = core.find(name)
     if info is None:
         raise core.SandboxError("the workspace disappeared before snapshot export")
@@ -58,15 +58,14 @@ def export(name: str, label: str) -> str:
     try:
         # This private checkpoint is temporary, like a pause snapshot. Never
         # publish it: it still belongs to the source workspace's identity.
-        checkpoint = Sandbox.create_snapshot(info.sandbox_id, name=label + "-private", mode="filesystem")
-        actual = Sandbox.get_info(info.sandbox_id)
+        checkpoint = runtime.snapshot(info.sandbox_id, label + "-private")
+        actual = runtime.info(info.sandbox_id)
         if not isinstance(actual.memory_mb, int) or actual.memory_mb <= 0:
             raise core.SandboxError("cannot determine the snapshot clone's actual memory allocation")
         with core.reserve_capacity(actual.memory_mb):
-            staging = Sandbox.create(checkpoint.snapshot_id, timeout=240,
+            staging = runtime.create(checkpoint.snapshot_id, timeout=240,
                                      metadata={"sbx_cache_build": label}, envs={},
-                                     network={"deny_out": ["0.0.0.0/0"]},
-                                     lifecycle={"on_timeout": "kill"})
+                                     deny_out=["0.0.0.0/0"], on_timeout="kill")
         # The runtime's CIDR interface is IPv4-only. Block every new guest
         # connection too, including internal ranges and IPv6, before the hook.
         staging.commands.run(OFFLINE, timeout=30)
@@ -78,24 +77,24 @@ def export(name: str, label: str) -> str:
         # without service env and without network access. Never reset the source.
         clone.run(f"cd {shlex.quote(recipe.workdir)} && {platform.APP_SCRIPTS}/snapshot", timeout=90)
         staging.commands.run(scrub(info), timeout=30)
-        published = Sandbox.create_snapshot(staging.sandbox_id, name=label, mode="filesystem")
+        published = runtime.snapshot(staging.sandbox_id, label)
         return published.snapshot_id
     finally:
         failures = []
         try:
             if staging is not None:
-                Sandbox.kill(staging.sandbox_id)
+                runtime.kill(staging.sandbox_id)
         except Exception as error:
             failures.append(error)
         try:
             if checkpoint is not None:
-                Sandbox.delete_snapshot(checkpoint.snapshot_id)
+                runtime.delete_snapshot(checkpoint.snapshot_id)
         except Exception as error:
             failures.append(error)
         if failures:
             if published is not None:
                 try:
-                    Sandbox.delete_snapshot(published.snapshot_id)
+                    runtime.delete_snapshot(published.snapshot_id)
                 except Exception:
                     pass
             state.event(name, "snapshot cleanup deferred", label, internal=True)
@@ -140,7 +139,7 @@ def save(name: str, key: str, repo: str):
                 conn.execute("insert into amp_snapshots (key, repo, snapshot_id, source_template) values (?, ?, ?, ?)",
                              (key, repo, snapshot_id, source))
         except Exception:
-            Sandbox.delete_snapshot(snapshot_id)
+            runtime.delete_snapshot(snapshot_id)
             raise
 
 
@@ -154,5 +153,5 @@ def delete(key: str):
     with orb_lock("snapshot:" + key), state.db() as conn:
         row = conn.execute("select snapshot_id from amp_snapshots where key = ?", (key,)).fetchone()
         if row:
-            Sandbox.delete_snapshot(row[0])
+            runtime.delete_snapshot(row[0])
             conn.execute("delete from amp_snapshots where key = ?", (key,))

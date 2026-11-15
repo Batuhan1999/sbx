@@ -27,8 +27,8 @@ import uuid
 # control/ in the repository.
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "control")]
-from sbx_control import embed_storage as storage  # noqa: E402
-from sbx_control.embed_storage import FILES, MAPPING, META, NIL, STORAGE, query  # noqa: E402
+from sbx_control.runtime.embed import storage  # noqa: E402
+from sbx_control.runtime.embed.storage import FILES, MAPPING, META, NIL, STORAGE, query  # noqa: E402
 
 COPY_CHUNK = 64 * 2**20
 

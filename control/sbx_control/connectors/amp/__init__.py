@@ -47,18 +47,18 @@ def active() -> bool:
 
 
 def wayland_tools() -> bytes:
-    from e2b import Sandbox, Template, default_build_logger
-    Template.build(Template().from_image(IMAGE).set_start_cmd("sleep infinity", "true"), alias=TOOLS, cpu_count=1,
-                   memory_mb=1024, min_free_disk_mb=1024, on_build_logs=default_build_logger())
+    from ... import runtime
+    runtime.build_template(runtime.TemplateSpec().from_image(IMAGE).set_start_cmd("sleep infinity", "true"),
+                           alias=TOOLS, cpu=1, memory_mb=1024, disk_mb=1024)
     vm = None
     try:
         with core.reserve_capacity(1024):
-            vm = Sandbox.create(TOOLS, timeout=180, metadata={"sbx_cache_build": TOOLS}, lifecycle={"on_timeout": "kill"})
+            vm = runtime.create(TOOLS, timeout=180, metadata={"sbx_cache_build": TOOLS}, on_timeout="kill")
         vm.commands.run("tar -C /opt -czf /tmp/sbx-amp-tools.tar.gz amp-wayland", timeout=60)
         data = vm.files.read("/tmp/sbx-amp-tools.tar.gz", format="bytes")
     finally:
         if vm is not None:
-            Sandbox.kill(vm.sandbox_id)
+            runtime.kill(vm.sandbox_id)
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
@@ -104,9 +104,9 @@ class Amp(extensions.Connector):
         return extensions.Policy(keep_awake=running, decided=True, keep_paused=True)
 
     def before_pause(self, info):
-        from e2b import Sandbox
+        from ... import runtime
         from .orbs import stop_bootstrap
-        stop_bootstrap(Sandbox.connect(info.sandbox_id))
+        stop_bootstrap(runtime.connect(info.sandbox_id))
 
     def on_resume(self, sbx, info):
         """A resume that was not a spawn (a preview woke it) must not leave an
@@ -129,11 +129,12 @@ class Amp(extensions.Connector):
             "Environment=HOME=/root\nRestart=on-failure\nRestartSec=15\nTimeoutStopSec=300\nUMask=0077",
             enabled=self.settings().enabled, apply=Settings.applies[0], prepare=prepare)]
 
-    def embed(self) -> extensions.EmbedLayer:
-        """The runtime built with filesystem-only snapshots, when the settings name it."""
+    def embed(self):
+        """Embed built with filesystem-only snapshots, when the settings name it."""
+        from ...runtime.embed.host import EmbedLayer
         amp = self.settings()
         on = bool(amp.checkpoint_api_image)
-        return extensions.EmbedLayer(
+        return EmbedLayer(
             KIND, env={"SBX_CHECKPOINT_API_IMAGE": amp.checkpoint_api_image,
                        "SBX_ORCHESTRATOR_BINARY": amp.orchestrator_binary},
             compose=(CHECKPOINTS / "compose.yaml",) if on else (),

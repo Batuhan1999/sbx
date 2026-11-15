@@ -3,7 +3,7 @@ snapshot compaction (embed/compact-snapshot.py) and sbx-control read it:
 the build directories, the header format that maps each block of a build's
 memory and disk to the build holding it, Embed's Postgres and Redis, and
 the per-sandbox snapshot usage the GC writes. Standard library only (and
-host.py's layout).
+host.py's layout of Embed's project).
 
 These follow the vendored Embed release (vendor/e2b-embed): its storage
 layout, header version 3, its tables and Redis keys."""
@@ -19,7 +19,7 @@ import struct
 import subprocess
 import uuid
 
-from . import host
+from .host import EMBED
 
 ROOT = pathlib.Path("/var/lib/e2b")
 STORAGE = ROOT / "storage/templates"           # one directory per build
@@ -27,7 +27,7 @@ INDEX = ROOT / "storage/build-cache"
 LOCAL_COPIES = pathlib.Path("/orchestrator/build")
 USAGE = ROOT / "storage-usage.json"            # sandbox id -> {gb, snapshots}, from the GC
 LOCK = ROOT / ".storage.lock"                  # held by whoever writes a build outside Embed (compaction)
-COMPOSE = host.EMBED / "compose.yaml"
+COMPOSE = EMBED / "compose.yaml"
 FILES = ("memfile", "rootfs.ext4")
 HEADER_VERSION = 3
 META = struct.Struct("<4Q16s16s")  # version, block size, size, generation, build, base build

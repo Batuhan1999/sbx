@@ -17,7 +17,6 @@ import dataclasses
 import functools
 import importlib
 import importlib.metadata
-import pathlib
 import sys
 import threading
 import time
@@ -87,17 +86,6 @@ class HostService:
     enabled: bool               # running; else stopped and disabled
     apply: str = ""             # the host effect whose request restarts it (sbx-apply-<apply>)
     prepare: str = ""           # shell run as root before it starts: installs what it needs
-
-
-@dataclass(frozen=True)
-class EmbedLayer:
-    """An extension's part of the sandbox runtime, which host.write_embed_env
-    lays into Embed's project (/opt/e2b/<name>/) and its .env. Applying a
-    change recreates the runtime's containers (sbx-admin network apply)."""
-    name: str
-    env: Mapping[str, str] = field(default_factory=dict)     # its keys in Embed's .env; "" removes one
-    compose: tuple[pathlib.Path, ...] = ()                    # compose files merged over Embed's, in order
-    files: tuple[pathlib.Path, ...] = ()                      # what those compose files mount (./<name>/<file>)
 
 
 Worker = Callable[[threading.Event], None]
@@ -175,8 +163,9 @@ class Connector(Connection):
     def host_services(self) -> list[HostService]:
         return []
 
-    def embed(self) -> EmbedLayer | None:
-        """What it adds to the sandbox runtime (Embed) on this host."""
+    def embed(self):
+        """What it adds to the sandbox runtime when that is Embed on this host
+        (runtime.embed.host.EmbedLayer), or None."""
         return None
 
     def on_restore(self, conn):
@@ -311,10 +300,6 @@ def origin(info) -> dict | None:
 
 def host_services() -> list[HostService]:
     return [service for c in connectors() for service in c.host_services()]
-
-
-def embed() -> list[EmbedLayer]:
-    return [layer for layer in (c.embed() for c in connectors()) if layer is not None]
 
 
 def on_restore(conn):

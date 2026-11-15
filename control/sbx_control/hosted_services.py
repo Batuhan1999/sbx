@@ -7,7 +7,7 @@ server has: its container, address, admin password and storage.
 
 Its network is not an operator's setting: sandboxes of trusted repos reach
 it beside network.internal_cidrs while a managed server exists
-(host_network.allowed_cidrs), so no settings write drops it."""
+(allowed_cidrs), so no settings write drops it."""
 from __future__ import annotations
 
 import contextlib
@@ -103,6 +103,14 @@ def _save(server: Server, values: dict, status: str | None = None):
                      "status = coalesce(?, managed_servers.status)", (server.name, server.kind, reference, status, status))
     if old and old[0] != reference:
         secret_store.discard(old[0])
+
+
+def allowed_cidrs() -> list[str]:
+    """What every sandbox of a trusted repo may reach: the operator's
+    network.internal_cidrs and the managed servers' networks, computed,
+    never stored as one list, each written by its own owner. The runtime
+    enforces it (runtime.apply_network)."""
+    return list(dict.fromkeys([*settings.current().network.internal_cidrs, *networks()]))
 
 
 def networks() -> list[str]:
@@ -207,6 +215,10 @@ def up(name, kind, *, data_root=None, storage_gb=None):
     if settings.current().access.public_repos:
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
+    from . import runtime
+    if not runtime.capabilities().private_networks:
+        raise ValueError(f"sandboxes on {runtime.title()} can't reach this host's private network, so a managed "
+                         "server here would be out of their reach; use a hosted database instead")
     with _lock():
         return _up(Server(name, kind), data_root, storage_gb)
 

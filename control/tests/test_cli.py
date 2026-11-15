@@ -570,13 +570,13 @@ class SandboxViewTests(Server):
         self.assertEqual(response.json()["lifecycle"]["phase"], "preparing_workspace")
 
     def test_exec_runs_as_the_owner_and_reports_the_exit_code(self):
-        from e2b.sandbox.commands.command_handle import CommandExitException
+        from sbx_control import runtime
         ran = []
 
         class Commands:
             def run(self, command, timeout=None, **_):
                 ran.append((command, timeout))
-                raise CommandExitException(stdout="partial\n", stderr="boom\n", exit_code=2, error=None)
+                raise runtime.CommandFailed(stdout="partial\n", stderr="boom\n", exit_code=2)
         vm = self.core.Attached("try", SimpleNamespace(commands=Commands()), None)
         with patch.object(self.core, "attach", return_value=vm):
             response = self.client.post("/api/sandboxes/try/exec", json={"script": "false", "timeout": 30})

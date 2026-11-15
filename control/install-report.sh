@@ -46,5 +46,5 @@ Next:
   - Settings: sbx-admin config get [SECTION] | set SECTION JSON (the repos to serve, admins, network)
   - Agent connectors (off until connected): sbx-admin connect claude environment_secret=- (the secret on stdin)
   - Backups: sbx-admin backup; the recovery key: sbx-admin key show (keep it apart)
-  - Check sandboxes can't reach this host: cd $here && venv/bin/python -m sbx_control.netcheck
+  - Check sandboxes can't reach this host: cd $here && venv/bin/python -m sbx_control.runtime.embed.netcheck
 NEXT

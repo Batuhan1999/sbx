@@ -6,9 +6,7 @@ import shlex
 import threading
 import time
 
-from e2b import Sandbox
-
-from . import core, extensions, gate, github_app, lifecycle, platform, routing, sandboxes, settings, state, views
+from . import core, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, views
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -28,7 +26,7 @@ def probe(sandbox_id) -> extensions.Probe:
     # [x]yz matches xyz but not this command's own text.
     pattern = "|".join(f"[{p[0]}]{p[1:]}" for p in busy)
     processes = f"pgrep -fc {shlex.quote(pattern)} || true" if busy else "echo 0"
-    ssh, agents, running = Sandbox.connect(sandbox_id).commands.run(
+    ssh, agents, running = runtime.connect(sandbox_id).commands.run(
         f"ss -Htn state established '( sport = :{platform.SSH_PORT} )' | wc -l; {transcripts}; {processes}",
         timeout=15).stdout.split()
     return extensions.Probe(int(ssh), int(agents), int(running))
@@ -92,7 +90,7 @@ def delete_paused(info):
                     return
                 sandboxes.delete_locked(name)
         else:
-            Sandbox.kill(info.sandbox_id)
+            runtime.kill(info.sandbox_id)
         state.event(name or info.sandbox_id, "deleted", f"paused since {info.end_at:%Y-%m-%d %H:%M} UTC, "
                                                        f"over {settings.current().sandboxes.paused_days:g} days")
     except Exception as error:
@@ -102,7 +100,7 @@ def delete_paused(info):
 def keep_awake(info):
     """Push its timeout out: it is used. A use that is not a preview's
     request ends what a preview request's resume holds open (gate)."""
-    Sandbox.set_timeout(info.sandbox_id, core.TIMEOUT_SECONDS)
+    runtime.set_timeout(info.sandbox_id, core.TIMEOUT_SECONDS)
     gate.forget_preview_resume(info.sandbox_id)
 
 

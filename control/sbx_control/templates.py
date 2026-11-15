@@ -1,4 +1,4 @@
-"""Sandbox templates: what goes into one (a plan) and building it on Embed.
+"""Sandbox templates: what goes into one (a plan) and building it on the runtime.
 
 A template is three layers: the platform layer (the base template), the
 extensions' contributions, and the recipe (a repo's .sbx/Dockerfile, its
@@ -25,10 +25,7 @@ import subprocess
 import time
 from urllib.parse import urlsplit
 
-from e2b import Template, wait_for_port
-from e2b.template.dockerfile_parser import parse_dockerfile
-
-from . import contributions, paths, platform, recipes, settings
+from . import contributions, paths, platform, recipes, runtime, settings
 from .contributions import Contribution
 
 FILES = pathlib.Path(__file__).parent / "template_files"
@@ -59,8 +56,8 @@ def bundles():
     return paths.state_dir() / "bundles"
 
 def inline(text: str) -> str:
-    """A script as a command that runs it: Embed's file upload (Template.copy)
-    answers on 127.0.0.1 only."""
+    """A script as a command that runs it, in the build's own steps rather
+    than a file upload (Embed's answers on 127.0.0.1 only)."""
     return f"echo {base64.b64encode(text.encode()).decode()} | base64 -d > /tmp/sbx-step && bash /tmp/sbx-step"
 
 
@@ -150,34 +147,19 @@ def named_for(name: str, keys) -> bool:
 class Built:
     """A template in the runtime, as listing() reports it."""
     name: str
-    status: str   # Embed's build status: building, waiting, ready or error
+    status: str   # the runtime's build status: building, waiting, ready or error
 
 
 def listing() -> list:
     """Every template the runtime holds, by name (its alias)."""
-    from e2b.api.client.api.templates import get_templates
-    from e2b.api.client_sync import get_api_client
-    from e2b.connection_config import ConnectionConfig
-    response = get_templates.sync_detailed(client=get_api_client(ConnectionConfig()))
-    if response.status_code >= 300 or not isinstance(response.parsed, list):
-        raise RuntimeError(f"the runtime did not list its templates (HTTP {response.status_code})")
-    return [Built(alias, str(t.build_status)) for t in response.parsed for alias in t.aliases]
+    return [Built(name, status) for name, status in runtime.templates()]
 
 
 def delete(name: str) -> bool:
     """Delete a template from the runtime; False when it has none of that name.
-    Its layers stay until the storage GC finds nothing reads them (a sandbox
-    still running from it, a pause snapshot made from it)."""
-    from e2b.api.client.api.templates import delete_templates_template_id
-    from e2b.api.client_sync import get_api_client
-    from e2b.connection_config import ConnectionConfig
-    response = delete_templates_template_id.sync_detailed(name, client=get_api_client(ConnectionConfig()))
-    if response.status_code == 404:
-        return False
-    if response.status_code >= 300:
-        raise RuntimeError(f"the runtime refused to delete {name} (HTTP {response.status_code}): "
-                           f"{response.content[:300].decode(errors='replace')}")
-    return True
+    On Embed its layers stay until the storage GC finds nothing reads them (a
+    sandbox still running from it, a pause snapshot made from it)."""
+    return runtime.delete_template(name)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -223,8 +205,8 @@ def recipe_inputs(a: recipes.App) -> list:
     return [a.text("Dockerfile"), a.text("build"), a.workdir]
 
 
-def base_template() -> Template:
-    t = Template()
+def base_template() -> runtime.TemplateSpec:
+    t = runtime.TemplateSpec()
     for what, value in base_steps():
         if what == "image":
             t = t.from_image(value)
@@ -239,7 +221,7 @@ def base_template() -> Template:
     return t
 
 
-def contribute(t: Template, extras, served: list) -> Template:
+def contribute(t: runtime.TemplateSpec, extras, served: list) -> runtime.TemplateSpec:
     for c in extras:
         layer = c.template
         if not layer:
@@ -265,13 +247,13 @@ def contribute(t: Template, extras, served: list) -> Template:
     return t.set_user("user")
 
 
-def recipe_layer(t: Template, a: recipes.App, fetch: str) -> Template:
+def recipe_layer(t: runtime.TemplateSpec, a: recipes.App, fetch: str) -> runtime.TemplateSpec:
     """The recipe's part of a prebuilt template; what it reads is recipe_inputs."""
     dockerfile, build = a.text("Dockerfile"), a.text("build")
     if dockerfile and any(line.split()[:1] in (["COPY"], ["ADD"]) for line in dockerfile.upper().splitlines()):
         raise recipes.RecipeError(".sbx/Dockerfile: COPY and ADD are not supported; fetch files with RUN curl or in .sbx/build")
     if dockerfile:
-        parse_dockerfile(dockerfile, t)  # its FROM is ignored: templates start from the base
+        t = t.dockerfile(dockerfile)  # its FROM is ignored: templates start from the base
     workdir, branch = a.workdir, recipes.default_branch(a.repo)
     t = (
         t.set_user("user")
@@ -334,7 +316,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None):
         if p.base is None:
             t = base_template()
         else:
-            t = Template().from_template(p.base.name)
+            t = runtime.TemplateSpec().from_template(p.base.name)
             if p.recipe:
                 token, bundle = serve_bundle(git_dir)
                 served.append((token, bundle))
@@ -348,11 +330,11 @@ def build(p: Plan, git_dir: pathlib.Path | None = None):
                 if c.ready:
                     t = t.run_cmd(c.ready.command)
             t = t.set_workdir(workdir)
-        t = t.set_start_cmd(platform.START, wait_for_port(platform.NOVNC_PORT))
+        t = t.set_start_cmd(platform.START, platform.NOVNC_PORT)
         hidden = [token for token, _ in served]
         try:
-            return Template.build(t, alias=p.name, cpu_count=p.size["cpu"], memory_mb=p.size["memory_mb"],
-                                  min_free_disk_mb=p.size["disk_mb"], on_build_logs=build_logger(p.key, hidden))
+            return runtime.build_template(t, alias=p.name, cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],
+                                          disk_mb=p.size["disk_mb"], on_log=build_logger(p.key, hidden))
         except Exception as error:
             # The runtime's error repeats the command that failed.
             raise BuildFailed(mask(str(error), hidden)) from None

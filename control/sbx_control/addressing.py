@@ -6,7 +6,7 @@ Every function decides from the settings as they are now; nothing is kept
 from the start."""
 import re
 
-from . import ip_previews, platform, recipes, settings
+from . import ip_previews, recipes, runtime, settings
 
 # <port>-<sandbox id>.<domain>: the runtime's own host for a sandbox port.
 RAW_HOST = re.compile(r"^(\d+)-([a-z0-9]+)$")
@@ -118,7 +118,7 @@ def preview_pattern(suffix: str, path: str = "") -> str:
 
 def vite_allowed_hosts() -> str:
     """Vite rejects unknown Host headers; a leading dot allows subdomains."""
-    return host_suffix() or f".{platform.INTERNAL_HOST_SUFFIX}"
+    return host_suffix() or f".{runtime.current().internal_suffix}"
 
 
 def control_origin(request_origin: str) -> str:
@@ -130,11 +130,6 @@ def control_origin(request_origin: str) -> str:
 def on_our_hosts(url) -> bool:
     current = domain()
     return bool(current) and url.scheme == "https" and (url.hostname or "").endswith(f".{current}")
-
-
-def runtime_host() -> str:
-    """sandbox.<domain>: the E2B dashboard's header-routed host."""
-    return f"sandbox.{domain()}"
 
 
 def service_hosts() -> set:
@@ -156,5 +151,5 @@ def raw_host(host: str):
 
 
 def upstream(port: int, sandbox_id: str) -> str:
-    """The host nginx gives client-proxy for a sandbox port."""
-    return f"{port}-{sandbox_id}.{domain() or platform.INTERNAL_HOST_SUFFIX}"
+    """The Host nginx sends a sandbox port's requests to the runtime with."""
+    return runtime.upstream_host(port, sandbox_id)

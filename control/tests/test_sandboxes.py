@@ -120,7 +120,7 @@ class WorkspaceTests(Server):
                          "values ('test-resume','operator@example.com','main')")
         vm = VM("resume-vm")
         info = self.resumable("test-resume", vm)
-        with patch.object(core, "find", return_value=info), patch.object(core.Sandbox, "connect", return_value=vm), \
+        with patch.object(core, "find", return_value=info), patch.object(core.runtime, "connect", return_value=vm), \
                 patch.object(core.time, "sleep"):
             response = self.client.post("/api/sandboxes/test-resume/resume")
         self.assertEqual(response.status_code, 200, response.text)
@@ -133,7 +133,7 @@ class WorkspaceTests(Server):
         info = self.resumable("preview-fixture", vm)
         self.addCleanup(gate.forget_preview_resume, "preview-vm")
         with patch.object(core, "sandboxes", return_value=[info]), patch.object(core, "find", return_value=info), \
-                patch.object(core.Sandbox, "connect", return_value=vm), patch.object(core.time, "sleep"):
+                patch.object(core.runtime, "connect", return_value=vm), patch.object(core.time, "sleep"):
             gate.ensure_running("preview-vm")
         self.assertTrue(gate.resumed_for_preview("preview-vm"))
         self.assertTrue(vm.shipped_before_started(self.START))
@@ -144,8 +144,8 @@ class WorkspaceTests(Server):
         actual = Mock(state='paused', cpu_count=2, memory_mb=4096, template_id='small')
         recipe = recipes.App('owner/app', Path('/unused'), {'resources': {'cpu': 4, 'memory_mb': 8192}})
         with patch.object(core, 'find', return_value=info), patch.object(core, 'app_of', return_value=recipe), \
-                patch.object(core.Sandbox, 'get_info', return_value=actual), \
-                patch.object(core.Sandbox, 'connect') as connect, patch.object(core, 'capacity', return_value={}):
+                patch.object(core.runtime, 'info', return_value=actual), \
+                patch.object(core.runtime, 'connect') as connect, patch.object(core, 'capacity', return_value={}):
             result = resources.snapshot('test-vm', live=True)
         connect.assert_not_called()
         self.assertIsNone(result['usage'])
@@ -162,8 +162,8 @@ class WorkspaceTests(Server):
         runtime.commands.run.return_value.stdout = json.dumps({'disk': {'total_bytes': 20 * 1024**3,
                                                                          'available_bytes': 300 * 1024**2}})
         with patch.object(core, 'find', return_value=Mock(sandbox_id='test-vm')), \
-                patch.object(core, 'app_of', return_value=recipe), patch.object(core.Sandbox, 'get_info', return_value=actual), \
-                patch.object(core.Sandbox, 'connect', return_value=runtime), patch.object(core, 'capacity', return_value={}):
+                patch.object(core, 'app_of', return_value=recipe), patch.object(core.runtime, 'info', return_value=actual), \
+                patch.object(core.runtime, 'connect', return_value=runtime), patch.object(core, 'capacity', return_value={}):
             result = resources.snapshot('test-vm', live=True)
         self.assertEqual({issue['code'] for issue in result['issues']}, {'low_disk_space', 'disk_request_not_applied'})
 
@@ -175,7 +175,7 @@ class WorkspaceTests(Server):
         })
         with patch.object(core, 'find', return_value=Mock(sandbox_id='vm')), \
                 patch.object(core, 'app_of', return_value=recipe), patch.object(core, 'capacity', return_value={}), \
-                patch.object(core.Sandbox, 'get_info', return_value=Mock(state='running', cpu_count=4, memory_mb=8192, template_id='test')):
+                patch.object(core.runtime, 'info', return_value=Mock(state='running', cpu_count=4, memory_mb=8192, template_id='test')):
             result = resources.snapshot('test')
         self.assertEqual(result['recipe']['allocation_source'], 'build_resources')
         self.assertEqual(result['recipe']['memory_mb'], 16384)
@@ -210,7 +210,7 @@ class WorkspaceTests(Server):
             conn.execute("insert or replace into sandboxes (name, owner, branch, slug) values ('test-pause', 'operator@example.com', 'main', 'test-pause')")
         lifecycle.begin('test-pause', 'prepare')
         info = Mock(sandbox_id='vm', metadata={'sbx': 'test-pause', 'owner': 'operator@example.com'})
-        with patch.object(core, 'find', return_value=info), patch.object(core.Sandbox, 'pause') as pause:
+        with patch.object(core, 'find', return_value=info), patch.object(core.runtime, 'pause') as pause:
             response = self.client.post('/api/sandboxes/test-pause/pause')
         self.assertEqual(response.status_code, 409)
         pause.assert_not_called()
@@ -301,7 +301,7 @@ class WorkspaceTests(Server):
         self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
 
     def test_a_deleted_sandbox_s_preview_is_gone(self):
-        from sbx_control import addressing, auth, core, lifecycle, recipes
+        from sbx_control import auth, core, lifecycle, recipes
         self.repo_admin()
         app = recipes.App('owner/app', Path('/unused'), {'previews': {'': 3000}})
         info = Mock(sandbox_id='gone-vm', state='running',
@@ -310,12 +310,13 @@ class WorkspaceTests(Server):
         op.advance('allocating')
         op.advance('preparing_workspace', sandbox_id='gone-vm', runtime='running')
         op.advance('workspace_ready', finish=True)
-        headers = {'X-Original-Host': addressing.runtime_host(), 'X-Original-Sandbox-Id': 'gone-vm',
+        from sbx_control.runtime import embed
+        headers = {'X-Original-Host': embed.dashboard_host(), 'X-Original-Sandbox-Id': 'gone-vm',
                    'X-Original-Sandbox-Port': '3000',
                    'Authorization': f"Bearer {auth.mint_token('operator@example.com', 'test')}"}
         with patch.object(core, 'sandboxes', return_value=[info]), patch.object(core, 'app_of', return_value=app):
             self.assertEqual(self.client.get('/gate', headers=headers).status_code, 200)
-            with patch.object(core, 'find', return_value=info), patch.object(core.Sandbox, 'kill'), \
+            with patch.object(core, 'find', return_value=info), patch.object(core.runtime, 'kill'), \
                     patch('sbx_control.catalog.resources.delete_all', return_value=[]):
                 core.delete('gone-fixture')
             response = self.client.get('/gate', headers=headers)  # the runtime still lists the VM
@@ -339,7 +340,7 @@ class WorkspaceTests(Server):
         url = ip_previews.origin(name, 3000)
         info = Mock(sandbox_id='delete-fixture-vm', metadata={'sbx': name, 'slug': name, 'repo': app.repo})
         with patch.object(core, 'find', return_value=info), patch.object(recipes, 'load', return_value=app), \
-                patch.object(core.Sandbox, 'kill') as kill, patch('sbx_control.catalog.resources.delete_all', return_value=[]):
+                patch.object(core.runtime, 'kill') as kill, patch('sbx_control.catalog.resources.delete_all', return_value=[]):
             core.delete(name)
         kill.assert_called_once_with('delete-fixture-vm')
         from urllib.parse import urlsplit
@@ -348,7 +349,7 @@ class WorkspaceTests(Server):
 
     def embed_env(self, text):
         """Embed's env file, with a marker that its network change is pending."""
-        from sbx_control import host
+        from sbx_control.runtime.embed import host
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         env = folder / '.env'
         env.write_text(text)
@@ -364,7 +365,7 @@ class WorkspaceTests(Server):
         return any(call.args[0][:3] == ['docker', 'compose', 'up'] for call in run.call_args_list)
 
     def test_network_change_cannot_restart_a_runtime_with_existing_workspaces(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         original = 'OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=172.29.20.0/24\n'
         env, marker = self.embed_env(original)
         with patch.object(host_network.core, 'sandboxes', return_value=[Mock()]), \
@@ -376,7 +377,7 @@ class WorkspaceTests(Server):
         self.assertTrue(marker.exists())
 
     def test_network_apply_restarts_embed_with_the_new_ranges_and_clears_the_pending_marker(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
         env, marker = self.embed_env('OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=\n')
@@ -390,10 +391,10 @@ class WorkspaceTests(Server):
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', env.read_text())
 
     def test_network_apply_clears_the_pending_marker_when_configuration_is_current(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
-        from sbx_control import host
+        from sbx_control.runtime.embed import host
         original = host.render_embed_env('OTHER_SETTING=preserved\n', host.embed_env())
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', original)
         env, marker = self.embed_env(original)
@@ -411,14 +412,15 @@ class WorkspaceTests(Server):
                          (name, secret_store.seal({}, key=f'managed-server/{name}')))
 
     def test_managed_servers_network_is_reached_beside_the_operators_ranges_whatever_they_are_set_to(self):
-        from sbx_control import host, host_network, hosted_services
+        from sbx_control import hosted_services
+        from sbx_control.runtime.embed import host, network as host_network
         self.settings.update('network', {'internal_cidrs': ['10.0.0.0/24']}, by='test')
         self.assertEqual(host.embed_env()['ALLOW_SANDBOX_INTERNAL_CIDRS'], '10.0.0.0/24')
         self.managed_server()
         self.assertEqual(host.embed_env()['ALLOW_SANDBOX_INTERNAL_CIDRS'], f'10.0.0.0/24,{hosted_services.CIDR}')
         # What install.sh --internal or sbx-admin config set writes replaces the operator's list only.
         self.settings.update('network', {'internal_cidrs': ['10.9.0.0/24']}, by='test')
-        self.assertEqual(host_network.allowed_cidrs(), ['10.9.0.0/24', hosted_services.CIDR])
+        self.assertEqual(hosted_services.allowed_cidrs(), ['10.9.0.0/24', hosted_services.CIDR])
         self.settings.update('network', {'internal_cidrs': []}, by='test')
         with patch.object(host_network.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             host_network.apply_routes()
@@ -436,6 +438,14 @@ class WorkspaceTests(Server):
         self.settings.update('access', {'public_repos': True}, by='test')
         with self.assertRaisesRegex(ValueError, 'public_repos'):
             hosted_services.up('shared-ch', 'clickhouse')
+
+    def test_a_runtime_whose_sandboxes_cant_reach_this_host_gets_no_managed_server(self):
+        from sbx_control import hosted_services, runtime
+        with patch.object(runtime, 'capabilities', return_value=runtime.Capabilities()), \
+                patch.object(hosted_services, 'docker') as docker, \
+                self.assertRaisesRegex(ValueError, "can't reach this host's private network"):
+            hosted_services.up('shared-ch', 'clickhouse')
+        docker.assert_not_called()
 
     def test_server_up_writes_no_network_setting_and_asks_the_host_to_apply_its_network(self):
         import json
