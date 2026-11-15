@@ -1,9 +1,10 @@
 """E2B Embed on this host: Firecracker VMs that E2B's self-hosted stack runs
 from /opt/e2b (vendor/e2b-embed). The only module of sbx that imports the
-E2B SDK; platform.connect points the SDK at Embed's API."""
+E2B SDK; configure points the SDK at Embed's API."""
 from __future__ import annotations
 
 import datetime
+import os
 
 from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, Snapshot, TemplateSpec, Timeout
 from . import capacity, storage
@@ -68,6 +69,10 @@ class _Handle:
         return self._sandbox.kill()
 
 
+CLIENT_PROXY_PORT = 3002    # Embed's client-proxy, which reaches <port>-<sandbox id> hosts
+# The <port>-<id> host suffix client-proxy routes when there is no domain.
+INTERNAL_HOST_SUFFIX = "e2b.sandboxes.internal"
+ENVD_PORT = 49983           # E2B's control daemon in every sandbox; it checks its own access token
 # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml): a
 # pause needs room on disk for the sandbox's whole memory plus this.
 PAUSE_DISK_HEADROOM_MB = 1024
@@ -78,6 +83,36 @@ class Embed:
     title = "E2B Embed"
     capabilities = Capabilities(snapshots=True, private_networks=True, memory_pause=True)
     disk_path = str(storage.ROOT)
+    ingress = f"http://127.0.0.1:{CLIENT_PROXY_PORT}"
+    ingress_cleared = ("E2b-Sandbox-Id", "E2b-Sandbox-Port")   # client-proxy routes on them too
+    internal_suffix = INTERNAL_HOST_SUFFIX
+    ports = frozenset({ENVD_PORT})
+
+    def configure(self, secrets):
+        """install.sh copies the key and URLs from Embed's sdk.env into runtime.env."""
+        if "E2B_API_KEY" not in secrets or not ({"E2B_API_URL", "E2B_HOST"} & secrets.keys()):
+            raise SystemExit("missing platform secrets: E2B_API_KEY and E2B_API_URL (/etc/sbx/runtime.env, written "
+                             "by install.sh)")
+        host = secrets.get("E2B_HOST", "")
+        # The SDK reads these on every call; this is the one place that sets them.
+        os.environ["E2B_API_KEY"] = secrets["E2B_API_KEY"]
+        os.environ["E2B_API_URL"] = secrets.get("E2B_API_URL") or f"http://{host}:3000"
+        # A sandbox. hostname makes client-proxy route by header (proxy/host.go).
+        os.environ["E2B_SANDBOX_URL"] = secrets.get("E2B_SANDBOX_URL") or f"http://sandbox.{host}:{CLIENT_PROXY_PORT}"
+
+    def upstream_host(self, port, sandbox_id):
+        from ... import addressing
+        return f"{port}-{sandbox_id}.{addressing.domain() or INTERNAL_HOST_SUFFIX}"
+
+    def own_route(self, host, sandbox_id, port):
+        """sandbox.<domain> is the E2B dashboard's header-routed host: the
+        target is in the headers, so the same rules apply to it as to the
+        preview hosts, but for envd, which checks its own token."""
+        if host != dashboard_host():
+            return None
+        if port == str(ENVD_PORT):
+            return True
+        return int(port or 0), sandbox_id
 
     def create(self, template, *, timeout, envs=None, metadata=None, deny_out=None, on_timeout=None,
                auto_resume=None):
@@ -227,6 +262,12 @@ class Embed:
     def test(self):
         from . import connection
         return connection.test()
+
+
+def dashboard_host() -> str:
+    """sandbox.<domain>: the E2B dashboard's header-routed host."""
+    from ... import addressing
+    return f"sandbox.{addressing.domain()}"
 
 
 def template(spec: TemplateSpec):

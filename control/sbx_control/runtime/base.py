@@ -134,6 +134,26 @@ class Runtime(Protocol):
     title: str
     capabilities: Capabilities
     disk_path: str    # where it keeps templates and snapshots, as messages name it
+    # The last hop of a preview: nginx proxies to ingress with the Host
+    # upstream_host names, after clearing the request headers in
+    # ingress_cleared (a browser must not pick the VM). Without a domain the
+    # app sees hosts ending in internal_suffix.
+    ingress: str
+    ingress_cleared: tuple
+    internal_suffix: str
+    ports: frozenset  # its own ports in every sandbox: never a preview
+
+    def configure(self, secrets: dict) -> None:
+        """Take its credentials from the platform secrets (runtime.env);
+        SystemExit when they are missing."""
+
+    def upstream_host(self, port: int, sandbox_id: str) -> str:
+        """The Host nginx sends a sandbox port's requests to ingress with."""
+
+    def own_route(self, host: str, sandbox_id: str, port: str):
+        """For a request to the runtime's own host (Embed's dashboard): True
+        to let it through ungated, (port, sandbox_id) to gate it like any
+        preview; None for every other host."""
 
     def create(self, template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
                deny_out: list | None = None, on_timeout: str | None = None,

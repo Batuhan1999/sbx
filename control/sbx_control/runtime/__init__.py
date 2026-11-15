@@ -114,6 +114,14 @@ def jobs() -> list:
     return current().jobs()
 
 
+def upstream_host(port: int, sandbox_id: str) -> str:
+    return current().upstream_host(port, sandbox_id)
+
+
+def own_route(host: str, sandbox_id: str, port: str):
+    return current().own_route(host, sandbox_id, port)
+
+
 def capabilities() -> Capabilities:
     return current().capabilities
 

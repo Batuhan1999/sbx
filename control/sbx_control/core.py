@@ -130,7 +130,7 @@ def detectable(port: int, a: recipes.App) -> bool:
 
 def detectable_port(port: int) -> bool:
     return ((port == 80 or 1024 <= port <= 65535) and port not in platform.PLATFORM_PORTS
-            and port not in extensions.reserved_ports())
+            and port not in runtime.current().ports and port not in extensions.reserved_ports())
 
 
 def detected_ports(listening: str, a: recipes.App) -> dict:

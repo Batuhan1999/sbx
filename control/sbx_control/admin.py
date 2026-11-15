@@ -312,7 +312,7 @@ def main(argv: list) -> int:
             print(str(error), file=sys.stderr)
             return 1
     if a.cmd == "preview":
-        from .preview_proxy import serve
+        from .runtime.embed.proxy import serve
         if not 0 <= a.listen <= 65535 or (a.port is not None and not 1 <= a.port <= 65535):
             p.error("ports must be between 1 and 65535 (listen 0 chooses a free port)")
         try:

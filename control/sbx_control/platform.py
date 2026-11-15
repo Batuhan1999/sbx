@@ -5,7 +5,6 @@ every template runs.
 Nothing here runs at import. Each entry point (the server's lifespan, a host
 CLI) calls connect() once; code that needs the credentials later asks
 credentials()."""
-import os
 from dataclasses import dataclass
 
 from . import state, vault
@@ -16,15 +15,11 @@ VNC_PORTS = (5900, 5901)    # VNC's default display port, and the desktop's x11v
 VNC_PORT = VNC_PORTS[1]
 NOVNC_PORT = 6080           # websockify in front of VNC, the desktop preview
 SSH_BRIDGE_PORT = 8081      # the CLI's SSH-over-WebSocket bridge (websocat in START)
-ENVD_PORT = 49983           # the sandbox's control daemon; it checks its own access token
 # Never a detected preview, even where the operator removed the preview that declares it.
-# Extensions add their own (extensions.Connector.ports).
-PLATFORM_PORTS = frozenset({SSH_PORT, *VNC_PORTS, NOVNC_PORT, SSH_BRIDGE_PORT, ENVD_PORT})
+# The runtime adds its own (runtime.Runtime.ports), extensions theirs (extensions.Connector.ports).
+PLATFORM_PORTS = frozenset({SSH_PORT, *VNC_PORTS, NOVNC_PORT, SSH_BRIDGE_PORT})
 # On the host:
 CONTROL_PORT = 8080         # sbx-control, on loopback behind nginx
-CLIENT_PROXY_PORT = 3002    # Embed's client-proxy, which reaches <port>-<sandbox id> hosts
-# The <port>-<id> host suffix client-proxy routes when there is no domain.
-INTERNAL_HOST_SUFFIX = "e2b.sandboxes.internal"
 SESSION_COOKIE = "sbx_session"
 # The platform's tmpfs in the sandbox: env, keys, the shipped recipe, the
 # guest helper (core.ship_guest), what extensions write.
@@ -72,19 +67,13 @@ _connected: Credentials | None = None
 
 
 def connect() -> Credentials:
-    """Read the platform secrets and point the E2B SDK at Embed. install.sh
-    copies the key and URLs from Embed's sdk.env. Also called again when the
-    secrets store reports a change."""
+    """Read the platform secrets and hand the runtime its own (runtime.env,
+    which install.sh writes). Also called again when the secrets store
+    reports a change."""
     global _connected
+    from . import runtime
     found = vault.platform_secrets()
-    if "E2B_API_KEY" not in found or not ({"E2B_API_URL", "E2B_HOST"} & found.keys()):
-        raise SystemExit("missing platform secrets: E2B_API_KEY and E2B_API_URL (/etc/sbx/runtime.env, written by install.sh)")
-    host = found.get("E2B_HOST", "")
-    # The SDK reads these on every call; this is the one place that sets them.
-    os.environ["E2B_API_KEY"] = found["E2B_API_KEY"]
-    os.environ["E2B_API_URL"] = found.get("E2B_API_URL") or f"http://{host}:3000"
-    # A sandbox. hostname makes client-proxy route by header (proxy/host.go).
-    os.environ["E2B_SANDBOX_URL"] = found.get("E2B_SANDBOX_URL") or f"http://sandbox.{host}:{CLIENT_PROXY_PORT}"
+    runtime.current().configure(found)
     key = found.get("GITHUB_DEPLOY_KEY", "").strip()
     _connected = Credentials(key + "\n" if key else "", found)
     return _connected

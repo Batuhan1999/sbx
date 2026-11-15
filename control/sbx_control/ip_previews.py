@@ -5,7 +5,7 @@ import sys
 import time
 from urllib.parse import urlencode, urlsplit
 
-from . import platform, settings, state
+from . import platform, runtime, settings, state
 
 FIRST_PORT = 21000
 LAST_PORT = 21255
@@ -148,6 +148,7 @@ def nginx(value, certificate):
     ip = ipaddress.ip_address(value)
     if certificate not in ('bootstrap', str(ip)):
         raise ValueError('Invalid IP certificate name')
+    cleared = "\n".join(f'    proxy_set_header {name} "";' for name in runtime.current().ingress_cleared)
     first, last = port_range()
     listeners = '\n'.join(f'  listen {"[::]:" if ip.version == 6 else ""}{p} ssl;' for p in range(first, last + 1))
     return f'''# IP previews share the control plane's renewable IP certificate.
@@ -189,11 +190,10 @@ server {{
     auth_request_set $ip_gone $upstream_http_x_sbx_gone;
     error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
-    proxy_pass http://127.0.0.1:{platform.CLIENT_PROXY_PORT};
+    proxy_pass {runtime.current().ingress};
     proxy_http_version 1.1;
     proxy_set_header Host $ip_upstream;
-    proxy_set_header E2b-Sandbox-Id "";
-    proxy_set_header E2b-Sandbox-Port "";
+{cleared}
     proxy_set_header X-Forwarded-Host {host(str(ip))}:$server_port;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-For $remote_addr;

@@ -301,7 +301,7 @@ class WorkspaceTests(Server):
         self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
 
     def test_a_deleted_sandbox_s_preview_is_gone(self):
-        from sbx_control import addressing, auth, core, lifecycle, recipes
+        from sbx_control import auth, core, lifecycle, recipes
         self.repo_admin()
         app = recipes.App('owner/app', Path('/unused'), {'previews': {'': 3000}})
         info = Mock(sandbox_id='gone-vm', state='running',
@@ -310,7 +310,8 @@ class WorkspaceTests(Server):
         op.advance('allocating')
         op.advance('preparing_workspace', sandbox_id='gone-vm', runtime='running')
         op.advance('workspace_ready', finish=True)
-        headers = {'X-Original-Host': addressing.runtime_host(), 'X-Original-Sandbox-Id': 'gone-vm',
+        from sbx_control.runtime import embed
+        headers = {'X-Original-Host': embed.dashboard_host(), 'X-Original-Sandbox-Id': 'gone-vm',
                    'X-Original-Sandbox-Port': '3000',
                    'Authorization': f"Bearer {auth.mint_token('operator@example.com', 'test')}"}
         with patch.object(core, 'sandboxes', return_value=[info]), patch.object(core, 'app_of', return_value=app):

@@ -12,7 +12,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from . import addressing, auth, core, ip_previews, lifecycle, platform, routing
+from . import addressing, auth, core, ip_previews, lifecycle, routing, runtime
 
 router = APIRouter()
 GONE = "X-Sbx-Gone"
@@ -103,8 +103,10 @@ def _gate(request: Request):
         if ip_route is None:
             raise HTTPException(404)
     preflight = bool(ip_route and request.headers.get('x-original-method') == 'OPTIONS')
-    if request.headers.get("x-original-host", "").lower() == addressing.runtime_host() and \
-            request.headers.get("x-original-sandbox-port") == str(platform.ENVD_PORT):
+    own = runtime.own_route(request.headers.get("x-original-host", "").lower(),
+                            request.headers.get("x-original-sandbox-id", ""),
+                            request.headers.get("x-original-sandbox-port") or "")
+    if own is True:
         return Response(status_code=200)
     header = request.headers.get("authorization", "")
     email = auth.token_email(header[7:].strip()) if header.lower().startswith("bearer ") else None
@@ -123,11 +125,8 @@ def _gate(request: Request):
         if target is None:
             raise HTTPException(404)
         sandbox_id = target[0]
-    elif host == addressing.runtime_host():
-        # Header routing (the E2B dashboard): the target is in the headers,
-        # so the same rules apply to it as to the host names below.
-        sandbox_id = request.headers.get("x-original-sandbox-id", "")
-        port = int(request.headers.get("x-original-sandbox-port") or 0)
+    elif own:
+        port, sandbox_id = own   # the runtime's own host routes by header
     else:
         found = addressing.raw_host(host) or routing.readable_host(host)
         if found is None:
@@ -151,7 +150,7 @@ def _gate(request: Request):
         raise HTTPException(403)
     if not preflight:
         ensure_running(sandbox_id)
-    # nginx sends the request to client-proxy under the <port>-<id> host.
+    # nginx sends the request to the runtime under the host it names (upstream).
     headers = {"X-Sbx-User": email or '', "X-Sbx-Upstream": upstream, "X-Sbx-Auth": kind}
     if ip_route:
         headers['X-Sbx-Cookies'] = ip_previews.app_cookies(request.headers.get('cookie', ''))
