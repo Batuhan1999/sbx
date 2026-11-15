@@ -1,13 +1,18 @@
 # sbx
 
-**Run GitHub repositories in development sandboxes on your own server.**
+**Self-hosted orchestration for agent sandboxes.**
 
-sbx is a self-hosted platform that runs each branch of a repository in its own
-Firecracker VM, using [E2B Embed](vendor/e2b-embed/compose/README.md) as the
-runtime. You give your coding agent the repository and access to a server; the
-agent installs sbx, discovers what the app needs, and writes a small `.sbx/`
-recipe. After that, `sbx up NAME` starts a sandbox with the app running, its own
-development data, injected environment variables, and HTTPS preview links.
+Sandboxes are cheap now; the hard part is everything your app talks to. sbx
+handles that part. Your coding agent reads the repository, picks the services
+it needs from a shared catalog and writes one small `.sbx/` recipe. From then
+on, every sandbox gets its own databases and other resources on your shared or
+hosted services, its secrets injected, the app running and HTTPS preview links,
+and all of it is cleaned up when the sandbox goes. `sbx up`, Claude Code
+sessions, Amp threads and PR previews all start from that recipe; Codex and
+any other agent work over SSH.
+
+Each sandbox is a Firecracker VM on your own server, with
+[E2B Embed](vendor/e2b-embed/compose/README.md) as the runtime.
 
 ## Quick start with your coding agent
 
