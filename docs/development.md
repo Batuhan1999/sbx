@@ -154,7 +154,9 @@ not an extension. Today it is E2B Embed on the host.
   `test_runtime.py` fails if any module outside `runtime/embed/` imports `e2b`.
 - `control/sbx_control/runtime/embed/` is everything that knows Embed: the SDK
   calls (`__init__.py`), room for sandboxes (`capacity.py`), how it enforces
-  `hosted_services.allowed_cidrs` (`network.py`), its storage (`storage.py`,
+  `hosted_services.allowed_cidrs` and limits its egress proxy (`network.py`,
+  which `host-guard.sh` runs as `python -m sbx_control.runtime guard`), its
+  storage (`storage.py`,
   read by `embed/storage-gc.py` and `embed/compact-snapshot.py`), its project
   on the host (`host.py`), its settings card (`connection.py`), and the
   loopback preview (`proxy.py`).
@@ -162,14 +164,15 @@ not an extension. Today it is E2B Embed on the host.
 The rules stay in the core. Those are what sandboxes may reach, preview names,
 login and access, and when to pause or delete. A runtime only carries them
 out: it enforces the network ranges, and its `ingress` and `upstream_host`
-are where nginx sends a preview.
+are where nginx sends a preview. It also names what it reads from
+`/etc/sbx/runtime.env` (`credential_keys`, and the `secret_key` that store
+enable seals) and what it needs from the host (`capabilities`: managed
+servers need `private_networks`, Amp's project caches need `snapshots`).
 
 A second runtime implements the `Runtime` protocol in its own package, and
-`runtime.current()` chooses it. Some places still assume Embed:
+`runtime.current()` chooses it. Two places still assume Embed:
 
 - `install.sh` installs it;
-- `host-guard.sh` writes rules for its egress proxy;
-- `runtime.env` holds `E2B_*` keys;
 - the settings effects are named `embed-env` and `embed-network`.
 
 ### Embed's configuration

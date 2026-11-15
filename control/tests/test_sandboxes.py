@@ -439,6 +439,14 @@ class WorkspaceTests(Server):
         with self.assertRaisesRegex(ValueError, 'public_repos'):
             hosted_services.up('shared-ch', 'clickhouse')
 
+    def test_a_runtime_whose_sandboxes_cant_reach_this_host_gets_no_managed_server(self):
+        from sbx_control import hosted_services, runtime
+        with patch.object(runtime, 'capabilities', return_value=runtime.Capabilities()), \
+                patch.object(hosted_services, 'docker') as docker, \
+                self.assertRaisesRegex(ValueError, "can't reach this host's private network"):
+            hosted_services.up('shared-ch', 'clickhouse')
+        docker.assert_not_called()
+
     def test_server_up_writes_no_network_setting_and_asks_the_host_to_apply_its_network(self):
         import json
         from sbx_control import hosted_services

@@ -215,6 +215,10 @@ def up(name, kind, *, data_root=None, storage_gb=None):
     if settings.current().access.public_repos:
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
+    from . import runtime
+    if not runtime.capabilities().private_networks:
+        raise ValueError(f"sandboxes on {runtime.title()} can't reach this host's private network, so a managed "
+                         "server here would be out of their reach; use a hosted database instead")
     with _lock():
         return _up(Server(name, kind), data_root, storage_gb)
 

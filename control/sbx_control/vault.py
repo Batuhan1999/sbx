@@ -42,7 +42,6 @@ INFISICAL_WEBHOOK_TOKEN = Key("INFISICAL_WEBHOOK_TOKEN")
 PLATFORM = (LOGIN_PASSWORD, OIDC_CLIENT_SECRET, GITHUB_DEPLOY_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
             CLOUDFLARE_API_TOKEN, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET, INFISICAL_WEBHOOK_TOKEN)
 BOOTSTRAP = {"INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_WEBHOOK_TOKEN"}
-RUNTIME_KEYS = ("E2B_API_KEY", "E2B_API_URL", "E2B_SANDBOX_URL", "E2B_HOST", "E2B_DOMAIN")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -130,12 +129,15 @@ def extras() -> list[str]:
 
 
 def _runtime_file() -> dict:
-    """runtime.env as written: plain values, or references into the store."""
+    """runtime.env as written: plain values, or references into the store,
+    of the keys the installed runtime reads (Runtime.credential_keys)."""
+    from . import runtime as sandbox_runtime
+    keys = sandbox_runtime.current().credential_keys
     file = paths.runtime_env()
     out = {}
     for line in file.read_text().splitlines() if file.exists() else ():
         name, sep, value = line.partition("=")
-        if not sep or line.lstrip().startswith("#") or name not in RUNTIME_KEYS:
+        if not sep or line.lstrip().startswith("#") or name not in keys:
             continue
         out[name] = shlex.split(value)[0] if value.strip() else ""
     return out
@@ -154,15 +156,18 @@ def runtime_sealed() -> bool:
 
 
 def seal_runtime_file() -> int:
-    """The runtime's API key as a reference into the store (store enable)."""
+    """The runtime's secret (Runtime.secret_key) as a reference into the store (store enable)."""
+    from . import runtime as sandbox_runtime
+    current = sandbox_runtime.current()
     file = paths.runtime_env()
     found = runtime()
-    if not found.get("E2B_API_KEY") or runtime_sealed():
+    secret = current.secret_key
+    if not found.get(secret) or runtime_sealed():
         return 0
-    lines = {**found, "E2B_API_KEY": secret_store.seal(found["E2B_API_KEY"], key="runtime/E2B_API_KEY")}
+    lines = {**found, secret: secret_store.seal(found[secret], key=f"runtime/{secret}")}
     temporary = file.with_suffix(".new")
     temporary.touch(mode=0o600)
-    temporary.write_text("# This host's sandbox runtime (E2B Embed). Written by install.sh; not backed up.\n"
+    temporary.write_text(f"# This host's sandbox runtime ({current.title}). Written by install.sh; not backed up.\n"
                          + "".join(f"{k}={shlex.quote(v)}\n" for k, v in lines.items()))
     temporary.replace(file)
     return 1

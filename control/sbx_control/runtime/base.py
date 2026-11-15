@@ -62,8 +62,7 @@ class Capabilities:
     """What a runtime can do beyond the basics; extensions and settings that
     need one check it."""
     snapshots: bool = False         # filesystem snapshots a new sandbox can start from
-    private_networks: bool = False  # sandboxes reach private ranges of this host's network
-    memory_pause: bool = False      # a paused sandbox resumes with its processes
+    private_networks: bool = False  # sandboxes reach private ranges of this host's network (managed servers)
 
 
 class TemplateSpec:
@@ -143,12 +142,18 @@ class Runtime(Protocol):
     internal_suffix: str
     ports: frozenset  # its own ports in every sandbox: never a preview
     host_unit: str | None   # the systemd unit that runs it on this host, which the host's guard needs
+    credential_keys: tuple  # what it reads from /etc/sbx/runtime.env (vault.runtime)
+    secret_key: str         # the one of them that is a secret, sealed into the store
 
     def host_units(self) -> list:
         """Its systemd units on this host (host.Unit), installed before the platform's."""
 
     def host_commands(self, into) -> dict:
         """Its commands in /usr/local/sbin: name -> script, into(command) runs one in the active release."""
+
+    def guard_host(self) -> None:
+        """Its own rules on this host's firewall, after the platform's
+        (sbx-host-guard): what its sandboxes' traffic may reach here."""
 
     def apply_host(self, key: str) -> bool:
         """A settings change's root-side effect (sbx-apply KEY) when key is

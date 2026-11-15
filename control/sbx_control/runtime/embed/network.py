@@ -1,8 +1,20 @@
 """Make Embed enforce what sandboxes may reach (hosted_services.allowed_cidrs):
 its slot firewall, which recreating the runtime applies before sandboxes
-are created, and this host's forwarding rules for its slots' veths."""
+are created, and this host's forwarding rules for its slots' veths.
+
+guard() is Embed's part of sbx-host-guard (host-guard.sh), after the
+platform's rules. Sandboxes' TCP leaves through Embed's egress proxy in the
+orchestrator's container, i.e. from this host itself, so per-sandbox rules
+and the IMDS hop limit don't apply to it. For that container's cgroup only:
+no cloud metadata service, and none of this host's own addresses but
+loopback (the orchestrator's own) and network.host_ports (443: nginx and
+the gate). On bare metal the public address is on an interface, and the
+proxy would otherwise reach every port the host listens on. It runs at boot
+and whenever install.sh recreates Embed's containers (the orchestrator's
+cgroup changes with its container)."""
 import fcntl
 import ipaddress
+import shlex
 import subprocess
 
 from ... import core, hosted_services, paths, platform, settings
@@ -71,5 +83,33 @@ def _compose_up():
                    stdout=subprocess.DEVNULL)
 
 
-if __name__ == '__main__':   # sbx-host-guard, after its own rules
+def guard():
+    egress_rules()
     apply_routes()
+
+
+def egress_rules():
+    """SBX-EGRESS for the orchestrator's cgroup, replacing an earlier run's."""
+    from ... import host as platform_host
+    # Docker Compose names the container <project>-<service>-1; the project is /opt/e2b.
+    container = subprocess.run(["docker", "inspect", "-f", "{{.Id}}", "e2b-orchestrator-1"], check=True,
+                               capture_output=True, text=True).stdout.strip()
+    cgroup = f"system.slice/docker-{container}.scope"
+    host_ports = platform_host.shell()["host_ports"].split()
+    for tool, loopback in (("iptables", "127.0.0.0/8"), ("ip6tables", "::1/128")):
+        def rule(*args, check=True):
+            return subprocess.run([tool, "-w", *args], check=check, capture_output=True, text=True)
+        for chain in ("OUTPUT", "INPUT"):
+            for line in rule("-S", chain).stdout.splitlines():
+                if line.startswith("-A ") and "-j SBX-EGRESS" in line:
+                    rule("-D", *shlex.split(line)[1:])
+        if rule("-N", "SBX-EGRESS", check=False).returncode:
+            rule("-F", "SBX-EGRESS")
+        if tool == "iptables":
+            rule("-A", "SBX-EGRESS", "-d", "169.254.169.254/32", "-j", "REJECT")
+        for port in host_ports:
+            rule("-A", "SBX-EGRESS", "-p", "tcp", "--dport", port, "-m", "addrtype", "--dst-type", "LOCAL",
+                 "-j", "RETURN")
+        rule("-A", "SBX-EGRESS", "-p", "tcp", "-m", "addrtype", "--dst-type", "LOCAL", "!", "-d", loopback,
+             "-j", "REJECT", "--reject-with", "tcp-reset")
+        rule("-I", "OUTPUT", "-m", "cgroup", "--path", cgroup, "-j", "SBX-EGRESS")

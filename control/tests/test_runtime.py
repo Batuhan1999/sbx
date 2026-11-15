@@ -108,6 +108,33 @@ class Embed(unittest.TestCase):
         self.assertTrue(self.embed.failure(SandboxException("500")))
         self.assertFalse(self.embed.failure(ValueError("sbx's own")))
 
+    def test_the_egress_proxy_reaches_only_the_host_ports_and_replaces_an_earlier_run(self):
+        from sbx_control import host
+        from sbx_control.runtime.embed import network
+        old = "-A OUTPUT -m cgroup --path system.slice/docker-old.scope -j SBX-EGRESS"
+
+        def run(command, **_):
+            if command[:2] == ["docker", "inspect"]:
+                return Mock(stdout="new\n", returncode=0)
+            if command[2:] == ["-S", "OUTPUT"]:
+                return Mock(stdout=f"-P OUTPUT ACCEPT\n{old}\n", returncode=0)
+            return Mock(stdout="", returncode=1 if command[2:4] == ["-N", "SBX-EGRESS"] else 0)
+        with patch.object(host, "shell", return_value={"host_ports": "443 21000"}), \
+                patch.object(network.subprocess, "run", side_effect=run) as calls:
+            network.egress_rules()
+        v4 = [c.args[0][2:] for c in calls.call_args_list if c.args[0][0] == "iptables"]
+        self.assertIn(["-D", "OUTPUT", "-m", "cgroup", "--path", "system.slice/docker-old.scope", "-j", "SBX-EGRESS"], v4)
+        self.assertIn(["-F", "SBX-EGRESS"], v4)
+        self.assertIn(["-A", "SBX-EGRESS", "-d", "169.254.169.254/32", "-j", "REJECT"], v4)
+        for port in ("443", "21000"):
+            self.assertIn(["-A", "SBX-EGRESS", "-p", "tcp", "--dport", port, "-m", "addrtype", "--dst-type", "LOCAL",
+                           "-j", "RETURN"], v4)
+        self.assertEqual(v4[-1], ["-I", "OUTPUT", "-m", "cgroup", "--path", "system.slice/docker-new.scope",
+                                  "-j", "SBX-EGRESS"])
+        v6 = [c.args[0][2:] for c in calls.call_args_list if c.args[0][0] == "ip6tables"]
+        self.assertNotIn(["-A", "SBX-EGRESS", "-d", "169.254.169.254/32", "-j", "REJECT"], v6)
+        self.assertIn("::1/128", v6[-2])
+
     def test_a_template_spec_becomes_the_same_builder_steps_in_order(self):
         from sbx_control import runtime
         from sbx_control.runtime import embed

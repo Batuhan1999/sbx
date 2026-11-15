@@ -81,13 +81,15 @@ PAUSE_DISK_HEADROOM_MB = 1024
 class Embed:
     kind = "embed"
     title = "E2B Embed"
-    capabilities = Capabilities(snapshots=True, private_networks=True, memory_pause=True)
+    capabilities = Capabilities(snapshots=True, private_networks=True)
     disk_path = str(storage.ROOT)
     ingress = f"http://127.0.0.1:{CLIENT_PROXY_PORT}"
     ingress_cleared = ("E2b-Sandbox-Id", "E2b-Sandbox-Port")   # client-proxy routes on them too
     internal_suffix = INTERNAL_HOST_SUFFIX
     ports = frozenset({ENVD_PORT})
     host_unit = "e2b-embed.service"
+    credential_keys = ("E2B_API_KEY", "E2B_API_URL", "E2B_SANDBOX_URL", "E2B_HOST", "E2B_DOMAIN")
+    secret_key = "E2B_API_KEY"
 
     def configure(self, secrets):
         """install.sh copies the key and URLs from Embed's sdk.env into runtime.env."""
@@ -267,6 +269,10 @@ class Embed:
     def apply_host(self, key):
         from . import host
         return host.apply(key)
+
+    def guard_host(self):
+        from . import network
+        network.guard()
 
     def readiness(self, facts):
         from ... import vault
