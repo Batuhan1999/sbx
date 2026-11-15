@@ -3,7 +3,7 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-from . import (core, embed_storage, extensions, lifecycle, recipes, sandboxes, settings, template_builds, templates,
+from . import (core, extensions, lifecycle, recipes, runtime, sandboxes, settings, template_builds, templates,
     variables)
 from .catalog import attachments
 from .state import db
@@ -63,7 +63,7 @@ def find_item(name: str):
 
 
 def snapshot_usage(sandbox_id: str) -> dict:
-    return embed_storage.usage().get(sandbox_id) or {}
+    return runtime.snapshot_usage(sandbox_id)
 
 
 def services_of(name: str) -> list:

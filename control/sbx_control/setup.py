@@ -9,7 +9,7 @@ import pathlib
 import secrets
 import sqlite3
 
-from . import embed_storage, paths, settings, vault
+from . import paths, runtime, settings, vault
 from .state import Setting
 
 COMPLETE = Setting("setup_complete")
@@ -108,7 +108,7 @@ def host_facts() -> dict:
             facts["memory_gb"] = round(int(f.readline().split()[1]) / 1024 / 1024)
     except (OSError, ValueError, IndexError):
         pass
-    disk = embed_storage.disk()
+    disk = runtime.disk()
     if disk:
         facts["disk_free_gb"] = disk["free_gb"]
     return facts

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import core, embed_storage, infisical_api, keeper, settings, template_builds, templates
+from . import core, infisical_api, keeper, runtime, settings, template_builds, templates
 
 @dataclass(frozen=True)
 class Job:
@@ -20,7 +20,7 @@ class Job:
     title: str
     text: Callable[[], str]
     schedule: Callable[[], str]
-    kind: str = "keeper"                       # timer: a systemd unit; keeper: a loop in sbx-control
+    kind: str = "keeper"   # timer: a systemd unit; keeper: a loop in sbx-control; manual: run by hand
     enabled: Callable[[], bool] = lambda: True
     runnable: bool = False
 
@@ -34,8 +34,6 @@ def _s():
 
 
 JOBS = (
-    Job("e2b-storage-gc", "storage", "Template storage cleanup",
-        lambda: "Deletes template layers no build or live sandbox needs.", lambda: "hourly", "timer", runnable=True),
     Job("sbx-backup", "secrets", "Backup",
         lambda: "A backup bundle of the installation, whatever the secret store (settings backup: every_hours, to, keep).",
         lambda: f"every {_s().backup.every_hours} hours", "timer", enabled=lambda: bool(_s().backup.every_hours),
@@ -63,7 +61,6 @@ JOBS = (
         lambda: "Values edited in Infisical itself reach the sandboxes that use them.",
         lambda: f"{_every(infisical_api.POLL_SECONDS)}, and its webhook", enabled=lambda: _s().store.mode == "infisical"),
 )
-TIMERS = {job.id for job in JOBS if job.kind == "timer"}
 _started = time.time()
 
 
@@ -97,8 +94,9 @@ def jobs() -> list:
     """Every job, classified; timers from systemd, the keeper's from what
     sbx-control knows."""
     out = []
-    for job in JOBS:
-        info = _systemd(job.id) if job.kind == "timer" else {"available": True, "uptime_s": int(time.time() - _started)}
+    for job in defined():
+        info = (_systemd(job.id) if job.kind == "timer" else {"available": True} if job.kind == "manual"
+                else {"available": True, "uptime_s": int(time.time() - _started)})
         if not job.enabled() and not (job.kind == "timer" and info.get("available")):
             continue
         out.append({"id": job.id, "group": job.group, "title": job.title, "text": job.text(), "kind": job.kind,
@@ -107,15 +105,16 @@ def jobs() -> list:
         out.append({"id": f"template:{repo}", "group": "templates", "title": f"Template build · {repo}", "kind": "build",
                     "text": build.get("error") or "", "status": build.get("status"), "last": build.get("finished_at") or build.get("started_at"),
                     "available": True, "runnable": build.get("status") != "building"})
-    usage = embed_storage.USAGE
-    out.append({"id": "compact", "group": "storage", "title": "Snapshot compaction", "kind": "manual", "available": True, "runnable": False,
-                "text": "A paused sandbox's chain of pause snapshots folded into one build: `e2b-compact-snapshot <sandbox id> --apply` on the host."
-                        + (f" Usage per sandbox in {usage}." if usage.exists() else "")})
     return out
 
 
+def defined() -> tuple:
+    """The platform's jobs, then the runtime's upkeep (runtime.jobs)."""
+    return (*JOBS, *runtime.jobs())
+
+
 def run_now(job_id: str) -> str:
-    if job_id in TIMERS:
+    if job_id in {job.id for job in defined() if job.kind == "timer"}:
         try:
             subprocess.run(["systemctl", "start", "--no-block", f"{job_id}.service"], check=True, capture_output=True, timeout=10)
         except (OSError, subprocess.SubprocessError) as error:

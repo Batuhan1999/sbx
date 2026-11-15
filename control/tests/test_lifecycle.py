@@ -192,7 +192,7 @@ class LifecycleTests(Installation):
         with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
                 patch.object(self.core.runtime, "pause", side_effect=self.busy()), \
                 patch.object(self.core, "find", return_value=self.info), \
-                patch("sbx_control.embed_storage.free_mb", return_value=3 * 1024), \
+                patch("sbx_control.runtime.embed.storage.free_mb", return_value=3 * 1024), \
                 self.assertRaisesRegex(self.core.PauseRefused, r"disk has 3\.0 GB free .* memory \(4\.0 GB\) plus 1 GB"):
             self.core.pause("fixture", self.info)
 

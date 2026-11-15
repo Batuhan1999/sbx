@@ -133,6 +133,7 @@ class Runtime(Protocol):
     kind: str
     title: str
     capabilities: Capabilities
+    disk_path: str    # where it keeps templates and snapshots, as messages name it
 
     def create(self, template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
                deny_out: list | None = None, on_timeout: str | None = None,
@@ -179,6 +180,30 @@ class Runtime(Protocol):
         (hosted_services.allowed_cidrs): {"status": "applied" or
         "unchanged", "allowed_cidrs": [...]}; refused (ValueError) when it
         can't while sandboxes exist."""
+
+    def disk(self) -> dict | None:
+        """Its disk: {"percent": used, "free_gb"}; None when it can't be read."""
+
+    def free_disk_mb(self) -> int | None:
+        """Free MiB for templates and snapshots; None when it keeps none here."""
+
+    def why_busy(self, memory_mb: int | None) -> str:
+        """Why it refused to pause a sandbox of memory_mb (Busy), as what to do about it."""
+
+    def snapshot_usage(self, sandbox_id: str) -> dict:
+        """What a sandbox's snapshots hold: {"gb", "snapshots"}; {} when unknown."""
+
+    def collect_storage(self) -> None:
+        """Reclaim what nothing uses now (a failed build's layers, a deleted template's)."""
+
+    def jobs(self) -> list:
+        """Its upkeep as jobs.Job entries (Settings → Operations, sbx-admin jobs)."""
+
+    def status(self):
+        """Its connections.Status on the settings page."""
+
+    def test(self) -> list:
+        """Its checks (connections.Check), as sbx-admin doctor runs them."""
 
     def placing(self) -> ContextManager:
         """Held while a sandbox is placed, so two creations can't both take

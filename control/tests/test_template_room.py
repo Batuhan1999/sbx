@@ -12,8 +12,9 @@ from support import Installation
 class TemplateRoomTests(Installation):
     def setUp(self):
         super().setUp()
-        from sbx_control import core, embed_storage, state, template_builds, templates
-        self.core, self.storage, self.state, self.builds, self.templates = core, embed_storage, state, template_builds, templates
+        from sbx_control import core, state, template_builds, templates
+        from sbx_control.runtime.embed import storage
+        self.core, self.storage, self.state, self.builds, self.templates = core, storage, state, template_builds, templates
         with state.db() as conn:
             conn.execute("delete from template_builds")
 

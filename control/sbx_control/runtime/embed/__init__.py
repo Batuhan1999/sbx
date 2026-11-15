@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime
 
 from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, Snapshot, TemplateSpec, Timeout
-from . import capacity
+from . import capacity, storage
 
 
 def _state(value) -> str:
@@ -68,10 +68,16 @@ class _Handle:
         return self._sandbox.kill()
 
 
+# Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml): a
+# pause needs room on disk for the sandbox's whole memory plus this.
+PAUSE_DISK_HEADROOM_MB = 1024
+
+
 class Embed:
     kind = "embed"
     title = "E2B Embed"
     capabilities = Capabilities(snapshots=True, private_networks=True, memory_pause=True)
+    disk_path = str(storage.ROOT)
 
     def create(self, template, *, timeout, envs=None, metadata=None, deny_out=None, on_timeout=None,
                auto_resume=None):
@@ -170,6 +176,57 @@ class Embed:
     def apply_network(self):
         from . import network
         return network.apply()
+
+    def disk(self):
+        return storage.disk()
+
+    def free_disk_mb(self):
+        return storage.free_mb()
+
+    def why_busy(self, memory_mb):
+        free = storage.free_mb()
+        if memory_mb and free is not None and free < memory_mb + PAUSE_DISK_HEADROOM_MB:
+            return (f"the runtime's disk has {free / 1024:.1f} GB free and a pause needs room for the sandbox's "
+                    f"whole memory ({memory_mb / 1024:.1f} GB) plus {PAUSE_DISK_HEADROOM_MB // 1024} GB; free disk "
+                    "(delete sandboxes or templates nobody uses, sbx-admin template prune) and pause again")
+        return ("the runtime is still saving the template or snapshot the sandbox started from, or another "
+                "sandbox's snapshot; pause again in a minute")
+
+    def snapshot_usage(self, sandbox_id):
+        return storage.usage().get(sandbox_id) or {}
+
+    def collect_storage(self):
+        """Start the storage GC (e2b-storage-gc) now, on a host that runs Embed."""
+        import subprocess
+        if not storage.ROOT.exists():
+            return
+        try:
+            subprocess.run(["systemctl", "start", "--no-block", "e2b-storage-gc.service"], capture_output=True,
+                           timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"storage GC: {error!r}", flush=True)
+
+    def jobs(self):
+        from ...jobs import Job
+        usage = storage.USAGE
+        return [
+            Job("e2b-storage-gc", "storage", "Template storage cleanup",
+                lambda: "Deletes template layers no build or live sandbox needs.", lambda: "hourly", "timer",
+                runnable=True),
+            Job("compact", "storage", "Snapshot compaction",
+                lambda: "A paused sandbox's chain of pause snapshots folded into one build: "
+                        "`e2b-compact-snapshot <sandbox id> --apply` on the host."
+                        + (f" Usage per sandbox in {usage}." if usage.exists() else ""),
+                lambda: "", "manual"),
+        ]
+
+    def status(self):
+        from . import connection
+        return connection.status()
+
+    def test(self):
+        from . import connection
+        return connection.test()
 
 
 def template(spec: TemplateSpec):

@@ -19,7 +19,7 @@ import struct
 import subprocess
 import uuid
 
-from . import host
+from ... import host
 
 ROOT = pathlib.Path("/var/lib/e2b")
 STORAGE = ROOT / "storage/templates"           # one directory per build

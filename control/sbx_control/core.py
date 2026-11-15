@@ -53,7 +53,6 @@ class PauseRefused(SandboxError):
 # saving the sandbox's parent, or the disk cannot hold a snapshot of the
 # sandbox's whole memory plus its headroom. The sandbox keeps running; retry.
 PAUSE_RETRY_SECONDS = (5, 15)
-PAUSE_DISK_HEADROOM_MB = 1024  # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml)
 
 
 def runtime_failure(error: BaseException) -> bool:
@@ -1084,18 +1083,9 @@ def _pause_vm(info):
 
 def pause_refusal(info, error) -> str:
     """Why the runtime would not pause the sandbox, in words a person can act on."""
-    from . import embed_storage
-    memory = getattr(info, "memory_mb", None)
-    free = embed_storage.free_mb()
     tries = len(PAUSE_RETRY_SECONDS) + 1
     retries = f"{tries} tries over {sum(PAUSE_RETRY_SECONDS)} s" if tries > 1 else "once"
-    if memory and free is not None and free < memory + PAUSE_DISK_HEADROOM_MB:
-        cause = (f"the runtime's disk has {free / 1024:.1f} GB free and a pause needs room for the sandbox's whole "
-                 f"memory ({memory / 1024:.1f} GB) plus {PAUSE_DISK_HEADROOM_MB // 1024} GB; free disk "
-                 "(delete sandboxes or templates nobody uses, sbx-admin template prune) and pause again")
-    else:
-        cause = ("the runtime is still saving the template or snapshot the sandbox started from, or another "
-                 "sandbox's snapshot; pause again in a minute")
+    cause = runtime.why_busy(getattr(info, "memory_mb", None))
     return (f"the runtime refused the pause ({retries}): {cause}. The sandbox keeps running. "
             f"Runtime: {str(error)[-300:]}")
 

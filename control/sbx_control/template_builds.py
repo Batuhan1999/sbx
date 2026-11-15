@@ -22,12 +22,11 @@ at its sandboxes' size, which the row keeps for capacity (size_of).
       repo: the default template at that repo's size"""
 import argparse
 import os
-import subprocess
 import sys
 import threading
 import time
 
-from . import embed_storage, extensions, recipes, settings, templates
+from . import extensions, recipes, runtime, settings, templates
 from .state import Schema, db
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
@@ -93,10 +92,10 @@ def check_room(key: str):
         raise NoRoom(f"building the {key} template needs {_gb(needs['memory_mb'])} of free sandbox memory "
                      f"(twice its {_gb(size['memory_mb'])}: each build step starts from the previous one's "
                      f"snapshot), and {_gb(memory['free_mb'])} is free; pause or delete a sandbox, then build again")
-    free = embed_storage.free_mb()
+    free = runtime.free_disk_mb()
     if free is not None and free < needs["disk_mb"]:
         raise NoRoom(f"building the {key} template needs {_gb(needs['disk_mb'])} of free disk for the runtime "
-                     f"({embed_storage.ROOT}), and {_gb(free)} is free; delete sandboxes or templates nobody uses "
+                     f"({runtime.current().disk_path}), and {_gb(free)} is free; delete sandboxes or templates nobody uses "
                      "(sbx-admin template rm), or add disk, then build again")
 
 
@@ -122,7 +121,7 @@ class Watch:
 
     def sample(self):
         from . import core
-        free = embed_storage.free_mb()
+        free = runtime.free_disk_mb()
         if free is not None:
             self.lowest_disk = free if self.lowest_disk is None else min(self.lowest_disk, free)
         memory = core.capacity(self.size["memory_mb"])
@@ -140,7 +139,7 @@ class Watch:
         """What the watch saw that explains a failure; "" when nothing did."""
         reasons = []
         if self.lowest_disk is not None and self.lowest_disk < self.reserve:
-            reasons.append(f"the runtime's disk ({embed_storage.ROOT}) fell to {_gb(self.lowest_disk)} free during "
+            reasons.append(f"the runtime's disk ({runtime.current().disk_path}) fell to {_gb(self.lowest_disk)} free during "
                            f"the build (one step at {self.size['memory_mb']} MB can write {_gb(self.reserve)}); "
                            "delete sandboxes or templates nobody uses (sbx-admin template rm), or add disk")
         if self.lowest_memory is not None and self.lowest_memory < self.size["memory_mb"]:
@@ -401,13 +400,9 @@ def _build(key: str):
 
 
 def collect_storage():
-    """Start the storage GC (e2b-storage-gc) now, on a host that runs Embed."""
-    if not embed_storage.ROOT.exists():
-        return
-    try:
-        subprocess.run(["systemctl", "start", "--no-block", "e2b-storage-gc.service"], capture_output=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as error:
-        print(f"storage GC: {error!r}", flush=True)
+    """Reclaim what the runtime keeps that nothing uses now: a failed
+    build's layers, a pruned template's."""
+    runtime.collect_storage()
 
 
 def in_use() -> set:

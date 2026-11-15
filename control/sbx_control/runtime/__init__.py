@@ -90,6 +90,30 @@ def apply_network() -> dict:
     return current().apply_network()
 
 
+def disk() -> dict | None:
+    return current().disk()
+
+
+def free_disk_mb() -> int | None:
+    return current().free_disk_mb()
+
+
+def why_busy(memory_mb: int | None) -> str:
+    return current().why_busy(memory_mb)
+
+
+def snapshot_usage(sandbox_id: str) -> dict:
+    return current().snapshot_usage(sandbox_id)
+
+
+def collect_storage() -> None:
+    current().collect_storage()
+
+
+def jobs() -> list:
+    return current().jobs()
+
+
 def capabilities() -> Capabilities:
     return current().capabilities
 
