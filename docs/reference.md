@@ -499,8 +499,8 @@ building or has no room), with `Retry-After` when waiting helps.
 
   ```sh
   v=v0.2.0 url=https://github.com/Batuhan1999/sbx/releases/download
-  curl -fsSLO "$url/$v/sbx-$v.tar.gz" && curl -fsSL "$url/$v/sbx-$v.tar.gz.sha256" | sha256sum -c
-  tar -xzf "sbx-$v.tar.gz" && sudo sh "sbx-$v/install.sh"
+  curl -fsSLO "$url/$v/sbx-$v.tar.gz" && curl -fsSL "$url/$v/sbx-$v.tar.gz.sha256" | sha256sum -c \
+    && tar -xzf "sbx-$v.tar.gz" && sudo sh "sbx-$v/install.sh"
   ```
 
   Going back to an older release is the rollback below, not an install of it:

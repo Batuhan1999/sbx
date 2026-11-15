@@ -39,8 +39,9 @@ jobs:
           fetch-depth: 0
       - name: The version is SemVer, and a tag is on main
         run: |
-          echo "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' || {
-            echo "::error::$VERSION is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE"; exit 1; }
+          n='(0|[1-9][0-9]*)' id='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          echo "$VERSION" | grep -Eq "^v$n\.$n\.$n(-$id(\.$id)*)?\$" || {
+            echo "::error::$VERSION is not SemVer: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE"; exit 1; }
           if [ "$PUBLISH" = true ] && ! git merge-base --is-ancestor HEAD origin/main; then
             echo "::error::$VERSION points at a commit main does not contain: tag a commit on main"; exit 1
           fi
@@ -69,11 +70,15 @@ jobs:
         run: |
           set -- "$RUNNER_TEMP/$NAME.tar.gz" "$RUNNER_TEMP/$NAME.tar.gz.sha256"
           case "$VERSION" in *-*) set -- --prerelease "$@" ;; esac
-          # Notes from the release before on main, skipping pre-releases: a
-          # release lists everything since the last one, its candidates' PRs too.
-          if previous=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' HEAD^ 2>/dev/null); then
-            set -- --notes-start-tag "$previous" "$@"
-          fi
+          # Notes from the newest published full release this one contains: a
+          # release lists everything since, its candidates' PRs too, and a tag
+          # whose release never published does not count.
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+              --limit 100 --json tagName --jq '.[].tagName'); do
+            if [ "$tag" != "$VERSION" ] && git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
+              set -- --notes-start-tag "$tag" "$@"; break
+            fi
+          done
           # Upgrade steps written in an annotated tag's message, below its
           # first line, go above the generated notes.
           git fetch -q --force origin "refs/tags/$VERSION:refs/tags/$VERSION"

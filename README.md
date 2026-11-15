@@ -109,7 +109,7 @@ method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
 
    ```sh
    git clone https://github.com/Batuhan1999/sbx.git && cd sbx
-   git checkout "$(git describe --tags --abbrev=0 --exclude '*-*' origin/main)"
+   git checkout "$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' origin/main)"
    ```
 
    Each release also has an archive with a checksum
