@@ -360,11 +360,11 @@ def main(argv: list) -> int:
     if a.cmd == "template":
         return do_template(a)
     if a.cmd == "jobs":
-        from . import runtime
+        from . import jobs
         if a.verb == "run":
-            print(runtime.run_now(a.id or ""))
+            print(jobs.run_now(a.id or ""))
             return 0
-        for j in runtime.jobs():
+        for j in jobs.jobs():
             when = f"last {j.get('last') or '-'}, next {j.get('next') or j.get('schedule') or '-'}" if j.get("available") else "not on this host"
             print(f"{j['group']:12} {j['title']:34} {when}{'  (run: sbx-admin jobs run ' + j['id'] + ')' if j.get('runnable') else ''}")
         return 0
