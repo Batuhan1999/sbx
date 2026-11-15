@@ -25,11 +25,19 @@ export const keys = {
   setup: ['setup'] as const,
   setupChecks: ['setup', 'checks'] as const,
   settings: ['settings'] as const,
+  updates: ['updates'] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)
 
 export const useMe = () => useQuery({ queryKey: keys.me, queryFn: api.me, staleTime: 60_000, retry: false })
+
+/** Newer releases and the last upgrade, for admins; every 3 s while an upgrade
+ * runs, through sbx-control's restart (a failed poll keeps the last answer). */
+export const useUpdates = (enabled: boolean) => useQuery({
+  queryKey: keys.updates, queryFn: api.updates.get, enabled, staleTime: 60_000, retry: false,
+  refetchInterval: q => (q.state.data?.upgrade?.state === 'running' ? 3_000 : 10 * 60_000),
+})
 
 /** The agents this server offers, from /api/me; none while it loads. */
 export const useAgents = () => Object.values(useMe().data?.agents ?? {})

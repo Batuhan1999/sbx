@@ -111,8 +111,9 @@ PRs merged since the previous release (grouped by
 [`.github/release.yml`](../.github/release.yml)). When an upgrade needs steps,
 write them in the tag's message below its first line (a second `-m`, or
 `git tag -a` without `-m` for an editor); they go above the list. A tag with a
-suffix (`v0.2.0-rc.1`) publishes a pre-release to try on a test installation;
-the next full release's notes still start from the release before it.
+suffix (`v0.2.0-rc.1`) publishes a pre-release to try on a test installation
+(one with `updates.prereleases` offers it in the web app); the next full
+release's notes still start from the release before it.
 Running the workflow by hand (**Actions → Release → Run workflow**) with a
 version builds and checks the archive of any branch and publishes nothing. A
 published tag never moves: fix a bad release with the next patch.
@@ -195,6 +196,11 @@ docker compose --env-file vendor/e2b-embed/compose/.env \
 Upgrading the runtime can recreate its containers, which existing sandboxes do
 not survive. Configure private service networks and extensions' runtime layers
 before creating sandboxes (`sbx-admin network apply` refuses once they exist).
+An sbx upgrade asks first: `install.sh` runs `python -m sbx_control.runtime.embed
+upgrade-check`, which lays the new release's compose files and `.env` keys over
+a copy of `/opt/e2b` (`recreates` in `runtime/embed/host.py`), compares
+`docker compose config --hash` with the running containers' labels, and
+refuses while sandboxes exist when any of them would be recreated.
 
 ## Secret store backends
 

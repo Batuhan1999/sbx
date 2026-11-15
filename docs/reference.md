@@ -465,6 +465,7 @@ building or has no room), with `Retry-After` when waiting helps.
 | `POST /api/sandboxes/NAME/exec` | owner | Run a script as the sandbox's user: body `{"script": "...", "timeout": 120}`, answers `exit_code`, `stdout`, `stderr`. |
 | `GET /api/sandboxes/NAME/inspect?lines=N` | owner | The checkout's commit and the tails of the setup and process logs. |
 | `POST /api/sandboxes/NAME/restart`, `/prepare`, `/pause`, `/resume`; `DELETE /api/sandboxes/NAME` | owner | The [lifecycle](#lifecycle) operations. |
+| `GET /api/updates`, `POST /api/updates`, `POST /api/updates/check` | admin | The installed release, the newer ones with their notes, and the last upgrade with its steps and progress; `POST` with `{"tag": "v0.3.0"}`, the newest release, [installs it](#operating-the-host): 400 for any other tag, 409 while an upgrade runs. `check` asks GitHub now. |
 
 ## Operating the host
 
@@ -505,9 +506,39 @@ building or has no room), with `Retry-After` when waiting helps.
 
   Going back to an older release is the rollback below, not an install of it:
   a newer release may have migrated `sbx.db`.
+- Admins see a newer release in the web app's sidebar (`v0.3.0 available`)
+  and on **Settings → Updates**, which shows what changed in every release the
+  upgrade passes (upgrade steps, breaking changes, the pull requests) and
+  installs it with **Update**; breaking changes in any of them must be
+  confirmed as read. While it runs, the page shows its progress: the
+  download, each step `install.sh` announces, sbx-control's restart, the log's
+  last lines. sbx-control asks GitHub again that the tag
+  is the newest release, then hands it to the host: `sbx-apply-upgrade`, as
+  root, downloads `sbx-<tag>.tar.gz`, checks it against its `.sha256`, unpacks
+  it into `/var/lib/sbx/upgrades/sbx-<tag>/` and runs its `install.sh` (the
+  upgrade below), logging to `/var/log/sbx-upgrade.log`. The page then shows
+  the new release, or the failure with the log and, while the new release
+  runs, its `rollback.sh`. **Check now** asks GitHub at once.
+  `sbx-admin upgrade` lists the newer releases with their notes, and
+  `sbx-admin upgrade TAG` installs the newest the same way and prints the log.
+  One upgrade runs at a time and never to an older release; an installation
+  that runs no release (a checkout before the first tag) is offered none.
+  The `updates` settings section sets where releases come from: `check`
+  (default on; off for an air-gapped or private installation, which then asks
+  GitHub only for `sbx-admin upgrade`), `repository` (default
+  `Batuhan1999/sbx`, or a public fork that publishes the same release
+  archives) and `prereleases` (release candidates too, for a test
+  installation), as in `sbx-admin config set updates '{"check": false}'`.
 - Re-running `install.sh` upgrades the installation and keeps its settings:
   the settings options (`--domain`, `--repos`, `--internal`, ...) apply on a
-  first install only and are ignored, with a note, on an upgrade.
+  first install only and are ignored, with a note, on an upgrade, which also
+  keeps Embed's hugepages unless `--hugepages` is given. Before it changes
+  anything, an upgrade compares what it would lay into Embed's project (the
+  runtime's image pins, sbx's compose override, the keys sbx owns in
+  `/opt/e2b/.env`) with Embed's running containers, as `docker compose`
+  does; when that recreates any of them while sandboxes exist, running or
+  paused, it refuses and names them: sandboxes do not survive a recreated
+  runtime, so delete them first.
   An upgrade stops `sbx-control` and the running connector services
   (`sbx-amp`, `claude-orchestrator`, ...) before it migrates `sbx.db`, after
   backing up the state as it was into `/var/lib/sbx/upgrade-backups/<time>/`:

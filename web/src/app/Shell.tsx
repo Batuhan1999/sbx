@@ -7,6 +7,7 @@ import { Drawer } from '@/components/ui/dialog'
 import { Kbd, Skeleton } from '@/components/ui/primitives'
 import { applyTheme, themeChoice, type ThemeChoice } from '@/lib/theme'
 import { cn } from '@/lib/utils'
+import { UpdateNotice } from './UpdateNotice'
 
 const NAV = [
   { to: '/app/repos', label: 'Repositories', icon: FolderGit2, key: 'r' },
@@ -59,6 +60,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     <div className="mt-auto flex flex-col gap-3">
       <NavItem to="/app/cli" icon={Terminal} label="CLI & access" onClick={onNavigate} />
       <ThemeSwitch />
+      {admin && <UpdateNotice />}
       <div className="flex items-center gap-2 border-t border-line px-1 pt-3">
         {me.data ? <div className="min-w-0 grow">
           <div className="truncate text-[12.5px] font-medium" title={me.data.email}>{me.data.email}</div>
@@ -106,7 +108,7 @@ export function Shell() {
     <Drawer open={open} onOpenChange={setOpen} label="Navigation"><Sidebar onNavigate={() => setOpen(false)} /></Drawer>
     <main id="main" tabIndex={-1} className="min-w-0 outline-none">
       <div className="mx-auto w-full max-w-[1180px] px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
-        {me.error ? <ErrorState error={me.error} retry={() => me.refetch()} /> : <Outlet />}
+        {me.error && !me.data ? <ErrorState error={me.error} retry={() => me.refetch()} /> : <Outlet />}
       </div>
     </main>
   </div>

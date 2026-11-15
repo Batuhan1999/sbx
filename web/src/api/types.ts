@@ -15,6 +15,35 @@ export type Me = {
   agents: Record<string, Agent>
 }
 
+/** A published release newer than the installed one (updates.py). */
+export type Release = { tag: string; url: string; notes: string; breaking: boolean; prerelease: boolean; published_at: string }
+
+/** One step of an upgrade: the download, then each step install.sh announces. */
+export type UpgradeStep = { title: string; state: 'running' | 'done' | 'failed'; detail: string }
+
+/** An upgrade the host ran or runs; rollback only while the new release is the active one. */
+export type Upgrade = {
+  tag: string; from: string; state: 'running' | 'done' | 'failed'; log: string
+  error?: string; rollback?: string; started_at?: string; finished_at?: string
+  /** Absent while the request waits for the host. */
+  steps?: UpgradeStep[]
+  /** 0..1, estimated from the steps install.sh announced. */
+  progress?: number
+  log_tail?: string[]
+}
+
+/** GET /api/updates, admins only. */
+export type Updates = {
+  installed: string
+  check: boolean
+  /** When GitHub was last asked (ISO), and what went wrong then. */
+  checked_at: string
+  check_error: string
+  /** The newest release past the installed one, and every release in between, newest first. */
+  available: { latest: string; url: string; breaking: boolean; releases: Release[] } | null
+  upgrade: Upgrade | null
+}
+
 /** An agent connector: `sbx open NAME <command>` runs it inside a sandbox. */
 export type Agent = { title: string; command: string }
 

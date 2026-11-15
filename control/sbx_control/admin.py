@@ -30,6 +30,8 @@
                                      one is generated and printed when none is set)
   sbx-admin connect KIND k=v ...     connect one (github, claude, sign_in, domain, store); a secret
                                      given as k=- is read from stdin
+  sbx-admin upgrade [TAG]            the releases newer than this one and their notes; with TAG
+                                     (the newest), install it as the web app's Update does
   sbx-admin CONNECTOR ...            a connector's own commands (amp)
 
 What the host alone can do. Repositories, recipes, templates and sandboxes
@@ -205,6 +207,30 @@ def do_template(a) -> int:
     return 0
 
 
+def do_upgrade(tag: str | None) -> int:
+    from . import setup, updates
+    if tag:
+        return updates.follow(tag)
+    s, installed = settings.current().updates, setup.version()
+    try:
+        found = updates.newer(updates.refresh(force=True), installed, s.prereleases)
+    except updates.Unavailable as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    if updates.key(installed) is None:
+        print(f"this installation runs {installed}, not a release: install one by hand "
+              "(docs/reference.md, Operating the host)")
+        return 0
+    if not found:
+        print(f"{installed} is the newest release of {s.repository}")
+        return 0
+    for release in found:
+        print(f"== {release.tag}{' (breaking changes)' if release.breaking else ''}  {release.url}\n"
+              f"{release.notes.strip()}\n")
+    print(f"installed: {installed}. Read the notes above, then: sbx-admin upgrade {found[0].tag}")
+    return 0
+
+
 def main(argv: list) -> int:
     from . import extensions
     connector = extensions.get(argv[0]) if argv else None
@@ -270,6 +296,7 @@ def main(argv: list) -> int:
     sub.add_parser("network").add_argument("action", choices=["apply"])
     sub.add_parser('store').add_argument('action', choices=['enable', 'status'])
     sub.add_parser("sign-in").add_argument("method", choices=["password"])
+    sub.add_parser("upgrade").add_argument("tag", nargs="?")
     connect = sub.add_parser("connect")
     connect.add_argument("kind")
     connect.add_argument("pairs", nargs="*")
@@ -410,6 +437,8 @@ def main(argv: list) -> int:
         return 0
     if a.cmd == "connect":
         return do_connect(a.kind, a.pairs)
+    if a.cmd == "upgrade":
+        return do_upgrade(a.tag)
     if a.cmd == "sign-in":
         from .connections import sign_in
         return _connected(lambda: sign_in.use_password(by="sbx-admin"))

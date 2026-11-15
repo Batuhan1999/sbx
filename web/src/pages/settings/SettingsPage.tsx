@@ -10,8 +10,9 @@ import { NavTabs } from '@/components/Tabs'
 import { Panel } from '@/components/ui/primitives'
 import { emailError } from '@/lib/validation'
 import { ConnectionCard } from '../extensions/ConnectionCard'
+import { Updates } from './Updates'
 
-const SECTIONS = { general: 'General', access: 'Access' } as const
+const SECTIONS = { general: 'General', access: 'Access', updates: 'Updates' } as const
 
 export default function SettingsPage() {
   const { section = 'general' } = useParams()
@@ -19,10 +20,11 @@ export default function SettingsPage() {
   if (me.data && !me.data.admin) return <><PageHeader title="Settings" /><EmptyState title="Admins only">Ask an admin of this server to change its settings.</EmptyState></>
   if (!(section in SECTIONS)) return <Navigate to="/app/settings/general" replace />
   return <>
-    <PageHeader title="Settings" description="This server: its address, sign-in, sandbox defaults and who has access." />
+    <PageHeader title="Settings" description="This server: its address, sign-in, sandbox defaults, who has access and its release." />
     <NavTabs label="Settings sections" tabs={Object.entries(SECTIONS).map(([id, label]) => ({ to: `/app/settings/${id}`, label }))} />
     {section === 'general' && <General />}
     {section === 'access' && <Access />}
+    {section === 'updates' && <Updates />}
   </>
 }
 

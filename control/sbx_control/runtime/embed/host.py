@@ -1,7 +1,8 @@
 """Embed's project on this host (/opt/e2b, which install.sh lays out): the
 keys sbx owns in its .env, the layers extensions add to it
 (Connector.embed), and its systemd units and commands. install.sh writes
-the .env through `python -m sbx_control.runtime.embed embed-env`."""
+the .env through `python -m sbx_control.runtime.embed embed-env`, and asks
+`upgrade-check` first whether a release recreates the stack (recreates)."""
 from __future__ import annotations
 
 import pathlib
@@ -69,13 +70,15 @@ def render_embed_env(text: str, values: dict[str, str]) -> str:
 
 
 def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None = None,
-                    keys: tuple[str, ...] | None = None) -> tuple[str, str]:
+                    keys: tuple[str, ...] | None = None, into: pathlib.Path | None = None) -> tuple[str, str]:
     """The one writer of Embed's .env: the keys sbx owns (embed_env, only
     `keys` of them when given), the hugepages (install.sh) and the runtime's
     image pins (the vendored .env) when given; the rest stays as Embed wrote
     it. Also lays the extensions' compose files into Embed's project, unless
-    limited to `keys`. (text before, text after)."""
-    path = EMBED / ".env"
+    limited to `keys`. into: a copy of the project instead (recreates).
+    (text before, text after)."""
+    project = into or EMBED
+    path = project / ".env"
     before = path.read_text() if path.exists() else ""
     values = embed_env()
     if keys is not None:
@@ -87,8 +90,8 @@ def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None =
                       if re.fullmatch(EMBED_PINS, k))
     for layer in layers() if keys is None else ():
         for source in layer.compose + layer.files:
-            (EMBED / layer.name).mkdir(mode=0o755, exist_ok=True)
-            shutil.copy(source, EMBED / layer.name / source.name)
+            (project / layer.name).mkdir(mode=0o755, exist_ok=True)
+            shutil.copy(source, project / layer.name / source.name)
     after = render_embed_env(before, values)
     if after != before:
         temporary = path.with_suffix(".sbx-new")
@@ -96,6 +99,45 @@ def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None =
         temporary.write_text(after)
         temporary.replace(path)
     return before, after
+
+
+def recreates(source: pathlib.Path, hugepages: int | None = None) -> list[str]:
+    """The running services of Embed that installing the release in source
+    would recreate, by compose's own test (a service's config hash): what
+    Embed's project would recreate already, against its running containers,
+    and what install.sh lays into it (the vendored compose, sbx's override,
+    the .env keys sbx owns, the image pins, the hugepages), as a copy of the
+    project before and after, both at one path so relative bind mounts
+    hash alike. Raises when Docker does not answer."""
+    import tempfile
+    project = EMBED.name
+    if not EMBED.is_dir():
+        return []    # a first install
+    listed = subprocess.run(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}", "--format",
+                             '{{.Label "com.docker.compose.service"}} {{.Label "com.docker.compose.config-hash"}}'],
+                            capture_output=True, text=True, check=True, timeout=60).stdout
+    running = dict(line.split() for line in listed.splitlines() if len(line.split()) == 2)
+    if not running:
+        return []
+
+    def hashes(folder: pathlib.Path) -> dict[str, str]:
+        found = subprocess.run(["docker", "compose", "-p", project, "config", "--hash", "*"], cwd=folder,
+                               capture_output=True, text=True, check=True, timeout=120).stdout
+        return dict(line.split() for line in found.splitlines() if len(line.split()) == 2)
+    pending = hashes(EMBED)
+    vendored = source / "vendor/e2b-embed/compose"
+    with tempfile.TemporaryDirectory(prefix="sbx-embed-check-") as directory:
+        stage = pathlib.Path(directory) / project
+        shutil.copytree(EMBED, stage, symlinks=True)
+        before = hashes(stage)
+        shutil.copytree(vendored, stage, symlinks=True, dirs_exist_ok=True,
+                        ignore=lambda folder, names: [".env"] if pathlib.Path(folder) == vendored else [])
+        shutil.copy(source / "embed/compose.override.yaml", stage / "compose.override.yaml")
+        write_embed_env(hugepages=hugepages, pins=vendored / ".env", into=stage)
+        after = hashes(stage)
+    # A service the release drops stays as it runs (compose leaves orphans).
+    return sorted(service for service, digest in running.items()
+                  if pending.get(service, digest) != digest or after.get(service, before.get(service)) != before.get(service))
 
 
 def units() -> list:
