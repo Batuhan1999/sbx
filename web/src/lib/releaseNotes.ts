@@ -11,18 +11,29 @@ export type ReleaseNotes = { steps: NoteItem[]; sections: NoteSection[]; compare
 // "Title by @someone in URL" and "@someone made their first contribution in URL".
 const PR_LINE = /^(.*?)(?:\s+by\s+@[\w-]+(?:\[bot\])?)?\s+in\s+(https:\/\/github\.com\/\S+\/pull\/(\d+))\s*$/
 const COMPARE = /^\*\*Full Changelog\*\*:\s*(https:\/\/\S+)\s*$/
-// A fenced block, kept whole: what it holds is never markup.
-const FENCED = /(^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[^\n]*$)/m
+/** The text without HTML comments (the generator's), in one pass that
+ * knows fenced blocks: a comment in a block is the block's, a block in a
+ * comment is the comment's. */
+function withoutComments(text: string): string {
+  let out = '', fenced = false
+  for (let i = 0; i < text.length;) {
+    if (!fenced && text.startsWith('<!--', i)) {
+      const end = text.indexOf('-->', i + 4)
+      i = end < 0 ? text.length : end + 3
+      continue
+    }
+    if ((i === 0 || text[i - 1] === '\n') && /^[ \t]*```/.test(text.slice(i, i + 80))) fenced = !fenced
+    out += text[i++]
+  }
+  return out
+}
 
 export function parseNotes(text: string): ReleaseNotes {
   const notes: ReleaseNotes = { steps: [], sections: [] }
   let section: NoteSection | null = null
   let fence: string[] | null = null
   const add = (item: NoteItem) => (section ? section.items : notes.steps).push(item)
-  // HTML comments (the generator's) go, outside fenced blocks only.
-  const visible = text.replace(/\r\n/g, '\n').split(FENCED)
-    .map((part, i) => (i % 2 ? part : part.replace(/<!--[\s\S]*?-->/g, ''))).join('')
-  for (const raw of visible.split('\n')) {
+  for (const raw of withoutComments(text.replace(/\r\n/g, '\n')).split('\n')) {
     const line = raw.trim()
     if (line.startsWith('```')) {
       if (fence) { add({ text: fence.join('\n'), code: true }); fence = null } else fence = []

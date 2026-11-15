@@ -103,11 +103,12 @@ def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None =
 
 def recreates(source: pathlib.Path, hugepages: int | None = None) -> list[str]:
     """The running services of Embed that installing the release in source
-    would recreate: what install.sh lays into Embed's project (the vendored
-    compose, sbx's override, the .env keys sbx owns, the image pins, the
-    hugepages) laid over a copy of it, then compose's own test, each
-    service's config hash against its running container's. Raises when
-    Docker does not answer."""
+    would recreate, by compose's own test (a service's config hash): what
+    Embed's project would recreate already, against its running containers,
+    and what install.sh lays into it (the vendored compose, sbx's override,
+    the .env keys sbx owns, the image pins, the hugepages), as a copy of the
+    project before and after, both at one path so relative bind mounts
+    hash alike. Raises when Docker does not answer."""
     import tempfile
     project = EMBED.name
     if not EMBED.is_dir():
@@ -118,18 +119,25 @@ def recreates(source: pathlib.Path, hugepages: int | None = None) -> list[str]:
     running = dict(line.split() for line in listed.splitlines() if len(line.split()) == 2)
     if not running:
         return []
+
+    def hashes(folder: pathlib.Path) -> dict[str, str]:
+        found = subprocess.run(["docker", "compose", "-p", project, "config", "--hash", "*"], cwd=folder,
+                               capture_output=True, text=True, check=True, timeout=120).stdout
+        return dict(line.split() for line in found.splitlines() if len(line.split()) == 2)
+    pending = hashes(EMBED)
     vendored = source / "vendor/e2b-embed/compose"
     with tempfile.TemporaryDirectory(prefix="sbx-embed-check-") as directory:
         stage = pathlib.Path(directory) / project
         shutil.copytree(EMBED, stage, symlinks=True)
+        before = hashes(stage)
         shutil.copytree(vendored, stage, symlinks=True, dirs_exist_ok=True,
                         ignore=lambda folder, names: [".env"] if pathlib.Path(folder) == vendored else [])
         shutil.copy(source / "embed/compose.override.yaml", stage / "compose.override.yaml")
         write_embed_env(hugepages=hugepages, pins=vendored / ".env", into=stage)
-        rendered = subprocess.run(["docker", "compose", "-p", project, "config", "--hash", "*"], cwd=stage,
-                                  capture_output=True, text=True, check=True, timeout=120).stdout
-    planned = dict(line.split() for line in rendered.splitlines() if len(line.split()) == 2)
-    return sorted(service for service, digest in running.items() if planned.get(service, digest) != digest)
+        after = hashes(stage)
+    # A service the release drops stays as it runs (compose leaves orphans).
+    return sorted(service for service, digest in running.items()
+                  if pending.get(service, digest) != digest or after.get(service, before.get(service)) != before.get(service))
 
 
 def units() -> list:

@@ -46,6 +46,8 @@ describe('parseNotes', () => {
   it('keeps a fenced block as written', () => {
     const notes = parseNotes('Set this first:<!-- a note -->\n```yaml\nupdates:\n  check: false  # <!-- kept -->\n```\n## Changes\n* x')
     expect(notes.steps).toEqual([{ text: 'Set this first:' }, { text: 'updates:\n  check: false  # <!-- kept -->', code: true }])
+    const hidden = parseNotes('Shown.\n<!-- an example:\n```\nnot shown\n```\n-->\nAlso shown.')
+    expect(hidden.steps).toEqual([{ text: 'Shown.' }, { text: 'Also shown.' }])
   })
 })
 

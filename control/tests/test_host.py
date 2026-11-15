@@ -139,23 +139,27 @@ class HostTests(Installation):
         embed_host.write_embed_env()     # Embed as install.sh left it
 
         def hashes(folder):
+            # api mounts ./api.sh: its hash holds the absolute source path, as compose's does.
             env = (folder / ".env").read_text()
             orchestrator = "".join(line for line in env.splitlines() if "ORCHESTRATOR" in line or "HUGEPAGES" in line)
             return {"orchestrator": hashlib.sha256(orchestrator.encode()).hexdigest(),
-                    "api": hashlib.sha256((folder / "compose.override.yaml").read_bytes()).hexdigest()}
+                    "api": hashlib.sha256((folder / "compose.override.yaml").read_bytes()
+                                          + str(folder / "api.sh").encode()).hexdigest()}
+
+        before = (embed / ".env").read_text()
+        labels = hashes(embed)                     # the containers as they were created
 
         def docker(args, cwd=None, **_):
             if args[:2] == ["docker", "ps"]:
-                out = "".join(f"{s} {h}\n" for s, h in hashes(embed).items())
-            else:
-                self.assertEqual(args, ["docker", "compose", "-p", "e2b", "config", "--hash", "*"])
-                self.assertNotEqual(Path(cwd), embed)
-                out = "".join(f"{s} {h}\n" for s, h in hashes(Path(cwd)).items())
-            return subprocess.CompletedProcess(args, 0, out, "")
+                return subprocess.CompletedProcess(args, 0, "".join(f"{s} {h}\n" for s, h in labels.items()), "")
+            self.assertEqual(args, ["docker", "compose", "-p", "e2b", "config", "--hash", "*"])
+            return subprocess.CompletedProcess(args, 0, "".join(f"{s} {h}\n" for s, h in hashes(Path(cwd)).items()), "")
         self.run.side_effect = docker
-        before = (embed / ".env").read_text()
-        self.assertEqual(embed_host.recreates(release, 4096), [])
+        self.assertEqual(embed_host.recreates(release, 4096), [])                       # the copy's paths do not count
         self.assertEqual(embed_host.recreates(release, 8192), ["orchestrator"])         # another hugepages count
+        (embed / ".env").write_text(before.replace("orch:1", "orch:0"))                 # a change up would apply already
+        self.assertEqual(embed_host.recreates(release, 4096), ["orchestrator"])
+        (embed / ".env").write_text(before)
         (vendored / ".env").write_text("E2B_ORCHESTRATOR_IMAGE=orch:2\n")              # a new runtime pin
         (release / "embed/compose.override.yaml").write_text("api: two\n")              # sbx's override
         self.assertEqual(embed_host.recreates(release, 4096), ["api", "orchestrator"])
