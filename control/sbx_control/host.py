@@ -86,11 +86,16 @@ def _apply_units(key: str) -> list[Unit]:
 
 def platform_effects() -> list:
     """The platform's effects that have a path unit (settings.HostUnit);
-    extensions' keys re-render their services. embed-network has none: it
+    extensions' keys re-render their services. runtime-network has none: it
     stays pending until `sbx-admin network apply`, which may refuse with
     sandboxes running."""
     from .settings import HostUnit
-    return [unit.value for unit in HostUnit if unit != HostUnit.EMBED_NETWORK]
+    return [unit.value for unit in HostUnit if unit != HostUnit.RUNTIME_NETWORK]
+
+
+# Effects a release renamed, old: new. install carries a request still
+# pending under the old name over (v0.1 named the runtime's after Embed).
+RENAMED_EFFECTS = {"embed-env": "runtime-env", "embed-network": "runtime-network"}
 
 
 def shell() -> dict:
@@ -248,12 +253,33 @@ def write(found: list[Unit]):
 
 def install(names: list[str] | None = None):
     from . import paths
-    (paths.run() / "apply").mkdir(parents=True, exist_ok=True)
+    requests = paths.run() / "apply"
+    requests.mkdir(parents=True, exist_ok=True)
     found = units()
+    if not names:
+        remove_stale_effects(found)
+    for old, new in RENAMED_EFFECTS.items():
+        if (requests / old).exists():
+            (requests / old).replace(requests / new)
     write(found)
     for unit in found:
         if not names or unit.name in names:
             _activate(unit)
+
+
+def remove_stale_effects(found: list[Unit]):
+    """Disable and delete the settings effects' units (sbx-apply-*) that
+    found doesn't have: an effect an upgrade renamed or dropped, which
+    sbx-apply would refuse as unknown."""
+    directory = systemd_dir()
+    known = {unit.name for unit in found}
+    stale = sorted(path.name for path in directory.glob("sbx-apply-*")
+                   if path.suffix in (".path", ".service") and path.name not in known)
+    if not stale:
+        return
+    _systemctl("disable", "--now", "-q", *stale)
+    for name in stale:
+        (directory / name).unlink()
 
 
 def apply(key: str) -> int:
@@ -382,7 +408,11 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
             f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n"
             f"rm -f {q(str(database))}-wal {q(str(database))}-shm\n"
             f"install -m 600 {q(str(out / 'sbx.db'))} {q(str(database))}\n"
-            f"systemctl daemon-reload\nsystemctl start {units}\n"
+            f"systemctl daemon-reload\n"
+            # The upgrade may have disabled the release's effect paths (remove_stale_effects).
+            f"for unit in {q(str(out / 'systemd'))}/sbx-apply-*.path; do\n"
+            f"  [ ! -e \"$unit\" ] || systemctl enable -q --now \"$(basename \"$unit\")\" || true\ndone\n"
+            f"systemctl start {units}\n"
             f"echo 'rolled back to {previous or 'the release before'}'\n")
 
 

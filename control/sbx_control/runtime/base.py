@@ -157,7 +157,9 @@ class Runtime(Protocol):
 
     def apply_host(self, key: str) -> bool:
         """A settings change's root-side effect (sbx-apply KEY) when key is
-        the runtime's; False when it is not."""
+        the runtime's; False when it is not. settings.HostUnit.RUNTIME_ENV
+        is always the runtime's: the installation's names changed (True,
+        whether or not it has anything to do)."""
 
     def readiness(self, facts: dict) -> list:
         """What the first-run setup checks before its own test (connections.Check),
@@ -217,9 +219,9 @@ class Runtime(Protocol):
 
     def apply_network(self) -> dict:
         """Make the runtime enforce what sandboxes may reach now
-        (hosted_services.allowed_cidrs): {"status": "applied" or
-        "unchanged", "allowed_cidrs": [...]}; refused (ValueError) when it
-        can't while sandboxes exist."""
+        (hosted_services.allowed_cidrs) and take what extensions add to it:
+        {"status": "applied" or "unchanged", "allowed_cidrs": [...]};
+        refused (ValueError) when it can't while sandboxes exist."""
 
     def disk(self) -> dict | None:
         """Its disk: {"percent": used, "free_gb"}; None when it can't be read."""

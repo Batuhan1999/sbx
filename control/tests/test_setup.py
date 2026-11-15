@@ -351,7 +351,7 @@ class SettingsTests(Server):
         settings.update("domain", {"address": "203.0.113.10", "acme_email": "ops@example.com"}, by="test")
         self.assertEqual(self.effects(), ["tls"])
         settings.update("domain", {"address": "203.0.113.10", "name": "sbx.example.com"}, by="test")
-        self.assertEqual(self.effects(), ["control", "embed-env", "host-guard", "tls"])  # 53 for delegated DNS-01
+        self.assertEqual(self.effects(), ["control", "host-guard", "runtime-env", "tls"])  # 53 for delegated DNS-01
         self.assertEqual(settings.opened_ports(settings.current()), (22, 443, 80, 53))
 
     def test_a_section_is_written_whole_or_not_at_all_and_its_history_kept(self):

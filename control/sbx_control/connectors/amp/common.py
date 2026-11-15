@@ -40,7 +40,7 @@ class Settings(settings.ExtensionSection):
         """New checkpoint builds recreate the runtime: pending until `sbx-admin network apply`."""
         moved = (self.checkpoint_api_image, self.orchestrator_binary) != (before.checkpoint_api_image,
                                                                           before.orchestrator_binary)
-        return self.applies + ((settings.HostUnit.EMBED_NETWORK,) if moved else ())
+        return self.applies + ((settings.HostUnit.RUNTIME_NETWORK,) if moved else ())
 
     @model_validator(mode="after")
     def _checkpoints(self):

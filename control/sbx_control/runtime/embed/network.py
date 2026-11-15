@@ -17,7 +17,7 @@ import ipaddress
 import shlex
 import subprocess
 
-from ... import core, hosted_services, paths, platform, settings
+from ... import core, hosted_services, paths, platform
 from . import host
 
 
@@ -73,7 +73,6 @@ def _apply():
         finally:
             subprocess.run(['systemctl', 'restart', 'sbx-host-guard'], check=True, timeout=30)
     apply_routes()
-    (paths.run() / 'apply' / settings.HostUnit.EMBED_NETWORK.value).unlink(missing_ok=True)
     return {'status': 'unchanged' if unchanged else 'applied',
             'allowed_cidrs': hosted_services.allowed_cidrs()}
 

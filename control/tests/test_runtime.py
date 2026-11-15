@@ -24,6 +24,10 @@ class Boundary(unittest.TestCase):
                     found.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
         self.assertEqual(found, [], "reach the runtime through sbx_control.runtime")
 
+    def test_the_settings_effects_name_no_runtime(self):
+        from sbx_control.settings import HostUnit
+        self.assertEqual([unit for unit in HostUnit if "embed" in unit or "e2b" in unit], [])
+
 
 class Embed(unittest.TestCase):
     def setUp(self):

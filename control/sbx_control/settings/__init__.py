@@ -31,9 +31,9 @@ class HostUnit(enum.StrEnum):
     Extensions add their own, by name (extensions.HostService.apply)."""
     TLS = "tls"                      # control/tls.sh: nginx config and certificate
     HOST_GUARD = "host-guard"        # sbx-host-guard: public ports, the egress rules
-    EMBED_NETWORK = "embed-network"  # Embed's .env keys that recreate its runtime: sbx-admin network apply
+    RUNTIME_NETWORK = "runtime-network"  # what recreates the runtime: pending until sbx-admin network apply
     CONTROL = "control"              # sbx-control restart (what it reads at start: the cookie domain)
-    EMBED_ENV = "embed-env"          # E2B_PUBLIC_DOMAIN and the sandbox URL in /opt/e2b/.env, then compose up
+    RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Runtime.apply_host)
     UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
 
 
@@ -54,7 +54,7 @@ class ExtensionSection(Section):
 
 
 class Domain(Section):
-    applies = (HostUnit.TLS, HostUnit.EMBED_ENV, HostUnit.CONTROL)
+    applies = (HostUnit.TLS, HostUnit.RUNTIME_ENV, HostUnit.CONTROL)
     name: str = ""                     # "" until set: the installation answers on its address only
     address: str = ""                  # the IP chosen during setup; keeps bootstrap access during DNS setup
     login_host: str = "login"
@@ -66,8 +66,8 @@ class Domain(Section):
     acme: Literal["delegated", "route53", "cloudflare", "none"] = "delegated"
 
     def effects(self, before: "Domain") -> tuple[str, ...]:
-        """The names reach Embed and the session cookie; the rest only the
-        certificate, and the firewall when the ports it needs change (opened_ports)."""
+        """The names reach the runtime and the session cookie; the rest only
+        the certificate, and the firewall when the ports it needs change (opened_ports)."""
         guard = (HostUnit.HOST_GUARD,) if self.needs_ports() != before.needs_ports() else ()
         if (self.name, self.login_host) != (before.name, before.login_host):
             return (*self.applies, *guard)
@@ -129,7 +129,7 @@ class Access(Section):
 
 
 class Network(Section):
-    applies = (HostUnit.TLS, HostUnit.HOST_GUARD, HostUnit.EMBED_NETWORK)
+    applies = (HostUnit.TLS, HostUnit.HOST_GUARD, HostUnit.RUNTIME_NETWORK)
     host_ports: tuple[int, ...] = (443,)
     public_ports: tuple[int, ...] | Literal["all"] = (22, 443)
     ip_preview_first_port: int = Field(default=21000, ge=1024, le=65535)
