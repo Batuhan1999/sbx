@@ -86,6 +86,10 @@ def placing():
     return current().placing()
 
 
+def apply_network() -> dict:
+    return current().apply_network()
+
+
 def capabilities() -> Capabilities:
     return current().capabilities
 

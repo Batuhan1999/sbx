@@ -364,7 +364,7 @@ class WorkspaceTests(Server):
         return any(call.args[0][:3] == ['docker', 'compose', 'up'] for call in run.call_args_list)
 
     def test_network_change_cannot_restart_a_runtime_with_existing_workspaces(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         original = 'OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=172.29.20.0/24\n'
         env, marker = self.embed_env(original)
         with patch.object(host_network.core, 'sandboxes', return_value=[Mock()]), \
@@ -376,7 +376,7 @@ class WorkspaceTests(Server):
         self.assertTrue(marker.exists())
 
     def test_network_apply_restarts_embed_with_the_new_ranges_and_clears_the_pending_marker(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
         env, marker = self.embed_env('OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=\n')
@@ -390,7 +390,7 @@ class WorkspaceTests(Server):
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', env.read_text())
 
     def test_network_apply_clears_the_pending_marker_when_configuration_is_current(self):
-        from sbx_control import host_network
+        from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
         from sbx_control import host
@@ -411,14 +411,15 @@ class WorkspaceTests(Server):
                          (name, secret_store.seal({}, key=f'managed-server/{name}')))
 
     def test_managed_servers_network_is_reached_beside_the_operators_ranges_whatever_they_are_set_to(self):
-        from sbx_control import host, host_network, hosted_services
+        from sbx_control import host, hosted_services
+        from sbx_control.runtime.embed import network as host_network
         self.settings.update('network', {'internal_cidrs': ['10.0.0.0/24']}, by='test')
         self.assertEqual(host.embed_env()['ALLOW_SANDBOX_INTERNAL_CIDRS'], '10.0.0.0/24')
         self.managed_server()
         self.assertEqual(host.embed_env()['ALLOW_SANDBOX_INTERNAL_CIDRS'], f'10.0.0.0/24,{hosted_services.CIDR}')
         # What install.sh --internal or sbx-admin config set writes replaces the operator's list only.
         self.settings.update('network', {'internal_cidrs': ['10.9.0.0/24']}, by='test')
-        self.assertEqual(host_network.allowed_cidrs(), ['10.9.0.0/24', hosted_services.CIDR])
+        self.assertEqual(hosted_services.allowed_cidrs(), ['10.9.0.0/24', hosted_services.CIDR])
         self.settings.update('network', {'internal_cidrs': []}, by='test')
         with patch.object(host_network.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             host_network.apply_routes()

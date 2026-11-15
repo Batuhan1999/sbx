@@ -291,7 +291,7 @@ def main(argv: list) -> int:
                           'pending_sandboxes': sorted(delivery.waiting())}))
         return 0
     if a.cmd in ("server", "network"):
-        from . import hosted_services, host_network
+        from . import hosted_services, runtime
         try:
             if a.cmd == "server":
                 if a.action == 'ls':
@@ -305,7 +305,7 @@ def main(argv: list) -> int:
                 else:
                     result = hosted_services.up(a.name, a.kind, data_root=a.data_root, storage_gb=a.storage_gb)
             else:
-                result = host_network.apply()
+                result = runtime.apply_network()
             print(json.dumps(result))
             return 0
         except (ValueError, RuntimeError, OSError) as error:

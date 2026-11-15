@@ -1,6 +1,6 @@
 """Can a sandbox reach the host it runs on? Run on the host, as root:
 
-  python -m sbx_control.netcheck [--template NAME]   (default: the base template built last)
+  python -m sbx_control.runtime.embed.netcheck [--template NAME]   (default: the base template built last)
 
 Starts a throwaway sandbox and, from inside it, tries every TCP port the
 host listens on, at every address the host has. Only the settings'
@@ -22,7 +22,7 @@ import socket
 import subprocess
 import sys
 
-from . import platform, runtime, settings
+from ... import platform, runtime, settings
 
 METADATA = "169.254.169.254"
 
@@ -76,7 +76,7 @@ def main():
     args = parser.parse_args()
     platform.connect()
     if not args.template:
-        from . import template_builds, templates
+        from ... import template_builds, templates
         args.template = template_builds.built(templates.BASE)
     # On a cloud VM the public address is not on an interface; the domain names it.
     addresses = set(host_addresses()) | {socket.gethostbyname(f"{settings.current().domain.login_host}.{settings.current().domain.name}")}

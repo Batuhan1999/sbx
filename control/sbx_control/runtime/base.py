@@ -174,6 +174,12 @@ class Runtime(Protocol):
         """Room for sandboxes of memory_mb: {"known": True, "memory_mb",
         "slots_free", "free_mb", ...}, or {"known": False} when it can't say."""
 
+    def apply_network(self) -> dict:
+        """Make the runtime enforce what sandboxes may reach now
+        (hosted_services.allowed_cidrs): {"status": "applied" or
+        "unchanged", "allowed_cidrs": [...]}; refused (ValueError) when it
+        can't while sandboxes exist."""
+
     def placing(self) -> ContextManager:
         """Held while a sandbox is placed, so two creations can't both take
         the last room."""

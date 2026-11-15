@@ -284,7 +284,7 @@ def apply(key: str) -> int:
         _systemctl("restart", "sbx-control", check=True)
     elif key == "embed-env":
         # Only the domain: the rest (embed-network, extensions) recreates the
-        # runtime, which host_network.apply refuses under running sandboxes.
+        # runtime, which runtime.apply_network refuses under running sandboxes.
         write_embed_env(keys=DOMAIN_KEYS)
         subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=EMBED, check=True)
     else:
@@ -307,12 +307,12 @@ def embed_env() -> dict[str, str]:
     """Every key sbx owns in Embed's .env, from the settings and the
     extensions (Connector.embed); "" removes a key. Embed needs a name for
     its sandbox URLs: a placeholder until the setup's Domain step."""
-    from . import extensions, host_network, settings
+    from . import extensions, hosted_services, settings
     s = settings.current()
     domain = s.domain.name or "sbx.invalid"
     layers = extensions.embed()
     compose = [*EMBED_COMPOSE, *(f"{layer.name}/{path.name}" for layer in layers for path in layer.compose)]
-    return {"ALLOW_SANDBOX_INTERNAL_CIDRS": ",".join(host_network.allowed_cidrs()),
+    return {"ALLOW_SANDBOX_INTERNAL_CIDRS": ",".join(hosted_services.allowed_cidrs()),
             "E2B_PUBLIC_DOMAIN": domain, "E2B_PUBLIC_SANDBOX_URL": f"https://sandbox.{domain}",
             "COMPOSE_FILE": ":".join(compose) if len(compose) > len(EMBED_COMPOSE) else "",
             **{key: value for layer in layers for key, value in layer.env.items()}}

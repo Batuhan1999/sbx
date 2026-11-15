@@ -116,7 +116,7 @@ class HostTests(Installation):
 
     def test_a_domain_change_writes_only_the_domain_keys(self):
         # A pending embed-network change recreates the runtime, which only
-        # host_network.apply may do (it refuses under running sandboxes).
+        # runtime.apply_network may do (it refuses under running sandboxes).
         from sbx_control import settings
         embed = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-embed-")))
         self.enterContext(patch.object(self.host, "EMBED", embed))

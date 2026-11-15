@@ -136,7 +136,7 @@ def _here(package: Package, action: str, env: dict, label: str) -> tuple[int, st
 def _in_runner(package: Package, action: str, env: dict, label: str) -> tuple[int, str, str, str]:
     """In a throwaway sandbox from the base template, so a repo's scripts
     never run on this host; like the repo's own sandboxes it reaches
-    private ranges (host_network.allowed_cidrs) and the internet. Killed when done, whatever
+    private ranges (hosted_services.allowed_cidrs) and the internet. Killed when done, whatever
     happened. The script sees its env file and nothing of the sandbox's."""
     from .. import template_builds, templates
     try:

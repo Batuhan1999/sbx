@@ -167,6 +167,10 @@ class Embed:
     def placing(self):
         return capacity.placing()
 
+    def apply_network(self):
+        from . import network
+        return network.apply()
+
 
 def template(spec: TemplateSpec):
     """The E2B template builder for spec, step by step."""

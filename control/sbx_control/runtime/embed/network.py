@@ -1,21 +1,11 @@
-"""Apply what recreates the sandbox runtime (the private ranges sandboxes
-may reach, an extension's runtime layer) before sandboxes are created.
-
-The ranges are computed (allowed_cidrs), never stored as one list: the
-operator's network.internal_cidrs and the managed servers' networks, each
-written by its own owner."""
+"""Make Embed enforce what sandboxes may reach (hosted_services.allowed_cidrs):
+its slot firewall, which recreating the runtime applies before sandboxes
+are created, and this host's forwarding rules for its slots' veths."""
 import fcntl
 import ipaddress
 import subprocess
 
-from . import core, host, paths, platform, settings
-
-
-def allowed_cidrs() -> list[str]:
-    """What every sandbox of a trusted repo may reach: Embed's slot firewall
-    (host.embed_env) and the host's forwarding rules (apply_routes) read this."""
-    from . import hosted_services
-    return list(dict.fromkeys([*settings.current().network.internal_cidrs, *hosted_services.networks()]))
+from ... import core, host, hosted_services, paths, platform, settings
 
 
 def apply_routes():
@@ -27,7 +17,7 @@ def apply_routes():
         rule("-F", "SBX-SERVICES")
         rule("-t", "raw", "-N", "SBX-SERVICES-RAW", check=False)
         rule("-t", "raw", "-F", "SBX-SERVICES-RAW")
-        for cidr in allowed_cidrs():
+        for cidr in hosted_services.allowed_cidrs():
             if ipaddress.ip_network(cidr).version != version:
                 continue
             rule("-A", "SBX-SERVICES", "-i", "veth-+", "-d", cidr, "-p", "tcp", "-j", "ACCEPT")
@@ -72,7 +62,7 @@ def _apply():
     apply_routes()
     (paths.run() / 'apply' / settings.HostUnit.EMBED_NETWORK.value).unlink(missing_ok=True)
     return {'status': 'unchanged' if unchanged else 'applied',
-            'allowed_cidrs': allowed_cidrs()}
+            'allowed_cidrs': hosted_services.allowed_cidrs()}
 
 
 def _compose_up():

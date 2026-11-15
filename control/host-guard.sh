@@ -13,7 +13,7 @@
 #   delegated DNS-01 responder: settings.opened_ports), replies and ICMP: Embed listens on all interfaces, its orchestrator
 #   API on 5008 without authentication. A cloud firewall in front is still
 #   good; bare metal often has none. public_ports: all leaves it open.
-# - Then the routes to the private services (host_network.py).
+# - Then the routes to the private services (runtime/embed/network.py).
 # Runs at boot and whenever install.sh recreates Embed's containers (the
 # orchestrator's cgroup changes with its container).
 set -eu
@@ -46,4 +46,4 @@ for t in iptables ip6tables; do
     $t -w -I INPUT -i "$iface" -j SBX-PUBLIC
   fi
 done
-venv/bin/python -m sbx_control.host_network
+venv/bin/python -m sbx_control.runtime.embed.network
