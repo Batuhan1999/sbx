@@ -37,6 +37,7 @@ product mode.
 | Redis with a native client | A `processes:` entry in the app sandbox | Its own data directory; enable persistence if the app needs it. |
 | SQLite, uploads, local files | The sandbox filesystem | Files created by normal setup. |
 | AWS SDKs or AWS secret loaders | `aws-role` + `aws-profile` | A named profile with renewable role credentials ([AWS role access](../catalog/aws-role/README.md)). |
+| LLM calls through OpenRouter, or routed through it by the owner's choice ([LLM calls](#llm-calls)) | `openrouter-account` + `openrouter-key` | Its own OpenRouter API key with a credit limit, as `OPENROUTER_API_KEY`; deleted with the sandbox. |
 | Something else | The provider's branch or namespace API, in a new package | State what it copies and how it is cleaned up. |
 
 Protocols matter more than names:
@@ -68,7 +69,44 @@ only hosted services needs neither.
 Keys for email, payments, LLMs, analytics or error reporting are ordinary
 repository variables (`sbx env set`); they need no package. When the repository
 loads them from a secret manager, keep the loader and connect its identity
-instead (for AWS, `aws-role` + `aws-profile`).
+instead (for AWS, `aws-role` + `aws-profile`). A shared LLM key has no cap per
+sandbox, though; see [LLM calls](#llm-calls).
+
+## LLM calls
+
+`openrouter-key` gives each sandbox an OpenRouter API key of its own, with a
+credit limit in USD (`limit`, required; `limit_reset` makes it daily, weekly or
+monthly), made with a management key that stays on the server. A sandbox that
+spends its limit gets OpenRouter's `403` key-limit error instead of using
+another sandbox's budget, and its key is deleted with it.
+
+Use it when the repository already calls OpenRouter, or when the owner chooses
+to route its LLM calls through OpenRouter. For an app that calls a provider
+directly, that is the owner's call, not a default: it changes the model IDs,
+how requests are routed among providers and who sees the prompts.
+
+The limit caps the key, not the account: every key spends the account's
+prepaid balance, so a sandbox can still fail with `402` when others have used
+it up. A request running when the limit is reached still completes, so usage
+can pass the limit by about one request. Changing an input of an existing
+sandbox replaces its key on the next prepare, and the new key starts with no
+usage.
+
+The package sets `OPENROUTER_API_KEY`. For the OpenAI or Anthropic SDKs, map
+its outputs in the recipe:
+
+```yaml
+services:
+  llm:
+    uses: openrouter-key
+    with: { limit: 5 }
+env:
+  OPENAI_API_KEY: ${services.llm.key}
+  OPENAI_BASE_URL: ${services.llm.base_url}
+  # Anthropic SDKs send ANTHROPIC_AUTH_TOKEN as the bearer OpenRouter expects.
+  ANTHROPIC_BASE_URL: ${services.llm.anthropic_base_url}
+  ANTHROPIC_AUTH_TOKEN: ${services.llm.key}
+```
 
 ## PlanetScale token access
 
