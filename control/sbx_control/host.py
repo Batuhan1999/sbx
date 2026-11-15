@@ -2,8 +2,8 @@
 
   /opt/sbx-control/releases/<id>/   a release (control/release.sh), with its own venv
   /opt/sbx-control/current          the active release (host-install.sh switches it)
-  /usr/local/sbin/sbx-admin, sbx-apply, sbx-host-guard, e2b-storage-gc,
-  e2b-compact-snapshot              commands into the active release
+  /usr/local/sbin/sbx-admin, sbx-apply, sbx-host-guard, and the runtime's
+  (runtime.Runtime.host_commands)    commands into the active release
 
 Every unit and command below runs the active release from CURRENT, so
 switching releases is one symlink and a restart. Host scripts (tls.sh,
@@ -13,8 +13,6 @@ directory.
   python -m sbx_control.host install   write every unit and command, then (re)start them
   python -m sbx_control.host apply KEY a settings change's root-side effect (sbx-apply KEY)
   python -m sbx_control.host list      the units and whether each is wanted
-  python -m sbx_control.host embed-env [--hugepages N] [--pins FILE]
-                                       write the keys sbx owns in Embed's .env (install.sh)
   python -m sbx_control.host tools     install the host tools catalog packages declare
   python -m sbx_control.host upgrade-backup
                                        before an upgrade's migration (host-install.sh): stop
@@ -40,11 +38,7 @@ CURRENT = HOME / "current"
 RELEASES = HOME / "releases"
 KEEP_RELEASES = 3                       # the active one and two to roll back to
 SBIN = pathlib.Path("/usr/local/sbin")
-EMBED = pathlib.Path("/opt/e2b")        # Embed's compose project (install.sh)
 INFISICAL_COMPOSE = CURRENT / "infisical/compose.yaml"
-# Embed's own compose files: the vendored one and sbx's settings over it.
-EMBED_COMPOSE = ("compose.yaml", "compose.override.yaml")
-EMBED_PINS = r"^(E2B_[A-Z_]+_(IMAGE|VERSION)|RUNTIME_COMMIT)$"   # the runtime's image pins (vendor/e2b-embed)
 
 
 def systemd_dir() -> pathlib.Path:
@@ -106,32 +100,25 @@ def shell() -> dict:
 
 
 def units() -> list[Unit]:
-    """Every unit, in the order install starts them: Embed and the host's
-    guard first, sbx-control before the connectors that call it."""
-    from . import extensions, settings
+    """Every unit, in the order install starts them: the runtime's and the
+    host's guard first, sbx-control before the connectors that call it."""
+    from . import extensions, runtime, settings
     from .secret_store.infisical import env_file
     s = shell()
     infisical, port = env_file().exists(), settings.current().store.port
+    sandboxes = runtime.current()
+    needs = f"Requires={sandboxes.host_unit}\n" if sandboxes.host_unit else ""
     found = [
-        Unit("e2b-embed.service", _service(
-            "E2B Embed stack", f"Type=oneshot\nRemainAfterExit=yes\nWorkingDirectory={EMBED}\n"
-            "ExecStart=/usr/bin/docker compose up -d --wait\nTimeoutStartSec=30min",
-            after="docker.service network-online.target",
-            unit_extra="Requires=docker.service\nWants=network-online.target\n"), action="enable"),
-        # Sandboxes' TCP leaves through Embed's egress proxy (host-guard.sh says what it allows).
+        *sandboxes.host_units(),
+        # Sandboxes' TCP leaves through the runtime's egress (host-guard.sh says what it allows).
         Unit("sbx-host-guard.service", _service(
             "Keep sandboxes off the host and the cloud metadata service; close the public interface",
             f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-host-guard",
-            after="e2b-embed.service", unit_extra="Requires=e2b-embed.service\n")),
+            after=sandboxes.host_unit or "network-online.target", unit_extra=needs)),
         Unit("sbx-firewall.service", _service(
             "Keep sandboxes off the host's own ports",
             f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-firewall",
             after="docker.service network-online.target"), wanted=bool(s["sandbox_cidr"])),
-        Unit("e2b-storage-gc.service", _service(
-            "Delete template layers no build needs", f"Type=oneshot\nExecStart={SBIN}/e2b-storage-gc --delete",
-            install=False), action=""),
-        Unit("e2b-storage-gc.timer", _timer("Hourly template storage cleanup", "OnCalendar=hourly\nPersistent=true"),
-             action="start"),
         Unit("sbx-infisical.service", _service(
             "Infisical managed secret store",
             f"Type=oneshot\nRemainAfterExit=yes\nEnvironment=INFISICAL_ENV={env_file()} INFISICAL_PORT={port}\n"
@@ -180,14 +167,14 @@ def commands() -> dict[str, str]:
     """/usr/local/sbin's commands into the active release."""
     def into(command):
         return f"#!/bin/sh\nset -eu\ncd {CURRENT}\nexec {command}\n"
+    from . import runtime
     s = shell()
     host_ports = " ".join(s["host_ports"].split())
     return {
         "sbx-admin": into('venv/bin/python -m sbx_control.admin "$@"'),
         "sbx-apply": into('venv/bin/python -m sbx_control.host apply "$@"'),
         "sbx-host-guard": into("sh host-guard.sh"),
-        "e2b-storage-gc": into('venv/bin/python embed/storage-gc.py "$@"'),
-        "e2b-compact-snapshot": into('venv/bin/python embed/compact-snapshot.py "$@"'),
+        **runtime.current().host_commands(into),
         # Sandboxes may reach the host's nginx (the gate) and nothing else of it.
         "sbx-firewall": (
             "#!/bin/sh\nset -eu\n"
@@ -271,7 +258,7 @@ def install(names: list[str] | None = None):
 def apply(key: str) -> int:
     """sbx-apply KEY, as root. The request goes first, so one made while
     this runs triggers it again."""
-    from . import paths
+    from . import paths, runtime
     (paths.run() / "apply" / key).unlink(missing_ok=True)
     if key == "tls":
         acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
@@ -282,11 +269,8 @@ def apply(key: str) -> int:
         _systemctl("restart", "sbx-host-guard", check=True)
     elif key == "control":
         _systemctl("restart", "sbx-control", check=True)
-    elif key == "embed-env":
-        # Only the domain: the rest (embed-network, extensions) recreates the
-        # runtime, which runtime.apply_network refuses under running sandboxes.
-        write_embed_env(keys=DOMAIN_KEYS)
-        subprocess.run(["docker", "compose", "up", "-d", "--wait"], cwd=EMBED, check=True)
+    elif runtime.current().apply_host(key):
+        pass   # the runtime's own (Embed's domain keys)
     else:
         from . import extensions
         names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
@@ -299,73 +283,6 @@ def apply(key: str) -> int:
             _activate(unit)
     return 0
 
-
-DOMAIN_KEYS = ("E2B_PUBLIC_DOMAIN", "E2B_PUBLIC_SANDBOX_URL")
-
-
-def embed_env() -> dict[str, str]:
-    """Every key sbx owns in Embed's .env, from the settings and the
-    extensions (Connector.embed); "" removes a key. Embed needs a name for
-    its sandbox URLs: a placeholder until the setup's Domain step."""
-    from . import extensions, hosted_services, settings
-    s = settings.current()
-    domain = s.domain.name or "sbx.invalid"
-    layers = extensions.embed()
-    compose = [*EMBED_COMPOSE, *(f"{layer.name}/{path.name}" for layer in layers for path in layer.compose)]
-    return {"ALLOW_SANDBOX_INTERNAL_CIDRS": ",".join(hosted_services.allowed_cidrs()),
-            "E2B_PUBLIC_DOMAIN": domain, "E2B_PUBLIC_SANDBOX_URL": f"https://sandbox.{domain}",
-            "COMPOSE_FILE": ":".join(compose) if len(compose) > len(EMBED_COMPOSE) else "",
-            **{key: value for layer in layers for key, value in layer.env.items()}}
-
-
-def render_embed_env(text: str, values: dict[str, str]) -> str:
-    """text with values set over it, in place where a key is there already,
-    appended where not, removed where the value is ""."""
-    import re
-    lines, seen = [], set()
-    for line in text.splitlines():
-        key = line.partition("=")[0]
-        if re.fullmatch(r"#?[A-Z0-9_]+", key) and key.lstrip("#") in values:
-            key = key.lstrip("#")
-            if key in seen or values[key] == "":
-                continue
-            seen.add(key)
-            line = f"{key}={values[key]}"
-        lines.append(line)
-    lines += [f"{key}={value}" for key, value in values.items() if key not in seen and value != ""]
-    return "\n".join(lines) + "\n"
-
-
-def write_embed_env(*, hugepages: int | None = None, pins: pathlib.Path | None = None,
-                    keys: tuple[str, ...] | None = None) -> tuple[str, str]:
-    """The one writer of Embed's .env: the keys sbx owns (embed_env, only
-    `keys` of them when given), the hugepages (install.sh) and the runtime's
-    image pins (the vendored .env) when given; the rest stays as Embed wrote
-    it. Also lays the extensions' compose files into Embed's project, unless
-    limited to `keys`. (text before, text after)."""
-    import re
-    from . import extensions
-    path = EMBED / ".env"
-    before = path.read_text() if path.exists() else ""
-    values = embed_env()
-    if keys is not None:
-        values = {key: values[key] for key in keys}
-    if hugepages is not None:
-        values["HUGEPAGES"] = str(hugepages)
-    if pins is not None:
-        values.update((k, v) for k, _, v in (line.partition("=") for line in pins.read_text().splitlines())
-                      if re.fullmatch(EMBED_PINS, k))
-    for layer in extensions.embed() if keys is None else ():
-        for source in layer.compose + layer.files:
-            (EMBED / layer.name).mkdir(mode=0o755, exist_ok=True)
-            shutil.copy(source, EMBED / layer.name / source.name)
-    after = render_embed_env(before, values)
-    if after != before:
-        temporary = path.with_suffix(".sbx-new")
-        temporary.touch(mode=0o600)
-        temporary.write_text(after)
-        temporary.replace(path)
-    return before, after
 
 
 def install_tools():
@@ -482,13 +399,8 @@ def main(argv=None) -> int:
     sub.add_parser("prune")
     sub.add_parser("tools")
     sub.add_parser("upgrade-backup")
-    embed = sub.add_parser("embed-env")
-    embed.add_argument("--hugepages", type=int)
-    embed.add_argument("--pins", type=pathlib.Path)
     args = parser.parse_args(argv)
-    if args.action == "embed-env":
-        write_embed_env(hugepages=args.hugepages, pins=args.pins)
-    elif args.action == "tools":
+    if args.action == "tools":
         install_tools()
     elif args.action == "upgrade-backup":
         upgrade_backup()

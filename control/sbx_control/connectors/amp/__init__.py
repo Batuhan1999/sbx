@@ -129,11 +129,12 @@ class Amp(extensions.Connector):
             "Environment=HOME=/root\nRestart=on-failure\nRestartSec=15\nTimeoutStopSec=300\nUMask=0077",
             enabled=self.settings().enabled, apply=Settings.applies[0], prepare=prepare)]
 
-    def embed(self) -> extensions.EmbedLayer:
-        """The runtime built with filesystem-only snapshots, when the settings name it."""
+    def embed(self):
+        """Embed built with filesystem-only snapshots, when the settings name it."""
+        from ...runtime.embed.host import EmbedLayer
         amp = self.settings()
         on = bool(amp.checkpoint_api_image)
-        return extensions.EmbedLayer(
+        return EmbedLayer(
             KIND, env={"SBX_CHECKPOINT_API_IMAGE": amp.checkpoint_api_image,
                        "SBX_ORCHESTRATOR_BINARY": amp.orchestrator_binary},
             compose=(CHECKPOINTS / "compose.yaml",) if on else (),

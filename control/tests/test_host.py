@@ -43,7 +43,8 @@ class HostTests(Installation):
         self.host.install()
         # Switching releases is one symlink: whatever a unit or command runs of
         # sbx is reached through it (or through a command that is).
-        outside = ("/usr/bin/", "/bin/", str(self.host.EMBED))   # docker, sh, Embed's compose project
+        from sbx_control.runtime.embed import host as embed_host
+        outside = ("/usr/bin/", "/bin/", str(embed_host.EMBED))   # docker, sh, Embed's compose project
         for unit in self.systemd.glob("*.service"):
             for line in unit.read_text().splitlines():
                 key, _, value = line.partition("=")
@@ -88,14 +89,15 @@ class HostTests(Installation):
 
     def test_embeds_env_has_one_writer_for_the_keys_sbx_owns(self):
         from sbx_control import settings
+        from sbx_control.runtime.embed import host as embed_host
         embed = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-embed-")))
-        self.enterContext(patch.object(self.host, "EMBED", embed))
+        self.enterContext(patch.object(embed_host, "EMBED", embed))
         (embed / ".env").write_text("POSTGRES_PASSWORD=runtime-own\n#HUGEPAGES=0\nE2B_API_IMAGE=old\n")
         pins = embed / "pins.env"
         pins.write_text("E2B_API_IMAGE=new\nRUNTIME_COMMIT=abc\nPOSTGRES_PASSWORD=vendor-default\n")
         settings.update("domain", {"name": "sbx.example.com"}, by="test")
         settings.update("network", {"internal_cidrs": ["10.0.0.0/24"]}, by="test")
-        self.host.write_embed_env(hugepages=4096, pins=pins)
+        embed_host.write_embed_env(hugepages=4096, pins=pins)
         env = dict(line.split("=", 1) for line in (embed / ".env").read_text().splitlines())
         self.assertEqual(env, {"POSTGRES_PASSWORD": "runtime-own", "HUGEPAGES": "4096", "E2B_API_IMAGE": "new",
                                "RUNTIME_COMMIT": "abc", "ALLOW_SANDBOX_INTERNAL_CIDRS": "10.0.0.0/24",
@@ -103,23 +105,24 @@ class HostTests(Installation):
                                "E2B_PUBLIC_SANDBOX_URL": "https://sandbox.sbx.example.com"})
         # An extension's runtime layer: its compose file joins Embed's, and goes again when cleared.
         connector_settings("amp", checkpoint_api_image="sbx-checkpoint-api:1", orchestrator_binary="/opt/amp/orchestrator")
-        self.host.write_embed_env()
+        embed_host.write_embed_env()
         env = dict(line.split("=", 1) for line in (embed / ".env").read_text().splitlines())
         self.assertEqual(env["COMPOSE_FILE"], "compose.yaml:compose.override.yaml:amp/compose.yaml")
         self.assertEqual(env["SBX_ORCHESTRATOR_BINARY"], "/opt/amp/orchestrator")
         self.assertTrue((embed / "amp/orchestrator-launch.sh").exists())
         connector_settings("amp", checkpoint_api_image="", orchestrator_binary="")
-        before, after = self.host.write_embed_env()
+        before, after = embed_host.write_embed_env()
         self.assertNotIn("COMPOSE_FILE", after)
         self.assertNotIn("SBX_CHECKPOINT_API_IMAGE", after)
-        self.assertEqual(self.host.write_embed_env(), (after, after))
+        self.assertEqual(embed_host.write_embed_env(), (after, after))
 
     def test_a_domain_change_writes_only_the_domain_keys(self):
         # A pending embed-network change recreates the runtime, which only
         # runtime.apply_network may do (it refuses under running sandboxes).
         from sbx_control import settings
+        from sbx_control.runtime.embed import host as embed_host
         embed = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-embed-")))
-        self.enterContext(patch.object(self.host, "EMBED", embed))
+        self.enterContext(patch.object(embed_host, "EMBED", embed))
         (embed / ".env").write_text("ALLOW_SANDBOX_INTERNAL_CIDRS=10.0.0.0/24\n")
         settings.update("network", {"internal_cidrs": ["10.9.0.0/24"]}, by="test")
         settings.update("domain", {"name": "sbx.example.com"}, by="test")

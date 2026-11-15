@@ -349,7 +349,7 @@ class WorkspaceTests(Server):
 
     def embed_env(self, text):
         """Embed's env file, with a marker that its network change is pending."""
-        from sbx_control import host
+        from sbx_control.runtime.embed import host
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         env = folder / '.env'
         env.write_text(text)
@@ -394,7 +394,7 @@ class WorkspaceTests(Server):
         from sbx_control.runtime.embed import network as host_network
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
-        from sbx_control import host
+        from sbx_control.runtime.embed import host
         original = host.render_embed_env('OTHER_SETTING=preserved\n', host.embed_env())
         self.assertIn('ALLOW_SANDBOX_INTERNAL_CIDRS=172.29.50.0/24\n', original)
         env, marker = self.embed_env(original)
@@ -412,8 +412,8 @@ class WorkspaceTests(Server):
                          (name, secret_store.seal({}, key=f'managed-server/{name}')))
 
     def test_managed_servers_network_is_reached_beside_the_operators_ranges_whatever_they_are_set_to(self):
-        from sbx_control import host, hosted_services
-        from sbx_control.runtime.embed import network as host_network
+        from sbx_control import hosted_services
+        from sbx_control.runtime.embed import host, network as host_network
         self.settings.update('network', {'internal_cidrs': ['10.0.0.0/24']}, by='test')
         self.assertEqual(host.embed_env()['ALLOW_SANDBOX_INTERNAL_CIDRS'], '10.0.0.0/24')
         self.managed_server()

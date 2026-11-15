@@ -214,8 +214,9 @@ if [ ! -f /opt/e2b/.env ]; then
 fi
 install -m 644 "$src/embed/compose.override.yaml" /opt/e2b/compose.override.yaml
 # Every key sbx owns there (the settings', the extensions', the hugepages and
-# the platform's image pins) has one writer: sbx_control/host.py.
-release_host embed-env --hugepages "$hugepages" --pins "$src/vendor/e2b-embed/compose/.env" \
+# the platform's image pins) has one writer: sbx_control/runtime/embed/host.py.
+(cd "$release" && venv/bin/python -m sbx_control.runtime.embed embed-env --hugepages "$hugepages" \
+  --pins "$src/vendor/e2b-embed/compose/.env") \
   || die "could not write /opt/e2b/.env (above)"
 echo "starting (the first time pulls images and builds Embed's base template: several minutes)"
 (cd /opt/e2b && docker compose up -d --wait) > /tmp/e2b-up.log 2>&1 || { tail -30 /tmp/e2b-up.log; die "Embed did not come up; see /tmp/e2b-up.log"; }

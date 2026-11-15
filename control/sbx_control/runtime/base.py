@@ -142,6 +142,21 @@ class Runtime(Protocol):
     ingress_cleared: tuple
     internal_suffix: str
     ports: frozenset  # its own ports in every sandbox: never a preview
+    host_unit: str | None   # the systemd unit that runs it on this host, which the host's guard needs
+
+    def host_units(self) -> list:
+        """Its systemd units on this host (host.Unit), installed before the platform's."""
+
+    def host_commands(self, into) -> dict:
+        """Its commands in /usr/local/sbin: name -> script, into(command) runs one in the active release."""
+
+    def apply_host(self, key: str) -> bool:
+        """A settings change's root-side effect (sbx-apply KEY) when key is
+        the runtime's; False when it is not."""
+
+    def readiness(self, facts: dict) -> list:
+        """What the first-run setup checks before its own test (connections.Check),
+        given setup.host_facts."""
 
     def configure(self, secrets: dict) -> None:
         """Take its credentials from the platform secrets (runtime.env);

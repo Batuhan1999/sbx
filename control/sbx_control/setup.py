@@ -127,13 +127,8 @@ def address_ready() -> bool:
 
 
 def readiness() -> dict:
-    from .connections import Check, runtime
-    host = host_facts()
-    checks = [Check("Virtualization", host["kvm"], "KVM is available" if host["kvm"] else
-                    "KVM is unavailable", "The server needs /dev/kvm; rerun install.sh after enabling it."),
-              Check("Runtime configured", bool(vault.runtime().get("E2B_API_KEY")),
-                    "Sandbox runtime credentials", "Run install.sh to finish installing the runtime.")]
-    checks.extend(runtime.Runtime().test())
+    from .connections import runtime as runtime_connection
+    checks = [*runtime.current().readiness(host_facts()), *runtime_connection.Runtime().test()]
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 

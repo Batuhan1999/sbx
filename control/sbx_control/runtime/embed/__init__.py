@@ -87,6 +87,7 @@ class Embed:
     ingress_cleared = ("E2b-Sandbox-Id", "E2b-Sandbox-Port")   # client-proxy routes on them too
     internal_suffix = INTERNAL_HOST_SUFFIX
     ports = frozenset({ENVD_PORT})
+    host_unit = "e2b-embed.service"
 
     def configure(self, secrets):
         """install.sh copies the key and URLs from Embed's sdk.env into runtime.env."""
@@ -254,6 +255,27 @@ class Embed:
                         + (f" Usage per sandbox in {usage}." if usage.exists() else ""),
                 lambda: "", "manual"),
         ]
+
+    def host_units(self):
+        from . import host
+        return host.units()
+
+    def host_commands(self, into):
+        from . import host
+        return host.commands(into)
+
+    def apply_host(self, key):
+        from . import host
+        return host.apply(key)
+
+    def readiness(self, facts):
+        from ... import vault
+        from ...connections.base import Check
+        return [Check("Virtualization", facts.get("kvm", False),
+                      "KVM is available" if facts.get("kvm") else "KVM is unavailable",
+                      "The server needs /dev/kvm; rerun install.sh after enabling it."),
+                Check("Runtime configured", bool(vault.runtime().get("E2B_API_KEY")),
+                      "Sandbox runtime credentials", "Run install.sh to finish installing the runtime.")]
 
     def status(self):
         from . import connection

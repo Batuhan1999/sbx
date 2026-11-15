@@ -5,7 +5,8 @@ import fcntl
 import ipaddress
 import subprocess
 
-from ... import core, host, hosted_services, paths, platform, settings
+from ... import core, hosted_services, paths, platform, settings
+from . import host
 
 
 def apply_routes():
