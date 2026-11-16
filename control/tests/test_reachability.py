@@ -1,0 +1,108 @@
+"""Whether sandboxes reach this server at its public address: the check
+behind sbx-admin doctor and the first-run setup, with the runtime faked."""
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from support import Installation
+
+
+class ReachabilityTests(Installation):
+    SETTINGS = {"domain": {"name": "sbx.example.com"}}
+
+    def setUp(self):
+        super().setUp()
+        from sbx_control import reachability, runtime, template_builds, templates
+        self.reachability, self.runtime = reachability, runtime
+        self.enterContext(patch.object(template_builds, "built", return_value="sbx-base-1234"))
+        self.enterContext(patch.object(templates, "pinned_key", return_value=""))
+        self.sandbox = MagicMock(sandbox_id="probe-1")
+        self.create = self.enterContext(patch.object(runtime, "create", return_value=self.sandbox))
+
+    def answer(self, stdout: str, stderr: str = ""):
+        self.sandbox.commands.run.return_value = SimpleNamespace(stdout=stdout, stderr=stderr, exit_code=0)
+        return self.reachability.check()
+
+    def test_a_sandbox_that_fetches_this_servers_version_passes_and_is_killed(self):
+        check = self.answer("0 200\ndev")
+        self.assertTrue(check.ok, check)
+        self.assertIn("https://login.sbx.example.com/dist/version", check.detail)
+        self.assertEqual(self.create.call_args.args[0], "sbx-base-1234")
+        self.assertEqual(self.create.call_args.kwargs["on_timeout"], "kill")
+        self.assertIn("https://login.sbx.example.com/dist/version", self.sandbox.commands.run.call_args.args[0])
+        self.sandbox.kill.assert_called_once()
+
+    def test_each_failure_is_named_with_what_to_fix_and_the_sandbox_is_killed(self):
+        cases = [("6 000\n", "curl: (6) Could not resolve host: login.sbx.example.com", "does not resolve", "DNS record"),
+                 ("7 000\n", "curl: (7) Failed to connect", "refused or is unreachable", "port 443"),
+                 ("28 000\n", "curl: (28) Connection timed out", "timed out", "firewall"),
+                 ("60 000\n", "curl: (60) SSL certificate problem", "TLS", "certificate"),
+                 ("90 000\n", "curl: (90) pinned public key mismatch", "not this server's", "something else"),
+                 ("0 502\nbad gateway", "", "HTTP 502", "proxy"),
+                 ("0 200\n9.9.9", "", "not as this server", "another sbx"),
+                 ("", "", "exit -1", "curl")]
+        for stdout, stderr, detail, fix in cases:
+            with self.subTest(stdout=stdout):
+                self.sandbox.reset_mock()
+                check = self.answer(stdout, stderr)
+                self.assertFalse(check.ok)
+                self.assertIn(detail, check.detail)
+                self.assertIn(fix, check.fix)
+                self.sandbox.kill.assert_called_once()
+
+    def test_a_runtime_error_in_the_sandbox_still_kills_it(self):
+        self.sandbox.commands.run.side_effect = self.runtime.Timeout("no answer")
+        check = self.reachability.check()
+        self.assertFalse(check.ok)
+        self.assertIn("no answer", check.detail)
+        self.sandbox.kill.assert_called_once()
+
+    def test_a_failing_kill_does_not_hide_the_answer(self):
+        self.sandbox.kill.side_effect = RuntimeError("gone")
+        with patch("sys.stderr"):
+            self.assertTrue(self.answer("0 200\ndev").ok)
+
+    def test_no_sandbox_starts_without_an_address_or_a_base_template(self):
+        from sbx_control import settings, template_builds
+        self.create.side_effect = self.runtime.NoRoom("full")
+        check = self.reachability.check()
+        self.assertFalse(check.ok)
+        self.assertIn("no sandbox to check from", check.detail)
+        self.sandbox.kill.assert_not_called()
+
+        with patch.object(template_builds, "built", side_effect=template_builds.NotBuilt("building")):
+            check = self.reachability.check()
+        self.assertTrue(check.ok)
+        self.assertIn("not checked yet", check.detail)
+
+        settings.update("domain", {"name": ""}, by="test")
+        check = self.reachability.check()
+        self.assertFalse(check.ok)
+        self.assertIn("no public address", check.detail)
+
+    def test_a_self_signed_certificate_is_pinned_like_a_template_build(self):
+        from sbx_control import templates
+        with patch.object(templates, "pinned_key", return_value="--insecure --pinnedpubkey sha256//abc="):
+            self.answer("0 200\ndev")
+        self.assertIn("--pinnedpubkey sha256//abc=", self.sandbox.commands.run.call_args.args[0])
+
+    def test_doctor_and_setup_run_it_after_the_runtime_checks_pass(self):
+        from sbx_control import connections, runtime, setup
+        from sbx_control.connections.base import Check
+        fake = MagicMock(capabilities=runtime.Capabilities())
+        fake.test.return_value = [Check("Embed API", True, "answers")]
+        fake.readiness.return_value = []
+        fake.disk.return_value = None
+        self.sandbox.commands.run.return_value = SimpleNamespace(stdout="6 000\n", stderr="", exit_code=0)
+        with patch.object(runtime, "_current", fake):
+            names = [c.name for c in connections.get("runtime").test()]
+            ready = setup.readiness()
+            fake.test.return_value = [Check("Embed API", False, "down")]
+            down = [c.name for c in connections.get("runtime").test()]
+        self.assertEqual(names, ["Embed API", self.reachability.NAME])
+        self.assertFalse(ready["ok"])
+        self.assertEqual(down, ["Embed API"])   # no sandbox started when the runtime itself is down
+
+
+if __name__ == "__main__":
+    unittest.main()

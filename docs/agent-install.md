@@ -32,7 +32,10 @@ failed step before presenting it as done.
    holds it can sign in as any of them; for a team, suggest OIDC with
    `allowed_emails`.
    Confirm the control service, runtime and secret store are ready
-   (`sbx-admin doctor`, `sbx-admin store status`).
+   (`sbx-admin doctor`, `sbx-admin store status`). The runtime's checks
+   include one that starts a sandbox and fetches this server's public address
+   from inside it: template builds, git pushes and catalog actions all need
+   that address to work from where sandboxes run.
 3. **Repository access.** Connect GitHub on the web app's **Extensions** page
    and let the owner select a repository. A public repository URL works
    without a GitHub App.
