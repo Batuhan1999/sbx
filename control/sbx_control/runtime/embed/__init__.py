@@ -6,7 +6,8 @@ from __future__ import annotations
 import datetime
 import os
 
-from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateSpec, Timeout
+from ..base import (Busy, Capabilities, CommandFailed, Info, Limits, NoRoom, NotRunning, Snapshot, TemplateSpec,
+                    Timeout)
 from . import capacity, storage
 
 
@@ -224,6 +225,11 @@ class Embed:
 
     def capacity(self, memory_mb):
         return capacity.room(memory_mb)
+
+    def limits(self):
+        """This host's: a VM has at most its cores and all of the hugepages
+        that back sandbox memory. How many run at once is capacity()'s."""
+        return Limits(cpu=os.cpu_count(), memory_mb=capacity.hugepages_mb())
 
     def placing(self):
         return capacity.placing()

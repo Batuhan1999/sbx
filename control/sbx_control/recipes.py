@@ -16,7 +16,7 @@ from typing import Callable
 
 import yaml
 
-from . import paths, platform, settings
+from . import paths, platform, runtime, settings
 
 MAX_FILES = 128
 MAX_BYTES = 1024 * 1024
@@ -211,7 +211,8 @@ def validate(repo: str, source: Path) -> dict:
     parsed.previews()
     parsed.resume_mode
     parsed.swap_mb
-    parsed.size
+    if why := runtime.beyond_limits(parsed.size):
+        raise RecipeError(why)
     return spec
 
 

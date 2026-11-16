@@ -21,11 +21,29 @@ const EMPTY: Record<SandboxScope, string> = {
 }
 
 export function CapacityNote({ capacity }: { capacity?: Capacity }) {
-  if (!capacity?.known) return null
+  if (!capacity) return null
+  if (!capacity.known) return <LimitsNote limits={capacity.limits} />
   const low = (capacity.slots_free ?? 0) <= 1
   return <span className={low ? 'text-warn' : undefined}>
     Room for {capacity.slots_free} more of {capacity.slots_total} at {memory(capacity.memory_mb)} each
   </span>
+}
+
+// What the runtime allows when it can't say how much room is left.
+function LimitsNote({ limits }: { limits?: Capacity['limits'] }) {
+  if (!limits) return null
+  const each = [
+    limits.cpu != null && `${limits.cpu} vCPUs`,
+    limits.memory_mb != null && memory(limits.memory_mb),
+    limits.disk_mb != null && `${memory(limits.disk_mb)} disk`,
+  ].filter(Boolean)
+  const parts = [
+    limits.sandboxes != null && `Up to ${limits.sandboxes} running at once`,
+    each.length > 0 && `each at most ${each.join(', ')}`,
+  ].filter(Boolean) as string[]
+  if (!parts.length) return null
+  const text = parts.join(', ')
+  return <span>{text.charAt(0).toUpperCase() + text.slice(1)}</span>
 }
 
 export default function SandboxesPage() {

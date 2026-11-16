@@ -89,6 +89,28 @@ class RuntimeLayer:
     files: tuple[pathlib.Path, ...] = ()       # what those compose files mount (./<name>/<file>)
 
 
+@dataclasses.dataclass(frozen=True)
+class Limits:
+    """The most a runtime allows, which sbx checks before asking it; None
+    where it sets no limit or can't say. keys names, by field, the
+    runtime.env setting that raises it, and source what sets the limits, as
+    messages name them ("your <provider> plan")."""
+    timeout_seconds: int | None = None  # how long a sandbox runs before its timeout
+    cpu: int | None = None              # vCPUs per sandbox
+    memory_mb: int | None = None        # per sandbox
+    disk_mb: int | None = None          # per sandbox
+    sandboxes: int | None = None        # running at once
+    source: str = ""
+    keys: dict = dataclasses.field(default_factory=dict)
+
+    def known(self) -> dict:
+        """The limits it sets, by field."""
+        return {f: getattr(self, f) for f in LIMIT_FIELDS if getattr(self, f) is not None}
+
+
+LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
+
+
 class TemplateSpec:
     """A template as steps, in order: where it starts (an image or another
     template), then users, working directories, env and commands, then how
@@ -242,6 +264,9 @@ class Runtime(Protocol):
 
     def failure(self, error: BaseException) -> bool:
         """Whether an error is the runtime's or the connection's to it."""
+
+    def limits(self) -> Limits:
+        """The most it allows per sandbox and at once."""
 
     def capacity(self, memory_mb: int) -> dict:
         """Room for sandboxes of memory_mb: {"known": True, "memory_mb",

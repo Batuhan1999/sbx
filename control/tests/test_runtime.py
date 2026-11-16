@@ -211,5 +211,89 @@ class Embed(unittest.TestCase):
                                  ("set_start_cmd", ("start", "port 6080"))])
 
 
+
+class Limits(unittest.TestCase):
+    """The core checks a runtime's limits before asking it, and says which
+    limit and how to raise it; a backend only fills in the values."""
+
+    def setUp(self):
+        from sbx_control import runtime
+        from sbx_control.runtime.embed import Embed
+        self.runtime = runtime
+        self.backend = Embed()
+        self.limits = runtime.Limits(timeout_seconds=3600, cpu=8, memory_mb=8192, disk_mb=10240, sandboxes=20,
+                                     source="your plan", keys={"memory_mb": "MAX_MEMORY_MB", "cpu": "MAX_CPU",
+                                                               "sandboxes": "MAX_SANDBOXES"})
+        for patcher in (patch.object(runtime, "_current", self.backend),
+                        patch.object(self.backend, "limits", side_effect=lambda: self.limits),
+                        patch.object(self.backend, "capacity", return_value={"known": False})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_size_beyond_a_limit_names_it_and_how_to_raise_it(self):
+        why = self.runtime.beyond_limits({"cpu": 2, "memory_mb": 16384, "disk_mb": 8192})
+        self.assertIn("resources.memory_mb is 16384 MiB", why)
+        self.assertIn("at most 8192 MiB", why)
+        self.assertIn("if your plan allows more, set MAX_MEMORY_MB in /etc/sbx/runtime.env", why)
+        self.assertEqual(self.runtime.beyond_limits({"cpu": 8, "memory_mb": 8192, "disk_mb": 10240}), "")
+
+    def test_a_runtime_without_limits_allows_anything(self):
+        self.limits = self.runtime.Limits()
+        self.assertEqual(self.runtime.beyond_limits({"cpu": 64, "memory_mb": 1 << 20, "disk_mb": 1 << 20}), "")
+        self.assertEqual(self.runtime.too_many(), "")
+        self.assertEqual(self.runtime._capped(7200), 7200)
+
+    def test_timeouts_stay_within_the_limit(self):
+        from e2b import Sandbox
+        sandbox = SimpleNamespace(sandbox_id="sb1", commands=None, files=None)
+        with patch.object(Sandbox, "create", return_value=sandbox) as create, \
+                patch.object(Sandbox, "connect", return_value=sandbox) as connect, \
+                patch.object(Sandbox, "set_timeout") as set_timeout:
+            self.runtime.create("t", timeout=7200)
+            self.runtime.connect("sb1", timeout=7200)
+            self.runtime.set_timeout("sb1", 600)
+        self.assertEqual((create.call_args.kwargs["timeout"], connect.call_args.kwargs["timeout"],
+                          set_timeout.call_args.args[1]), (3600, 3600, 600))
+
+    def test_embed_limits_come_from_the_host(self):
+        from sbx_control.runtime.embed import Embed, capacity
+        with patch.object(capacity, "room", return_value={"known": True, "total_mb": 30720}), \
+                patch("os.cpu_count", return_value=16):
+            self.assertEqual(Embed().limits().known(), {"cpu": 16, "memory_mb": 30720})
+        with patch.object(capacity, "room", return_value={"known": False}):
+            self.assertIsNone(Embed().limits().memory_mb)
+
+    def test_running_sandboxes_at_the_limit_refuse_another(self):
+        running = [Mock()] * 20
+        with patch.object(self.backend, "sandboxes", return_value=running) as listed:
+            why = self.runtime.too_many()
+        self.assertEqual(listed.call_args.args, (None, [self.runtime.RUNNING]))
+        self.assertIn("20 sandboxes are running", why)
+        self.assertIn("MAX_SANDBOXES", why)
+        with patch.object(self.backend, "sandboxes", return_value=running[:19]):
+            self.assertEqual(self.runtime.too_many(), "")
+
+    def test_core_refuses_a_create_beyond_the_limit_before_the_runtime(self):
+        from sbx_control import core
+        with patch.object(self.backend, "sandboxes", return_value=[Mock()] * 20), \
+                self.assertRaisesRegex(core.NoCapacity, "runs at most 20 at once"):
+            core.check_capacity(4096)
+
+    def test_unknown_capacity_shows_the_limits(self):
+        from sbx_control import core
+        room = core.capacity(4096)
+        self.assertEqual((room["known"], room["limits"]["sandboxes"]), (False, 20))
+
+    def test_a_recipe_beyond_the_limits_is_refused_when_applied(self):
+        import tempfile
+        from sbx_control import recipes
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "sbx.yaml").write_text("resources:\n  cpu: 16\n")
+            with self.assertRaisesRegex(recipes.RecipeError, "resources.cpu is 16 vCPUs.*MAX_CPU"):
+                recipes.validate("owner/app", Path(folder))
+            Path(folder, "sbx.yaml").write_text("resources:\n  cpu: 8\n")
+            recipes.validate("owner/app", Path(folder))
+
+
 if __name__ == "__main__":
     unittest.main()
