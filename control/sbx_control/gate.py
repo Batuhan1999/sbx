@@ -114,7 +114,9 @@ def _gate(request: Request):
         ip_route = ip_previews.route(int(public_port))
         if ip_route is None:
             raise HTTPException(404)
-    preflight = bool(ip_route and request.headers.get('x-original-method') == 'OPTIONS')
+    # A CORS preflight carries no credentials: let it through to a declared
+    # preview without a login, waking nothing; the request that follows is gated.
+    preflight = request.headers.get('x-original-method') == 'OPTIONS'
     own_kind, own = runtime.own_route(request.headers.get("x-original-host", "").lower(),
                                       request.headers.get("x-original-sandbox-id", ""),
                                       request.headers.get("x-original-sandbox-port") or "") or ("", None)
@@ -125,12 +127,14 @@ def _gate(request: Request):
     # bearer: nginx strips the header, our token; otherwise it is the app's.
     kind = "bearer" if email else "cookie"
     email = email or auth.session_email(request)
+    host = request.headers.get("x-original-host", "").lower()
+    if host in addressing.service_hosts():   # the operator's services: a login, preflight or not
+        if not email:
+            raise HTTPException(401)
+        return Response(status_code=200, headers={"X-Sbx-User": email, "X-Sbx-Auth": kind})
     if not email and not preflight:
         headers = {'X-Sbx-Login': ip_previews.login_url(int(public_port), request.headers.get('x-original-uri', '/'))} if ip_route else None
         raise HTTPException(401, headers=headers)
-    host = request.headers.get("x-original-host", "").lower()
-    if host in addressing.service_hosts():
-        return Response(status_code=200, headers={"X-Sbx-User": email, "X-Sbx-Auth": kind})
     if ip_route:
         slug, port = ip_route
         target = routing.slugs().get(slug)
@@ -152,8 +156,9 @@ def _gate(request: Request):
     # raw <port>-<id> hosts. A team-shared sandbox's owner-only previews (the
     # desktop) are the team's.
     a = _owners["app"][sandbox_id]
-    preview = addressing.preview_on(a, port) or routing.detected_preview(
-        sandbox_id, port, a, running=_owners["state"].get(sandbox_id) == "running")
+    preview = addressing.preview_on(a, port)
+    if preview is None and not (preflight and not ip_route):   # a domain host's preflight: declared ones only
+        preview = routing.detected_preview(sandbox_id, port, a, running=_owners["state"].get(sandbox_id) == "running")
     if preview is None:
         raise HTTPException(404)
     shared = core.shared(_owners["info"][sandbox_id].metadata)

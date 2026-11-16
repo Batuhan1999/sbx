@@ -180,7 +180,16 @@ path.write_text(path.read_text().replace(before, after))
         self.assertGreater(sum("certonly" in c for c in self.commands()), ip_requests)   # the domain's renewal renews the IP's too
         self.assertFalse((self.root / 'tls/nginx/ip-previews.conf').exists())
         # A deleted sandbox's preview is a 404 within a second, not a 502 for as long as an allow is cached.
-        self.assertIn("proxy_cache_valid 200 1s;", (self.root / "tls/nginx/gate.inc").read_text())
+        gate = (self.root / "tls/nginx/gate.inc").read_text()
+        self.assertIn("proxy_cache_valid 200 1s;", gate)
+        # A CORS preflight goes through the gate too, named by its method, which
+        # comes first in the cache key: an anonymous OPTIONS's allow never answers a GET.
+        self.assertIn("proxy_set_header X-Original-Method $sbx_method;", gate)
+        self.assertIn('proxy_cache_key "$sbx_method|$host|', gate)
+        self.assertIn("set $sbx_method $request_method;", config)
+        self.assertNotIn("_preflight", config)
+        self.assertIn("auth_request_set $sbx_runtime $upstream_http_x_sbx_runtime;", config)
+        self.assertIn("proxy_pass $sbx_ingress;", config)
 
 
 if __name__ == "__main__":

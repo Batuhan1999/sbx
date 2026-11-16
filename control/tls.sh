@@ -14,10 +14,8 @@ eval "$(venv/bin/python -m sbx_control.settings shell)"
 # The renewal scripts below run whichever release is active then.
 current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)')
 # Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
-# one upstream per enabled runtime, picked by the kind the gate names; a
-# preflight, which passes no gate, goes to the default runtime's.
+# one upstream per enabled runtime, picked by the kind the gate names.
 upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
-ingress=$(venv/bin/python -m sbx_control.ip_previews default-ingress)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
@@ -187,12 +185,16 @@ location = /_sbx_gate {
   proxy_set_header X-Original-Host \$host;
   proxy_set_header X-Original-Sandbox-Id \$http_e2b_sandbox_id;
   proxy_set_header X-Original-Sandbox-Port \$http_e2b_sandbox_port;
+  # A CORS preflight carries no credentials: the gate lets it through to a
+  # declared preview, without a login, and names its runtime.
+  proxy_set_header X-Original-Method \$sbx_method;
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;
-  proxy_cache_key "\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
+  # The method first: an anonymous preflight's allow never answers a GET.
+  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
@@ -235,15 +237,9 @@ server {
   server_name $domain *.$domain;
   client_max_body_size 0;
   include /etc/nginx/conf.d/gate.inc;
-  location ^~ /_preflight/ {
-    internal;
-    rewrite ^/_preflight(.*)\$ \$1 break;
-    proxy_pass $ingress;
-    proxy_set_header Host \$host;
-  }
   location / {
-    # CORS preflights carry no credentials; the request that follows is gated.
-    if (\$request_method = OPTIONS) { rewrite ^ /_preflight\$uri last; }
+    # The gate's subrequest is a GET; it reads the request's method from here.
+    set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_upstream \$upstream_http_x_sbx_upstream;
     auth_request_set \$sbx_auth \$upstream_http_x_sbx_auth;
@@ -280,6 +276,7 @@ server {
   client_max_body_size 50m;
   include /etc/nginx/conf.d/gate.inc;
   location / {
+    set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
     error_page 401 = @login;

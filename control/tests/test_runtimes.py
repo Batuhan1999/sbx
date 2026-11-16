@@ -471,3 +471,46 @@ class Review(TwoRuntimes, Installation):
         with state.db() as conn:
             self.assertNotIn(template_builds.OLD_TABLE, state.tables(conn))
         self.assertEqual(template_builds.built("sbx-base"), "b-2")
+
+
+class Preflights(TwoRuntimes, Server):
+    """A CORS preflight on a domain host passes the gate without a login, to
+    a declared preview, and is sent to its sandbox's runtime."""
+
+    def setUp(self):
+        super().setUp()
+        from pathlib import Path
+        from sbx_control import core, gate, recipes, settings
+        self.repo_admin()
+        settings.update("domain", {**settings.current().domain.model_dump(), "name": "example.test"}, by="test")
+        self.client.cookies.clear()
+        handle = self.runtime.create("tpl", timeout=600, kind="fake", metadata={
+            "sbx": "pre", "slug": "pre", "owner": "operator@example.com", "repo": "owner/app"})
+        self.vm = handle.sandbox_id
+        app = recipes.App("owner/app", Path("/unused"), {"previews": {"": {"port": 3000, "access": "owner"}}})
+        self.enterContext(patch.object(core, "app_of", return_value=app))
+        self.attach = self.enterContext(patch.object(core, "attach"))
+        gate.sandbox_owner(self.vm, fresh=True)
+
+    def ask(self, host, method="GET"):
+        return self.client.get("/gate", headers={"X-Original-Host": host, "X-Original-Method": method})
+
+    def test_a_preflight_needs_no_login_and_names_the_runtime(self):
+        response = self.ask(f"3000-{self.vm}.example.test", "OPTIONS")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["x-sbx-upstream"], f"3000-{self.vm}.fake.sandboxes.internal")
+        self.assertEqual(response.headers["x-sbx-runtime"], "fake")
+        self.attach.assert_not_called()   # wakes nothing
+        self.assertEqual(self.ask(f"3000-{self.vm}.example.test").status_code, 401)
+
+    def test_a_preflight_reaches_declared_previews_only(self):
+        from sbx_control import routing
+        with patch.object(routing, "detected_preview") as detected:
+            response = self.ask(f"4000-{self.vm}.example.test", "OPTIONS")
+        self.assertEqual((response.status_code, response.headers.get("x-sbx-gone")), (403, "1"))
+        detected.assert_not_called()
+
+    def test_a_service_host_needs_a_login_for_a_preflight_too(self):
+        from sbx_control import addressing
+        with patch.object(addressing, "service_hosts", return_value={"grafana.example.test"}):
+            self.assertEqual(self.ask("grafana.example.test", "OPTIONS").status_code, 401)
