@@ -328,6 +328,8 @@ class CatalogTests(Server):
         import subprocess
         import sys
         root = Path(__file__).resolve().parents[2]
+        if not (root / "control/sbx_control/web_dist/index.html").is_file():
+            self.skipTest("release.sh needs the web app built: npm --prefix web run build")
         out = Path(self.enterContext(tempfile.TemporaryDirectory())) / "release"
         subprocess.run(["sh", str(root / "control/release.sh"), str(out), "test"], check=True, capture_output=True)
         shipped = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "

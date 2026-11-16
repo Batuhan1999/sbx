@@ -27,10 +27,10 @@ python3 -m venv .venv
 npm --prefix web ci
 
 .venv/bin/ruff check .
+npm --prefix web test
+npm --prefix web run build   # before the tests: the release test lays it out
 PYTHONPATH=control .venv/bin/python -m unittest discover -s control/tests -q
 .venv/bin/python -m unittest discover -s embed/tests -q
-npm --prefix web test
-npm --prefix web run build
 ```
 
 Every test class gets a throwaway installation of its own (settings, state
