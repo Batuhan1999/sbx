@@ -34,7 +34,7 @@ OWNERS = ("sbx_control.state", "sbx_control.settings", "sbx_control.secret_store
           "sbx_control.auth", "sbx_control.sandboxes", "sbx_control.lifecycle", "sbx_control.variables",
           "sbx_control.catalog", "sbx_control.catalog.attachments", "sbx_control.catalog.resources",
           "sbx_control.hosted_services", "sbx_control.ip_previews", "sbx_control.template_builds",
-          "sbx_control.setup_pr", "sbx_control.extensions", "sbx_control.delivery")
+          "sbx_control.setup_pr", "sbx_control.extensions", "sbx_control.delivery", "sbx_control.runtimes")
 EVENT_DAYS = 30
 
 SCHEMA = Schema(tables="""

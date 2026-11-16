@@ -133,17 +133,18 @@ sudo() {
             recipe = recipes.App('owner/app', Path(directory), {})
             with patch.object(recipes, 'load', return_value=recipe), \
                     patch.object(core, 'find', return_value=SimpleNamespace(metadata={'template': 'app-12345678'})), \
-                    patch.object(snapshots, 'export', return_value='prepared-cache-id') as export:
+                    patch.object(snapshots, 'export',
+                                 return_value=snapshots.runtime.Snapshot('prepared-cache-id', 'embed')) as export:
                 snapshots.save('amp-source-test', key, 'owner/app')
                 snapshots.save('amp-source-test', key, 'owner/app')
             export.assert_called_once()
-            self.assertEqual(snapshots.cached(key, 'owner/app'), 'prepared-cache-id')
+            self.assertEqual(snapshots.cached(key, 'owner/app'), snapshots.runtime.Snapshot('prepared-cache-id', 'embed'))
             with self.assertRaises(orbs.JobError):
                 snapshots.cached(key, 'other/repo')
             with patch.object(snapshots.runtime, 'delete_snapshot') as delete:
                 snapshots.delete(key)
                 snapshots.delete(key)
-            delete.assert_called_once_with('prepared-cache-id')
+            delete.assert_called_once_with('prepared-cache-id', 'embed')
             self.assertIsNone(snapshots.cached(key, 'owner/app'))
 
     def test_prepared_snapshot_scrubs_an_offline_clone_and_never_mutates_source(self):
@@ -156,6 +157,7 @@ sudo() {
             recipe = recipes.App('owner/app', Path(directory), {})
             source = SimpleNamespace(sandbox_id='source-vm', metadata={'sbx': 'source-name', 'repo': 'owner/app'})
             sdk = Mock()
+            sdk.kind_of.return_value = 'embed'
             sdk.info.return_value.memory_mb = 8192
             sdk.snapshot.side_effect = lambda sandbox_id, name: SimpleNamespace(
                 snapshot_id={'source-vm': 'private-checkpoint', 'temporary-cache-vm': 'clean-project-cache'}[sandbox_id])
@@ -165,13 +167,15 @@ sudo() {
                     patch.object(core, 'reserve_capacity', return_value=contextlib.nullcontext()), \
                     patch.object(recipes, 'ship'), patch.object(core, 'run_in'), \
                     patch.object(prepared_snapshots, 'runtime', sdk):
-                self.assertEqual(prepared_snapshots.export('source-name', 'cache-label'), 'clean-project-cache')
+                self.assertEqual(prepared_snapshots.export('source-name', 'cache-label').snapshot_id,
+                                 'clean-project-cache')
+            self.assertEqual(sdk.create.call_args.kwargs['kind'], 'embed')   # on the source's runtime
             # The clone starts without the workspace's env or any network.
             self.assertEqual(sdk.create.call_args.kwargs['envs'], {})
             self.assertEqual(sdk.create.call_args.kwargs['deny_out'], ['0.0.0.0/0'])
             sdk.connect.assert_not_called()
             sdk.kill.assert_called_once_with('temporary-cache-vm')
-            sdk.delete_snapshot.assert_called_once_with('private-checkpoint')
+            sdk.delete_snapshot.assert_called_once_with('private-checkpoint', 'embed')
             # What the clone ran before it was published removed the runtime's credentials.
             self.assertTrue(any('sudo rm -rf /run/sbx' in c.args[0] for c in staging.commands.run.call_args_list))
 
@@ -188,6 +192,7 @@ sudo() {
             hook.write_text('#!/bin/sh\nexit 1\n'); hook.chmod(0o700)
             recipe = recipes.App('owner/app', Path(directory), {})
             sdk = Mock()
+            sdk.kind_of.return_value = 'embed'
             sdk.info.return_value.memory_mb = 8192
             sdk.snapshot.return_value.snapshot_id = 'private-checkpoint'
             with patch.object(core, 'find', return_value=SimpleNamespace(sandbox_id='source-vm', metadata={})), \
@@ -200,7 +205,7 @@ sudo() {
                     prepared_snapshots.export('source-name', 'cache-label')
             sdk.snapshot.assert_called_once()
             sdk.kill.assert_called_once_with(sdk.create.return_value.sandbox_id)
-            sdk.delete_snapshot.assert_called_once_with('private-checkpoint')
+            sdk.delete_snapshot.assert_called_once_with('private-checkpoint', 'embed')
 
     def amp_fixture(self):
         from fastapi.testclient import TestClient
@@ -373,7 +378,8 @@ sudo() {
             response = self.amp_job({**self.env, 'ORB_SNAPSHOT_ID': 'cached-spawn-test'})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(self.created.call_args.kwargs['template'], 'sanitized-cache-template')
-            self.assertEqual(snapshots.cached('cached-spawn-test', 'owner/app'), 'sanitized-cache-template')
+            self.assertEqual(snapshots.cached('cached-spawn-test', 'owner/app').snapshot_id, 'sanitized-cache-template')
+            self.assertEqual(self.created.call_args.kwargs['kind'], 'embed')   # the runtime that holds the cache
         finally:
             with self.state.db() as conn:
                 conn.execute('delete from amp_snapshots where key=?', ('cached-spawn-test',))

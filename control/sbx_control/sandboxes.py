@@ -11,8 +11,8 @@ import time
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, settings, state,
-               template_builds, variables)
+from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, settings,
+               state, template_builds, variables)
 from .state import db
 
 SLUG_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -25,6 +25,7 @@ class CreateSandbox(BaseModel):
     slug: str | None = None  # defaults to the name
     repo: str | None = None  # owner/repo; defaults to the installation's first
     source_commit: str | None = Field(default=None, pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    runtime: str | None = None  # the runtime's kind; defaults to the repo's setting, else the installation's
 
     @field_validator("repo")
     @classmethod
@@ -54,10 +55,10 @@ def registered(infos) -> list:
             and (info.metadata or {}).get('owner') == known[(info.metadata or {}).get('sbx')]]
 
 
-def register(name: str, owner: str, branch: str, slug: str, metadata: dict | None = None):
+def register(name: str, owner: str, branch: str, slug: str, metadata: dict | None = None, kind: str = ""):
     """A name whose last sandbox failed or was deleted is free again for
     the same owner. metadata is what its creator tagged it with (core.create),
-    known here before its VM exists."""
+    known here before its VM exists; kind the runtime it runs on."""
     found = registered_owner(name)
     if found and found != owner:
         raise lifecycle.Conflict("the sandbox name belongs to another owner")
@@ -68,8 +69,8 @@ def register(name: str, owner: str, branch: str, slug: str, metadata: dict | Non
         unregister(name)
     try:
         with db() as conn:
-            conn.execute("insert into sandboxes (name, owner, branch, slug, metadata) values (?, ?, ?, ?, ?)",
-                         (name, owner, branch, slug, json.dumps(metadata or {})))
+            conn.execute("insert into sandboxes (name, owner, branch, slug, metadata, runtime) values (?, ?, ?, ?, ?, ?)",
+                         (name, owner, branch, slug, json.dumps(metadata or {}), kind or runtime.default()))
     except sqlite3.IntegrityError as error:
         raise lifecycle.Conflict(f"{name} exists") from error
 
@@ -189,7 +190,7 @@ def describe(info) -> dict:
     a = core.app_of(info)
     status = lifecycle.status(current)
     return {"name": meta["sbx"], "owner": meta.get("owner"), "branch": meta.get("branch", ""),
-            "sandbox_id": info.sandbox_id, "state": str(info.state),
+            "sandbox_id": info.sandbox_id, "state": str(info.state), "runtime": runtime.kind_of(info),
             "status": status, "readiness": current["readiness"] if current else "unknown",
             "actions": lifecycle.actions(current, status, vm),
             "lifecycle": current, "error": current["error"] if current else None,
@@ -241,15 +242,19 @@ def create_locked(body: CreateSandbox, email: str, *, start_app: bool = True, me
                   start_from: str | None = None):
     """create() for a caller that holds core.sandbox_operation(body.name).
     metadata tags the sandbox (core.create); start_from is a snapshot to
-    start from instead of the repo's template (an extension's cache)."""
+    start from instead of the repo's template (an extension's cache), on the
+    runtime body.runtime names (the one that holds it). The runtime is the
+    request's, else the repo's, else the default (runtimes.choose)."""
     slug = check_slug(body.slug or body.name, body.name)
     branch = body.branch or recipes.default_branch(body.repo)
-    template = start_from or template_builds.template_for(body.repo or settings.current().default_repo)
-    register(body.name, email, branch, slug, metadata)
+    repo = body.repo or settings.current().default_repo
+    kind = runtimes.choose(repo, body.runtime, None if start_from else recipes.load(body.repo).size)
+    template = start_from or template_builds.template_for(repo, kind)
+    register(body.name, email, branch, slug, metadata, kind)
     try:
         result = core.create(body.name, slug, email, branch, body.public_keys, body.repo,
                              source_commit=body.source_commit, template=template,
-                             memory_mb=template_builds.size_of(template), metadata=metadata)
+                             memory_mb=template_builds.size_of(template), metadata=metadata, kind=kind)
     except Exception:
         if lifecycle.get(body.name) is None:  # refused before anything was made
             unregister(body.name)
@@ -368,9 +373,15 @@ def deliver_waiting(running: set):
         threading.Thread(target=deliver_pending, args=(name,), daemon=True).start()
 
 
+def _runtimes(conn):
+    """Sandboxes registered before each recorded its runtime ran on the installation's default."""
+    conn.execute("update sandboxes set runtime = ? where runtime = ''", (runtime.default(),))
+
+
 SCHEMA = state.Schema(tables="""
 create table if not exists sandboxes (
     name text primary key, owner text not null, branch text not null,
     slug text unique, metadata text not null default '{}',
     created_at text not null default current_timestamp, updated_at text not null default current_timestamp);
-""", columns=(("sandboxes", "prepare_wanted", "text not null default ''"),))
+""", columns=(("sandboxes", "prepare_wanted", "text not null default ''"),
+              ("sandboxes", "runtime", "text not null default ''")), upgrade=_runtimes)

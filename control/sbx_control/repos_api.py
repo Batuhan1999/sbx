@@ -4,8 +4,9 @@ agent gets to set one up."""
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
-from . import readiness, recipes, repo_path, repos, template_builds, views
+from . import readiness, recipes, repo_path, repos, runtimes, template_builds, views
 from .auth import admin_user, api_user, is_admin
 
 router = APIRouter()
@@ -20,6 +21,21 @@ async def api_repos(email: str = Depends(api_user)):
 @router.get("/api/repos/{owner}/{name}")
 def api_repo(email: str = Depends(api_user), repo: str = Depends(repo_path.named)):
     """What the installation knows about a repo, for the CLI (repos.info)."""
+    return repos.info(repo)
+
+
+class RepoRuntime(BaseModel):
+    runtime: str | None = None   # a kind from /api/runtimes; null: the installation's default
+
+
+@router.put("/api/repos/{owner}/{name}/runtime")
+def api_repo_runtime(body: RepoRuntime, email: str = Depends(admin_user), repo: str = Depends(repo_path.named)):
+    """The runtime the repo's new sandboxes run on unless a request names
+    one; null clears it. Its sandboxes keep the runtime they run on."""
+    try:
+        runtimes.set_setting(repo, body.runtime, by=email)
+    except runtimes.Refused as error:
+        raise HTTPException(400, str(error)) from None
     return repos.info(repo)
 
 
@@ -45,7 +61,7 @@ def api_repo_files(email: str = Depends(api_user), repo: str = Depends(repo_path
 def api_template_build(email: str = Depends(admin_user), repo: str = Depends(repo_path.served)):
     """Build the repo's template from its default branch, in the background.
     That is also what makes a committed .sbx/ take effect."""
-    if not template_builds.start(repo):
+    if not template_builds.start(repo, runtimes.of_repo(repo)):
         raise HTTPException(409, f"{repo}'s template is already building")
     return {"repo": repo, "status": "building"}
 

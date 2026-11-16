@@ -43,12 +43,14 @@ def scrub(info) -> str:
     return SCRUB + (f"\nrm -rf {quoted}" if quoted else "") + "\n" + TRIM
 
 
-def export(name: str, label: str) -> str:
-    if not runtime.capabilities().snapshots:
-        raise core.SandboxError(f"project snapshots need filesystem snapshots, which {runtime.title()} does not take")
+def export(name: str, label: str) -> runtime.Snapshot:
+    """The published snapshot, on the runtime the sandbox runs on (Snapshot.runtime)."""
     info = core.find(name)
     if info is None:
         raise core.SandboxError("the workspace disappeared before snapshot export")
+    kind = runtime.kind_of(info)
+    if not runtime.capabilities(kind).snapshots:
+        raise core.SandboxError(f"project snapshots need filesystem snapshots, which {runtime.title(kind)} does not take")
     recipe = core.app_of(info)
     hook = recipe.dir / "snapshot"
     if not hook.is_file() or not os.access(hook, os.X_OK):
@@ -62,10 +64,10 @@ def export(name: str, label: str) -> str:
         actual = runtime.info(info.sandbox_id)
         if not isinstance(actual.memory_mb, int) or actual.memory_mb <= 0:
             raise core.SandboxError("cannot determine the snapshot clone's actual memory allocation")
-        with core.reserve_capacity(actual.memory_mb):
+        with core.reserve_capacity(actual.memory_mb, kind):
             staging = runtime.create(checkpoint.snapshot_id, timeout=240,
                                      metadata={"sbx_cache_build": label}, envs={},
-                                     deny_out=["0.0.0.0/0"], on_timeout="kill")
+                                     deny_out=["0.0.0.0/0"], on_timeout="kill", kind=kind)
         # The runtime's CIDR interface is IPv4-only. Block every new guest
         # connection too, including internal ranges and IPv6, before the hook.
         staging.commands.run(OFFLINE, timeout=30)
@@ -78,7 +80,7 @@ def export(name: str, label: str) -> str:
         clone.run(f"cd {shlex.quote(recipe.workdir)} && {platform.APP_SCRIPTS}/snapshot", timeout=90)
         staging.commands.run(scrub(info), timeout=30)
         published = runtime.snapshot(staging.sandbox_id, label)
-        return published.snapshot_id
+        return published
     finally:
         failures = []
         try:
@@ -88,13 +90,13 @@ def export(name: str, label: str) -> str:
             failures.append(error)
         try:
             if checkpoint is not None:
-                runtime.delete_snapshot(checkpoint.snapshot_id)
+                runtime.delete_snapshot(checkpoint.snapshot_id, kind)
         except Exception as error:
             failures.append(error)
         if failures:
             if published is not None:
                 try:
-                    runtime.delete_snapshot(published.snapshot_id)
+                    runtime.delete_snapshot(published.snapshot_id, kind)
                 except Exception:
                     pass
             state.event(name, "snapshot cleanup deferred", label, internal=True)
@@ -109,15 +111,16 @@ def repo_of(key: str) -> str:
     return row[0] if row else ""
 
 
-def cached(key: str, repo: str) -> str | None:
-    """The project cache a new orb of the repo starts from, or None (the repo's template)."""
+def cached(key: str, repo: str) -> runtime.Snapshot | None:
+    """The project cache a new orb of the repo starts from, on the runtime
+    that holds it, or None (the repo's template)."""
     if not key:
         return None
     with state.db() as conn:
-        row = conn.execute("select repo, snapshot_id from amp_snapshots where key = ?", (key,)).fetchone()
+        row = conn.execute("select repo, snapshot_id, runtime from amp_snapshots where key = ?", (key,)).fetchone()
     if row and row[0] != repo:
         raise JobError("the project snapshot belongs to a different repository")
-    return row[1] if row else None
+    return runtime.Snapshot(row[1], row[2] or runtime.default()) if row else None
 
 
 def save(name: str, key: str, repo: str):
@@ -133,13 +136,13 @@ def save(name: str, key: str, repo: str):
             raise JobError("add an executable .sbx/snapshot hook to remove app-specific credentials and local "
                            "writable data from the temporary cache copy; see docs/amp-orbs.md")
         source = (core.find(name).metadata or {}).get("template", "")
-        snapshot_id = export(name, label)
+        published = export(name, label)
         try:
             with state.db() as conn:
-                conn.execute("insert into amp_snapshots (key, repo, snapshot_id, source_template) values (?, ?, ?, ?)",
-                             (key, repo, snapshot_id, source))
+                conn.execute("insert into amp_snapshots (key, repo, snapshot_id, source_template, runtime) "
+                             "values (?, ?, ?, ?, ?)", (key, repo, published.snapshot_id, source, published.runtime))
         except Exception:
-            runtime.delete_snapshot(snapshot_id)
+            runtime.delete_snapshot(published.snapshot_id, published.runtime)
             raise
 
 
@@ -151,7 +154,7 @@ def records():
 
 def delete(key: str):
     with orb_lock("snapshot:" + key), state.db() as conn:
-        row = conn.execute("select snapshot_id from amp_snapshots where key = ?", (key,)).fetchone()
+        row = conn.execute("select snapshot_id, runtime from amp_snapshots where key = ?", (key,)).fetchone()
         if row:
-            runtime.delete_snapshot(row[0])
+            runtime.delete_snapshot(row[0], row[1] or None)
             conn.execute("delete from amp_snapshots where key = ?", (key,))

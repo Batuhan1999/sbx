@@ -22,8 +22,10 @@ def runner_order(order: runner.Order, request: Request):
     reason = runner.rejection(order)
     if not reason:
         try:
-            core.check_capacity(recipes.load(recipes.repo_of(order.primary_repo_url)).size["memory_mb"]
-                                if order.primary_repo_url else None)
+            # Room on the runtime the session's sandbox will run on (runtimes.choose).
+            from ... import runtimes
+            repo = recipes.repo_of(order.primary_repo_url) if order.primary_repo_url else None
+            core.check_capacity(recipes.load(repo).size["memory_mb"] if repo else None, runtimes.of_repo(repo))
         except core.NoCapacity as error:
             # Retryable for the orchestrator (the hook exits 1), and the message reaches the session.
             print(f"runner order {order.order_id} for {order.session_id}: refused, {error}", flush=True)

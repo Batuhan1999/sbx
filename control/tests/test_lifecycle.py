@@ -329,7 +329,7 @@ class LifecycleTests(Installation):
         recipe = self.recipes.App("owner/repo", Path("/unused"), {"resources": {"memory_mb": 8192}})
         asked = []
 
-        def room(memory_mb=None):  # the host's hugepages
+        def room(memory_mb=None, kind=None):  # the host's hugepages
             asked.append(memory_mb)
             return {"known": False}
         with patch.object(self.recipes, "load", return_value=recipe), \
@@ -888,7 +888,7 @@ class LifecycleTests(Installation):
         self.assertEqual(response.status_code, 503, response.text)
         self.assertEqual(response.headers["retry-after"], "60")
         self.assertIn("owner/repo template is building", response.json()["detail"])
-        start.assert_called_once_with("owner/repo")
+        start.assert_called_once_with("owner/repo", "embed")
         self.assertIsNone(sandboxes.registered_owner("too-early"))
 
     def test_a_runtime_that_does_not_take_the_sandbox_asks_for_the_same_request_again(self):
