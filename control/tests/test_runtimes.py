@@ -489,6 +489,18 @@ class Review(TwoRuntimes, Installation):
         finally:
             file.write_text(before)
 
+    def test_amp_caches_from_before_are_the_default_runtime_s_once(self):
+        from sbx_control import state
+        from sbx_control.connectors.amp import Amp
+        with state.db() as conn:
+            Amp().migrate(conn)
+            conn.execute("insert into amp_snapshots (key, repo, snapshot_id, source_template, runtime) "
+                         "values ('old-cache', 'owner/app', 'snap', 't', '')")
+            Amp().migrate(conn)
+            row = conn.execute("select runtime from amp_snapshots where key = 'old-cache'").fetchone()
+            conn.execute("delete from amp_snapshots where key = 'old-cache'")
+        self.assertEqual(row, ("embed",))
+
     def test_a_recipe_is_refused_only_when_no_runtime_runs_it(self):
         import tempfile
         from pathlib import Path
