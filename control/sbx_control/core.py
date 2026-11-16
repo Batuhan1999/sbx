@@ -701,20 +701,28 @@ def attach(name: str, why: str, *, info=None, run_app: bool = True, wait: bool =
     with _attaching.setdefault(name, threading.Lock()):
         if info is None or runtime_state(info) == "paused":
             info = find(name)  # another caller may have resumed it meanwhile
-        if not info:
-            raise SandboxError(f"no sbx-{name}")
-        if runtime_state(info) == "paused":
-            sbx, info = _resume(name, why, info, run_app, wait)
-        else:
-            sbx, info = connect(name, why, info)
-            if restore_runtime(sbx, info) and run_app and app_of(info).repo:
-                if wait:
-                    restart(name)
-                else:
-                    lifecycle.in_background(name, "restart", lambda operation: restart(name, operation))
+        try:
+            sbx, info = _attach(name, why, info, run_app, wait)
+        except runtime.NotRunning:
+            # The runtime paused or deleted it since it was listed: as it is now.
+            sbx, info = _attach(name, why, find(name), run_app, wait)
     if ready:
         verify_ready(sbx, info)
     return Attached(name, sbx, app_of(info))
+
+
+def _attach(name, why, info, run_app, wait):
+    if not info:
+        raise SandboxError(f"no sbx-{name}")
+    if runtime_state(info) == "paused":
+        return _resume(name, why, info, run_app, wait)
+    sbx, info = connect(name, why, info)
+    if restore_runtime(sbx, info) and run_app and app_of(info).repo:
+        if wait:
+            restart(name)
+        else:
+            lifecycle.in_background(name, "restart", lambda operation: restart(name, operation))
+    return sbx, info
 
 
 def _resume(name, why, info, run_app, wait):

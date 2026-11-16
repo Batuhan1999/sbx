@@ -32,6 +32,11 @@ class Timeout(Failed):
     """A command or a call to the runtime ran out of time."""
 
 
+class NotRunning(Failed):
+    """The sandbox is not running now: the runtime paused or deleted it (on
+    its own timeout, say) since it was listed. The next listing says which."""
+
+
 class Busy(Failed):
     """The runtime would not pause the sandbox now; it keeps running."""
 
@@ -204,18 +209,23 @@ class Runtime(Protocol):
         "kill" when its timeout passes; auto_resume: traffic resumes it."""
 
     def connect(self, sandbox_id: str, *, timeout: int | None = None) -> Handle:
-        """The running sandbox, resuming a paused one; timeout: seconds until it pauses."""
+        """The running sandbox, resuming a paused one; timeout: seconds until it
+        pauses. Raises NotRunning when the runtime has no such sandbox, and a
+        handle's calls raise it when the sandbox paused or went meanwhile."""
 
     def sandboxes(self, metadata: dict | None = None, states: list | None = None) -> list[Info]: ...
 
-    def info(self, sandbox_id: str) -> Info: ...
+    def info(self, sandbox_id: str) -> Info:
+        """Raises NotRunning when the runtime has no such sandbox."""
 
     def kill(self, sandbox_id: str) -> bool: ...
 
     def pause(self, sandbox_id: str) -> None:
-        """Raises Busy when the runtime would not pause it now."""
+        """Raises Busy when the runtime would not pause it now, NotRunning
+        when it is not running (paused or gone)."""
 
-    def set_timeout(self, sandbox_id: str, seconds: int) -> None: ...
+    def set_timeout(self, sandbox_id: str, seconds: int) -> None:
+        """Raises NotRunning when it is not running (paused or gone)."""
 
     def snapshot(self, sandbox_id: str, name: str) -> Snapshot: ...
 

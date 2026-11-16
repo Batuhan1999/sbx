@@ -133,6 +133,32 @@ class Embed(unittest.TestCase):
                 self.assertRaisesRegex(runtime.Busy, "node is busy"):
             self.embed.pause("vm")
 
+    def test_a_sandbox_that_paused_or_went_is_not_running(self):
+        from e2b import Sandbox, TimeoutException
+        from e2b.exceptions import SandboxNotFoundException, SandboxNotRunningException
+        from sbx_control import runtime
+        gone = SandboxNotFoundException("Sandbox vm not found")
+        for call, method in ((lambda: self.embed.set_timeout("vm", 60), "set_timeout"),
+                             (lambda: self.embed.pause("vm"), "pause"),
+                             (lambda: self.embed.connect("vm"), "connect"),
+                             (lambda: self.embed.info("vm"), "get_info")):
+            with self.subTest(method), patch.object(Sandbox, method, side_effect=gone), \
+                    self.assertRaisesRegex(runtime.NotRunning, "not found"):
+                call()
+        vm = Mock(sandbox_id="vm")
+        with patch.object(Sandbox, "connect", return_value=vm):
+            handle = self.embed.connect("vm")
+        vm.commands.run.side_effect = SandboxNotRunningException("The sandbox was not found")
+        with self.assertRaises(runtime.NotRunning):
+            handle.commands.run("true")
+        vm.files.read.side_effect = SandboxNotRunningException("The sandbox was not found")
+        with self.assertRaises(runtime.NotRunning):
+            handle.files.read("/x")
+        vm.commands.run.side_effect = TimeoutException("too slow")  # still a timeout, not a pause
+        with self.assertRaises(runtime.Timeout) as raised:
+            handle.commands.run("sleep 9")
+        self.assertNotIsInstance(raised.exception, runtime.NotRunning)
+
     def test_the_sdk_and_its_http_client_count_as_the_runtime(self):
         from e2b.exceptions import SandboxException
         self.assertTrue(self.embed.failure(SandboxException("500")))

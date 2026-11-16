@@ -42,6 +42,8 @@ def notice_stopped_app(info):
         return
     try:
         why = core.check_app(info)
+    except runtime.NotRunning:
+        raise
     except Exception as error:  # the sandbox did not answer this round
         print(f"keeper: checking {name}'s app: {error!r}", flush=True)
         return
@@ -104,33 +106,44 @@ def keep_awake(info):
     gate.forget_preview_resume(info.sandbox_id)
 
 
+def look_at(info) -> bool:
+    """One sandbox's round; whether it runs."""
+    vm = core.runtime_state(info)
+    sandboxes.record_transition(info, vm)
+    if vm != "running":
+        gate.forget_preview_resume(info.sandbox_id)
+    if vm == "paused" and settings.current().sandboxes.paused_days and info.end_at \
+            and time.time() - info.end_at.timestamp() > settings.current().sandboxes.paused_days * 86400:
+        delete_paused(info)
+    if vm != "running":
+        return False
+    notice_stopped_app(info)
+    if settings.current().sandboxes.detected_previews != "off":
+        routing.detect_ports(info.sandbox_id, core.app_of(info))
+    use = use_of(info, running=True)
+    policy = extensions.keeper_policy(info, use)
+    if policy and policy.decided:
+        if policy.keep_awake:
+            keep_awake(info)
+        return True
+    if use.accessed_within(core.TIMEOUT_SECONDS) or use.probe.ssh or use.probe.agents or use.probe.busy:
+        keep_awake(info)
+    return True
+
+
 def look_once():
     """A deleted paused preview comes back with the PR's next push."""
     infos = sandboxes.registered(core.sandboxes())
     routing.forget_except(i.sandbox_id for i in infos)
     running = set()
     for info in infos:
-        vm = core.runtime_state(info)
-        sandboxes.record_transition(info, vm)
-        if vm != "running":
+        try:
+            if look_at(info):
+                running.add((info.metadata or {}).get("sbx"))
+        except runtime.NotRunning:
+            # The runtime paused or deleted it since the listing (its own
+            # timeout): nothing failed, the next round sees it as it is.
             gate.forget_preview_resume(info.sandbox_id)
-        if vm == "paused" and settings.current().sandboxes.paused_days and info.end_at \
-                and time.time() - info.end_at.timestamp() > settings.current().sandboxes.paused_days * 86400:
-            delete_paused(info)
-        if vm != "running":
-            continue
-        running.add((info.metadata or {}).get("sbx"))
-        notice_stopped_app(info)
-        if settings.current().sandboxes.detected_previews != "off":
-            routing.detect_ports(info.sandbox_id, core.app_of(info))
-        use = use_of(info, running=True)
-        policy = extensions.keeper_policy(info, use)
-        if policy and policy.decided:
-            if policy.keep_awake:
-                keep_awake(info)
-            continue
-        if use.accessed_within(core.TIMEOUT_SECONDS) or use.probe.ssh or use.probe.agents or use.probe.busy:
-            keep_awake(info)
     sandboxes.deliver_waiting(running)
     sandboxes.prepare_waiting({(i.metadata or {}).get("sbx") for i in infos})
 

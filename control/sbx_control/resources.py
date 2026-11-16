@@ -8,7 +8,10 @@ def snapshot(name, live=False):
     info = core.find(name)
     if not info:
         raise core.SandboxError(f"no sandbox {name}")
-    actual = runtime.info(info.sandbox_id)
+    try:
+        actual = runtime.info(info.sandbox_id)
+    except runtime.NotRunning:  # deleted since it was listed
+        raise core.SandboxError(f"no sandbox {name}")
     app = core.app_of(info)
     size = app.size
     runtime_state = core.runtime_state(actual)
@@ -22,9 +25,13 @@ def snapshot(name, live=False):
         "usage": None, "host": core.capacity(actual.memory_mb), "issues": [],
     }
     if live and runtime_state == "running":
-        sandbox = runtime.connect(info.sandbox_id, timeout=core.TIMEOUT_SECONDS)
-        core.ship_guest(sandbox)
-        result["usage"] = json.loads(sandbox.commands.run(core.guest("usage"), timeout=20).stdout)
+        try:
+            sandbox = runtime.connect(info.sandbox_id, timeout=core.TIMEOUT_SECONDS)
+            core.ship_guest(sandbox)
+            result["usage"] = json.loads(sandbox.commands.run(core.guest("usage"), timeout=20).stdout)
+        except runtime.NotRunning:  # paused or deleted since it was listed
+            result["issues"].append({"code": "usage_unavailable",
+                                     "message": "Live usage is unavailable: the workspace stopped running."})
     elif live:
         result["issues"].append({"code": "usage_unavailable", "message": "Live usage is unavailable while the workspace is paused."})
     for field in ("cpu", "memory_mb"):

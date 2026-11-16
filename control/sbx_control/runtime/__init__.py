@@ -4,11 +4,11 @@ sbx's core and its extensions reach VMs only through these functions;
 only a runtime's own package names its SDK (a test enforces it). Today
 the runtime is E2B Embed on this host (runtime.embed); the core names
 no backend (a test enforces that too)."""
-from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, NoRoom, Runtime,
-                   RuntimeLayer, Snapshot, TemplateSpec, Timeout)
+from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, NoRoom, NotRunning,
+                   Runtime, RuntimeLayer, Snapshot, TemplateSpec, Timeout)
 
 __all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "NoRoom",
-           "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout", "current"]
+           "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout", "current"]
 
 _current: Runtime | None = None
 
