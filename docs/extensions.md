@@ -9,12 +9,17 @@ specific to an agent product or a service provider is an extension:
 | Agent connector | `control/sbx_control/connectors/<name>`, or an installed Python package | Claude Code, Codex, [Amp](amp-orbs.md) |
 | Catalog package | `catalog/<name>/`, `/etc/sbx/catalog/<name>/`, or a repository's `.sbx/services/<name>/` | Postgres, ClickHouse, Neon, PlanetScale, Tinybird, Upstash, AWS |
 | GitHub | `control/sbx_control/connections/github.py`, a platform connection | `gh`, git credentials and PR previews |
+| Sandbox runtime | `control/sbx_control/runtime/<kind>/`, or an installed Python package registered under `sbx.runtimes` | E2B Embed |
 
 Where secret values are kept is not an extension but an installation setting,
 chosen when sbx is installed ([secret storage](reference.md#secret-storage-and-live-updates)).
-Neither is the sandbox runtime, the compute under the lifecycle, which is
-today E2B Embed on the host. Extensions reach it only through
-`sbx_control.runtime`, never through a runtime's SDK
+
+Sandbox runtimes, the compute under the lifecycle, are pluggable through
+their own registry (`sbx_control.runtime`), not the extensions' one. An
+installation enables every runtime it can ([runtimes](reference.md#runtimes)),
+and each sandbox runs on one of them. Embed is built in; another runtime is a
+package ([runtime backends](#runtime-backends)). Extensions reach the runtimes
+only through `sbx_control.runtime`, never through a runtime's SDK
 ([sandbox runtime](development.md#sandbox-runtime)).
 
 The core never names an extension. It asks the registry
@@ -201,3 +206,32 @@ on pushes that change `.sbx/` and runs PR previews: a pull request labelled
 `preview` gets a team-shared sandbox `pr-<number>` that follows the branch and
 is deleted when the label goes or the PR closes. The App's id, key and secrets
 are the installation's own secrets, not env variables.
+
+## Runtime backends
+
+A runtime backend runs sandboxes somewhere: Embed on this host, or a
+provider's service. The built-in one is listed in `sbx_control.runtime`
+(`{"embed": "sbx_control.runtime.embed:Embed"}`). Another is an installed
+Python package that registers an entry point, named after the runtime's kind:
+
+```toml
+[project.entry-points."sbx.runtimes"]
+my-provider = "my_package:MyProvider"
+```
+
+Unlike a connector, a runtime that `SBX_RUNTIMES` enables but no package
+provides stops sbx at start, naming the kinds that exist. A backend:
+
+- implements the compute part of `runtime.base.Runtime`: its sandboxes
+  (`create`, `connect`, `sandboxes`, `info`, `pause`, `kill`, ...), their
+  templates, and what it can do (`capabilities`);
+- inherits `runtime.base.HostSide` for the host part, whose no-op defaults
+  fit a backend with nothing on this host, and overrides only what it has;
+- reads only its own keys from `/etc/sbx/runtime.env` (`credential_keys`),
+  never another backend's;
+- keeps no process-global configuration: no credentials in the process
+  environment or in module state where another backend would read them;
+- passes `sbx-admin runtime verify <kind>` on a real installation.
+
+The [sandbox runtime](development.md#sandbox-runtime) section has the
+interface in detail.

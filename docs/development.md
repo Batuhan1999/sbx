@@ -223,11 +223,45 @@ domain into its `.env`. `runtime-network` follows a change to what sandboxes
 reach or to an extension's runtime layer. It has no path unit and stays
 pending until `sbx-admin network apply` calls `apply_network`.
 
-A second runtime implements the `Runtime` protocol in its own package
-(inheriting `HostSide` when it does not run on this host), registers itself
-under `sbx.runtimes`, and is enabled in `SBX_RUNTIMES`. One place still
-assumes Embed: `install.sh` installs it, and writes `SBX_RUNTIMES=embed` on a
-fresh install.
+One place still assumes Embed: `install.sh` installs it, and writes
+`SBX_RUNTIMES=embed` on a fresh install.
+
+### Adding a runtime
+
+A runtime backend is a Python package that registers an entry point in the
+group `sbx.runtimes`: the name is the runtime's kind, the value `module:Class`.
+
+```toml
+[project.entry-points."sbx.runtimes"]
+my-provider = "my_package:MyProvider"
+```
+
+The built-in `{"embed": "sbx_control.runtime.embed:Embed"}` is registered the
+same way in `runtime/__init__.py`. A kind that `SBX_RUNTIMES` enables but no
+package provides fails at start with the kinds that exist.
+
+The contract has two parts. Every backend implements the compute part of
+`Runtime`: its sandboxes, their templates, `limits` and `capabilities`. The
+host part (`host_units`, `guard_host`, `apply_host`, `apply_network`, `disk`,
+`collect_storage`, `jobs`, ...) has no-op defaults in `runtime.base.HostSide`;
+a backend with nothing on this host inherits it and implements nothing it does
+not have. Embed overrides it.
+
+- Read only your own keys from `/etc/sbx/runtime.env` and name them in
+  `credential_keys`. Two backends never share a key name: a backend for a
+  provider's E2B service reads its own key, never Embed's `E2B_API_KEY`.
+- Keep no process-global configuration. Credentials go to each call, not
+  into the process environment or module state where another backend reads
+  them. `runtime/base.py` states the rule.
+- Pass the test suite's runtime tests, which `runtime/fake/` (the in-memory
+  backend the test suite uses) passes too, then
+  `sbx-admin runtime verify <kind>` on a real installation: it creates a sandbox from the base template, runs a command,
+  writes and reads a file, pauses and resumes it, reaches a preview port
+  through the gate, and deletes it, reporting each step.
+
+Previews follow each sandbox's runtime: the gate returns its kind
+(`X-Sbx-Runtime`) next to `X-Sbx-Upstream`, and nginx has one `upstream` per
+enabled runtime.
 
 ### Embed's configuration
 

@@ -71,8 +71,13 @@ What the agent reads along the way, if you want the details yourself:
   - *catalog packages* provide per-sandbox resources on shared or hosted
     services (Postgres, ClickHouse, Neon, PlanetScale, AWS, ...);
   - *GitHub* gives sandboxes repository access and `gh`, and runs PR previews.
-- **Runtime**: the compute under the core, reached through one interface
-  (`control/sbx_control/runtime`). Today it is E2B Embed on your server.
+- **Runtimes**: the compute under the core, reached through one interface
+  (`control/sbx_control/runtime`) and pluggable. An installation enables every
+  runtime it can: E2B Embed on this server when it has `/dev/kvm` and the
+  resources, and a third-party provider once its credentials are configured.
+  Each sandbox runs on one of them, chosen for the sandbox, for its repository
+  or by the installation's default. Embed is built in; other runtimes plug in
+  as packages.
 - **Secrets** stay out of recipes and templates, in the installation's secret
   store (a private Infisical on the host by default).
 - **Templates** are composed from the platform layer, each enabled extension's
