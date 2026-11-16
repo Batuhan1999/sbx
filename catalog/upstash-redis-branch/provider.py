@@ -60,6 +60,8 @@ class UpstashBranch(Upstash):
             expected_root = root(parent)
             branch = self.request('/redis/database/' + quote(parent['database_id'], safe='') + '/branch', 'POST',
                                   {'name': name})
+            # Recorded before polling: a retry then finds this branch, or reports it gone, instead of making another.
+            sbx.write_outputs({'database_id': branch['database_id']})
         identifier = branch['database_id']
         sbx.write_outputs(connection(sbx.wait('Upstash branch', lambda: self.ready(identifier, name, expected_root), 150)))
 

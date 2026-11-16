@@ -114,8 +114,21 @@ class UpstashBranchProviderTests(ScriptCase):
         upstash.failing = True
         with self.assertRaisesRegex(ValueError, 'could not create the branch'):
             self.api.run('create')
+        self.assertEqual(self.values(), {'database_id': 'db-new'})   # the identity only, no credentials
+        with self.previous(self.values()), self.assertRaisesRegex(ValueError, 'branch is missing'):
+            self.api.run('create')
         self.assertEqual(len(upstash.created), 1)
-        self.assertFalse(self.output.exists())
+
+    def test_a_timed_out_branch_is_resumed_by_its_recorded_id(self):
+        upstash = self.upstash(database())
+        upstash.pending = 100
+        with patch('time.monotonic', side_effect=[0, 151]), self.assertRaisesRegex(ValueError, 'not ready'):
+            self.api.run('create')
+        self.assertEqual(self.values(), {'database_id': 'db-new'})
+        upstash.pending = 0
+        with self.previous(self.values()):
+            self.api.run('create')
+        self.assertEqual((len(upstash.created), self.values()['host']), (1, 'branch-fixture.upstash.io'))
 
     def test_ineligible_or_unclear_parents_never_create_a_branch(self):
         for parent, error in ((database(database_type='free'), 'paid plan'),
