@@ -4,7 +4,7 @@
 # HTTP-01 for an IP or DNS-01 for a wildcard domain, serving
 #   <login_host>.<domain>  sbx-control: the login, the API, /install
 #   <service>.<domain>     the operator's services, behind the login
-#   everything else        sandboxes, through the runtime's ingress (Embed's client-proxy on 3002)
+#   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
 # Every request to a service or a sandbox passes sbx-control's /gate first:
 # previews for anyone signed in, owner-only ports for their owner. nginx
 # removes the login cookie, and an sbx token, before a request reaches a
@@ -13,8 +13,11 @@ set -eu
 eval "$(venv/bin/python -m sbx_control.settings shell)"
 # The renewal scripts below run whichever release is active then.
 current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)')
-# Where previews go: the sandbox runtime's ingress (Embed's client-proxy).
-ingress=$(venv/bin/python -c 'from sbx_control import runtime; print(runtime.current().ingress)')
+# Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
+# one upstream per enabled runtime, picked by the kind the gate names; a
+# preflight, which passes no gate, goes to the default runtime's.
+upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
+ingress=$(venv/bin/python -m sbx_control.ip_previews default-ingress)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
@@ -206,6 +209,7 @@ proxy_cache_path /var/cache/nginx/gate keys_zone=gate:2m max_size=20m inactive=5
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
 # The gate names the runtime's host (<port>-<id>) for readable host names.
 map \$sbx_upstream \$sbx_target { "" \$host; default \$sbx_upstream; }
+$upstreams
 # An sbx API token must not reach a sandbox either; an Authorization header the
 # gate did not use is the app's own (a JWT, Basic auth) and passes.
 map \$sbx_auth \$sandbox_authorization { bearer ""; default \$http_authorization; }
@@ -244,9 +248,10 @@ server {
     auth_request_set \$sbx_upstream \$upstream_http_x_sbx_upstream;
     auth_request_set \$sbx_auth \$upstream_http_x_sbx_auth;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
+    auth_request_set \$sbx_runtime \$upstream_http_x_sbx_runtime;
     error_page 401 = @login;
     error_page 403 = @denied;
-    proxy_pass $ingress;
+    proxy_pass \$sbx_ingress;
     proxy_http_version 1.1;
     # The runtime routes on Host; the app learns the host the browser used
     # from X-Forwarded-Host (Rails, Django, Next.js and Phoenix read it).

@@ -142,17 +142,54 @@ def app_cookies(value):
                      if part.partition('=')[0].strip() != platform.SESSION_COOKIE and part.strip())
 
 
+def upstream_name(kind: str) -> str:
+    return "sbx_runtime_" + re.sub(r"[^A-Za-z0-9_]", "_", kind)
+
+
+def _upstream_url(kind: str, ingress: str) -> str:
+    return f"{urlsplit(ingress).scheme or 'http'}://{upstream_name(kind)}"
+
+
+def default_ingress() -> str:
+    """The default runtime's upstream, for what reaches a runtime without the
+    gate naming one (a CORS preflight)."""
+    kind, (ingress, _) = next(iter(runtime.ingresses().items()))
+    return _upstream_url(kind, ingress)
+
+
+def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") -> str:
+    """nginx: one upstream block per enabled runtime (its ingress) and a map
+    from the kind the gate names (X-Sbx-Runtime, in $source) to it ($target);
+    anything else goes to the default runtime's."""
+    found = runtime.ingresses()
+    lines = ["# One upstream per enabled sandbox runtime; the gate names a sandbox's (X-Sbx-Runtime)."]
+    for kind, (ingress, _) in found.items():
+        parts = urlsplit(ingress)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        lines.append(f"upstream {upstream_name(kind)} {{ server {parts.hostname}:{port}; }}")
+    lines.append(f"map ${source} ${target} {{")
+    lines.append(f"  default {default_ingress()};")
+    lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def cleared_headers() -> list:
+    """Every enabled runtime's ingress_cleared: a browser must not pick the VM."""
+    return list(dict.fromkeys(name for _, cleared in runtime.ingresses().values() for name in cleared))
+
+
 def nginx(value, certificate):
     if not value:
         return ''
     ip = ipaddress.ip_address(value)
     if certificate not in ('bootstrap', str(ip)):
         raise ValueError('Invalid IP certificate name')
-    cleared = "\n".join(f'    proxy_set_header {name} "";' for name in runtime.current().ingress_cleared)
+    cleared = "\n".join(f'    proxy_set_header {name} "";' for name in cleared_headers())
     first, last = port_range()
     listeners = '\n'.join(f'  listen {"[::]:" if ip.version == 6 else ""}{p} ssl;' for p in range(first, last + 1))
     return f'''# IP previews share the control plane's renewable IP certificate.
-map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
+{runtime_upstreams("ip_runtime", "ip_ingress")}map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
 map $http_upgrade $ip_connection {{ default upgrade; '' close; }}
 server {{
 {listeners}
@@ -188,9 +225,10 @@ server {{
     auth_request_set $ip_auth $upstream_http_x_sbx_auth;
     auth_request_set $ip_login $upstream_http_x_sbx_login;
     auth_request_set $ip_gone $upstream_http_x_sbx_gone;
+    auth_request_set $ip_runtime $upstream_http_x_sbx_runtime;
     error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
-    proxy_pass {runtime.current().ingress};
+    proxy_pass $ip_ingress;
     proxy_http_version 1.1;
     proxy_set_header Host $ip_upstream;
 {cleared}
@@ -223,5 +261,10 @@ create table if not exists ip_preview_missing (
 if __name__ == '__main__':
     if sys.argv[1:2] == ['nginx'] and len(sys.argv) == 4:
         print(nginx(sys.argv[2], sys.argv[3]), end='')
+    elif sys.argv[1:] == ['upstreams']:
+        print(runtime_upstreams(), end='')
+    elif sys.argv[1:] == ['default-ingress']:
+        print(default_ingress())
     else:
-        raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE')
+        raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE | upstreams | '
+                         'default-ingress')
