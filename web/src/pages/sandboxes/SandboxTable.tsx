@@ -1,6 +1,7 @@
 import { ArrowUpRight, Bot, GitBranch, GitPullRequest, User } from 'lucide-react'
 import { Link } from 'react-router'
 import type { Sandbox } from '@/api/types'
+import { RuntimeLabel } from '@/components/RuntimeLabel'
 import { StatusBadge } from '@/components/StatusBadge'
 import { ago, host } from '@/lib/format'
 import { sandboxStatus } from '@/lib/status'
@@ -26,7 +27,10 @@ export function SandboxTable({ sandboxes, showRepo = true }: { sandboxes: Sandbo
         const status = sandboxStatus(s)
         return <div role="row" key={s.name} className={cn('relative grid grid-cols-1 gap-x-4 gap-y-1.5 px-4 py-3 transition-colors hover:bg-hover/60 md:items-center', cols)}>
           <div role="cell" className="min-w-0">
-            <Link to={`/app/sandboxes/${encodeURIComponent(s.name)}`} className="font-medium after:absolute after:inset-0 hover:underline">{s.name}</Link>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Link to={`/app/sandboxes/${encodeURIComponent(s.name)}`} className="truncate font-medium after:absolute after:inset-0 hover:underline">{s.name}</Link>
+              <RuntimeLabel kind={s.runtime} />
+            </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-muted"><GitBranch className="size-3 shrink-0" /><span className="truncate">{s.branch || 'default branch'}</span></div>
           </div>
           {showRepo && <div role="cell" className="min-w-0 truncate text-[13px] text-muted">{s.app || '—'}</div>}

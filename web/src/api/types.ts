@@ -100,6 +100,8 @@ export type Sandbox = {
   vm: string
   created_at: string | null
   origin: Origin
+  /** The kind of runtime it runs on (GET /api/runtimes names it). */
+  runtime?: string
 }
 
 // The runtime's limits, by field, when it can't say how much room it has.
@@ -137,7 +139,22 @@ export type SandboxInspection = {
   skipped: string[]
 }
 
-export type CreateSandbox = { name: string; branch?: string; repo?: string; public_keys: string }
+/** runtime: a kind from GET /api/runtimes; left out, the repo's setting or the installation's default. */
+export type CreateSandbox = { name: string; branch?: string; repo?: string; public_keys: string; runtime?: string }
+
+/** The most a runtime allows, by field; a field is missing where it sets no limit or can't say. */
+export type RuntimeLimits = { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number }
+/** An enabled sandbox runtime (GET /api/runtimes). host: it runs on this server, not at a provider. */
+export type SandboxRuntime = {
+  kind: string
+  title: string
+  default: boolean
+  host: boolean
+  capabilities: Record<string, unknown>
+  limits: RuntimeLimits
+  status: { state: ConnectionState | string; summary: string }
+}
+export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type Trust = 'trusted' | 'public' | null
 /** Who has to act: the coding agent, a person, an admin, or nobody (the server is working on it). */
@@ -169,6 +186,9 @@ export type RepoInfo = {
   github_app_install: string
   github_anonymous: boolean
 }
+
+/** GET /api/repos/{repo}: runtime is the repo's own setting, null for the installation's default. */
+export type RepoDetail = RepoInfo & { runtime?: string | null }
 
 export type ReadinessStepId = 'served' | 'github' | 'configured' | 'template' | 'services' | 'env' | 'sandbox'
 export type ReadinessStepStatus = 'done' | 'todo' | 'working' | 'blocked'

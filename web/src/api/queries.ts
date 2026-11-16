@@ -11,6 +11,7 @@ export const keys = {
   resources: (name: string) => ['sandboxes', 'resources', name] as const,
   repos: ['repos'] as const,
   repo: (repo: string) => ['repo', repo] as const,
+  repoInfo: (repo: string) => ['repo', repo, 'info'] as const,
   readiness: (repo: string) => ['repo', repo, 'readiness'] as const,
   env: (repo: string) => ['repo', repo, 'env'] as const,
   files: (repo: string) => ['repo', repo, 'files'] as const,
@@ -26,6 +27,7 @@ export const keys = {
   setupChecks: ['setup', 'checks'] as const,
   settings: ['settings'] as const,
   updates: ['updates'] as const,
+  runtimes: ['runtimes'] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)
@@ -59,7 +61,15 @@ export const useResources = (name: string, enabled = true) => useQuery({
   queryKey: keys.resources(name), queryFn: () => api.sandboxes.resources(name), enabled, staleTime: 30_000, retry: false,
 })
 
+export const useRuntimes = () => useQuery({ queryKey: keys.runtimes, queryFn: api.runtimes, staleTime: 60_000, retry: false })
+/** The enabled runtimes when there is a choice between them; null with one (or while loading), and the UI then says nothing about runtimes. */
+export function useRuntimeChoice() {
+  const data = useRuntimes().data
+  return data && data.runtimes.length > 1 ? data : null
+}
+
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
+export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })
 export const useReadiness = (repo: string) => useQuery({ queryKey: keys.readiness(repo), queryFn: () => api.repos.readiness(repo), refetchInterval: 10_000 })
 export const useEnv = (repo: string, enabled = true) => useQuery({ queryKey: keys.env(repo), queryFn: () => api.env.view(repo), enabled, retry: false })
 export const useRecipeFiles = (repo: string) => useQuery({ queryKey: keys.files(repo), queryFn: () => api.repos.files(repo) })

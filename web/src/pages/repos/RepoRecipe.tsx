@@ -10,6 +10,7 @@ import { Panel } from '@/components/ui/primitives'
 import { ago, dateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useRepo } from './RepoLayout'
+import { RepoRuntime } from './RepoRuntime'
 
 export default function RepoRecipe() {
   const { repo, readiness, me } = useRepo()
@@ -25,6 +26,7 @@ export default function RepoRecipe() {
         : <RecipeFiles files={d.files} />}</QueryView>
     </Panel>
     <div className="min-w-0 space-y-4">
+      {admin && <RepoRuntime repo={repo} />}
       <Panel title="Template" description="A prebuilt image of the repository with dependencies installed, so sandboxes start in seconds. Rebuilt when the recipe or an extension changes."
         actions={t && <StateBadge tone={t.level} label={t.label} pulse={t.level === 'progress'} />}>
         {readiness.info.prebuilt ? <div className="space-y-3">

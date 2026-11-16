@@ -44,3 +44,26 @@ export function host(url: string): string {
 export function portsHint(ports: number[] = []): string {
   return ports.map(p => (p === 53 ? 'inbound UDP and TCP port 53 (it answers the _acme-challenge DNS queries)' : `inbound TCP port ${p}`)).join(' and ')
 }
+
+/** A runtime's limits in words, exact (a rounded maximum would let a size just above it look allowed); "" when it states none. */
+export function limitsText(limits: { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number } = {}): string {
+  const each = [
+    limits.cpu != null && plural(limits.cpu, 'vCPU'),
+    limits.memory_mb != null && `${limits.memory_mb} MB memory`,
+    limits.disk_mb != null && `${limits.disk_mb} MB disk`,
+    limits.timeout_seconds != null && `${duration(limits.timeout_seconds)} before it pauses`,
+  ].filter(Boolean)
+  const parts = [
+    limits.sandboxes != null && `up to ${limits.sandboxes} running at once`,
+    each.length > 0 && `each at most ${each.join(', ')}`,
+  ].filter(Boolean) as string[]
+  const text = parts.join('; ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function duration(seconds: number): string {
+  if (seconds % 86_400 === 0) return plural(seconds / 86_400, 'day')
+  if (seconds % 3_600 === 0) return plural(seconds / 3_600, 'hour')
+  if (seconds % 60 === 0) return plural(seconds / 60, 'minute')
+  return plural(seconds, 'second')
+}

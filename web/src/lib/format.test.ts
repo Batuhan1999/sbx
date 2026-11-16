@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ago, parseTime, portsHint } from './format'
+import { ago, limitsText, parseTime, portsHint } from './format'
 
 describe('server times', () => {
   it('reads SQLite timestamps as UTC and ISO times as given', () => {
@@ -15,5 +15,14 @@ describe('certificate ports', () => {
     expect(portsHint([80])).toBe('inbound TCP port 80')
     expect(portsHint([80, 53])).toContain('port 80 and inbound UDP and TCP port 53')
     expect(portsHint([])).toBe('')
+  })
+})
+
+describe('runtime limits', () => {
+  it('words the limits a runtime states, exactly, and nothing for the ones it does not', () => {
+    expect(limitsText({ sandboxes: 20, cpu: 8, memory_mb: 8192, disk_mb: 10240, timeout_seconds: 3600 }))
+      .toBe('Up to 20 running at once; each at most 8 vCPUs, 8192 MB memory, 10240 MB disk, 1 hour before it pauses')
+    expect(limitsText({ cpu: 1 })).toBe('Each at most 1 vCPU')
+    expect(limitsText({})).toBe('')
   })
 })

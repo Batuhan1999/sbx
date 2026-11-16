@@ -8,6 +8,7 @@ import type { SandboxDetail, SandboxInspection } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CopyCommand } from '@/components/CopyCommand'
 import { PageHeader } from '@/components/PageHeader'
+import { RuntimeLabel } from '@/components/RuntimeLabel'
 import { EmptyState, ErrorState, Loading, QueryView } from '@/components/states'
 import { StateBadge, StatusBadge } from '@/components/StatusBadge'
 import { AnchorButton, Button } from '@/components/ui/button'
@@ -30,6 +31,7 @@ function Sandbox({ s }: { s: SandboxDetail }) {
     <PageHeader title={s.name} crumbs={[{ label: 'Sandboxes', to: '/app/sandboxes' }]}
       meta={<>
         <StatusBadge sandbox={s} />
+        <RuntimeLabel kind={s.runtime} />
         {s.app && <Link to={`/app/repos/${s.app}`} className="hover:text-ink">{s.app}</Link>}
         <span className="inline-flex items-center gap-1"><GitBranch className="size-3.5" />{s.branch || 'default branch'}</span>
         <span>{s.origin.href ? <a href={s.origin.href} target="_blank" rel="noreferrer" className="hover:text-ink">{s.origin.label}</a> : s.origin.label}{s.owner && s.origin.kind === 'person' ? ` · ${s.owner}` : ''}</span>
