@@ -1,0 +1,39 @@
+kind: provision
+name: upstash-redis-branch
+title: Upstash Redis branch
+logo: logo.svg
+description: >
+  A branch of one of your Upstash Redis databases per sandbox: its keys as they
+  were when the sandbox started, with its own endpoint and password, deleted
+  with the sandbox. Writes on either side stay separate. Only global databases
+  on a paid plan can be branched, on an account with a payment method. Every
+  branch is billed as Pay as You Go, so copy from a development database whose
+  size you accept paying for per sandbox.
+docs: https://upstash.com/docs/redis/features/branching
+requires:
+  account:
+    kind: upstash-account
+    expose:
+      email: UPSTASH_EMAIL
+      api_key: UPSTASH_API_KEY
+inputs:
+  parent:
+    label: Copy from
+    required: true
+    help: The name or ID of the database, or of one of its branches, each sandbox copies. Use the ID when a name is not unique.
+outputs:
+  url: { sensitive: true }
+  rest_url: {}
+  rest_token: { sensitive: true }
+  host: {}
+  port: {}
+  user: {}
+  password: { sensitive: true }
+  database: {}
+  database_id: {}
+runs: { create: provider.py, delete: provider.py, list: provider.py }
+timeout: 3m
+env:
+  REDIS_URL: ${outputs.url}
+  UPSTASH_REDIS_REST_URL: ${outputs.rest_url}
+  UPSTASH_REDIS_REST_TOKEN: ${outputs.rest_token}

@@ -33,6 +33,7 @@ product mode.
 | Tinybird | `tinybird-workspace` + `tinybird-branch` | A branch with the workspace's structure; data from the last partition only when selected. |
 | ClickHouse | `clickhouse-server` + `clickhouse-database` | Empty schemas, or clones of supported local MergeTree tables. |
 | Upstash Redis | `upstash-account` + `upstash-redis` | A separate Redis database; run the repository's seeds, if any. |
+| Upstash Redis with development data worth copying | `upstash-account` + `upstash-redis-branch` | A branch of the selected global, paid parent database: its keys at creation, billed as Pay as You Go. |
 | Temporal | `temporal-server` + `temporal-namespace`, or the local dev server as a process | A namespace, or a development store of its own. |
 | Redis with a native client | A `processes:` entry in the app sandbox | Its own data directory; enable persistence if the app needs it. |
 | SQLite, uploads, local files | The sandbox filesystem | Files created by normal setup. |
