@@ -6,10 +6,18 @@
 #   control/release.sh DIR [VERSION]
 # VERSION defaults to the VERSION file of a release archive, else the
 # checkout's nearest tag (v0.2.0, or v0.2.0-3-g<commit> past it).
+# The web app's bundle (sbx_control/web_dist) is not committed: a release
+# archive carries it, and a checkout needs `npm --prefix web ci && npm
+# --prefix web run build` first (Node 22).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 out=${1:?usage: release.sh DIR [VERSION]}
+[ -f "$here/sbx_control/web_dist/index.html" ] || {
+  echo "release.sh: the web app is not built ($here/sbx_control/web_dist): install from a release archive," \
+    "or build it first with Node 22: npm --prefix web ci && npm --prefix web run build" >&2
+  exit 1
+}
 if [ -n "${2:-}" ]; then version=$2
 elif [ -f "$root/VERSION" ]; then version=$(cat "$root/VERSION")
 else version=$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)

@@ -41,15 +41,9 @@ jobs:
         working-directory: web
       - run: npm test
         working-directory: web
+      # The bundle release packaging below lays out; it is not committed.
       - run: npm run build
         working-directory: web
-      - name: The committed web bundle matches its source
-        run: |
-          git add -N control/sbx_control/web_dist
-          git diff --exit-code --stat control/sbx_control/web_dist || {
-            echo "control/sbx_control/web_dist is out of date: run npm run build in web/ and commit the result" >&2
-            exit 1
-          }
       - name: Shell syntax and release packaging
         run: |
           git ls-files '*.sh' ':!:vendor/*' | while IFS= read -r file; do

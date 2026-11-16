@@ -32,7 +32,7 @@ app needs, and whether a fresh second sandbox fails the same way.
 - Add tests for behavior that can break, and run the checks.
 - For lifecycle or service changes, run the
   [acceptance checklist](docs/agent-install.md#acceptance-checklist).
-- Edit the web app in `web/src` and commit its rebuilt assets.
+- Edit the web app in `web/src`; its build is not committed (releases carry it).
 - Leave `vendor/e2b-embed/` untouched; runtime configuration goes in `embed/`.
   Keep third-party notices intact.
 - Update the docs when commands or behavior change.

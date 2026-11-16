@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag vMAJOR.MINOR.PATCH (or vX.Y.Z-rc.N, a pre-release) on main
 # publishes a GitHub release: the checks, then sbx-<tag>.tar.gz (the source
-# tree with a VERSION file, what install.sh installs) and its .sha256, with
+# tree with a VERSION file and the web app's bundle, built here: what
+# install.sh installs) and its .sha256, with
 # notes GitHub generates from the PRs merged since the last tag
 # (.github/release.yml). Run it by hand for a dry run: it builds and checks
 # the archive of any branch and publishes nothing.
@@ -45,10 +46,23 @@ jobs:
           if [ "$PUBLISH" = true ] && ! git merge-base --is-ancestor HEAD origin/main; then
             echo "::error::$VERSION points at a commit main does not contain: tag a commit on main"; exit 1
           fi
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: The web app's bundle, which is not committed
+        run: npm ci && npm run build
+        working-directory: web
       - name: Archive
         run: |
           name=sbx-$VERSION
-          git archive --format=tar.gz --prefix="$name/" --add-virtual-file="$name/VERSION:$VERSION" \
+          # Each bundle file under its own path, then the tree and VERSION.
+          set --
+          for file in $(find control/sbx_control/web_dist -type f | sort); do
+            set -- "$@" --prefix="$name/${file%/*}/" --add-file="$file"
+          done
+          git archive --format=tar.gz "$@" --prefix="$name/" --add-virtual-file="$name/VERSION:$VERSION" \
             -o "$RUNNER_TEMP/$name.tar.gz" HEAD
           (cd "$RUNNER_TEMP" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
           echo "NAME=$name" >> "$GITHUB_ENV"
@@ -58,7 +72,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP/unpacked"
           sh "$RUNNER_TEMP/unpacked/$NAME/control/release.sh" "$RUNNER_TEMP/layout"
           test "$(cat "$RUNNER_TEMP/layout/VERSION")" = "$VERSION"
-          test -f "$RUNNER_TEMP/layout/sbx_control/web_dist/index.html"
+          dist=$RUNNER_TEMP/layout/sbx_control/web_dist
+          assets=$(grep -o '/assets/[^"]*' "$dist/index.html")
+          for asset in $assets; do test -f "$dist$asset"; done
           test -f "$RUNNER_TEMP/unpacked/$NAME/install.sh"
           test -f "$RUNNER_TEMP/unpacked/$NAME/vendor/e2b-embed/compose/compose.yaml"
           echo "$NAME.tar.gz: $(du -h "$RUNNER_TEMP/$NAME.tar.gz" | cut -f1), sha256 $(cut -d' ' -f1 "$RUNNER_TEMP/$NAME.tar.gz.sha256")" \

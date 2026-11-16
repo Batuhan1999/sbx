@@ -3,8 +3,7 @@
 # It reads AGENTS.md on its own; the rest of the defaults stand.
 reviews:
   path_filters:
-    - '!control/sbx_control/web_dist/**'   # built from web/src; CI checks it matches
-    - '!vendor/**'                         # the vendored E2B Embed stack, never edited here
+    - '!vendor/**'   # the vendored E2B Embed stack, never edited here
     - '!web/package-lock.json'
   path_instructions:
     - path: '**'
