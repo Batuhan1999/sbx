@@ -77,8 +77,9 @@ sandbox, though; see [LLM calls](#llm-calls).
 `openrouter-key` gives each sandbox an OpenRouter API key of its own, with a
 credit limit in USD (`limit`, required; `limit_reset` makes it daily, weekly or
 monthly), made with a management key that stays on the server. A sandbox that
-spends its limit gets OpenRouter's `403` key-limit error instead of using
-another sandbox's budget, and its key is deleted with it.
+spends its limit gets OpenRouter's `403` key-limit error on paid models instead
+of using another sandbox's budget (free `:free` models still answer), and its
+key is deleted with it.
 
 Use it when the repository already calls OpenRouter, or when the owner chooses
 to route its LLM calls through OpenRouter. For an app that calls a provider
