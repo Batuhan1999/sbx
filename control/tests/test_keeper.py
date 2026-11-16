@@ -31,6 +31,7 @@ class Keeper(unittest.TestCase):
                     (keeper, "use_of", lambda info, running: used)):
                 stack.enter_context(patch.object(target, name, side_effect=value))
             stack.enter_context(patch.object(keeper.core, "sandboxes", return_value=infos))
+            stack.enter_context(patch.object(keeper.lifecycle, "busy", return_value=set()))
             stack.enter_context(patch.object(keeper.settings, "current", return_value=SimpleNamespace(
                 sandboxes=SimpleNamespace(paused_days=0, detected_previews="off"))))
             stack.enter_context(patch.object(keeper.runtime, "set_timeout", side_effect=set_timeout))

@@ -263,6 +263,21 @@ class Limits(unittest.TestCase):
             self.runtime.Limits(timeout_seconds=60)
         self.assertEqual(self.runtime.Limits(timeout_seconds=300).timeout_seconds, 300)
 
+    def test_the_keeper_keeps_a_sandbox_awake_while_an_operation_holds_it(self):
+        from sbx_control import keeper
+        info = SimpleNamespace(sandbox_id="sb1", state="running", metadata={"sbx": "box"}, end_at=None)
+        idle = Mock(accessed_within=Mock(return_value=False), probe=SimpleNamespace(ssh=False, agents=False, busy=False))
+        quiet = SimpleNamespace(sandboxes=SimpleNamespace(detected_previews="off", paused_days=0))
+        with patch.object(keeper.sandboxes, "record_transition"), patch.object(keeper, "notice_stopped_app"), \
+                patch.object(keeper.settings, "current", return_value=quiet), \
+                patch.object(keeper, "use_of", return_value=idle), \
+                patch.object(keeper.extensions, "keeper_policy", return_value=None), \
+                patch.object(keeper, "keep_awake") as keep_awake:
+            self.assertTrue(keeper.look_at(info, held=set()))
+            keep_awake.assert_not_called()   # idle and not held: it times out
+            self.assertTrue(keeper.look_at(info, held={"box"}))   # its setup still runs
+            keep_awake.assert_called_once_with(info)
+
     def test_embed_limits_come_from_the_host(self):
         from sbx_control.runtime.embed import Embed, capacity
         with patch.object(capacity, "room", return_value={"known": True, "total_mb": 30720}), \
