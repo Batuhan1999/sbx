@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUpRight, Bot, Check, CircleCheck, FolderGit2, Github, Network, Plus, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useCatalog, useCatalogProblems, useConnections, useMe, useRepos, useSharedConnections } from '@/api/queries'
@@ -121,9 +121,11 @@ function SharedConnections() {
   const location = useLocation()
   // A repository's Packages tab sends people here to connect what a package needs.
   const asked = (location.state as { connect?: string } | null)?.connect ?? null
-  const [adding, setAdding] = useState<string | boolean>(asked ?? false)
+  const [adding, setAdding] = useState<string | boolean>(false)
   useEffect(() => {
-    if (asked) navigate(location.pathname + location.hash, { replace: true, state: null })
+    if (!asked) return
+    setAdding(asked)
+    navigate(location.pathname + location.hash, { replace: true, state: null })
   }, [asked, navigate, location.pathname, location.hash])
   return <Section id="connections" title="Connections" description="The accounts and servers sandboxes get their own resources on: an OpenRouter account, a Neon project, a Postgres server."
     actions={<Button size="sm" variant="primary" onClick={() => setAdding(true)}><Plus />Add connection</Button>}>
@@ -161,7 +163,7 @@ function ConnectionRow({ s, onRemoved }: { s: SharedConnection; onRemoved: () =>
     {check.data && !check.data.ok && <p className="mt-2 text-[12.5px] text-bad"><LinkedText text={check.data.detail} /></p>}
     <ErrorState error={check.error} compact className="mt-2" />
     {s.known && <Dialog open={editing} onOpenChange={setEditing} title={`Edit ${s.key}`} description="Checked before it’s saved. Leave a secret empty to keep it." wide>
-      {editing && <ConnectionForm name={s.package} existing={s} onDone={() => setEditing(false)} />}
+      {editing && <ConnectionForm name={s.package} existing={s} onDone={() => { setEditing(false); check.reset() }} />}
     </Dialog>}
   </li>
 }
@@ -273,7 +275,8 @@ function ProviderPanel({ p, admin, connections, onClose }: { p: Provider; admin:
   const [another, setAnother] = useState(false)
   const [editing, setEditing] = useState<SharedConnection | null>(null)
   const reopened = another || !!editing
-  const [pkg, setPkg] = useState<CatalogPackage | undefined>(p.resources[0])
+  const [pkgName, setPkgName] = useState(p.resources[0]?.name)
+  const pkg = p.resources.find(r => r.name === pkgName)
   const [repo, setRepo] = useState<string | null>(null)
   // The connections may arrive after the panel opened: an account that is connected already skips its step.
   useEffect(() => { if (step === 'connect' && connections.length > 0 && !reopened) setStep('repo') }, [step, connections.length, reopened])
@@ -304,7 +307,7 @@ function ProviderPanel({ p, admin, connections, onClose }: { p: Provider; admin:
           summary={repo && <>{repo}{pkg && p.resources.length > 1 ? ` · ${pkg.title}` : ''}</>} last={false}>
           <div className="space-y-4">
             {p.resources.length > 1 && <Choices label="Package" items={p.resources.map(r => ({ value: r.name, label: r.title, note: sentences(r.description)[0] }))}
-              value={pkg?.name ?? null} onChoose={name => { setPkg(p.resources.find(r => r.name === name)); setRepo(null) }} />}
+              value={pkg?.name ?? null} onChoose={name => { setPkgName(name); setRepo(null) }} />}
             {pkg && <RepoChoices pkg={pkg} value={repo} onChoose={setRepo} />}
           </div>
         </Step>}
@@ -342,21 +345,21 @@ function Step({ n, title, state, summary, last, children }: { n: number; title: 
 
 /** A list to pick one item from, drawn as radio rows. */
 function Choices({ label, items, value, onChoose }: { label: string; items: { value: string; label: string; note?: string; href?: string; aside?: string }[]; value: string | null; onChoose: (value: string) => void }) {
+  const group = useId()
   const row = 'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-hover'
-  return <div role="radiogroup" aria-label={label} className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+  return <fieldset className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+    <legend className="sr-only">{label}</legend>
     {items.map(item => item.href
       ? <Link key={item.value} to={item.href} className={row}>
         <FolderGit2 className="size-4 shrink-0 text-faint" /><span className="grow font-medium text-muted">{item.label}</span>
         <span className="text-[12px] text-muted">{item.aside}</span><ArrowUpRight className="size-3.5 text-muted" />
       </Link>
-      : <button key={item.value} type="button" role="radio" aria-checked={value === item.value} onClick={() => onChoose(item.value)}
-        className={cn(row, value === item.value && 'bg-accent-soft hover:bg-accent-soft')}>
-        <span aria-hidden className={cn('grid size-4 shrink-0 place-items-center rounded-full border', value === item.value ? 'border-accent' : 'border-line-strong')}>
-          {value === item.value && <span className="size-2 rounded-full bg-accent" />}
-        </span>
+      : <label key={item.value} className={cn(row, 'cursor-pointer', value === item.value && 'bg-accent-soft hover:bg-accent-soft')}>
+        <input type="radio" name={group} value={item.value} checked={value === item.value} onChange={() => onChoose(item.value)}
+          className="size-4 shrink-0 accent-[var(--accent)]" />
         <span className="min-w-0 grow"><span className="block font-medium">{item.label}</span>{item.note && <span className="block text-[12px] text-muted">{item.note}</span>}</span>
-      </button>)}
-  </div>
+      </label>)}
+  </fieldset>
 }
 
 /** The repositories this server trusts, to add a package to; one that has it already links to its Packages tab. */

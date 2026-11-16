@@ -209,7 +209,10 @@ def attach(repo: str, name: str, key: str | None, inputs: dict, chosen: dict, *,
         raise PackageError(f"{key!r} is not a key (a-z, 0-9, - and _)")
     declared = next((m for m in merged(repo) if m[0] == key), None)
     given = {k: v for k, v in inputs.items() if v != ""}
-    values = package.with_defaults({**(declared[2] if declared else {}), **given}, key)
+    # A blank secret keeps what is saved; any other input given blank goes back to its default.
+    cleared = {k for k, v in inputs.items() if v == "" and not package.secret(k)}
+    base = {k: v for k, v in (declared[2] if declared else {}).items() if k not in cleared}
+    values = package.with_defaults({**base, **given}, key)
     bind(package, {**(declared[3] if declared else {}), **chosen}, key)
     why = check(package, values) if run_check else ""
     if why:
@@ -218,7 +221,8 @@ def attach(repo: str, name: str, key: str | None, inputs: dict, chosen: dict, *,
         row = conn.execute("select inputs, connections from attachments where scope = 'repo' and repo = ? and key = ?",
                            (repo, key)).fetchone()
         before_inputs, before_chosen = _unseal(row[0]) if row else {}, json.loads(row[1] or "{}") if row else {}
-        reference = secret_store.seal({**before_inputs, **given}, key=f"connection/repo/{repo}/{key}")
+        kept = {k: v for k, v in before_inputs.items() if k not in cleared}
+        reference = secret_store.seal({**kept, **given}, key=f"connection/repo/{repo}/{key}")
         conn.execute("insert into attachments (scope, repo, key, package, inputs, connections, added_by) "
                      "values ('repo', ?, ?, ?, ?, ?, ?) on conflict (scope, repo, key) do update set "
                      "package = excluded.package, inputs = excluded.inputs, connections = excluded.connections, disabled = 0, "

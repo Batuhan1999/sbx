@@ -28,7 +28,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
   const catalog = useCatalog()
   const shared = useSharedConnections(Object.keys(entry.requires).length > 0)
   const attach = useAction((v: { key: string; inputs: Record<string, string>; connections: Record<string, string> }) => api.attachments.attach(repo, {
-    package: entry.name, key: v.key, inputs: Object.fromEntries(Object.entries(v.inputs).filter(([, x]) => x !== '')),
+    package: entry.name, key: v.key, inputs: Object.fromEntries(Object.entries(v.inputs).filter(([n, x]) => x !== '' || !entry.inputs[n]?.secret)),
     connections: Object.fromEntries(Object.entries(v.connections).filter(([, x]) => x)), check: true,
   }), keys.env(repo), keys.readiness(repo), keys.repos, keys.catalog)
   const inputs = Object.entries(entry.inputs)

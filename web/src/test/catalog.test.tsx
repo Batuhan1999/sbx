@@ -243,12 +243,30 @@ describe('when connections fail or cannot be loaded', () => {
 
   it('shows the error with a retry instead of a form while connections cannot be loaded', async () => {
     stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { status: 500, body: { detail: 'the store is down' } },
+      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': () => ({ status: 500, body: { detail: 'the store is down' } }),
       'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
     })
     renderApp(<AttachForm repo="acme/api" entry={KEY as never} onDone={() => {}} />)
     expect(await screen.findByRole('button', { name: /Retry/ })).toBeTruthy()
     expect(screen.queryByRole('combobox')).toBeNull()
+  })
+})
+
+describe('editing a package\'s settings', () => {
+  it('sends a choice set back to blank and leaves a saved secret out', async () => {
+    const calls = stubApi({ 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] }, 'POST /api/repos/acme/app/attachments': { attachment: {} } })
+    const entry = { ...KEY, requires: {}, inputs: {
+      limit_reset: { required: false, secret: false, agent: true, help: '', default: '', label: 'Limit resets', choices: [{ value: '', label: 'Never' }, { value: 'daily', label: 'Daily' }] },
+      token: { required: false, secret: true, agent: true, help: '' },
+    } }
+    const attachment = { key: 'openrouter', package: 'openrouter-key', kind: 'provision', title: 'OpenRouter API key', logo: '', origin: 'here', inputs: { limit_reset: 'daily' },
+      secret_inputs: { token: true }, connections: {}, exports: [], disabled: false, state: 'ready', problem: null, project: false }
+    renderApp(<AttachForm repo="acme/app" entry={entry as never} attachment={attachment as never} onDone={() => {}} />)
+    const user = userEvent.setup()
+    await user.selectOptions(await screen.findByLabelText('Limit resets'), '')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ inputs: { limit_reset: '' } }))
+    expect((calls.find(c => c.method === 'POST')!.body as { inputs: Record<string, string> }).inputs).not.toHaveProperty('token')
   })
 })
 

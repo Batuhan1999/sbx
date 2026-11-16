@@ -102,8 +102,9 @@ function AttachmentRow({ a, repo, admin, catalog, shared }: {
           : admin && configurable && a.state !== 'disabled' ? <Button size="sm" onClick={() => setEditing(true)}><Settings2 />Edit</Button> : null}
         {!a.project && (a.state === 'ready' || a.state === 'check_failed') && <Button size="sm" busy={check.isPending} onClick={() => check.mutate()}><ShieldCheck />Test</Button>}
         {admin && a.origin !== 'sbx.yaml' && <ConfirmDialog trigger={<Button size="icon-sm" variant="ghost" aria-label={`Remove ${a.key}`}><Trash2 /></Button>}
-          title={`Remove ${a.title}?`} description={a.origin === 'both' ? 'This removes the settings made here; the recipe still names it.' : 'New sandboxes stop getting it. Existing sandboxes keep theirs until they are deleted.'}
-          confirm="Remove" onConfirm={async () => { await api.attachments.detach(repo, a.key); await qc.invalidateQueries({ queryKey: keys.env(repo) }) }} />}
+          title={a.origin === 'both' ? `Turn off ${a.title}?` : `Remove ${a.title}?`}
+          description={a.origin === 'both' ? 'The recipe still names it, so it stays here, turned off: new sandboxes stop getting it, and its settings are kept.' : 'New sandboxes stop getting it. Existing sandboxes keep theirs until they are deleted.'}
+          confirm={a.origin === 'both' ? 'Turn off' : 'Remove'} onConfirm={async () => { await api.attachments.detach(repo, a.key); await qc.invalidateQueries({ queryKey: keys.env(repo) }) }} />}
       </div>
     </div>
     {check.data && <p role="status" className={check.data.ok ? 'mt-2 text-[12.5px] text-ok' : 'mt-2 text-[12.5px] text-bad'}>{check.data.ok ? 'Test passed.' : <LinkedText text={check.data.detail || 'Test failed.'} />}</p>}
