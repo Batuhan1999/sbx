@@ -126,7 +126,7 @@ def restore(path: pathlib.Path, key: str) -> dict:
                     shutil.copytree(folder, target)
     settings.forget()
     if not paths.runtime_env().exists():
-        print("note: /etc/sbx/runtime.env is missing; install.sh writes this host's E2B credentials", flush=True)
+        print("note: /etc/sbx/runtime.env is missing; install.sh writes this host's runtime credentials", flush=True)
     return manifest
 
 

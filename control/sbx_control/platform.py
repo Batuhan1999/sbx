@@ -25,7 +25,7 @@ SESSION_COOKIE = "sbx_session"
 # guest helper (core.ship_guest), what extensions write.
 RUN = "/run/sbx"
 APP_SCRIPTS = f"{RUN}/app"  # the recipe's .sbx/ as shipped (recipes.ship)
-# The sandbox user's home (E2B's user, "user"): checkouts, SSH keys, agents' state.
+# The sandbox user's home (the runtime's default user, "user"): checkouts, SSH keys, agents' state.
 HOME = "/home/user"
 
 # Every template's start command, also run once at build before the snapshot.

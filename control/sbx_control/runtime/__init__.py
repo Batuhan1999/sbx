@@ -2,12 +2,13 @@
 
 sbx's core and its extensions reach VMs only through these functions;
 only a runtime's own package names its SDK (a test enforces it). Today
-the runtime is E2B Embed on this host (runtime.embed)."""
+the runtime is E2B Embed on this host (runtime.embed); the core names
+no backend (a test enforces that too)."""
 from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, NoRoom, Runtime,
-                   Snapshot, TemplateSpec, Timeout)
+                   RuntimeLayer, Snapshot, TemplateSpec, Timeout)
 
 __all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "NoRoom",
-           "Runtime", "Snapshot", "TemplateSpec", "Timeout", "current"]
+           "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout", "current"]
 
 _current: Runtime | None = None
 
@@ -125,6 +126,14 @@ def upstream_host(port: int, sandbox_id: str) -> str:
 
 def own_route(host: str, sandbox_id: str, port: str):
     return current().own_route(host, sandbox_id, port)
+
+
+def preview(name: str, port: int | None, listen: int, *, preserve_host: bool = False) -> None:
+    """sbx-admin preview; ValueError when the runtime has no local proxy."""
+    serve = getattr(current(), "preview", None)
+    if serve is None:
+        raise ValueError(f"{title()} has no loopback preview on this host; open the sandbox's preview URL instead")
+    serve(name, port, listen, preserve_host=preserve_host)
 
 
 def capabilities() -> Capabilities:

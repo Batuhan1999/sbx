@@ -1,5 +1,5 @@
 """sbx-control's state: one SQLite file on the host (paths.database()).
-Sandboxes themselves live in Embed.
+Sandboxes themselves live in the runtime.
 
 Every module that keeps rows declares its tables as a Schema; migrate()
 creates and upgrades all of them at every start (the server's lifespan,

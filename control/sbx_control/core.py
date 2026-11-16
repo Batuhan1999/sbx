@@ -49,9 +49,9 @@ class PauseRefused(SandboxError):
     """The runtime refused to pause a sandbox, which keeps running."""
 
 
-# Embed refuses a pause it cannot take now (503, "node is busy"): it is still
-# saving the sandbox's parent, or the disk cannot hold a snapshot of the
-# sandbox's whole memory plus its headroom. The sandbox keeps running; retry.
+# The runtime refuses a pause it cannot take now (runtime.Busy): it is still
+# saving the sandbox's parent, say, or has no room for its snapshot. The
+# sandbox keeps running; retry.
 PAUSE_RETRY_SECONDS = (5, 15)
 
 
@@ -134,8 +134,8 @@ def detectable_port(port: int) -> bool:
 
 
 def detected_ports(listening: str, a: recipes.App) -> dict:
-    """port -> whether it listens on loopback only, from `ss -Hltn`. Embed's
-    forwarder resets connections to loopback-only ports under load, so those
+    """port -> whether it listens on loopback only, from `ss -Hltn`. A runtime's
+    forwarder may reset connections to loopback-only ports under load, so those
     are reported but not exposed: the server has to listen on 0.0.0.0."""
     out = {}
     for line in listening.splitlines():
@@ -441,9 +441,9 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
            hidden: set = frozenset(), operation=None, metadata=None) -> dict:
     name, slug = env["SBX_NAME"], env["SBX_SLUG"]
     envs, layer = runtime_layer(name, a, _envs(env, app_env), trusted, metadata)
-    # The cloud metadata service: Embed denies it in the slot already, and
-    # install.sh's guard for what its egress proxy dials. Embed can't deny
-    # private ranges per sandbox.
+    # The cloud metadata service, denied per sandbox on every runtime (one
+    # may deny it already). Private ranges are the runtime's to enforce
+    # (Runtime.apply_network), not per sandbox.
     sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
                          deny_out=["169.254.169.254/32"],
                          metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
@@ -577,7 +577,7 @@ def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
 
 
 def restore_runtime(sbx, info) -> bool:
-    """When the host has no room for a pause snapshot, Embed boots the
+    """When the runtime had no room for a pause snapshot, it boots the
     sandbox again from its disk, and its tmpfs comes back empty: put the env,
     key and git credential back from what sbx-control keeps. True when it
     had to, or the recipe requests an app restart after resume."""

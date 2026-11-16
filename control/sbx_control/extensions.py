@@ -163,9 +163,9 @@ class Connector(Connection):
     def host_services(self) -> list[HostService]:
         return []
 
-    def embed(self):
-        """What it adds to the sandbox runtime when that is Embed on this host
-        (runtime.embed.host.EmbedLayer), or None."""
+    def runtime_layer(self, kind: str):
+        """What it adds to the services of the runtime of this kind
+        (Runtime.kind) on this host (runtime.RuntimeLayer), or None."""
         return None
 
     def on_restore(self, conn):

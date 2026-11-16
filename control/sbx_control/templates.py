@@ -57,7 +57,7 @@ def bundles():
 
 def inline(text: str) -> str:
     """A script as a command that runs it, in the build's own steps rather
-    than a file upload (Embed's answers on 127.0.0.1 only)."""
+    than a file upload, which a runtime's builder may not reach."""
     return f"echo {base64.b64encode(text.encode()).decode()} | base64 -d > /tmp/sbx-step && bash /tmp/sbx-step"
 
 
@@ -89,10 +89,10 @@ def base_steps() -> list:
                 "&& apt-get clean && rm -rf /var/lib/apt/lists/*"),
         # macOS ssh sends LC_* = en_US.UTF-8.
         ("run", "locale-gen en_US.UTF-8 >/dev/null"),
-        # Keys only; host keys are generated per sandbox by START. E2B's
-        # 00-e2b.conf allows empty passwords and root login, and sshd takes
-        # the first value it reads; 0- sorts before it if it ever comes back.
-        ("run", "mkdir -p /run/sshd && rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/00-e2b.conf "
+        # Keys only; host keys are generated per sandbox by START. A runtime's
+        # own drop-ins may allow empty passwords and root login, and sshd takes
+        # the first value it reads; 0- sorts before them if one comes back.
+        ("run", "mkdir -p /run/sshd && rm -f /etc/ssh/ssh_host_* /etc/ssh/sshd_config.d/*.conf "
                 "&& printf 'PasswordAuthentication no\\nPermitEmptyPasswords no\\nKbdInteractiveAuthentication no\\n"
                 "PermitRootLogin no\\nAllowUsers user\\n' > /etc/ssh/sshd_config.d/0-sandbox.conf"),
         ("run", inline((FILES / "resource-control.sh").read_text())),
@@ -157,8 +157,8 @@ def listing() -> list:
 
 def delete(name: str) -> bool:
     """Delete a template from the runtime; False when it has none of that name.
-    On Embed its layers stay until the storage GC finds nothing reads them (a
-    sandbox still running from it, a pause snapshot made from it)."""
+    The runtime may keep its layers while something still reads them (a
+    sandbox running from it, a pause snapshot made from it)."""
     return runtime.delete_template(name)
 
 
