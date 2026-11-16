@@ -166,9 +166,12 @@ class HostTests(Installation):
         self.assertEqual((embed / ".env").read_text(), before)                          # Embed's own project untouched
         self.assertEqual((embed / "compose.override.yaml").read_text(), "api: one\n")
         check = ["upgrade-check", "--source", str(release), "--hugepages", "4096"]
-        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.sandboxes", return_value=[]):
+        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.embed.own_sandboxes", return_value=[]):
             self.assertEqual(embed_cli.main(check), 0)
-        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.sandboxes", return_value=["paused"]), \
+        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.embed.own_sandboxes", side_effect=OSError("down")), \
+                patch("sys.stderr"):
+            self.assertEqual(embed_cli.main(check), 1)              # Embed not answering is no answer
+        with patch("sbx_control.platform.connect"), patch("sbx_control.runtime.embed.own_sandboxes", return_value=["paused"]), \
                 patch("sys.stderr", new_callable=__import__("io").StringIO) as said:
             self.assertEqual(embed_cli.main(check), 1)
         self.assertIn("recreates Embed's api, orchestrator, which the 1 sandbox here", said.getvalue())

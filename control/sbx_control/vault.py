@@ -143,11 +143,12 @@ def _runtime_file(keys=None) -> dict:
     return out
 
 
-def runtime() -> dict:
+def runtime(keys=None) -> dict:
     """This host's sandbox runtime credentials (runtime.env, written by
-    install.sh); a value may be a reference into the store."""
+    install.sh): the enabled runtimes' keys, or these; a value may be a
+    reference into the store."""
     return {name: secret_store.unseal(value) if secret_store.is_reference(value) else value
-            for name, value in _runtime_file().items()}
+            for name, value in _runtime_file(keys).items()}
 
 
 def runtime_sealed() -> bool:

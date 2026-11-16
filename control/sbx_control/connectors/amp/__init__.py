@@ -79,9 +79,9 @@ class Amp(extensions.Connector):
         from ...state import columns
         if "runtime" not in columns(conn, "amp_snapshots"):
             conn.execute("alter table amp_snapshots add column runtime text not null default ''")
-        # Caches from before several runtimes are on the default runtime of then, whatever it becomes.
+        # Caches from before several runtimes are on the one runtime there was then.
         from ... import runtime
-        conn.execute("update amp_snapshots set runtime = ? where runtime = ''", (runtime.default(),))
+        conn.execute("update amp_snapshots set runtime = ? where runtime = ''", (runtime.LEGACY,))
 
     def ready(self) -> Ready:
         return Ready(READY)

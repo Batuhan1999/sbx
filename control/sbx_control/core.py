@@ -201,7 +201,13 @@ def sandboxes_complete(metadata=None, state=None):
 
 
 def find(name):
-    return next(iter(sandboxes({"sbx": name})), None)
+    """The sandbox named name; None only when every runtime answered without
+    it (runtime.Incomplete when one did not answer: it may be there)."""
+    found = sandboxes({"sbx": name})
+    if found:
+        return found[0]
+    runtime.complete(found)
+    return None
 
 
 def sbx_env(name: str, slug: str, a: recipes.App, owner: str = "", branch: str = "", template: str = "") -> dict:

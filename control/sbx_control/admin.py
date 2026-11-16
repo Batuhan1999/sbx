@@ -214,10 +214,11 @@ def do_runtime(a) -> int:
     from . import platform, runtime, runtimes
     platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
     if a.action == "apply":
+        kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
         # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control
         # configures each runtime at start (platform.connect): both again.
         settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
-        print(f"runtimes {', '.join(runtime.enabled())} (default {runtime.default()}): nginx is regenerated and "
+        print(f"runtimes {', '.join(kinds)} (default {first}): nginx is regenerated and "
               "sbx-control restarts within seconds")
         return 0
     if a.action == "verify":

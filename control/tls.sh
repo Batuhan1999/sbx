@@ -16,6 +16,8 @@ current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)'
 # Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
 # one upstream per enabled runtime, picked by the kind the gate names.
 upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
+# An https ingress (a provider's): SNI with its own name, its certificate verified.
+upstream_tls=$(venv/bin/python -m sbx_control.ip_previews upstream-tls)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
@@ -248,6 +250,7 @@ server {
     error_page 401 = @login;
     error_page 403 = @denied;
     proxy_pass \$sbx_ingress;
+$upstream_tls
     proxy_http_version 1.1;
     # The runtime routes on Host; the app learns the host the browser used
     # from X-Forwarded-Host (Rails, Django, Next.js and Phoenix read it).

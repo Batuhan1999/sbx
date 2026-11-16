@@ -631,3 +631,112 @@ class Preflights(TwoRuntimes, Server):
         from sbx_control import addressing
         with patch.object(addressing, "service_hosts", return_value={"grafana.example.test"}):
             self.assertEqual(self.ask("grafana.example.test", "OPTIONS").status_code, 401)
+
+
+class CodeReview(TwoRuntimes, Installation):
+    """The PR review's findings, each as it was fixed."""
+
+    def test_runtime_apply_refuses_a_default_that_is_not_enabled_before_any_effect(self):
+        from sbx_control import admin
+        file = self.root / "etc/runtime.env"
+        file.write_text(TWO + "SBX_RUNTIME_DEFAULT=nope\n")
+        self.effects()
+        try:
+            with self.assertRaisesRegex(SystemExit, "SBX_RUNTIME_DEFAULT=nope"):
+                admin.main(["runtime", "apply"])
+        finally:
+            file.write_text(TWO)
+        self.assertEqual(self.effects(), [])
+
+    def test_a_claude_session_s_own_sandbox_needs_no_room_for_another(self):
+        from types import SimpleNamespace
+        from sbx_control import core
+        from sbx_control.connectors.claude_code import api
+        order = SimpleNamespace(session_id="s1", primary_repo_url="")
+        running = SimpleNamespace(sandbox_id="x", state="running", runtime="fake", metadata={}, memory_mb=2048)
+        with patch.object(api, "sandbox_of", return_value="box"), patch.object(core, "find", return_value=running), \
+                patch.object(core, "check_capacity", side_effect=core.NoCapacity("full")) as check:
+            api.check_room(order)                       # reused as it runs: no room asked for
+            check.assert_not_called()
+            paused = SimpleNamespace(**{**running.__dict__, "state": "paused"})
+            with patch.object(core, "find", return_value=paused), self.assertRaises(core.NoCapacity):
+                api.check_room(order)
+        self.assertEqual(check.call_args.args, (2048, "fake"))   # room on its own runtime
+
+    def test_find_does_not_take_a_runtime_that_did_not_answer_for_absence(self):
+        from sbx_control import core
+        self.runtime.create("tpl", timeout=600, metadata={"sbx": "here"})
+        with patch.object(self.fake, "sandboxes", side_effect=self.runtime.Failed("fake is down")):
+            self.assertEqual(core.find("here").metadata["sbx"], "here")      # what answered still counts
+            with self.assertRaises(self.runtime.Incomplete):
+                core.find("elsewhere")                                      # may be on the fake
+
+    def test_upstream_names_never_collide(self):
+        from sbx_control import ip_previews
+        self.assertEqual(ip_previews.upstream_name("embed"), "sbx_runtime_embed")
+        self.assertNotEqual(ip_previews.upstream_name("my-provider"), ip_previews.upstream_name("my_provider"))
+
+    def test_an_https_ingress_is_reached_by_its_name_and_verified(self):
+        from sbx_control import ip_previews
+        self.assertEqual(ip_previews.upstream_tls(), "")    # http ingresses only: nothing added
+        self.fake.ingress = "https://sandboxes.provider.example"
+        found = ip_previews.runtime_upstreams()
+        self.assertIn("upstream sbx_runtime_fake { server sandboxes.provider.example:443; }", found)
+        self.assertIn("map $sbx_runtime $sbx_ingress_name {", found)
+        self.assertIn("  fake sandboxes.provider.example;", found)
+        tls = ip_previews.upstream_tls()
+        for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_ingress_name;", "proxy_ssl_verify on;",
+                     f"proxy_ssl_trusted_certificate {ip_previews.CA_BUNDLE};"):
+            self.assertIn(line, tls)
+        config = ip_previews.nginx("203.0.113.10", "bootstrap")
+        self.assertIn("proxy_ssl_name $ip_ingress_name;", config)
+        self.assertIn("map $ip_runtime $ip_ingress_name {", config)
+
+    def test_a_sandbox_on_a_runtime_no_longer_enabled_is_unavailable(self):
+        self.runtime._index["vm-elsewhere"] = "gone"
+        with self.assertRaisesRegex(self.runtime.Unavailable, "runs on the gone runtime"):
+            self.runtime.of("vm-elsewhere")
+        with patch.object(self.runtime, "enabled", return_value=["embed"]), \
+                self.assertRaises(self.runtime.Unavailable):
+            self.runtime.of("vm-elsewhere")                                 # one runtime: no shortcut either
+
+    def test_embed_s_own_sandboxes_are_counted_whether_or_not_it_is_enabled(self):
+        from sbx_control.runtime import embed
+        self.runtime.create("tpl", timeout=600, kind="fake")
+        self.assertEqual(embed.own_sandboxes(), [])     # another runtime's sandbox does not block Embed's changes
+        on_embed = self.runtime.create("tpl", timeout=600)
+        self.assertEqual([i.sandbox_id for i in embed.own_sandboxes()], [on_embed.sandbox_id])
+        with patch.object(self.runtime, "enabled", return_value=["fake"]), \
+                patch.object(embed.Embed, "configure") as configure, \
+                patch.object(embed.Embed, "sandboxes", return_value=["paused-one"]):
+            self.assertEqual(embed.own_sandboxes(), ["paused-one"])
+        self.assertIn("E2B_API_KEY", configure.call_args.args[0])   # its own keys, though not enabled
+
+    def test_rows_from_before_are_embed_s_whatever_the_default(self):
+        from sbx_control import sandboxes, state
+        from sbx_control.connectors.amp import Amp
+        file = self.root / "etc/runtime.env"
+        file.write_text(TWO + "SBX_RUNTIME_DEFAULT=fake\n")
+        try:
+            with state.db() as conn:
+                conn.execute("insert into sandboxes (name, owner, branch, slug, runtime) values ('old', 'me', 'main', 'old', '')")
+                Amp().migrate(conn)
+                conn.execute("insert into amp_snapshots (key, repo, snapshot_id, source_template, runtime) "
+                             "values ('old-cache', 'owner/app', 'snap', 't', '')")
+            state.migrate()
+            with state.db() as conn:
+                cache = conn.execute("select runtime from amp_snapshots where key = 'old-cache'").fetchone()
+                conn.execute("delete from amp_snapshots where key = 'old-cache'")
+            self.assertEqual((sandboxes.rows()["old"]["runtime"], cache), (self.runtime.LEGACY, ("embed",)))
+        finally:
+            file.write_text(TWO)
+
+    def test_a_create_on_a_new_runtime_keeps_its_templates_there_until_it_runs(self):
+        from sbx_control import runtimes, template_builds
+        self.assertNotIn("fake", runtimes.used_by("owner/app"))
+        self.assertEqual(runtimes.choose("owner/app", "fake"), "fake")
+        self.assertIn("fake", runtimes.used_by("owner/app"))
+        with patch.object(template_builds.recipes, "with_recipe", return_value=["owner/app"]), \
+                patch.object(template_builds.settings, "trust", return_value="trusted"), \
+                patch.object(template_builds, "own", return_value=True):
+            self.assertIn("owner/app", template_builds.keys("fake"))   # prune keeps it while its build runs

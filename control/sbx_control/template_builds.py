@@ -702,7 +702,7 @@ OLD_TABLE = "template_builds_by_repo"
 
 def _per_runtime(conn):
     """A template_builds keyed by repo alone (from before several runtimes):
-    its rows become the installation's default runtime's, in one
+    its rows become the one runtime's there was then (runtime.LEGACY), in one
     transaction. An upgrade that stopped part way (the old table renamed and
     kept) is finished: its rows are copied when the new table has none."""
     if "runtime" in columns(conn, "template_builds") and OLD_TABLE not in tables(conn):
@@ -716,7 +716,7 @@ def _per_runtime(conn):
             kept = list(dict.fromkeys(c for c in ("repo", "error", "started_at", "finished_at", *FIELDS)
                                       if c in columns(conn, OLD_TABLE)))
             conn.execute(f"insert into template_builds (runtime, {', '.join(kept)}) "
-                         f"select ?, {', '.join(kept)} from {OLD_TABLE}", (runtime.default(),))
+                         f"select ?, {', '.join(kept)} from {OLD_TABLE}", (runtime.LEGACY,))
         conn.execute(f"drop table {OLD_TABLE}")
         conn.execute("commit")
     except BaseException:

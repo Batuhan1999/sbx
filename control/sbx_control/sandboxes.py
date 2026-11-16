@@ -374,8 +374,9 @@ def deliver_waiting(running: set):
 
 
 def _runtimes(conn):
-    """Sandboxes registered before each recorded its runtime ran on the installation's default."""
-    conn.execute("update sandboxes set runtime = ? where runtime = ''", (runtime.default(),))
+    """Sandboxes registered before each recorded its runtime ran on the one
+    runtime there was then (runtime.LEGACY), whatever the default is now."""
+    conn.execute("update sandboxes set runtime = ? where runtime = ''", (runtime.LEGACY,))
 
 
 SCHEMA = state.Schema(tables="""

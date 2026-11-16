@@ -142,8 +142,16 @@ def app_cookies(value):
                      if part.partition('=')[0].strip() != platform.SESSION_COOKIE and part.strip())
 
 
+# The CA bundle in nginx's image (alpine's ca-certificates): what an https
+# ingress's certificate is verified against.
+CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+
+
 def upstream_name(kind: str) -> str:
-    return "sbx_runtime_" + re.sub(r"[^A-Za-z0-9_]", "_", kind)
+    """An nginx name for the kind's upstream, one per kind: lowercase letters
+    and digits as they are, any other character as _<its hex code>."""
+    return "sbx_runtime_" + "".join(c if c in "abcdefghijklmnopqrstuvwxyz0123456789" else f"_{ord(c):02x}"
+                                    for c in kind)
 
 
 def _upstream_url(kind: str, ingress: str) -> str:
@@ -172,7 +180,29 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") 
     lines.append(f"  default {default_ingress()};")
     lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]
     lines.append("}")
+    if _https(found):
+        # An https ingress is verified by its own name (SNI), not the upstream block's.
+        names = {kind: urlsplit(ingress).hostname for kind, (ingress, _) in found.items()}
+        lines.append(f"map ${source} ${target}_name {{")
+        lines.append(f"  default {next(iter(names.values()))};")
+        lines += [f"  {kind} {name};" for kind, name in names.items()]
+        lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def _https(found: dict) -> bool:
+    return any(urlsplit(ingress).scheme == "https" for ingress, _ in found.values())
+
+
+def upstream_tls(target: str = "sbx_ingress", indent: str = "    ") -> str:
+    """The proxy location's lines for an https ingress: SNI with its own
+    name, and its certificate verified against the public CAs; "" while
+    every enabled runtime's ingress is plain http (Embed's, on this host)."""
+    if not _https(runtime.ingresses()):
+        return ""
+    return "".join(f"{indent}{line}\n" for line in (
+        "proxy_ssl_server_name on;", f"proxy_ssl_name ${target}_name;", "proxy_ssl_verify on;",
+        "proxy_ssl_verify_depth 4;", f"proxy_ssl_trusted_certificate {CA_BUNDLE};"))
 
 
 def cleared_headers() -> list:
@@ -230,7 +260,7 @@ server {{
     error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
     proxy_pass $ip_ingress;
-    proxy_http_version 1.1;
+{upstream_tls("ip_ingress")}    proxy_http_version 1.1;
     proxy_set_header Host $ip_upstream;
 {cleared}
     proxy_set_header X-Forwarded-Host {host(str(ip))}:$server_port;
@@ -264,8 +294,10 @@ if __name__ == '__main__':
         print(nginx(sys.argv[2], sys.argv[3]), end='')
     elif sys.argv[1:] == ['upstreams']:
         print(runtime_upstreams(), end='')
+    elif sys.argv[1:] == ['upstream-tls']:
+        print(upstream_tls(), end='')
     elif sys.argv[1:] == ['default-ingress']:
         print(default_ingress())
     else:
         raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE | upstreams | '
-                         'default-ingress')
+                         'upstream-tls | default-ingress')

@@ -320,6 +320,17 @@ class Embed(HostSide):
         return connection.test()
 
 
+def own_sandboxes() -> list:
+    """Embed's own sandboxes, whether or not SBX_RUNTIMES enables it: what
+    recreating its services would lose. Raises when Embed does not answer."""
+    from ... import runtime, vault
+    if Embed.kind in runtime.enabled():
+        return runtime.get(Embed.kind).sandboxes()
+    embed = Embed()
+    embed.configure(vault.runtime(Embed.credential_keys))
+    return embed.sandboxes()
+
+
 def dashboard_host() -> str:
     """sandbox.<domain>: the E2B dashboard's header-routed host."""
     from ... import addressing

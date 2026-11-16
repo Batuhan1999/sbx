@@ -33,6 +33,11 @@ BUILTIN = {"embed": "sbx_control.runtime.embed:Embed"}
 ENABLED_KEY, DEFAULT_KEY = "SBX_RUNTIMES", "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
 FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
+# The kind of everything recorded before an installation ran several
+# runtimes (sandboxes, template builds, Amp's caches): Embed was the only
+# runtime then, whatever the default is now. The migrations that tag those
+# rows use this, and no other core code names a runtime.
+LEGACY = "embed"
 
 _backends: dict = {}       # kind -> its backend, made once
 _index: dict = {}          # sandbox id -> kind, as the listings and creates saw it
@@ -116,10 +121,20 @@ def backends() -> list[Runtime]:
     return [get(kind) for kind in enabled()]
 
 
+class Unavailable(Failed):
+    """The sandbox runs on a runtime that is not enabled (any more)."""
+
+
 def of(sandbox_id: str) -> Runtime:
     """The runtime a sandbox runs on: from what the listings saw, else by
-    asking each enabled runtime. NotRunning (a Failed) when none has it."""
+    asking each enabled runtime. NotRunning (a Failed) when none has it;
+    Unavailable when it was seen on a runtime that is not enabled now:
+    another runtime never answers for it."""
     kinds_now = enabled()
+    recorded = _index.get(sandbox_id)
+    if recorded and recorded not in kinds_now:
+        raise Unavailable(f"sandbox {sandbox_id} runs on the {recorded} runtime, which is not enabled here "
+                          f"({ENABLED_KEY}: {', '.join(kinds_now)})")
     if len(kinds_now) == 1:
         return get(kinds_now[0])
     kind = _index.get(sandbox_id)
@@ -149,7 +164,9 @@ def kind_of(info) -> str:
 
 def configure(secrets: dict) -> None:
     """Hand each enabled runtime its own keys of the platform secrets
-    (runtime.env): only the names it reads (credential_keys)."""
+    (runtime.env): only the names it reads (credential_keys). An unknown
+    kind or a default that is not enabled stops it first (SystemExit)."""
+    default()
     for backend in backends():
         backend.configure({k: secrets[k] for k in backend.credential_keys if k in secrets})
 

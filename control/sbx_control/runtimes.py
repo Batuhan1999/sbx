@@ -20,7 +20,13 @@ REPO_RUNTIME_SCHEMA = """
 create table if not exists repo_runtimes (
     repo text primary key, runtime text not null, updated_by text not null,
     updated_at text not null default current_timestamp);
+create table if not exists runtime_requests (
+    repo text not null, runtime text not null, at text not null default current_timestamp,
+    primary key (repo, runtime));
 """
+# A create on a runtime the repo's sandboxes do not use yet keeps its
+# templates there this long, so its first create can wait for their build.
+REQUEST_HOURS = 24
 
 
 class Refused(SandboxError):
@@ -65,11 +71,15 @@ def of_repo(repo: str | None) -> str:
 
 def used_by(repo: str) -> set:
     """The enabled runtimes the repo's sandboxes use: its setting, the
-    default, and any a sandbox of it runs on (the templates it needs are
-    built on each of them)."""
+    default, any a sandbox of it runs on, and any a create asked for in the
+    last REQUEST_HOURS (its first sandbox there waits for the templates
+    built on each of these)."""
     found = {of_repo(repo), runtime.default()}
     try:
         with state.db() as conn:
+            found |= {row[0] for row in conn.execute(
+                "select runtime from runtime_requests where repo = ? and at > datetime('now', ?)",
+                (repo.lower(), f"-{REQUEST_HOURS} hours"))}
             found |= {row[0] for row in conn.execute(
                 "select s.runtime from sandboxes s join sandbox_lifecycle l on l.name = s.name "
                 "where json_extract(l.record, '$.repository') = ? and json_extract(l.record, '$.phase') != 'deleted' "
@@ -111,6 +121,10 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
                           "(private_networks); choose another runtime")
     if size and (why := runtime.beyond_limits(size, kind)):
         raise Refused(f"{title} ({kind}) can't run it: {why}")
+    if repo:
+        with state.db() as conn:   # keeps its templates on kind until its first sandbox there exists (used_by)
+            conn.execute("insert into runtime_requests (repo, runtime) values (?, ?) on conflict (repo, runtime) "
+                         "do update set at = current_timestamp", (repo.lower(), kind))
     return kind
 
 

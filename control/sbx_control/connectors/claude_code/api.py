@@ -12,6 +12,23 @@ from .sessions import KIND, bind, sandbox_of
 router = APIRouter()
 
 
+def check_room(order: runner.Order):
+    """NoCapacity when the session's sandbox has no room: none needed for its
+    running sandbox, room on its own runtime for its paused one, else room
+    for a new one on the runtime it will run on (runtimes.choose)."""
+    from ... import runtime, runtimes
+    found = sandbox_of(order.session_id)
+    info = core.find(found) if found else None
+    if info is not None:
+        if core.runtime_state(info) == "running":
+            return
+        memory = getattr(info, "memory_mb", None) or core.app_of(info).size["memory_mb"]
+        core.check_capacity(memory, runtime.kind_of(info))
+        return
+    repo = recipes.repo_of(order.primary_repo_url) if order.primary_repo_url else None
+    core.check_capacity(recipes.load(repo).size["memory_mb"] if repo else None, runtimes.of_repo(repo))
+
+
 @router.post("/internal/runner-orders")
 def runner_order(order: runner.Order, request: Request):
     """4xx tells the hook the order can never succeed."""
@@ -22,10 +39,7 @@ def runner_order(order: runner.Order, request: Request):
     reason = runner.rejection(order)
     if not reason:
         try:
-            # Room on the runtime the session's sandbox will run on (runtimes.choose).
-            from ... import runtimes
-            repo = recipes.repo_of(order.primary_repo_url) if order.primary_repo_url else None
-            core.check_capacity(recipes.load(repo).size["memory_mb"] if repo else None, runtimes.of_repo(repo))
+            check_room(order)
         except core.NoCapacity as error:
             # Retryable for the orchestrator (the hook exits 1), and the message reaches the session.
             print(f"runner order {order.order_id} for {order.session_id}: refused, {error}", flush=True)

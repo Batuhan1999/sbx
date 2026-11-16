@@ -19,7 +19,8 @@ class Installation(unittest.TestCase):
     RESET = ("settings", "config", "config_history", "repos", "sealed", "store_values", "template_builds",
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
-             "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes")
+             "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
+             "runtime_requests")
 
     @classmethod
     def setUpClass(cls):
