@@ -2,7 +2,7 @@ import { ArrowRight, ArrowUpRight, Bot, Check, Clock, Hammer, Lock, Plus, Shield
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { api } from '@/api/endpoints'
-import { keys, useAction, useSetupPr } from '@/api/queries'
+import { keys, useAction, useRepoInfo, useRuntimeChoice, useSetupPr } from '@/api/queries'
 import type { Actor, ReadinessStage, ReadinessStep, ReadinessStepId } from '@/api/types'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { ErrorState } from '@/components/states'
@@ -43,6 +43,7 @@ export default function RepoSetup() {
   const { repo, readiness, envError, me, trusted } = useRepo()
   const admin = !!me?.admin
   const showHandoff = readiness.stage === 'agent' || !readiness.info.configured
+  const runtime = useRepoRuntime(repo)
   return <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
     <div className="min-w-0 space-y-4">
       {showHandoff && <AgentHandoff repo={repo} configured={readiness.info.configured} />}
@@ -68,11 +69,21 @@ export default function RepoSetup() {
           ['GitHub', readiness.info.github === 'app' ? 'GitHub App' : readiness.info.github === 'key' ? 'Deploy key' : 'Anonymous'],
           ['Recipe', readiness.info.configured ? <Link to={`/app/repos/${repo}/recipe`} className="hover:underline">.sbx/ on the default branch</Link> : 'none yet'],
           ['Previews', readiness.info.previews.join(', ') || '—'],
+          ...(runtime ? [['Runtime', admin ? <Link to={`/app/repos/${repo}/recipe`} className="hover:underline">{runtime}</Link> : runtime] as [string, React.ReactNode]] : []),
         ]} />
       </Panel>
       {admin && trusted && <SetupPrPanel repo={repo} />}
     </div>
   </div>
+}
+
+/** Where the repo's new sandboxes run, in words; null with one runtime enabled. */
+function useRepoRuntime(repo: string): string | null {
+  const choice = useRuntimeChoice()
+  const info = useRepoInfo(repo, !!choice)
+  if (!choice) return null
+  const title = (kind: string) => choice.runtimes.find(r => r.kind === kind)?.title ?? kind
+  return info.data?.runtime ? title(info.data.runtime) : `Installation default (${title(choice.default)})`
 }
 
 function StepRow({ step, isNext, children }: { step: ReadinessStep; isNext: boolean; children: React.ReactNode }) {

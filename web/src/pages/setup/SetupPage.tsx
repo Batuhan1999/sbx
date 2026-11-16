@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, Check, Globe, Server } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { setSetupToken, setupToken } from '@/api/client'
 import { api } from '@/api/endpoints'
-import { keys, useSetup, useSetupChecks } from '@/api/queries'
+import { keys, useRuntimes, useSetup, useSetupChecks } from '@/api/queries'
 import type { SetupState } from '@/api/types'
 import { CopyCommand } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
@@ -14,6 +14,7 @@ import { portsHint } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError, required } from '@/lib/validation'
 import { Checks } from '../extensions/ConnectionCard'
+import { RuntimeList } from '../settings/Runtimes'
 
 type Step = 'address' | 'admin'
 
@@ -157,6 +158,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
 function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   const qc = useQueryClient()
   const checks = useSetupChecks()
+  const runtimes = useRuntimes()
   const existing = !!s.steps.find(x => x.step === 'sign_in')?.done  // someone can sign in already
   const ready = s.signed_in || s.can_complete
   const finish = async (admin?: { email: string; password: string }) => {
@@ -196,6 +198,10 @@ function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
       {checks.isPending ? <Spinner label="Checking…" /> : checks.error ? <ErrorState error={checks.error} compact retry={() => checks.refetch()} /> : checks.data && <Checks checks={checks.data.checks} />}
       {checks.data && !checks.data.ok && <Button size="sm" busy={checks.isFetching} onClick={() => checks.refetch()}>Check again</Button>}
     </div>
+    {runtimes.data && runtimes.data.runtimes.length > 0 && <div className="space-y-2">
+      <p className="text-[12.5px] font-medium">Sandbox runtimes</p>
+      <RuntimeList runtimes={runtimes.data.runtimes} className="rounded-lg border border-line bg-panel" />
+    </div>}
     {ready && <ErrorState error={error} compact />}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>

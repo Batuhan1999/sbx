@@ -1,18 +1,16 @@
 import { Globe, LogIn } from 'lucide-react'
 import { Navigate, useParams } from 'react-router'
 import { api } from '@/api/endpoints'
-import { keys, useAction, useConnections, useMe, useRuntimes, useSettings } from '@/api/queries'
-import type { ConnectionState, SandboxRuntime, Settings } from '@/api/types'
+import { keys, useAction, useConnections, useMe, useSettings } from '@/api/queries'
+import type { Settings } from '@/api/types'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { NavTabs } from '@/components/Tabs'
-import { StateBadge } from '@/components/StatusBadge'
-import { Badge, Panel } from '@/components/ui/primitives'
-import { limitsText } from '@/lib/format'
-import type { Tone } from '@/lib/status'
+import { Panel } from '@/components/ui/primitives'
 import { emailError } from '@/lib/validation'
-import { CONNECTION_STATE, ConnectionCard } from '../extensions/ConnectionCard'
+import { ConnectionCard } from '../extensions/ConnectionCard'
+import { Runtimes } from './Runtimes'
 import { Updates } from './Updates'
 
 const SECTIONS = { general: 'General', access: 'Access', updates: 'Updates' } as const
@@ -44,31 +42,6 @@ function General() {
     <QueryView query={settings} loading={null}>{s => <SandboxDefaults key={s.revision} settings={s} />}</QueryView>
     <Runtimes />
   </div>
-}
-
-/** Read-only: the runtimes are enabled in /etc/sbx/runtime.env on the server. */
-export function Runtimes() {
-  const runtimes = useRuntimes()
-  return <Panel id="runtimes" title="Sandbox runtimes" bodyClassName="p-0"
-    description="Where sandboxes run. Each sandbox runs on one, chosen when it is created; repositories without a choice of their own use the default. Enabled in /etc/sbx/runtime.env on the server.">
-    <QueryView query={runtimes} inline loading={<SkeletonRows rows={1} />}>{d => <ul className="divide-y divide-line">
-      {d.runtimes.map(r => <RuntimeRow key={r.kind} r={r} />)}
-    </ul>}</QueryView>
-  </Panel>
-}
-
-function RuntimeRow({ r }: { r: SandboxRuntime }) {
-  const state = CONNECTION_STATE[r.status.state as ConnectionState] ?? { label: r.status.state, tone: 'idle' as Tone }
-  const limits = limitsText(r.limits)
-  return <li className="px-4 py-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <h3 className="font-semibold">{r.title}</h3>
-      {r.default && <Badge tone="accent">Default</Badge>}
-      <StateBadge tone={state.tone} label={state.label} />
-    </div>
-    <p className="mt-0.5 break-words text-[13px] text-muted">{r.host ? 'Runs on this server' : 'Runs at the provider'}{r.status.summary ? `. ${r.status.summary}` : ''}</p>
-    {limits && <p className="mt-0.5 text-[12px] text-muted">{limits}</p>}
-  </li>
 }
 
 function SandboxDefaults({ settings }: { settings: Settings }) {
