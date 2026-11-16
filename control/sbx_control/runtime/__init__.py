@@ -63,7 +63,8 @@ def set_timeout(sandbox_id: str, seconds: int) -> None:
 
 def _capped(seconds: int | None) -> int | None:
     """A timeout within the runtime's limit: the keeper extends it while
-    the sandbox is used, so a shorter one only pauses an idle sandbox sooner."""
+    the sandbox is used, so a shorter one only pauses an idle sandbox sooner.
+    The limit is never below base.MIN_TIMEOUT_SECONDS, several renewals."""
     most = limits().timeout_seconds
     return seconds if seconds is None or most is None else min(seconds, most)
 

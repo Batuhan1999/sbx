@@ -103,12 +103,22 @@ class Limits:
     source: str = ""
     keys: dict = dataclasses.field(default_factory=dict)
 
+    def __post_init__(self):
+        if self.timeout_seconds is not None and self.timeout_seconds < MIN_TIMEOUT_SECONDS:
+            raise ValueError(f"a runtime's timeout limit must be at least {MIN_TIMEOUT_SECONDS} seconds, not "
+                             f"{self.timeout_seconds}: the keeper renews a used sandbox's timeout once a minute, "
+                             "and a shorter limit pauses it between renewals")
+
     def known(self) -> dict:
         """The limits it sets, by field."""
         return {f: getattr(self, f) for f in LIMIT_FIELDS if getattr(self, f) is not None}
 
 
 LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
+# The shortest timeout limit a runtime may set: several of the keeper's
+# renewal rounds (keeper.INTERVAL_SECONDS), so a used sandbox never times
+# out between two.
+MIN_TIMEOUT_SECONDS = 5 * 60
 
 
 class TemplateSpec:

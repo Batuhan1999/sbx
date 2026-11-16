@@ -255,6 +255,14 @@ class Limits(unittest.TestCase):
         self.assertEqual((create.call_args.kwargs["timeout"], connect.call_args.kwargs["timeout"],
                           set_timeout.call_args.args[1]), (3600, 3600, 600))
 
+    def test_a_timeout_limit_leaves_the_keeper_several_renewals(self):
+        from sbx_control import keeper
+        from sbx_control.runtime import base
+        self.assertGreaterEqual(base.MIN_TIMEOUT_SECONDS, 3 * keeper.INTERVAL_SECONDS)
+        with self.assertRaisesRegex(ValueError, "at least 300 seconds"):
+            self.runtime.Limits(timeout_seconds=60)
+        self.assertEqual(self.runtime.Limits(timeout_seconds=300).timeout_seconds, 300)
+
     def test_embed_limits_come_from_the_host(self):
         from sbx_control.runtime.embed import Embed, capacity
         with patch.object(capacity, "room", return_value={"known": True, "total_mb": 30720}), \
