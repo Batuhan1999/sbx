@@ -280,8 +280,9 @@ echo "ok: sbx-control $version"
 sh /opt/sbx-control/current/infisical/enable.sh "$store_admin"
 
 if [ -z "$skip_templates" ]; then
-  say "Base templates (sbx-base, then default: about 10 minutes the first time)"
   cd /opt/sbx-control/current
+  # The step's title says what rebuilds, so the upgrade's progress shows it.
+  say "$(venv/bin/python -m sbx_control.template_builds summary 2>/dev/null || echo "Base templates (sbx-base, then default)")"
   venv/bin/python -m sbx_control.template_builds --if-stale base > /tmp/sbx-template-base.log 2>&1 || { tail -20 /tmp/sbx-template-base.log; die "see /tmp/sbx-template-base.log"; }
   venv/bin/python -m sbx_control.template_builds --if-stale default > /tmp/sbx-template-default.log 2>&1 || { tail -20 /tmp/sbx-template-default.log; die "see /tmp/sbx-template-default.log"; }
   echo "ok"

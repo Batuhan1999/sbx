@@ -518,6 +518,28 @@ def stale() -> list:
     return out
 
 
+def summary() -> str:
+    """What an install or upgrade rebuilds, as the title of its templates
+    step: the base and default ones it builds now, and the others (default
+    sizes, repos' own) the scheduler rebuilds once it runs."""
+    with db() as conn:
+        rows = {key: _read(conn, key) for key in keys()}
+    if not any(rows.values()):
+        return "Base templates (sbx-base, then default: about 10 minutes the first time)"
+    changed = [key for key, row in rows.items() if not _current(row, plan(key).fingerprint)]
+    now = [key for key in changed if key in (templates.BASE, templates.DEFAULT)]
+    later = [key for key in changed if key not in now]
+    if not changed:
+        return "Templates: up to date, none rebuilds"
+    def verb(keys):
+        return "rebuilds" if len(keys) == 1 else "rebuild"
+    parts = [f"{' and '.join(now)} {verb(now)} now (about 10 minutes)"] if now else []
+    if later:
+        named = ", ".join(later) if len(later) <= 3 else f"{len(later)} {'more' if now else 'templates'}"
+        parts.append(f"{named} {verb(later)} in the background afterwards")
+    return "Templates: " + "; ".join(parts)
+
+
 def _current(row: dict | None, fingerprint: str) -> bool:
     """Whether the template built last (row) is the one planned now. A row
     without a built template (built while the repo had none of its own) is not."""
@@ -575,12 +597,16 @@ def main(argv=None) -> int:
     from . import platform
     from .state import migrate
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("which", choices=["base", "default", "app"])
+    parser.add_argument("which", choices=["base", "default", "app", "summary"],
+                        help="summary: what an upgrade rebuilds, in one line")
     parser.add_argument("repo", nargs="?", help="app: owner/repo; default: a repo whose size to build it at")
     parser.add_argument("--if-stale", action="store_true", help="only when the built template is not the one planned now")
     args = parser.parse_args(argv)
     migrate()
     platform.connect()
+    if args.which == "summary":
+        print(summary())
+        return 0
     key = {"base": templates.BASE, "default": default_for((args.repo or "").lower() or None)}.get(args.which) \
         or (args.repo or "").lower()
     if args.which == "app" and not settings.trust(key):
