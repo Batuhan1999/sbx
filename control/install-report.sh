@@ -37,6 +37,10 @@ eval "$(cd "$here" && venv/bin/python -m sbx_control.settings shell | sed 's/^/s
 host=$setting_login
 say "Done: https://$host"
 password
+# A runtime on this host gives a check that its sandboxes can't reach the host.
+netcheck=""
+[ ! -x /usr/local/sbin/sbx-netcheck ] || netcheck="
+  - Check sandboxes can't reach this host: sbx-netcheck"
 [ -z "${SBX_ROLLBACK:-}" ] || echo "Upgraded; the state before it is backed up. Roll back: sudo sh $SBX_ROLLBACK"
 cat <<NEXT
 
@@ -45,6 +49,5 @@ Next:
   - Try it on a public repo: in its checkout, sbx up try-1
   - Settings: sbx-admin config get [SECTION] | set SECTION JSON (the repos to serve, admins, network)
   - Agent connectors (off until connected): sbx-admin connect claude environment_secret=- (the secret on stdin)
-  - Backups: sbx-admin backup; the recovery key: sbx-admin key show (keep it apart)
-  - Check sandboxes can't reach this host: cd $here && venv/bin/python -m sbx_control.runtime.embed.netcheck
+  - Backups: sbx-admin backup; the recovery key: sbx-admin key show (keep it apart)$netcheck
 NEXT

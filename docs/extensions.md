@@ -87,7 +87,7 @@ are plain values rather than part of the contribution:
 | `keeper_policy(info, use)` | For its own sandboxes: `Policy(keep_awake, decided, keep_paused)`. `use` holds the gate's last access, whether a preview resumed it, and a probe (SSH sessions, agent activity, busy processes) taken only when read. |
 | `origin(info)` | How views label its sandboxes: `{kind, label, detail, href}`. |
 | `host_services()` | systemd services it runs on the host (`HostService`), rendered by the installer. |
-| `embed()` | An `EmbedLayer` (`runtime/embed/host.py`), used only when the runtime is Embed: keys it adds to Embed's `.env` and compose files merged over Embed's. |
+| `runtime_layer(kind)` | A `RuntimeLayer` (`runtime/base.py`) for the runtime of that kind, or `None`: keys it adds to the env of the services that run the runtime on this host and compose files merged over theirs. Each backend applies it its own way (Embed: `runtime/embed/host.py`). |
 | `git_access(repo)` | For the extension through which the installation reaches repositories (GitHub): a context giving host-side git its URL and environment. |
 
 Rules:

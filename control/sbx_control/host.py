@@ -303,7 +303,7 @@ def apply(key: str) -> int:
     elif key == "control":
         _systemctl("restart", "sbx-control", check=True)
     elif runtime.current().apply_host(key):
-        pass   # the runtime's own (Embed's domain keys)
+        pass   # the runtime's own
     else:
         from . import extensions
         names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
@@ -370,8 +370,10 @@ def upgrade_backup() -> pathlib.Path | None:
         units = out / "systemd"
         units.mkdir(mode=0o700)
         directory = systemd_dir()
+        from . import runtime
+        own = {unit.name for unit in runtime.current().host_units()} | set(stopped)
         for path in sorted(directory.iterdir()):
-            if path.name.startswith(("sbx-", "e2b-")) or path.name.removesuffix(".d") in stopped:
+            if path.name.startswith("sbx-") or path.name.removesuffix(".d") in own:
                 (shutil.copytree if path.is_dir() else shutil.copy2)(path, units / path.name)
         previous = CURRENT.resolve() if CURRENT.is_symlink() else None
         bundle = out / "bundle.tar.gz"
@@ -414,7 +416,7 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
                     for old, new in RENAMED_EFFECTS.items())
     renamed_back = f"if {older}; then\n{moves}fi\n"
     return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
-            f"# active, its unit files and sbx.db. Sandboxes and Embed are left as they are.\nset -eu\n"
+            f"# active, its unit files and sbx.db. Sandboxes and the runtime are left as they are.\nset -eu\n"
             f"systemctl stop {units} || true\n{switch}"
             f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n{renamed_back}"
             f"rm -f {q(str(database))}-wal {q(str(database))}-shm\n"

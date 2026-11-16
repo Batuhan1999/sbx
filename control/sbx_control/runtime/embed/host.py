@@ -1,6 +1,6 @@
 """Embed's project on this host (/opt/e2b, which install.sh lays out): the
 keys sbx owns in its .env, the layers extensions add to it
-(Connector.embed), and its systemd units and commands. install.sh writes
+(Connector.runtime_layer), and its systemd units and commands. install.sh writes
 the .env through `python -m sbx_control.runtime.embed embed-env`, and asks
 `upgrade-check` first whether a release recreates the stack (recreates)."""
 from __future__ import annotations
@@ -32,14 +32,17 @@ class EmbedLayer:
 
 
 def layers() -> list[EmbedLayer]:
-    """What the enabled extensions add to Embed (Connector.embed)."""
+    """What the enabled extensions add to Embed (Connector.runtime_layer)."""
+    from . import Embed
     from ... import extensions
-    return [layer for layer in (c.embed() for c in extensions.connectors()) if layer is not None]
+    found = (c.runtime_layer(Embed.kind) for c in extensions.connectors())
+    return [EmbedLayer(layer.name, dict(layer.env), tuple(layer.compose), tuple(layer.files))
+            for layer in found if layer is not None]
 
 
 def embed_env() -> dict[str, str]:
     """Every key sbx owns in Embed's .env, from the settings and the
-    extensions (Connector.embed); "" removes a key. Embed needs a name for
+    extensions (Connector.runtime_layer); "" removes a key. Embed needs a name for
     its sandbox URLs: a placeholder until the setup's Domain step."""
     from ... import hosted_services, settings
     s = settings.current()
@@ -158,7 +161,8 @@ def units() -> list:
 
 
 def commands(into) -> dict[str, str]:
-    return {"e2b-storage-gc": into('venv/bin/python embed/storage-gc.py "$@"'),
+    return {"sbx-netcheck": into('venv/bin/python -m sbx_control.runtime.embed.netcheck "$@"'),
+            "e2b-storage-gc": into('venv/bin/python embed/storage-gc.py "$@"'),
             "e2b-compact-snapshot": into('venv/bin/python embed/compact-snapshot.py "$@"')}
 
 

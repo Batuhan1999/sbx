@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-from typing import Any, Callable, ContextManager, Protocol
+import pathlib
+from typing import Any, Callable, ContextManager, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
 
@@ -63,6 +64,18 @@ class Capabilities:
     need one check it."""
     snapshots: bool = False         # filesystem snapshots a new sandbox can start from
     private_networks: bool = False  # sandboxes reach private ranges of this host's network (managed servers)
+
+
+@dataclasses.dataclass(frozen=True)
+class RuntimeLayer:
+    """What an extension adds to the services that run the runtime on this
+    host (Connector.runtime_layer): settings in their env and compose files
+    over theirs. Each runtime that runs such services takes it its own way;
+    applying a change recreates them (sbx-admin network apply)."""
+    name: str
+    env: Mapping[str, str] = dataclasses.field(default_factory=dict)  # its keys in their env; "" removes one
+    compose: tuple[pathlib.Path, ...] = ()     # compose files merged over the runtime's, in order
+    files: tuple[pathlib.Path, ...] = ()       # what those compose files mount (./<name>/<file>)
 
 
 class TemplateSpec:
@@ -246,6 +259,11 @@ class Runtime(Protocol):
 
     def test(self) -> list:
         """Its checks (connections.Check), as sbx-admin doctor runs them."""
+
+    def preview(self, name: str, port: int | None, listen: int, *, preserve_host: bool = False) -> None:
+        """sbx-admin preview: serve a sandbox's app port on this host's
+        loopback until interrupted. Optional: a runtime without a local
+        proxy leaves it out (runtime.preview says so)."""
 
     def placing(self) -> ContextManager:
         """Held while a sandbox is placed, so two creations can't both take

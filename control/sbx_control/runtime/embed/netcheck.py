@@ -1,6 +1,7 @@
 """Can a sandbox reach the host it runs on? Run on the host, as root:
 
-  python -m sbx_control.runtime.embed.netcheck [--template NAME]   (default: the base template built last)
+  sbx-netcheck [--template NAME]   (default: the base template built last;
+  python -m sbx_control.runtime.embed.netcheck from a release)
 
 Starts a throwaway sandbox and, from inside it, tries every TCP port the
 host listens on, at every address the host has. Only the settings'

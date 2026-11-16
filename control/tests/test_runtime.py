@@ -24,6 +24,32 @@ class Boundary(unittest.TestCase):
                     found.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
         self.assertEqual(found, [], "reach the runtime through sbx_control.runtime")
 
+    def test_only_the_runtime_package_imports_a_backend(self):
+        runtime = PACKAGE / "runtime"
+        found = []
+        for path in PACKAGE.rglob("*.py"):
+            if runtime in path.parents:
+                continue
+            package = ["sbx_control", *path.relative_to(PACKAGE).parent.parts]
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    base = ".".join([*package[:len(package) - node.level + 1], node.module or ""] if node.level
+                                    else [node.module or ""]).rstrip(".")
+                    names = [base, *(f"{base}.{a.name}" for a in node.names)]
+                else:
+                    continue
+                if any(n == "sbx_control.runtime.embed" or n.startswith("sbx_control.runtime.embed.") for n in names):
+                    found.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+        self.assertEqual(found, [], "reach the runtime's backend through sbx_control.runtime")
+
+    def test_a_runtime_without_a_loopback_preview_says_so(self):
+        from sbx_control import runtime
+        hosted = SimpleNamespace(title="Hosted")
+        with patch.object(runtime, "_current", hosted), self.assertRaisesRegex(ValueError, "Hosted has no loopback"):
+            runtime.preview("box", None, 0)
+
     def test_the_settings_effects_name_no_runtime(self):
         from sbx_control.settings import HostUnit
         self.assertEqual([unit for unit in HostUnit if "embed" in unit or "e2b" in unit], [])

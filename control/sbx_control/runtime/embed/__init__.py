@@ -258,6 +258,10 @@ class Embed:
                 lambda: "", "manual"),
         ]
 
+    def preview(self, name, port, listen, *, preserve_host=False):
+        from .proxy import serve
+        serve(name, port, listen, preserve_host=preserve_host)
+
     def host_units(self):
         from . import host
         return host.units()
