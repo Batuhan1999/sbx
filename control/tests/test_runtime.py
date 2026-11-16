@@ -273,6 +273,22 @@ class Limits(unittest.TestCase):
         with patch.object(self.backend, "sandboxes", return_value=running[:19]):
             self.assertEqual(self.runtime.too_many(), "")
 
+    def test_a_create_checks_the_templates_memory_when_it_is_given(self):
+        from sbx_control import core
+
+        class Reached(Exception):
+            pass
+        recipe = SimpleNamespace(repo="", size={"cpu": 2, "memory_mb": 4096, "disk_mb": 8192})
+        with patch.object(core.recipes, "load", return_value=recipe), patch.object(core, "check_name"), \
+                patch.object(core.lifecycle, "operation", side_effect=Reached):
+            with self.assertRaisesRegex(core.SandboxError, "resources.memory_mb is 16384 MiB"):
+                core.create("box", "box", "me", "main", "", template="snap", memory_mb=16384)
+            recipe.size["memory_mb"] = 16384
+            with self.assertRaises(Reached):  # a template within the limit passes, whatever the recipe says
+                core.create("box", "box", "me", "main", "", template="snap", memory_mb=4096)
+            with self.assertRaisesRegex(core.SandboxError, "resources.memory_mb is 16384 MiB"):
+                core.create("box", "box", "me", "main", "", template="t")
+
     def test_core_refuses_a_create_beyond_the_limit_before_the_runtime(self):
         from sbx_control import core
         with patch.object(self.backend, "sandboxes", return_value=[Mock()] * 20), \

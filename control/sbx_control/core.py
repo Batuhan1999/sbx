@@ -330,7 +330,9 @@ def create(name: str, slug: str, owner: str, branch: str, public_keys: str, repo
         if not a.repo or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source_commit):
             raise SandboxError("source_commit requires a repository and a full Git commit hash")
         source_commit = source_commit.lower()
-    if why := runtime.beyond_limits(a.size):
+    # The VM is the template's size: with memory_mb, a template built at
+    # that memory (or a snapshot), whose cpu and disk are not known here.
+    if why := runtime.beyond_limits({"memory_mb": memory_mb} if memory_mb else a.size):
         raise SandboxError(why)
     with lifecycle.operation(name, "create") as operation, reserve_capacity(memory_mb or a.size["memory_mb"]):
         operation.configure_workspace(a.repo)

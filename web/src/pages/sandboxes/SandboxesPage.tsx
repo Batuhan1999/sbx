@@ -34,8 +34,9 @@ function LimitsNote({ limits }: { limits?: Capacity['limits'] }) {
   if (!limits) return null
   const each = [
     limits.cpu != null && `${limits.cpu} vCPUs`,
-    limits.memory_mb != null && memory(limits.memory_mb),
-    limits.disk_mb != null && `${memory(limits.disk_mb)} disk`,
+    // Exact: a rounded maximum would let a request just above it look allowed.
+    limits.memory_mb != null && `${limits.memory_mb} MB`,
+    limits.disk_mb != null && `${limits.disk_mb} MB disk`,
   ].filter(Boolean)
   const parts = [
     limits.sandboxes != null && `Up to ${limits.sandboxes} running at once`,
