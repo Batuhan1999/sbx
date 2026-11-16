@@ -526,17 +526,27 @@ def summary() -> str:
         rows = {key: _read(conn, key) for key in keys()}
     if not any(rows.values()):
         return "Base templates (sbx-base, then default: about 10 minutes the first time)"
-    changed = [key for key, row in rows.items() if not _current(row, plan(key).fingerprint)]
-    now = [key for key in changed if key in (templates.BASE, templates.DEFAULT)]
-    later = [key for key in changed if key not in now]
+    planned = {key: plan(key).fingerprint for key in rows}
+    changed = [key for key, row in rows.items() if not _current(row, planned[key])]
     if not changed:
         return "Templates: up to date, none rebuilds"
+    now = [key for key in changed if key in (templates.BASE, templates.DEFAULT)]
+    # The scheduler skips a template whose last build failed on this plan (stale()).
+    failed = [key for key in changed if key not in now and status(key, rows[key]) == "failed"
+              and rows[key]["fingerprint"] == planned[key]]
+    later = [key for key in changed if key not in now and key not in failed]
+
     def verb(keys):
         return "rebuilds" if len(keys) == 1 else "rebuild"
+
+    def names(keys, rest):
+        return ", ".join(keys) if len(keys) <= 3 else f"{len(keys)} {rest}"
     parts = [f"{' and '.join(now)} {verb(now)} now (about 10 minutes)"] if now else []
     if later:
-        named = ", ".join(later) if len(later) <= 3 else f"{len(later)} {'more' if now else 'templates'}"
-        parts.append(f"{named} {verb(later)} in the background afterwards")
+        parts.append(f"{names(later, 'more' if now else 'templates')} {verb(later)} in the background afterwards")
+    if failed:
+        parts.append(f"{names(failed, 'templates')} failed on this plan: fix and build again with "
+                     "sbx-admin template build <key>")
     return "Templates: " + "; ".join(parts)
 
 

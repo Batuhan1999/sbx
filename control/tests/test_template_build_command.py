@@ -55,6 +55,13 @@ class BuildCommand(Installation):
                 mock.patch.object(template_builds, "keys", return_value=[templates.BASE, templates.DEFAULT, "owner/app"]):
             self.assertEqual(summary(), "Templates: sbx-base and default rebuild now (about 10 minutes); "
                                         "owner/app rebuilds in the background afterwards")
+            # A build that failed on this plan is not the scheduler's to retry.
+            with template_builds.db() as conn:
+                conn.execute("insert into template_builds (repo, status, fingerprint) values (?, 'failed', ?)",
+                             ("owner/app", template_builds.plan("owner/app").fingerprint))
+            self.assertEqual(summary(), "Templates: sbx-base and default rebuild now (about 10 minutes); "
+                                        "owner/app failed on this plan: fix and build again with "
+                                        "sbx-admin template build <key>")
 
     def test_an_upgrade_keeps_a_stale_template_the_host_has_no_room_to_rebuild(self):
         # The launch lab: Amp was enabled, the default template went stale, and with 3 GB of
