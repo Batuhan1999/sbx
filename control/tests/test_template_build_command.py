@@ -36,6 +36,32 @@ class BuildCommand(Installation):
                 self.assertEqual(template_builds.main(["--if-stale", "default"]), 0)
             self.assertEqual([c.args[0].key for c in build.call_args_list], [templates.BASE] * 2 + [templates.DEFAULT])
 
+    def test_the_upgrade_says_which_templates_it_rebuilds(self):
+        from sbx_control import template_builds, templates
+
+        def summary():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(template_builds.main(["summary"]), 0)
+            return out.getvalue().strip()
+        self.assertIn("about 10 minutes the first time", summary())
+        with mock.patch.object(templates, "build"), contextlib.redirect_stderr(io.StringIO()):
+            template_builds.main(["base"])
+            template_builds.main(["default"])
+        self.assertEqual(summary(), "Templates: up to date, none rebuilds")
+        with mock.patch.object(template_builds.templates, "DEFAULT_STEPS", ("echo changed",)):
+            self.assertEqual(summary(), "Templates: default rebuilds now (about 10 minutes)")
+        with mock.patch.object(template_builds.templates, "base_steps", return_value=[("run", "true")]), \
+                mock.patch.object(template_builds, "keys", return_value=[templates.BASE, templates.DEFAULT, "owner/app"]):
+            self.assertEqual(summary(), "Templates: sbx-base and default rebuild now (about 10 minutes); "
+                                        "owner/app rebuilds in the background afterwards")
+            # A build that failed on this plan is not the scheduler's to retry.
+            with template_builds.db() as conn:
+                conn.execute("insert into template_builds (repo, status, fingerprint) values (?, 'failed', ?)",
+                             ("owner/app", template_builds.plan("owner/app").fingerprint))
+            self.assertEqual(summary(), "Templates: sbx-base and default rebuild now (about 10 minutes); "
+                                        "owner/app failed on this plan: fix and build again with "
+                                        "sbx-admin template build <key>")
 
     def test_an_upgrade_keeps_a_stale_template_the_host_has_no_room_to_rebuild(self):
         # The launch lab: Amp was enabled, the default template went stale, and with 3 GB of
