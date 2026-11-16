@@ -472,6 +472,18 @@ class Review(TwoRuntimes, Installation):
             self.assertNotIn(template_builds.OLD_TABLE, state.tables(conn))
         self.assertEqual(template_builds.built("sbx-base"), "b-2")
 
+    def test_a_recipe_is_refused_only_when_no_runtime_runs_it(self):
+        import tempfile
+        from pathlib import Path
+        from sbx_control import recipes
+        self.embed.limit = self.runtime.Limits(memory_mb=2048)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "sbx.yaml").write_text("resources:\n  memory_mb: 4096\n")
+            recipes.validate("owner/app", Path(folder))          # the fake runs it
+            self.fake.limit = self.runtime.Limits(memory_mb=2048)
+            with self.assertRaisesRegex(recipes.RecipeError, "resources.memory_mb is 4096.*E2B Embed"):
+                recipes.validate("owner/app", Path(folder))
+
 
 class Preflights(TwoRuntimes, Server):
     """A CORS preflight on a domain host passes the gate without a login, to
