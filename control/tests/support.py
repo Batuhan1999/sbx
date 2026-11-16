@@ -15,10 +15,11 @@ class Installation(unittest.TestCase):
     """setUpClass makes the installation and migrates it; setUp empties the
     settings and what a test leaves in the tables named in RESET."""
     SETTINGS: dict = {}
+    RUNTIME_ENV = RUNTIME   # /etc/sbx/runtime.env as install.sh writes it
     RESET = ("settings", "config", "config_history", "repos", "sealed", "store_values", "template_builds",
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
-             "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing")
+             "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes")
 
     @classmethod
     def setUpClass(cls):
@@ -30,7 +31,7 @@ class Installation(unittest.TestCase):
         })
         cls.environment.start()
         (cls.root / "etc").mkdir()
-        (cls.root / "etc/runtime.env").write_text(RUNTIME)
+        (cls.root / "etc/runtime.env").write_text(cls.RUNTIME_ENV)
         from sbx_control import platform, settings, state
         state.migrate()
         settings.forget()
