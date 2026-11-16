@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from support import Installation
+from support import Installation, Server
 
 
 class ReachabilityTests(Installation):
@@ -70,7 +70,8 @@ class ReachabilityTests(Installation):
         self.assertIn("no sandbox to check from", check.detail)
         self.sandbox.kill.assert_not_called()
 
-        with patch.object(template_builds, "built", side_effect=template_builds.NotBuilt("building")):
+        with patch.object(template_builds, "built", side_effect=template_builds.NotBuilt("building")), \
+                patch.object(template_builds, "state", return_value={"status": "building"}):
             check = self.reachability.check()
         self.assertTrue(check.ok)
         self.assertIn("not checked yet", check.detail)
@@ -79,6 +80,16 @@ class ReachabilityTests(Installation):
         check = self.reachability.check()
         self.assertFalse(check.ok)
         self.assertIn("no public address", check.detail)
+
+    def test_a_failed_base_build_fails_with_its_error_and_how_to_build_again(self):
+        from sbx_control import template_builds
+        with patch.object(template_builds, "built", side_effect=template_builds.NotBuilt("failed")), \
+                patch.object(template_builds, "state", return_value={"status": "failed", "error": "apt-get: 404"}):
+            check = self.reachability.check()
+        self.assertFalse(check.ok)
+        self.assertIn("build failed: apt-get: 404", check.detail)
+        self.assertIn("sbx-admin template rm sbx-base", check.fix)
+        self.create.assert_not_called()
 
     def test_a_self_signed_certificate_is_pinned_like_a_template_build(self):
         from sbx_control import templates
@@ -102,6 +113,18 @@ class ReachabilityTests(Installation):
         self.assertEqual(names, ["Embed API", self.reachability.NAME])
         self.assertFalse(ready["ok"])
         self.assertEqual(down, ["Embed API"])   # no sandbox started when the runtime itself is down
+
+
+class SetupGateTests(Server):
+    def test_the_probed_path_alone_answers_while_setup_is_incomplete(self):
+        from sbx_control import reachability, setup
+        self.assertFalse(setup.complete())
+        response = self.client.get(reachability.PATH)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.text, "dev")
+        for path in ("/dist/version/x", "/dist/versions", "/dist/sbx.tgz.sha256", "/install"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 503)
 
 
 if __name__ == "__main__":

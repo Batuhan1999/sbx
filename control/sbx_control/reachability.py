@@ -83,9 +83,18 @@ def check() -> Check:
         return Check(NAME, False, "this server has no public address yet", "choose a domain or an IP address")
     try:
         template = template_builds.built(templates.BASE)
-    except template_builds.NotBuilt:
-        return Check(NAME, True, "not checked yet: the base template is still building; "
-                     "sbx-admin doctor checks it once it is built")
+    except template_builds.NotBuilt as not_built:
+        build = template_builds.state(templates.BASE)
+        if build.get("status") == "failed":
+            error = (build.get("error") or "").strip()[-300:] or "no error recorded"
+            return Check(NAME, False, f"no sandbox to check from: the base template's build failed: {error}",
+                         f"fix the cause, then `sbx-admin template rm {templates.BASE}`; "
+                         "the scheduler builds it again within minutes")
+        if build.get("status") == "building":
+            return Check(NAME, True, "not checked yet: the base template is still building; "
+                         "sbx-admin doctor checks it once it is built")
+        return Check(NAME, False, f"no sandbox to check from: {not_built}",
+                     "run sbx-admin doctor again once the base template is built")
     url = base + PATH
     try:
         sbx = runtime.create(template, timeout=TIMEOUT, metadata={"sbx": "reachability"}, on_timeout="kill")
