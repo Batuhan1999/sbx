@@ -6,6 +6,8 @@ from urllib.parse import quote
 import sbx_provider as sbx
 from upstash_redis import Upstash, connection
 
+MIN_BUDGET = 20   # Upstash refuses a smaller monthly budget
+
 
 def root(database):
     return database.get('root_database_id') or database['database_id']
@@ -54,9 +56,9 @@ class UpstashBranch(Upstash):
             if branch:
                 self.request('/redis/database/' + quote(branch['database_id'], safe=''), 'DELETE', missing_ok=True)
             return
-        budget = sbx.option('budget', '1')
-        if not re.fullmatch(r'[1-9][0-9]*', budget):
-            raise sbx.ProviderError('choose a positive whole number of US dollars as the monthly budget')
+        budget = sbx.option('budget', '20')
+        if not re.fullmatch(r'[1-9][0-9]*', budget) or int(budget) < MIN_BUDGET:
+            raise sbx.ProviderError(f'choose a whole number of US dollars, at least {MIN_BUDGET}, as the monthly budget')
         if branch:
             expected_root = branch['root_database_id']
         else:
@@ -68,6 +70,7 @@ class UpstashBranch(Upstash):
             sbx.write_outputs({'database_id': branch['database_id']})
         identifier = branch['database_id']
         ready = sbx.wait('Upstash branch', lambda: self.ready(identifier, name, expected_root), 150)
+        # Only when it differs: Upstash refuses to set the budget a database already has.
         if ready.get('budget') != int(budget):
             self.request('/redis/update-budget/' + quote(identifier, safe=''), 'PATCH', {'budget': int(budget)})
         sbx.write_outputs(connection(ready))

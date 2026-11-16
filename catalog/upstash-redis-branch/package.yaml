@@ -23,8 +23,8 @@ inputs:
     help: The name or ID of the database, or of one of its branches, each sandbox copies. Use the ID when a name is not unique.
   budget:
     label: Monthly budget (USD)
-    help: A whole number, set as each branch's monthly budget in Upstash before the sandbox gets it.
-    default: '1'
+    help: A whole number of at least 20, the smallest Upstash allows, set as each branch's monthly budget before the sandbox gets it.
+    default: '20'
 outputs:
   url: { sensitive: true }
   rest_url: {}

@@ -17,7 +17,7 @@ def database(**changes):
 def branch(**changes):
     return database(**{'database_id': 'db-branch', 'database_name': 'sbx-audit-resource',
                        'root_database_id': 'db-parent', 'source_database_id': 'db-parent', 'endpoint': 'branch-fixture',
-                       'password': 'branch:@?# /', 'rest_token': 'branch-token', 'budget': 1, **changes})
+                       'password': 'branch:@?# /', 'rest_token': 'branch-token', 'budget': 20, **changes})
 
 
 class FakeUpstash(FakeApi):
@@ -35,7 +35,10 @@ class FakeUpstash(FakeApi):
         if (method, path) == ('GET', '/redis/databases'):
             return list(self.databases.values())
         if method == 'PATCH' and path.startswith('/redis/update-budget/'):
-            self.databases[path.removeprefix('/redis/update-budget/')]['budget'] = body['budget']
+            target = self.databases[path.removeprefix('/redis/update-budget/')]
+            if target.get('budget') == body['budget'] or body['budget'] < 20:
+                raise Status(400)   # as Upstash: the same budget again, or under $20
+            target['budget'] = body['budget']
             return None
         identifier = path.removeprefix('/redis/database/')
         if method == 'POST' and identifier.endswith('/branch'):
@@ -102,7 +105,7 @@ class UpstashBranchProviderTests(ScriptCase):
 
     def test_the_budget_is_set_before_credentials_and_only_when_it_differs(self):
         upstash = self.upstash(database())
-        with patch.dict(os.environ, {'INPUT_BUDGET': '5'}):
+        with patch.dict(os.environ, {'INPUT_BUDGET': '25'}):
             self.api.run('create')
             first = self.values()
             self.output.unlink()
@@ -110,11 +113,11 @@ class UpstashBranchProviderTests(ScriptCase):
                 self.api.run('create')
         self.assertEqual(upstash.mutations, [('POST', '/redis/database/db-parent/branch'),
                                              ('PATCH', '/redis/update-budget/db-new')])
-        self.assertEqual((upstash.databases['db-new']['budget'], self.values()), (5, first))
+        self.assertEqual((upstash.databases['db-new']['budget'], self.values()), (25, first))
 
     def test_an_invalid_budget_never_creates_a_branch(self):
         upstash = self.upstash(database())
-        for value in ('0', '-1', '1.5', 'ten'):
+        for value in ('0', '-1', '1.5', 'ten', '19'):
             with self.subTest(budget=value), patch.dict(os.environ, {'INPUT_BUDGET': value}), \
                     self.assertRaisesRegex(ValueError, 'monthly budget'):
                 self.api.run('create')
