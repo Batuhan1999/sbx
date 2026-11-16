@@ -145,6 +145,8 @@ class Embed(unittest.TestCase):
             with self.subTest(method), patch.object(Sandbox, method, side_effect=gone), \
                     self.assertRaisesRegex(runtime.NotRunning, "not found"):
                 call()
+        with patch.object(Sandbox, "pause", return_value=False):   # already paused: what pause is for
+            self.embed.pause("vm")
         vm = Mock(sandbox_id="vm")
         with patch.object(Sandbox, "connect", return_value=vm):
             handle = self.embed.connect("vm")

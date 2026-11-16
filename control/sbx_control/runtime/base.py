@@ -222,7 +222,7 @@ class Runtime(Protocol):
 
     def pause(self, sandbox_id: str) -> None:
         """Raises Busy when the runtime would not pause it now, NotRunning
-        when it is not running (paused or gone)."""
+        when it has no such sandbox; one already paused stays paused."""
 
     def set_timeout(self, sandbox_id: str, seconds: int) -> None:
         """Raises NotRunning when it is not running (paused or gone)."""
