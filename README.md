@@ -75,9 +75,10 @@ What the agent reads along the way, if you want the details yourself:
     services (Postgres, ClickHouse, Neon, PlanetScale, AWS, ...);
   - *GitHub* gives sandboxes repository access and `gh`, and runs PR previews.
 - **Runtimes**: the compute under the core, reached through one interface
-  (`control/sbx_control/runtime`) and pluggable. An installation enables every
-  runtime it can: E2B Embed on this server when it has `/dev/kvm` and the
-  resources, and a third-party provider once its credentials are configured.
+  (`control/sbx_control/runtime`) and pluggable. An installation runs the
+  runtimes `/etc/sbx/runtime.env` enables: a fresh install enables E2B Embed
+  on this server, which needs `/dev/kvm` and the resources; a third-party
+  provider's runtime is enabled there once its credentials are configured.
   Each sandbox runs on one of them, chosen for the sandbox, for its repository
   or by the installation's default. Embed is built in; other runtimes plug in
   as packages.

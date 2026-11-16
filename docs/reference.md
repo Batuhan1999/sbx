@@ -397,8 +397,8 @@ listener or firewall rule.
 ## Runtimes
 
 A runtime is where sandboxes run: E2B Embed on this server, or a provider's
-service. An installation enables every runtime it can, and each sandbox runs
-on exactly one of them, chosen when it is created and kept until it is
+service. An installation runs the runtimes it enables (a fresh install
+enables Embed alone), and each sandbox runs on exactly one of them, chosen when it is created and kept until it is
 deleted. Embed is built in; other runtimes are installed as packages
 ([runtime backends](extensions.md#runtime-backends)).
 
@@ -407,11 +407,11 @@ The runtimes are set in `/etc/sbx/runtime.env` (root only, not in backups):
 | Key | Meaning |
 | --- | --- |
 | `SBX_RUNTIMES` | The enabled runtimes, by kind, in order: `SBX_RUNTIMES=embed`. Missing or empty means `embed`. |
-| `SBX_RUNTIME_DEFAULT` | The runtime of new sandboxes when nothing else chooses one. Missing means the first in `SBX_RUNTIMES`. |
+| `SBX_RUNTIME_DEFAULT` | The runtime of new sandboxes when nothing else chooses one. Missing means the first in `SBX_RUNTIMES`; it must be one of them. |
 
 Each runtime reads only its own keys from the same file; two runtimes never
-share a key name. A kind that no installed package provides stops sbx at
-start, naming the kinds that exist.
+share a key name. A kind that no installed package provides, or a default
+that is not enabled, stops sbx at start, naming the kinds that exist.
 
 A new sandbox's runtime is, in order: the one the request names
 (`sbx up NAME --runtime KIND`, or `runtime` in `POST /api/sandboxes`), the
@@ -438,11 +438,22 @@ again on the other one.
   (`host`), its `capabilities`, its `limits` (`{}` when it states none) and its
   `status` (`state` and `summary`). The settings page shows the same.
 - Sandbox payloads (`GET /api/sandboxes`, `GET /api/sandboxes/NAME`) carry
-  `runtime`, the kind the sandbox runs on.
+  `runtime`, the kind the sandbox runs on. The web app's sandbox list
+  (`GET /api/sandbox-list`) also has `capacity`, the default runtime's room
+  with its `runtime`, and with several runtimes `capacities`, each one's by
+  kind.
+- `GET /api/repos/OWNER/NAME/template` describes the template on the
+  repository's runtime (`runtime`); with several runtimes, `runtimes` lists
+  the same for each other one. `POST` on it builds on the repository's
+  runtime.
 - `GET /api/repos/OWNER/NAME` carries `runtime`, the repository's setting, or
   `null` for the installation's default.
-- On the host, `sbx-admin runtime list` shows the enabled runtimes, and
-  `sbx-admin runtime verify [KIND]` checks one end to end: it creates a
+- `GET /api/setup/checks`, the first-run wizard's, names the runtime each
+  check is about (`runtime`, `null` for the server's own). The wizard and
+  `GET /api/runtimes` take the setup link's token.
+- On the host, `sbx-admin runtime list` (`--json` as `GET /api/runtimes`
+  answers) shows the enabled runtimes, and `sbx-admin runtime verify [KIND]`
+  (the default when no kind is given) checks one end to end: it creates a
   sandbox from the base template, runs a command, writes and reads a file,
   pauses and resumes it, reaches a preview port through the gate and deletes
   it, reporting each step.
@@ -509,14 +520,14 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/me` | anyone | The token's email, whether it is an admin, the installation's repositories. |
 | `GET /api/repos`, `GET /api/repos/OWNER/NAME/readiness` | anyone | The repositories and one's setup checklist: what is missing and who acts. |
 | `GET /api/repos/OWNER/NAME` | anyone | What the installation knows about a repository, with `runtime`: its setting, or `null` for the default. |
-| `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. |
-| `GET /api/runtimes` | anyone | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
+| `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
+| `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
 | `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
 | `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |
 | `GET /api/repos/OWNER/NAME/files` | anyone | The recipe the platform reads, and where from. |
-| `POST /api/repos/OWNER/NAME/template` | admin | `sbx template build`, in the background; 409 while it builds, 503 without room. |
-| `GET /api/repos/OWNER/NAME/template` | anyone | Its status (`building`, `built`, `failed`), `stale`, the error, and for admins the build's last log lines. |
+| `POST /api/repos/OWNER/NAME/template` | admin | `sbx template build` on the repository's runtime, in the background; 409 while it builds, 503 without room. |
+| `GET /api/repos/OWNER/NAME/template` | anyone | Its status (`building`, `built`, `failed`), `stale`, the error, and for admins the build's last log lines; `runtime` names the runtime, and with several `runtimes` lists the other runtimes' states. |
 | `DELETE /api/repos/OWNER/NAME/template` | admin | `sbx template rm`. |
 | `GET /api/repos/OWNER/NAME/env`, `PUT /api/repos/OWNER/NAME/env/VAR` | admin (anyone with `"mine": true`) | `sbx env ls`, `sbx env set`; body `{"value": "...", "secret": true}`. |
 | `POST /api/sandboxes` | anyone | `sbx up`: body `{"name": "...", "repo": "OWNER/NAME", "branch": "...", "public_keys": ...}`; `branch` defaults to the default branch, `public_keys` is `authorized_keys` text or a list of keys (optional), `runtime` a kind (optional, see [runtimes](#runtimes)); a runtime that cannot take the sandbox is a 400 naming it and why. Returns when SSH works; `?start_app=false` stops before setup. |

@@ -16,7 +16,7 @@ chosen when sbx is installed ([secret storage](reference.md#secret-storage-and-l
 
 Sandbox runtimes, the compute under the lifecycle, are pluggable through
 their own registry (`sbx_control.runtime`), not the extensions' one. An
-installation enables every runtime it can ([runtimes](reference.md#runtimes)),
+installation runs the runtimes it enables ([runtimes](reference.md#runtimes)),
 and each sandbox runs on one of them. Embed is built in; another runtime is a
 package ([runtime backends](#runtime-backends)). Extensions reach the runtimes
 only through `sbx_control.runtime`, never through a runtime's SDK
