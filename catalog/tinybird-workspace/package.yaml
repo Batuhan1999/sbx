@@ -3,17 +3,18 @@ name: tinybird-workspace
 title: Tinybird Forward workspace
 logo: logo.svg
 description: >
-  An existing Tinybird Forward workspace. tinybird-branch creates an isolated
-  branch and branch token for each sandbox. This is Tinybird's API, not a
-  native ClickHouse connection.
+  Connects to an existing Tinybird Forward workspace with a workspace admin
+  token. This uses Tinybird's API, not a native ClickHouse connection.
 docs: https://www.tinybird.co/docs/forward/core-concepts/branches
 inputs:
   url:
-    default: https://api.tinybird.co
+    label: API URL
     help: The workspace region's HTTPS API base URL
+    default: https://api.tinybird.co
   workspace:
-    required: true
+    label: Workspace ID
     help: The main workspace ID, available from tb workspace current or the Tinybird API
+    required: true
   token:
     required: true
     secret: true

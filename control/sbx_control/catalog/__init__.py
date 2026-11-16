@@ -126,6 +126,10 @@ class Package:
         missing = [k for k, v in self.inputs.items() if v["required"] and k not in out]
         if missing:
             raise PackageError(f"{label}: needs {', '.join(missing)}")
+        for name, value in out.items():
+            allowed = [c["value"] for c in self.inputs.get(name, {}).get("choices", ())]
+            if allowed and value not in allowed:
+                raise PackageError(f"{label}: {name} is one of {', '.join(c or '(blank)' for c in allowed)}, not {value!r}")
         return out
 
     def secret(self, name: str) -> bool:
@@ -161,8 +165,25 @@ def _input(name, v) -> dict:
         raise PackageError(f"{name} is not an input name")
     out = {"required": bool(v.get("required")), "secret": bool(v.get("secret")), "agent": v.get("agent", True) is not False,
            "help": str(v.get("help") or v.get("description") or "")}
+    if v.get("label"):
+        out["label"] = str(v["label"])
+    if "choices" in v:
+        out["choices"] = _choices(name, v["choices"])
     if "default" in v:
         out["default"] = _text(v["default"])
+        if "choices" in out and out["default"] not in [c["value"] for c in out["choices"]]:
+            raise PackageError(f"input {name}: its default {out['default']!r} is not one of its choices")
+    return out
+
+
+def _choices(name, given) -> list:
+    """An input's allowed values, in order, each with the words people read:
+    a mapping (value: label) or a list of values, which are their own labels."""
+    pairs = list(given.items()) if isinstance(given, dict) else [(c, c) for c in given] if isinstance(given, list) else []
+    out = [{"value": "" if value is None else _text(value), "label": _text(label) if label not in (None, "") else _text(value)}
+           for value, label in pairs]
+    if not out or len({c["value"] for c in out}) != len(out) or not all(c["label"] for c in out):
+        raise PackageError(f"input {name}: choices is a mapping of value: label, or a list of distinct values")
     return out
 
 

@@ -12,7 +12,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
     <D.Portal>
       <D.Overlay className="overlay fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]" />
       <D.Content
-        className={cn('modal fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-line bg-panel shadow-2xl outline-none', wide ? 'max-w-2xl' : 'max-w-md')}>
+        className={cn('modal fixed left-1/2 top-[max(1rem,8dvh)] z-50 flex max-h-[calc(100dvh-max(1rem,8dvh)-1rem)] w-[calc(100vw-2rem)] -translate-x-1/2 flex-col rounded-xl border border-line bg-panel shadow-2xl outline-none', wide ? 'max-w-2xl' : 'max-w-md')}>
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
           <div className="min-w-0">
             <D.Title className="text-[15px] font-semibold">{title}</D.Title>
@@ -35,6 +35,26 @@ export function Drawer({ open, onOpenChange, children, label }: { open: boolean;
         <D.Title className="sr-only">{label}</D.Title>
         <D.Description className="sr-only">{label}</D.Description>
         {children}
+      </D.Content>
+    </D.Portal>
+  </D.Root>
+}
+
+/** A panel that slides in from the right, full height: for a task with several steps beside the page. */
+export function SidePanel({ open, onOpenChange, title, description, children, footer }: {
+  open: boolean; onOpenChange: (open: boolean) => void; title: ReactNode; description?: string; children: ReactNode; footer?: ReactNode
+}) {
+  return <D.Root open={open} onOpenChange={onOpenChange}>
+    <D.Portal>
+      <D.Overlay className="overlay fixed inset-0 z-40 bg-black/30" />
+      <D.Content className="side-panel fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-line bg-panel shadow-2xl outline-none sm:w-[480px]">
+        <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-4">
+          <D.Title className="min-w-0 text-[15px] font-semibold">{title}</D.Title>
+          <D.Description className="sr-only">{description ?? title}</D.Description>
+          <D.Close className="-mr-1.5 rounded-md p-1 text-muted hover:bg-hover hover:text-ink" aria-label="Close"><X className="size-4" /></D.Close>
+        </div>
+        <div className="min-h-0 grow overflow-y-auto px-5 py-5">{children}</div>
+        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3">{footer}</div>}
       </D.Content>
     </D.Portal>
   </D.Root>

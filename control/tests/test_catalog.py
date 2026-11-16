@@ -268,6 +268,33 @@ class CatalogTests(Server):
         package = self.catalog.parse("brand", {"package.yaml": "kind: connection\nlogo: logo.svg\n", "logo.svg": svg}, "repo")
         self.assertEqual(package.logo, "logo.svg")
 
+    def test_an_input_can_name_itself_for_people_and_offer_choices(self):
+        spec = ("kind: connection\ninputs:\n"
+                "  limit: {label: Credit limit (USD), required: true}\n"
+                "  reset:\n    default: ''\n    choices: {'': Never, daily: Daily, weekly: Weekly}\n"
+                "  size: {default: small, choices: [small, large]}\n")
+        package = self.catalog.parse("budget", {"package.yaml": spec}, "repo")
+        inputs = package.as_dict()["inputs"]
+        self.assertEqual(inputs["limit"]["label"], "Credit limit (USD)")
+        self.assertNotIn("choices", inputs["limit"])
+        self.assertEqual(inputs["reset"]["choices"], [{"value": "", "label": "Never"}, {"value": "daily", "label": "Daily"},
+                                                      {"value": "weekly", "label": "Weekly"}])
+        self.assertEqual([c["label"] for c in inputs["size"]["choices"]], ["small", "large"])
+        self.assertEqual(package.with_defaults({"limit": "5", "reset": "daily"}, "x")["reset"], "daily")
+        self.assertEqual(package.with_defaults({"limit": "5"}, "x")["reset"], "")
+        with self.assertRaisesRegex(self.catalog.PackageError, r"x: reset is one of \(blank\), daily, weekly, not 'hourly'"):
+            package.with_defaults({"limit": "5", "reset": "hourly"}, "x")
+        refused = {
+            "a default that is not a choice": "  a: {default: tiny, choices: [small, large]}\n",
+            "no choices": "  a: {choices: []}\n",
+            "choices that are text": "  a: {choices: small}\n",
+            "the same value twice": "  a: {choices: [small, small]}\n",
+            "a blank value without a label": "  a: {choices: ['', small]}\n",
+        }
+        for why, line in refused.items():
+            with self.subTest(why), self.assertRaisesRegex(self.catalog.PackageError, "input a"):
+                self.catalog.parse("budget", {"package.yaml": "kind: connection\ninputs:\n" + line}, "repo")
+
     def recipe(self, repo, text):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / repo / ".sbx").mkdir(parents=True)

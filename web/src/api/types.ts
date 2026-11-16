@@ -270,7 +270,11 @@ export type EnvView = {
 export type EnvChange = { running: number; paused: number; pending?: boolean; detail?: string }
 export type SetVariable = { value: string | null; secret?: boolean | null; audience?: Audience; agent?: boolean; mine?: boolean; restart?: boolean }
 
-export type PackageInput = { required: boolean; secret: boolean; agent: boolean; help: string; default?: string }
+/** label: the field's name for people; choices: the only values allowed, in order, each with its label. */
+export type PackageInput = {
+  required: boolean; secret: boolean; agent: boolean; help: string; default?: string
+  label?: string; choices?: { value: string; label: string }[]
+}
 export type CatalogPackage = {
   name: string
   kind: PackageKind

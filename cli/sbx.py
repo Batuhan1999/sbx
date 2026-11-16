@@ -877,7 +877,9 @@ def catalog_cmd(args):
         print(f"{e['title']} ({e['kind']}, {e['source']})\n{e['description']}")
         for n, i in e["inputs"].items():
             about = i.get("help") or i.get("description") or ""
-            print(f"  input {n}{' (required)' if i['required'] else ''}{' secret' if i['secret'] else ''}: {about}")
+            choices = ", ".join(repr(c["value"]) for c in i.get("choices", ()))
+            print(f"  input {n}{' (required)' if i['required'] else ''}{' secret' if i['secret'] else ''}: {about}"
+                  + (f" (one of {choices})" if choices else ""))
         for slot, r in e["requires"].items():
             print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})")
         if args.files:

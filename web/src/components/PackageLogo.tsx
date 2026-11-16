@@ -1,5 +1,9 @@
-import { Package } from 'lucide-react'
+import { ArrowUpRight, Package } from 'lucide-react'
+import type { PackageInput } from '@/api/types'
+import type { FieldControls } from '@/components/form'
+import { inputLabel, isToggle, sentence, summary } from '@/lib/packages'
 import { cn } from '@/lib/utils'
+import { LinkedText } from '@/components/LinkedText'
 
 /** A catalog package's own logo (a data: URL of the SVG its package.yaml names), else the
  * generic package icon. An <img> runs no script in the SVG. Providers draw their marks for
@@ -13,22 +17,55 @@ export function PackageLogo({ logo, large, className }: { logo?: string; large?:
   </span>
 }
 
-/** A list of packages to choose one from: logo, title, name and description. */
+/** A list of packages to choose one from: logo, title and what it gives. */
 export function PackagePicker({ packages, onChoose }: {
   packages: { name: string; title: string; description: string; logo?: string }[]; onChoose: (name: string) => void
 }) {
   return <ul className="-mx-2 space-y-0.5">
-    {packages.map(p => <li key={p.name}><button type="button" onClick={() => onChoose(p.name)} className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left hover:bg-hover">
-      <PackageLogo logo={p.logo} className="mt-0.5" />
+    {packages.map(p => <li key={p.name}><button type="button" onClick={() => onChoose(p.name)} className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-hover">
+      <PackageLogo logo={p.logo} large />
       <span className="min-w-0">
-        <span className="flex flex-wrap items-center gap-x-2"><span className="font-medium">{p.title}</span><span className="font-mono text-[11.5px] text-faint">{p.name}</span></span>
-        <span className="mt-0.5 line-clamp-2 text-[12.5px] text-muted">{p.description}</span>
+        <span className="block font-medium">{p.title}</span>
+        <span className="mt-0.5 line-clamp-2 text-[12.5px] text-muted">{summary(p.description)}</span>
       </span>
     </button></li>)}
   </ul>
 }
 
-/** The chosen package above its form: logo and title. */
-export function PackageHeading({ logo, title }: { logo?: string; title: string }) {
-  return <div className="flex items-center gap-2.5"><PackageLogo logo={logo} /><span className="font-medium">{title}</span></div>
+/** A link to the provider's own guide, for getting the key or account a package asks for. */
+export function DocsLink({ href, children = 'Setup guide' }: { href?: string; children?: React.ReactNode }) {
+  if (!href) return null
+  return <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-[12.5px] text-accent hover:underline">{children}<ArrowUpRight className="size-3" /></a>
+}
+
+/** The chosen package above its form: logo, title, what it gives and its guide. */
+export function PackageHeading({ logo, title, description, docs, docsLabel }: { logo?: string; title: string; description?: string; docs?: string; docsLabel?: string }) {
+  return <div className="flex items-start gap-3">
+    <PackageLogo logo={logo} large />
+    <div className="min-w-0">
+      <p className="font-medium">{title}</p>
+      {description && <p className="text-[12.5px] text-muted"><LinkedText text={summary(description)} /></p>}
+      <DocsLink href={docs}>{docsLabel}</DocsLink>
+    </div>
+  </div>
+}
+
+/** One package input in a form, the way people read it: its label, a list for its choices, a checkbox
+ * for yes or no, a hidden field for a secret. */
+export function PackageInputControl({ field, name, input, placeholder, note }: {
+  field: FieldControls; name: string; input: PackageInput; placeholder?: string; note?: string
+}) {
+  const label = inputLabel(name, input)
+  const text = [input.help && sentence(input.help), note].filter(Boolean).join(' ')
+  const help = text ? <LinkedText text={text} /> : undefined
+  if (input.choices?.length) {
+    const blank = !input.choices.some(c => c.value === '') && !input.default
+    return <field.SelectField label={label} help={help}>
+      {blank && <option value="">{input.required ? 'Choose…' : 'Not set'}</option>}
+      {input.choices.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+    </field.SelectField>
+  }
+  if (isToggle(input)) return <field.ToggleField label={label} help={help} />
+  return <field.TextField label={label} help={help} optional={!input.required} type={input.secret ? 'password' : 'text'}
+    placeholder={placeholder} autoComplete="off" spellCheck={false} />
 }

@@ -3,15 +3,18 @@ name: clickhouse-server
 title: ClickHouse server
 logo: logo.svg
 description: >
-  A ClickHouse you run, reachable from sandboxes. A provisioner makes a
-  database per sandbox on it with the admin user given here.
+  Connects to a ClickHouse server you run, reachable from sandboxes, with an
+  admin user that can create databases and users.
 inputs:
   url:
-    required: true
+    label: URL
     help: "HTTP(S) endpoint, such as http://host:8123"
+    required: true
   user:
+    help: An admin user that can create databases and users.
     default: default
   password:
+    help: That user's password.
     secret: true
     required: false
 check: |

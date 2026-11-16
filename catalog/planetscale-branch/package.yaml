@@ -1,13 +1,13 @@
 kind: provision
 name: planetscale-branch
-title: PlanetScale Postgres branch (per sandbox)
+title: PlanetScale Postgres branch
 logo: logo.svg
 description: >
-  An empty PS_DEV PostgreSQL branch and migration-capable login per sandbox.
-  Run the repository's migrations and development seeds in setup. The parent
-  selects PostgreSQL version and context; it does not copy schema or data.
-  Each branch incurs PlanetScale charges. No automatic backup restore,
-  production changes, branch promotion or topology changes.
+  An empty PostgreSQL development branch per sandbox, with a login that can run
+  migrations. Run the repository's migrations and development seeds in setup.
+  The parent branch sets the PostgreSQL version; its schema and data are not
+  copied. Each branch incurs PlanetScale charges. It never creates databases,
+  restores backups, changes production, promotes branches or changes topology.
 docs: https://planetscale.com/docs/postgres/branching
 requires:
   database:
@@ -19,14 +19,16 @@ requires:
       service_token: PSCALE_SERVICE_TOKEN
 inputs:
   parent:
+    label: Parent branch
+    help: Existing parent branch name; its schema and data are not copied
     default: main
-    description: Existing parent branch name; its schema and data are not copied
   region:
     default: ''
     description: Region slug; empty uses the parent's region
   sslrootcert:
+    label: CA bundle path
+    help: The CA bundle inside the sandbox; change it for custom images. system works with native libpq only.
     default: /etc/ssl/certs/ca-certificates.crt
-    description: CA bundle path inside the sandbox; override for custom images. system is native-libpq-only
 outputs:
   url: { sensitive: true }
   password: { sensitive: true }

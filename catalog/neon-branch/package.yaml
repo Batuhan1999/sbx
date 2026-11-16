@@ -1,19 +1,26 @@
 kind: provision
 name: neon-branch
-title: Neon branch (per sandbox)
+title: Neon branch
 logo: logo.svg
 description: >
-  A branch of a Neon project per sandbox, copied from the selected development parent, with its own direct Postgres
-  endpoint; deleted with the sandbox. Blank selectors discover the default
-  parent and a single application database with its owning login. Select a
-  development parent explicitly when the project default contains unwanted data.
+  A branch of your Neon project per sandbox, with its own Postgres endpoint,
+  deleted with the sandbox. Each branch is copied from the parent you choose, or
+  the project's default branch. Blank fields find the application database and
+  the login that owns it. Choose a parent when the default branch holds data
+  sandboxes should not get.
 docs: https://neon.com/docs/introduction/branching
 requires:
   project: { kind: neon-project, expose: { api_key: NEON_API_KEY, project: NEON_PROJECT } }
 inputs:
-  parent: { default: "", description: "branch name or ID to copy; blank uses the project default" }
+  parent:
+    label: Copy from
+    help: A branch name or ID. Blank copies the project's default branch.
+    default: ''
   database: { default: "", description: "database to connect to; blank discovers a single application database" }
-  role: { default: "", description: "migration-capable role; blank uses the selected database owner with password login" }
+  role:
+    label: Login role
+    help: migration-capable role; blank uses the selected database owner with password login
+    default: ''
 outputs:
   url: { sensitive: true }
   host: {}

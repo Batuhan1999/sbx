@@ -53,9 +53,10 @@ Check: `./{name}/package.yaml` exists.
 ```yaml
 kind: provision
 name: {name}
-title: Human title (per sandbox)
+title: Human title
 description: >
-  One paragraph: what a sandbox gets, where it comes from, how long it takes.
+  One paragraph for people: what a sandbox gets, where it comes from, how long
+  it takes. Its first sentence is the summary the web app shows.
 requires:
   server:                         # a slot, filled with a saved connection
     kind: postgres-server         # the connection package it needs
@@ -63,8 +64,14 @@ requires:
       url: PG_ADMIN_URL           # the connection's url input arrives as $PG_ADMIN_URL
 inputs:
   template:
+    label: Template database
     required: true
-    help: the database each sandbox's copy starts from
+    help: The database each sandbox's copy starts from.
+  mode:
+    label: Start with
+    default: schema
+    choices: { schema: Empty tables, data: A copy of the template's data }
+    help: Whether each sandbox's database gets the template's rows too.
 outputs:                          # what create writes to $SBX_OUTPUT
   url:
     sensitive: true
@@ -80,9 +87,9 @@ timeout: 5m
 
 | Key | Kinds | Meaning |
 | --- | --- | --- |
-| `kind`, `name`, `title`, `description`, `docs` | all | Identity and help. The name is lowercase letters, digits, `-` and `_`. |
+| `kind`, `name`, `title`, `description`, `docs` | all | Identity and help, written for people: the title names what you get (the web app shows the kind itself, so no "(per sandbox)"), and the description names other packages by what they give, not by their package name. The name is lowercase letters, digits, `-` and `_`. `docs` is the provider's page on getting the key or account the inputs ask for. |
 | `logo` | all | An `.svg` file in the folder (at most 32 KiB): the provider's official mark, in its version for light backgrounds. The web app shows it small on a white tile in both themes; without one it shows a generic icon. A copy made with `--from` keeps the example's logo: replace it, or remove the file and the key. |
-| `inputs` | all | `NAME: {required, default, secret, help}`. Scripts get `INPUT_<NAME>`; `secret: true` values are never shown. |
+| `inputs` | all | `NAME: {label, required, default, secret, help, choices}`. Scripts get `INPUT_<NAME>`; `secret: true` values are never shown. `label` is the field's name in the web app (else the name in words); `help` is a sentence. `choices` lists the only values allowed, as `value: label` (or a list of values), and the web app offers them as a list; the default must be one. A `default` of `"true"` or `"false"` shows as a checkbox. |
 | `check` | connection | Shell text run with the inputs (exit 0 means usable), or a `.py` file whose `check(values)` returns an error message or `""`. |
 | `connect` | connection | A `.py` file whose `connect(before, given)` returns the inputs to save on an update. |
 | `identity` | connection | Inputs that name the endpoint; they cannot change while resources use the connection. |
@@ -97,7 +104,9 @@ timeout: 5m
 | `live` | provision | `true`: attaching it reaches existing sandboxes when they are prepared. |
 | `scrub` | provision | Paths removed before a reusable snapshot is taken. |
 
-Check: every input has `help`, every output `create` writes is declared, and
+Check: every input has `help` (and a `label` where its name does not read as
+words), every input with a fixed set of values has `choices`, every output
+`create` writes is declared, and
 every value that is a credential is `secret` (inputs) or `sensitive` (outputs).
 
 ## 4. Write the scripts

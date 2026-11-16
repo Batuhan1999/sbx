@@ -3,8 +3,7 @@ name: upstash-account
 title: Upstash Redis account
 logo: logo.svg
 description: >
-  An existing Upstash account. upstash-redis creates a separate development
-  Redis database per sandbox, with its own Redis and REST credentials.
+  Connects to an existing Upstash account with a Developer API key.
 docs: https://upstash.com/docs/devops/developer-api/authentication
 inputs:
   email:

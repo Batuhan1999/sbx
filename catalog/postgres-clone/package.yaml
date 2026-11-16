@@ -1,11 +1,13 @@
 kind: provision
 name: postgres-clone
-title: Postgres clone (per sandbox)
+title: Postgres clone
 logo: logo.svg
-description: 'A database per sandbox, sbx_<name>, copied from a template database, with a login of the
-  same name that owns it. Copy-on-write depends on the connected server and its storage; this
-  provisioner does not enable it. PG_ADMIN_URL is a postgresql:// URL of a role
-  that may create roles and databases; the sandbox reaches the database on that URL''s host. Resource IDs are recorded per service; cleanup uses that saved ownership.'
+description: >
+  A database per sandbox, copied from a template database, with its own login
+  that owns it. The database and its login are named sbx_ and the sandbox's
+  name. Whether the copy is copy-on-write depends on the server and its storage;
+  this package does not turn it on. Sandboxes reach the database on the
+  connected server's host.
 requires:
   server:
     kind: postgres-server
@@ -16,17 +18,20 @@ inputs:
     default: '20'
     description: maximum concurrent connections for this sandbox login; size application pools below this budget
   template:
+    label: Template database
+    help: the template database
     required: true
-    description: the template database
   owner_role:
     default: ''
     description: a role the login is a member of, such as the owner of the template's objects
   createrole:
+    label: Can create roles
+    help: For migrations that create roles.
     default: 'false'
-    description: 'true: the login may create roles (migrations that create them)'
   replication:
+    label: Can replicate
+    help: Lets the login stream its database, for services such as ElectricSQL.
     default: 'false'
-    description: 'true: the login may stream its database for services such as ElectricSQL'
 outputs:
   url:
     sensitive: true
