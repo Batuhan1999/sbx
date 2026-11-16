@@ -349,17 +349,24 @@ def fetch(token: str) -> str:
     trusts only public CAs, so a self-signed certificate (--dns none) is
     pinned by its key."""
     command = f"curl -fsSL -H {shlex.quote(f'{TOKEN_HEADER}: {token}')} {shlex.quote(bundle_origin() + '/bundles')}"
+    pin = pinned_key()
+    return f"{command} {pin}" if pin else command
+
+
+def pinned_key() -> str:
+    """The curl options that trust this server's self-signed certificate by
+    its key (--dns none); "" when its certificate is from a public CA."""
     name = settings.current().domain.name
     path = paths.tls() / "letsencrypt/live" / name / "fullchain.pem"
     if not name or not path.exists():
-        return command
+        return ""
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
     cert = x509.load_pem_x509_certificate(path.read_bytes())
     if cert.issuer != cert.subject:
-        return command
+        return ""
     key = cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    return f"{command} --insecure --pinnedpubkey sha256//{base64.b64encode(hashlib.sha256(key).digest()).decode()}"
+    return f"--insecure --pinnedpubkey sha256//{base64.b64encode(hashlib.sha256(key).digest()).decode()}"
 
 
 def bundle_origin() -> str:

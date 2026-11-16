@@ -18,6 +18,9 @@ _setup_lock = threading.Lock()
 # Until the first-run setup is complete (setup.py), this host serves the
 # setup and nothing else: there is no sign-in yet to protect the rest.
 SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/api/settings", "/api/catalog", "/connections/github", "/auth/")
+# Open by exact path: the release string, which the setup's reachability
+# check fetches from inside a sandbox (reachability.PATH).
+SETUP_OPEN_EXACT = ("/dist/version",)
 
 
 async def setup_gate(request: Request, call_next):
@@ -27,7 +30,8 @@ async def setup_gate(request: Request, call_next):
         return PlainTextResponse("setting up", status_code=403) if not setup.complete() else await call_next(request)
     if not setup.complete() and path in ("/", "/app", "/app/"):
         return RedirectResponse("/app/setup")
-    if not setup.complete() and not any(path == p or path.startswith(p) for p in SETUP_OPEN):
+    if not setup.complete() and path not in SETUP_OPEN_EXACT and not any(path == p or path.startswith(p)
+                                                                         for p in SETUP_OPEN):
         return PlainTextResponse("This installation is being set up. Finish at /setup (the link install.sh printed).",
                                  status_code=503)
     return await call_next(request)
