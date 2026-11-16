@@ -37,6 +37,7 @@ scales). A package that shares a provider links to the same file.
 | --- | --- | --- | --- |
 | ClickHouse | `catalog/clickhouse-server/logo.svg` | [ClickHouse/ClickHouse](https://github.com/ClickHouse/ClickHouse/blob/10329cbbf2da51925e5a4580a8ba9faf3315cd02/docker/server/README.src/logo.svg) | Apache 2.0 (the same text as [`vendor/e2b-embed/LICENSE`](vendor/e2b-embed/LICENSE)); [trademark policy](https://clickhouse.com/legal/trademark-policy) |
 | Neon | `catalog/neon-project/logo.svg` | [neon.com/brand](https://neon.com/brand), light color logomark | [Brand guidelines](https://neon.com/brand) |
+| OpenRouter | `catalog/openrouter-account/logo.svg` | [openrouter.ai/brand](https://openrouter.ai/brand), glyph in Ink | [Brand guidelines](https://openrouter.ai/brand) |
 | PlanetScale | `catalog/planetscale-database/logo.svg` | [planetscale.com/brand](https://planetscale.com/brand), black logo mark | [Brand guidelines](https://planetscale.com/brand) |
 | PostgreSQL | `catalog/postgres-server/logo.svg` | [wiki.postgresql.org/wiki/Logo](https://wiki.postgresql.org/wiki/Logo), three-color Slonik | [Trademark policy](https://www.postgresql.org/about/policies/trademarks/) |
 | Temporal | `catalog/temporal-server/logo.svg` | [Simple Icons](https://simpleicons.org/?q=temporal) 16.38.0 | CC0 1.0 |

@@ -1,6 +1,7 @@
 kind: provision
 name: openrouter-key
 title: OpenRouter API key (per sandbox)
+logo: logo.svg
 description: >
   An OpenRouter API key per sandbox with its own credit limit, made with the
   account's management key and deleted with the sandbox. The limit caps what
