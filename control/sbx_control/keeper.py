@@ -106,8 +106,10 @@ def keep_awake(info):
     gate.forget_preview_resume(info.sandbox_id)
 
 
-def look_at(info) -> bool:
-    """One sandbox's round; whether it runs."""
+def look_at(info, held=frozenset()) -> bool:
+    """One sandbox's round; whether it runs. held: the sandboxes a lifecycle
+    operation holds (lifecycle.busy), kept awake whatever their use: a setup
+    may run longer than a runtime's timeout limit (runtime.limits)."""
     vm = core.runtime_state(info)
     sandboxes.record_transition(info, vm)
     if vm != "running":
@@ -120,6 +122,9 @@ def look_at(info) -> bool:
     notice_stopped_app(info)
     if settings.current().sandboxes.detected_previews != "off":
         routing.detect_ports(info.sandbox_id, core.app_of(info))
+    if (info.metadata or {}).get("sbx") in held:
+        keep_awake(info)
+        return True
     use = use_of(info, running=True)
     policy = extensions.keeper_policy(info, use)
     if policy and policy.decided:
@@ -136,9 +141,10 @@ def look_once():
     infos = sandboxes.registered(core.sandboxes())
     routing.forget_except(i.sandbox_id for i in infos)
     running = set()
+    held = lifecycle.busy()
     for info in infos:
         try:
-            if look_at(info):
+            if look_at(info, held):
                 running.add((info.metadata or {}).get("sbx"))
         except runtime.NotRunning:
             # The runtime paused or deleted it since the listing (its own

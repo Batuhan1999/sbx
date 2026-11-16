@@ -4,11 +4,11 @@ sbx's core and its extensions reach VMs only through these functions;
 only a runtime's own package names its SDK (a test enforces it). Today
 the runtime is E2B Embed on this host (runtime.embed); the core names
 no backend (a test enforces that too)."""
-from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, NoRoom, NotRunning,
-                   Runtime, RuntimeLayer, Snapshot, TemplateSpec, Timeout)
+from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, Info, Limits, NoRoom,
+                   NotRunning, Runtime, RuntimeLayer, Snapshot, TemplateSpec, Timeout)
 
-__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "NoRoom",
-           "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout", "current"]
+__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "Info", "Limits",
+           "NoRoom", "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout", "current"]
 
 _current: Runtime | None = None
 
@@ -23,7 +23,8 @@ def current() -> Runtime:
 
 def create(template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
            deny_out: list | None = None, on_timeout: str | None = None, auto_resume: bool | None = None) -> Handle:
-    return current().create(template, timeout=timeout, envs=envs, metadata=metadata, deny_out=deny_out,
+    """timeout: seconds until it pauses, within limits().timeout_seconds."""
+    return current().create(template, timeout=_capped(timeout), envs=envs, metadata=metadata, deny_out=deny_out,
                             on_timeout=on_timeout, auto_resume=auto_resume)
 
 
@@ -35,7 +36,7 @@ def deny_out(*cidrs: str) -> list | None:
 
 
 def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
-    return current().connect(sandbox_id, timeout=timeout)
+    return current().connect(sandbox_id, timeout=_capped(timeout))
 
 
 def sandboxes(metadata: dict | None = None, states=None) -> list[Info]:
@@ -57,7 +58,55 @@ def pause(sandbox_id: str) -> None:
 
 
 def set_timeout(sandbox_id: str, seconds: int) -> None:
-    current().set_timeout(sandbox_id, seconds)
+    current().set_timeout(sandbox_id, _capped(seconds))
+
+
+def _capped(seconds: int | None) -> int | None:
+    """A timeout within the runtime's limit: the keeper extends it while
+    the sandbox is used, so a shorter one only pauses an idle sandbox sooner.
+    The limit is never below base.MIN_TIMEOUT_SECONDS, several renewals."""
+    most = limits().timeout_seconds
+    return seconds if seconds is None or most is None else min(seconds, most)
+
+
+def limits() -> Limits:
+    return current().limits()
+
+
+SIZE_UNITS = {"cpu": "vCPUs", "memory_mb": "MiB", "disk_mb": "MiB"}
+
+
+def _raise_it(found: Limits, field: str) -> str:
+    """How to allow more, as the end of a message."""
+    key = found.keys.get(field)
+    if not key:
+        return ""
+    return f", or if {found.source or 'your plan'} allows more, set {key} in /etc/sbx/runtime.env"
+
+
+def beyond_limits(size: dict) -> str:
+    """Why a sandbox of size ({cpu, memory_mb, disk_mb}, recipes.App.size)
+    can't run here, naming the limit and how to raise it; "" when it can."""
+    found = limits()
+    for field, unit in SIZE_UNITS.items():
+        most = getattr(found, field)
+        if most is not None and size.get(field, 0) > most:
+            return (f"resources.{field} is {size[field]} {unit}, and the sandbox runtime ({title()}) allows at "
+                    f"most {most} {unit} per sandbox; lower it in .sbx/sbx.yaml{_raise_it(found, field)}")
+    return ""
+
+
+def too_many() -> str:
+    """Why another sandbox can't start now, when as many as the runtime runs
+    at once are running; "" when one can."""
+    found = limits()
+    if found.sandboxes is None:
+        return ""
+    running = len(sandboxes(None, [RUNNING]))
+    if running < found.sandboxes:
+        return ""
+    return (f"{running} sandboxes are running, and the sandbox runtime ({title()}) runs at most "
+            f"{found.sandboxes} at once; pause or delete one (sbx ls, sbx down){_raise_it(found, 'sandboxes')}")
 
 
 def snapshot(sandbox_id: str, name: str) -> Snapshot:

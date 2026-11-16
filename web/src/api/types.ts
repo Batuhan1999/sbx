@@ -102,7 +102,9 @@ export type Sandbox = {
   origin: Origin
 }
 
-export type Capacity = { known: boolean; memory_mb?: number; slots_total?: number; slots_free?: number; free_mb?: number; total_mb?: number }
+// The runtime's limits, by field, when it can't say how much room it has.
+export type RuntimeLimits = { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number }
+export type Capacity = { known: boolean; memory_mb?: number; slots_total?: number; slots_free?: number; free_mb?: number; total_mb?: number; limits?: RuntimeLimits }
 export type SandboxList = { sandboxes: Sandbox[]; capacity: Capacity }
 export type SandboxScope = 'mine' | 'previews' | 'sessions' | 'all'
 

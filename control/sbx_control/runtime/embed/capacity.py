@@ -44,6 +44,11 @@ def room(memory_mb: int) -> dict:
             "total_mb": total * page_kb // 1024}
 
 
+def hugepages_mb() -> int | None:
+    """All of the hugepages that back sandbox memory; None when there are none."""
+    return room(1024).get("total_mb") or None
+
+
 @contextlib.contextmanager
 def placing():
     """Held until the runtime has reserved a new sandbox's hugepages, so two
