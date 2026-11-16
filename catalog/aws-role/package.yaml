@@ -1,6 +1,7 @@
 kind: connection
 name: aws-role
 title: AWS development role
+logo: logo.svg
 description: >
   Connect a development AWS role with an access key pair that stays on the server.
   Sandboxes receive renewable temporary role credentials through a named AWS

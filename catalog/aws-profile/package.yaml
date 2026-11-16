@@ -1,6 +1,7 @@
 kind: provision
 name: aws-profile
 title: AWS profile (per sandbox)
+logo: logo.svg
 description: >
   Connect the repository's normal AWS CLI/SDK and secret loader to an existing
   development role. Credentials refresh through sbx; no SSO login is needed inside

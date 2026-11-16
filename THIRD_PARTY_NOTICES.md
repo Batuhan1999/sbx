@@ -31,10 +31,13 @@ A catalog package's `logo.svg` is its provider's mark, shown only to say which
 service the package works with. The marks are trademarks of their owners, who
 do not endorse sbx. Each file is the owner's published mark with only the XML
 prolog removed (and, for Upstash, a `viewBox` of its own size added so it
-scales). A package that shares a provider links to the same file.
+scales). The AWS mark is the one in the header of aws.amazon.com, with its
+wordmark in `#161D26`, the color that site gives it on light backgrounds. A
+package that shares a provider links to the same file.
 
 | Mark | File | Source | License |
 | --- | --- | --- | --- |
+| AWS | `catalog/aws-role/logo.svg` | [aws.amazon.com](https://aws.amazon.com/), the site header's logo | [Trademark guidelines](https://aws.amazon.com/trademark-guidelines/) |
 | ClickHouse | `catalog/clickhouse-server/logo.svg` | [ClickHouse/ClickHouse](https://github.com/ClickHouse/ClickHouse/blob/10329cbbf2da51925e5a4580a8ba9faf3315cd02/docker/server/README.src/logo.svg) | Apache 2.0 (the same text as [`vendor/e2b-embed/LICENSE`](vendor/e2b-embed/LICENSE)); [trademark policy](https://clickhouse.com/legal/trademark-policy) |
 | Neon | `catalog/neon-project/logo.svg` | [neon.com/brand](https://neon.com/brand), light color logomark | [Brand guidelines](https://neon.com/brand) |
 | OpenRouter | `catalog/openrouter-account/logo.svg` | [openrouter.ai/brand](https://openrouter.ai/brand), glyph in Ink | [Brand guidelines](https://openrouter.ai/brand) |
@@ -48,6 +51,5 @@ Postgres, PostgreSQL and the Slonik Logo are trademarks or registered
 trademarks of the PostgreSQL Community Association of Canada, and used with
 their permission.
 
-The AWS packages have no logo: Amazon's
-[trademark guidelines](https://aws.amazon.com/trademark-guidelines/) allow
-naming AWS only in plain text without its written permission.
+Amazon Web Services, AWS and the AWS logo are trademarks of Amazon.com, Inc.
+or its affiliates.
