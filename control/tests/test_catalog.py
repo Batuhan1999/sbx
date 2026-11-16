@@ -255,6 +255,10 @@ class CatalogTests(Server):
             "a missing file": {},
             "a file that is not .svg": {"logo.png": svg},
             "text that is not SVG": {"logo.svg": "<html></html>"},
+            "HTML that mentions svg": {"logo.svg": "<html><!-- <svg --></html>"},
+            "an svg root outside the SVG namespace": {"logo.svg": "<svg/>"},
+            "a document that does not parse": {"logo.svg": '<svg xmlns="http://www.w3.org/2000/svg">'},
+            "an entity declaration": {"logo.svg": '<!DOCTYPE svg [<!ENTITY a "a">]><svg xmlns="http://www.w3.org/2000/svg"/>'},
             "an SVG over the limit": {"logo.svg": svg + " " * self.catalog.LOGO_BYTES},
         }
         for why, files in refused.items():

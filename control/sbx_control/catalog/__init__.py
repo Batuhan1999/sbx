@@ -23,6 +23,7 @@ import pathlib
 import re
 import subprocess
 import types
+import xml.etree.ElementTree as ElementTree
 
 import yaml
 
@@ -40,6 +41,7 @@ TEMPLATE_KEYS = ("apt", "files", "root", "user")
 RESERVED = {"connections"}   # a route of its own under /api/catalog
 MAX_BYTES = 1 << 20
 LOGO_BYTES = 32 << 10        # every listing carries its packages' logos
+SVG_ROOT = "{http://www.w3.org/2000/svg}svg"
 CHECK_TIMEOUT = 20
 REPO_USES = re.compile(r"^\./\.sbx/services/([a-z0-9][a-z0-9_-]*)/?$")
 SHIPPED = paths.shipped("catalog")
@@ -47,6 +49,18 @@ SHIPPED = paths.shipped("catalog")
 
 class PackageError(Exception):
     pass
+
+
+def svg_document(text: str) -> bool:
+    """Whether text is an SVG document whose root a browser shows as an image:
+    <svg> in the SVG namespace. A mark needs no entities, so declaring one is
+    refused before parsing."""
+    if "<!ENTITY" in text:
+        return False
+    try:
+        return ElementTree.fromstring(text).tag == SVG_ROOT
+    except (ElementTree.ParseError, ValueError):
+        return False
 
 
 class NoSuchPackage(PackageError):
@@ -217,7 +231,7 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
     logo = spec.get("logo") or ""
     if logo and (not isinstance(logo, str) or not logo.endswith(".svg") or logo not in files):
         raise PackageError(f"{name}: logo names an .svg file in its folder")
-    if logo and (len(files[logo].encode()) > LOGO_BYTES or "<svg" not in files[logo]):
+    if logo and (len(files[logo].encode()) > LOGO_BYTES or not svg_document(files[logo])):
         raise PackageError(f"{name}: {logo} is not an SVG of at most {LOGO_BYTES >> 10} KiB")
     outputs = {}
     for out, v in (spec.get("outputs") or {}).items():
