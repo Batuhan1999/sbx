@@ -67,6 +67,11 @@ export function useRuntimeChoice() {
   const data = useRuntimes().data
   return data && data.runtimes.length > 1 ? data : null
 }
+/** With a choice of runtimes, a runtime's title by kind (the kind when it is not enabled); null with one. */
+export function useRuntimeTitle() {
+  const choice = useRuntimeChoice()
+  return choice ? (kind?: string) => choice.runtimes.find(r => r.kind === kind)?.title ?? kind ?? '' : null
+}
 
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
 export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })

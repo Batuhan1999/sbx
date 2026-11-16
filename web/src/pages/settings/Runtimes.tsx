@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useRuntimes } from '@/api/queries'
 import type { ConnectionState, SandboxRuntime } from '@/api/types'
 import { QueryView, SkeletonRows } from '@/components/states'
@@ -18,11 +19,11 @@ export function Runtimes() {
 }
 
 /** One row per enabled runtime: title, default, where it runs, its status and limits. */
-export function RuntimeList({ runtimes, className }: { runtimes: SandboxRuntime[]; className?: string }) {
-  return <ul aria-label="Sandbox runtimes" className={cn('divide-y divide-line', className)}>{runtimes.map(r => <RuntimeRow key={r.kind} r={r} />)}</ul>
+export function RuntimeList({ runtimes, className, children }: { runtimes: SandboxRuntime[]; className?: string; children?: (r: SandboxRuntime) => ReactNode }) {
+  return <ul aria-label="Sandbox runtimes" className={cn('divide-y divide-line', className)}>{runtimes.map(r => <RuntimeRow key={r.kind} r={r}>{children?.(r)}</RuntimeRow>)}</ul>
 }
 
-function RuntimeRow({ r }: { r: SandboxRuntime }) {
+function RuntimeRow({ r, children }: { r: SandboxRuntime; children?: ReactNode }) {
   const state = CONNECTION_STATE[r.status.state as ConnectionState] ?? { label: r.status.state, tone: 'idle' as Tone }
   const limits = limitsText(r.limits)
   return <li className="px-4 py-3">
@@ -33,5 +34,6 @@ function RuntimeRow({ r }: { r: SandboxRuntime }) {
     </div>
     <p className="mt-0.5 break-words text-[13px] text-muted">{r.host ? 'Runs on this server' : 'Runs at the provider'}{r.status.summary ? `. ${r.status.summary}` : ''}</p>
     {limits && <p className="mt-0.5 text-[12px] text-muted">{limits}</p>}
+    {children}
   </li>
 }

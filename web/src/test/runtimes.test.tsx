@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { setSetupToken } from '@/api/client'
 import type { Sandbox, SandboxRuntime } from '@/api/types'
 import { Outlet, Route, Routes } from 'react-router'
@@ -9,12 +9,14 @@ import { RepoRuntime } from '@/pages/repos/RepoRuntime'
 import RepoSetup from '@/pages/repos/RepoSetup'
 import SetupPage from '@/pages/setup/SetupPage'
 import { NewSandboxForm } from '@/pages/sandboxes/NewSandboxForm'
+import { CapacityNote } from '@/pages/sandboxes/SandboxesPage'
 import { SandboxTable } from '@/pages/sandboxes/SandboxTable'
+import RepoRecipe from '@/pages/repos/RepoRecipe'
 import { Runtimes } from '@/pages/settings/Runtimes'
 import { ME, renderApp, stubApi } from './render'
 
 const runtime = (kind: string, title: string, extra: Partial<SandboxRuntime> = {}): SandboxRuntime => ({
-  kind, title, default: false, host: false, capabilities: {}, limits: {}, status: { state: 'connected', summary: '' }, ...extra,
+  kind, title, default: false, host: false, capabilities: { snapshots: false, private_networks: false, egress_rules: false }, limits: {}, status: { state: 'connected', summary: '' }, ...extra,
 })
 const EMBED = runtime('embed', 'E2B Embed', { default: true, host: true, limits: { cpu: 16, memory_mb: 30720 }, status: { state: 'connected', summary: '3 sandboxes running' } })
 const HOSTED = runtime('hosted', 'Hosted runtime', { limits: { sandboxes: 20 }, status: { state: 'attention', summary: 'The API key was refused' } })
@@ -121,16 +123,26 @@ const SETUP = {
   access: { mode: 'ip', domain: '', url: 'https://203.0.113.7', certificate: '', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 }
-const CHECKS = { ok: true, checks: [{ name: 'Virtualization', ok: true, detail: 'KVM is available', fix: '' }] }
+const CHECKS = { ok: true, checks: [
+  { name: 'Virtualization', ok: true, detail: 'KVM is available', fix: '', runtime: 'embed' },
+  { name: 'Secret store', ok: true, detail: 'Infisical answers', fix: '', runtime: null },
+] }
 
 describe('first-run setup', () => {
-  it('shows each enabled runtime next to the server checks', async () => {
-    stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': TWO })
+  it('shows each enabled runtime with its own checks, sending the setup token', async () => {
+    setSetupToken('one-time-token')
+    const calls = stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': TWO })
     renderApp(<SetupPage />, '/app/setup')
-    expect(await screen.findByText('KVM is available')).toBeTruthy()
     const list = await screen.findByRole('list', { name: 'Sandbox runtimes' })
-    expect(within(list).getByText('E2B Embed').closest('li')!.textContent).toContain('Runs on this server')
+    const embed = within(list).getByText('E2B Embed').closest('li')!
+    expect(embed.textContent).toContain('Runs on this server')
+    expect(await within(embed).findByText('KVM is available')).toBeTruthy()
     expect(within(list).getByText('Hosted runtime').closest('li')!.textContent).toContain('Runs at the provider')
+    expect(within(list).queryByText('Infisical answers')).toBeNull()
+    expect(screen.getByText('Infisical answers')).toBeTruthy()
+    const fetchInit = (vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/runtimes')![1] ?? {}) as RequestInit
+    expect((fetchInit.headers as Record<string, string>).authorization).toBe('Setup one-time-token')
+    expect(calls.some(c => c.url === '/api/runtimes')).toBe(true)
   })
 
   it('keeps the server checks alone when the runtimes cannot be read', async () => {
@@ -140,6 +152,7 @@ describe('first-run setup', () => {
     expect(await screen.findByText('KVM is available')).toBeTruthy()
     await waitFor(() => expect(calls.some(c => c.url === '/api/runtimes')).toBe(true))
     expect(screen.queryByText('Sandbox runtimes')).toBeNull()
+    expect(screen.getByText('Infisical answers')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 })
@@ -166,3 +179,47 @@ describe('repository facts', () => {
 function RepoRuntimeFacts({ layout }: { layout: () => React.ReactNode }) {
   return <Routes><Route element={layout()}><Route path="*" element={<RepoSetup />} /></Route></Routes>
 }
+
+describe('room per runtime', () => {
+  const room = (runtime: string, free: number) => ({ known: true, memory_mb: 4096, slots_total: 6, slots_free: free, runtime })
+  it('says the room as before with one runtime', async () => {
+    const calls = stubApi({ 'GET /api/runtimes': ONE })
+    renderApp(<p><CapacityNote list={{ capacity: room('embed', 3) }} /></p>)
+    await waitFor(() => expect(calls.length).toBe(1))
+    expect(screen.getByText('Room for 3 more of 6 at 4 GB each')).toBeTruthy()
+  })
+
+  it('names each runtime that knows its room, and skips the others', async () => {
+    stubApi({ 'GET /api/runtimes': TWO })
+    renderApp(<p><CapacityNote list={{ capacity: room('embed', 3), capacities: { embed: room('embed', 3), hosted: { known: false, limits: { sandboxes: 20 }, runtime: 'hosted' } } }} /></p>)
+    expect(await screen.findByText('E2B Embed: room for 3 more of 6 at 4 GB each')).toBeTruthy()
+    expect(screen.queryByText(/Hosted runtime/)).toBeNull()
+  })
+})
+
+describe('template per runtime', () => {
+  const template = {
+    repo: 'usememos/memos', runtime: 'embed', status: 'built', state: 'built', label: 'Built', level: 'ok', log: [],
+    runtimes: [{ runtime: 'hosted', status: 'building', state: 'building', label: 'Building', level: 'progress' }],
+  }
+  const readiness = { repo: 'usememos/memos', info: { ...REPO, prebuilt: true, github: 'app' }, steps: [], stage: 'ready', done: 0, total: 1, next: null }
+  const page = () => <Outlet context={{ repo: 'usememos/memos', readiness, env: undefined, envError: null, me: { ...ME, admin: false }, trusted: true } as unknown as RepoContext} />
+
+  it('names the runtime of the template and lists the others', async () => {
+    stubApi({ 'GET /api/runtimes': TWO, 'GET /api/repos/usememos/memos/template': template, 'GET /api/repos/usememos/memos/files': { files: [] } })
+    renderApp(<Routes><Route element={page()}><Route path="*" element={<RepoRecipe />} /></Route></Routes>)
+    const others = await screen.findByRole('list', { name: 'On other runtimes' })
+    expect(within(others).getByText('Hosted runtime')).toBeTruthy()
+    expect(within(others).getByText('Building')).toBeTruthy()
+    expect(screen.getByText('E2B Embed')).toBeTruthy()
+  })
+
+  it('shows the template alone with one runtime', async () => {
+    const { runtimes: _, ...one } = template
+    stubApi({ 'GET /api/runtimes': ONE, 'GET /api/repos/usememos/memos/template': one, 'GET /api/repos/usememos/memos/files': { files: [] } })
+    renderApp(<Routes><Route element={page()}><Route path="*" element={<RepoRecipe />} /></Route></Routes>)
+    expect(await screen.findByText('Built')).toBeTruthy()
+    expect(screen.queryByText('E2B Embed')).toBeNull()
+    expect(screen.queryByRole('list', { name: 'On other runtimes' })).toBeNull()
+  })
+})

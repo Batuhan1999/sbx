@@ -1,8 +1,8 @@
 import { FileCode2, Hammer } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '@/api/endpoints'
-import { keys, useAction, useRecipeFiles, useTemplate } from '@/api/queries'
-import type { TemplateState } from '@/api/types'
+import { keys, useAction, useRecipeFiles, useRuntimeTitle, useTemplate } from '@/api/queries'
+import type { TemplateOnRuntime, TemplateState } from '@/api/types'
 import { EmptyState, ErrorState, QueryView } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,7 @@ export default function RepoRecipe() {
   const admin = !!me?.admin
   const build = useAction(() => api.repos.buildTemplate(repo), keys.template(repo), keys.readiness(repo), keys.repos)
   const t = template.data
+  const title = useRuntimeTitle()
   return <div className="grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
     <Panel title="Recipe" description="The .sbx/ folder on the default branch." bodyClassName="p-0">
       <QueryView query={files} inline>{d => d.files.length === 0
@@ -28,7 +29,7 @@ export default function RepoRecipe() {
     <div className="min-w-0 space-y-4">
       {admin && <RepoRuntime repo={repo} />}
       <Panel title="Template" description="A prebuilt image of the repository with dependencies installed, so sandboxes start in seconds. Rebuilt when the recipe or an extension changes."
-        actions={t && <StateBadge tone={t.level} label={t.label} pulse={t.level === 'progress'} />}>
+        actions={t && <>{title && t.runtime && <span className="text-[12.5px] text-muted">{title(t.runtime)}</span>}<StateBadge tone={t.level} label={t.label} pulse={t.level === 'progress'} /></>}>
         {readiness.info.prebuilt ? <div className="space-y-3">
           <BuildWhen t={t} />
           {t?.status === 'failed' && t.error && <p className="rounded-md bg-bad-soft px-3 py-2 text-[12.5px] text-bad">{t.error}</p>}
@@ -39,12 +40,22 @@ export default function RepoRecipe() {
           <BuildWhen t={t} />
           <ErrorState error={template.error} compact />
         </div>}
+        {title && t?.runtimes?.length ? <OtherRuntimes states={t.runtimes} title={title} /> : null}
       </Panel>
       {t?.status === 'failed' && t.log.length > 0 && <Panel title="Build log" description="Why the last build failed. Your coding agent can read it with the setup brief and fix the recipe." bodyClassName="p-0">
         <pre className="max-h-[420px] overflow-auto bg-sunken p-3 text-[11.5px] leading-relaxed">{t.log.join('\n')}</pre>
       </Panel>}
     </div>
   </div>
+}
+
+/** The template's state on the runtimes other than the repo's, one line each. */
+function OtherRuntimes({ states, title }: { states: TemplateOnRuntime[]; title: (kind?: string) => string }) {
+  return <ul aria-label="On other runtimes" className="mt-3 space-y-1.5 border-t border-line pt-3 text-[12.5px]">
+    {states.map(o => <li key={o.runtime} className="flex items-center justify-between gap-2">
+      <span className="min-w-0 truncate text-muted">{title(o.runtime)}</span><StateBadge tone={o.level} label={o.label} pulse={o.level === 'progress'} />
+    </li>)}
+  </ul>
 }
 
 function BuildWhen({ t }: { t: TemplateState | undefined }) {

@@ -106,8 +106,10 @@ export type Sandbox = {
 
 // The runtime's limits, by field, when it can't say how much room it has.
 export type RuntimeLimits = { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number }
-export type Capacity = { known: boolean; memory_mb?: number; slots_total?: number; slots_free?: number; free_mb?: number; total_mb?: number; limits?: RuntimeLimits }
-export type SandboxList = { sandboxes: Sandbox[]; capacity: Capacity }
+/** runtime: the kind of runtime the room is on. */
+export type Capacity = { known: boolean; memory_mb?: number; slots_total?: number; slots_free?: number; free_mb?: number; total_mb?: number; limits?: RuntimeLimits; runtime?: string }
+/** capacity: the default runtime's; capacities: each enabled runtime's by kind, only with several. */
+export type SandboxList = { sandboxes: Sandbox[]; capacity: Capacity; capacities?: Record<string, Capacity> }
 export type SandboxScope = 'mine' | 'previews' | 'sessions' | 'all'
 
 export type SandboxService = { key: string; uses: string; status: string; kind: string; created_at: string | null; outputs: Record<string, string> }
@@ -148,7 +150,7 @@ export type SandboxRuntime = {
   title: string
   default: boolean
   host: boolean
-  capabilities: Record<string, unknown>
+  capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean }
   limits: RuntimeLimits
   status: { state: ConnectionState | string; summary: string }
 }
@@ -214,8 +216,15 @@ export type RepoReadiness = {
   next: ReadinessStepId | null
 }
 
-export type TemplateState = {
+export type TemplateState = TemplateOnRuntime & {
   repo: string
+  log: string[]
+  /** With several runtimes: the template state on each other enabled runtime. */
+  runtimes?: TemplateOnRuntime[]
+}
+/** A repo's template on one runtime: the one its sandboxes start from there. */
+export type TemplateOnRuntime = {
+  runtime?: string
   status: 'building' | 'built' | 'failed' | '-' | string
   /** default, building, failed, missing, stale or built; label and level say it for people (the server decides). */
   state: string
@@ -225,7 +234,6 @@ export type TemplateState = {
   finished_at?: string | null
   error?: string | null
   stale?: boolean
-  log: string[]
 }
 
 export type RecipeFiles = { files: { path: string; text: string | null }[] }
@@ -353,7 +361,8 @@ export type Connection = {
   fields: ConnectionField[]
   actions: string[]
 }
-export type Check = { name: string; ok: boolean; detail: string; fix: string }
+/** runtime: the kind of sandbox runtime it checks, null for the server's own checks. */
+export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null }
 export type CheckResult = { ok: boolean; checks: Check[] }
 
 export type SetupState = {
