@@ -166,7 +166,8 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") 
     for kind, (ingress, _) in found.items():
         parts = urlsplit(ingress)
         port = parts.port or (443 if parts.scheme == "https" else 80)
-        lines.append(f"upstream {upstream_name(kind)} {{ server {parts.hostname}:{port}; }}")
+        name = f"[{parts.hostname}]" if ":" in (parts.hostname or "") else parts.hostname
+        lines.append(f"upstream {upstream_name(kind)} {{ server {name}:{port}; }}")
     lines.append(f"map ${source} ${target} {{")
     lines.append(f"  default {default_ingress()};")
     lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]

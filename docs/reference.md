@@ -413,6 +413,12 @@ Each runtime reads only its own keys from the same file; two runtimes never
 share a key name. A kind that no installed package provides, or a default
 that is not enabled, stops sbx at start, naming the kinds that exist.
 
+Nothing watches the file. sbx-control configures each runtime when it starts,
+and nginx has one upstream per enabled runtime, written by the TLS step. After
+editing `runtime.env`, run `sbx-admin runtime apply`: it checks the file (the
+same checks as at start), then regenerates nginx and restarts sbx-control. An
+upgrade (`install.sh`) does both as well.
+
 A new sandbox's runtime is, in order: the one the request names
 (`sbx up NAME --runtime KIND`, or `runtime` in `POST /api/sandboxes`), the
 repository's setting (admins: `PUT /api/repos/OWNER/NAME/runtime`, or the

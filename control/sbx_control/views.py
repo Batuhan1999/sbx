@@ -136,4 +136,6 @@ def sbx_files(a: recipes.App) -> list:
 
 
 def build_log(repo: str) -> list:
-    return templates.build_log(repo)
+    """The repo's latest build log on its runtime."""
+    from . import runtimes
+    return templates.build_log(repo, runtimes.of_repo(repo))

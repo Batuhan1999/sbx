@@ -21,6 +21,7 @@
   sbx-admin template prune           delete the templates nothing starts from any more (the scheduler does it too)
   sbx-admin runtime list             the enabled sandbox runtimes: kind, default, capabilities, limits, state
   sbx-admin runtime verify [KIND]    take a throwaway sandbox through its life on one (default: the default)
+  sbx-admin runtime apply            after editing /etc/sbx/runtime.env: check it, regenerate nginx, restart sbx-control
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
   sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
@@ -211,7 +212,14 @@ def do_template(a) -> int:
 
 def do_runtime(a) -> int:
     from . import platform, runtime, runtimes
-    platform.connect()
+    platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action == "apply":
+        # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control
+        # configures each runtime at start (platform.connect): both again.
+        settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
+        print(f"runtimes {', '.join(runtime.enabled())} (default {runtime.default()}): nginx is regenerated and "
+              "sbx-control restarts within seconds")
+        return 0
     if a.action == "verify":
         if a.kind and a.kind not in runtime.enabled():
             print(f"no runtime {a.kind} is enabled here; the enabled ones are {', '.join(runtime.enabled())}",
@@ -298,7 +306,7 @@ def main(argv: list) -> int:
     template.add_argument("action", choices=["rm", "prune"])
     template.add_argument("key", nargs="?")
     runtime_cmd = sub.add_parser("runtime", help="the enabled sandbox runtimes")
-    runtime_cmd.add_argument("action", choices=["list", "verify"])
+    runtime_cmd.add_argument("action", choices=["list", "verify", "apply"])
     runtime_cmd.add_argument("kind", nargs="?", help="verify: the runtime to verify (default: the default)")
     runtime_cmd.add_argument("--json", action="store_true", help="list: as GET /api/runtimes answers")
     preview = sub.add_parser("preview", help="loopback-only app preview; forward its listener over SSH")

@@ -559,6 +559,28 @@ class Review(TwoRuntimes, Installation):
             with self.assertRaisesRegex(recipes.RecipeError, "resources.memory_mb is 4096.*E2B Embed"):
                 recipes.validate("owner/app", Path(folder))
 
+    def test_build_logs_are_per_runtime(self):
+        from sbx_control import template_builds, templates
+        template_builds.build_now(templates.BASE, "fake")
+        self.assertTrue(templates.build_log(templates.BASE, "fake"))
+        self.assertEqual(templates.build_log(templates.BASE), [])
+
+    def test_an_ipv6_ingress_is_bracketed(self):
+        from sbx_control import ip_previews
+        self.fake.ingress = "http://[::1]:3999"
+        self.assertIn("upstream sbx_runtime_fake { server [::1]:3999; }", ip_previews.runtime_upstreams())
+
+    def test_runtime_apply_checks_the_file_and_asks_for_nginx_and_a_restart(self):
+        from sbx_control import admin
+        self.effects()
+        with patch("sbx_control.platform.connect"), patch("sys.stdout"):
+            self.assertEqual(admin.main(["runtime", "apply"]), 0)
+        self.assertEqual(self.effects(), ["control", "tls"])
+        with patch("sbx_control.platform.connect", side_effect=SystemExit("SBX_RUNTIMES names nope")), \
+                self.assertRaises(SystemExit):
+            admin.main(["runtime", "apply"])
+        self.assertEqual(self.effects(), [])
+
 
 class Preflights(TwoRuntimes, Server):
     """A CORS preflight on a domain host passes the gate without a login, to

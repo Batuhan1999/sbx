@@ -280,8 +280,9 @@ def recipe_layer(t: runtime.TemplateSpec, a: recipes.App, fetch: str) -> runtime
 BUILD_LOGS: dict = {}
 
 
-def build_log(key: str) -> list:
-    return list(BUILD_LOGS.get(key) or [])
+def build_log(key: str, kind: str | None = None) -> list:
+    """The last lines of key's latest build on the runtime of kind (None: the default)."""
+    return list(BUILD_LOGS.get((kind or runtime.default(), key)) or [])
 
 
 def mask(text: str, hidden) -> str:
@@ -296,8 +297,8 @@ class BuildFailed(Exception):
     """A template build the runtime refused, its message masked."""
 
 
-def build_logger(key: str, hidden):
-    lines = BUILD_LOGS[key] = collections.deque(maxlen=300)
+def build_logger(key: str, hidden, kind: str | None = None):
+    lines = BUILD_LOGS[(kind or runtime.default(), key)] = collections.deque(maxlen=300)
 
     def log(entry):
         if getattr(entry, "level", "info") == "debug":
@@ -311,7 +312,7 @@ def build_logger(key: str, hidden):
 def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = None):
     """Build the plan as p.name on the runtime of kind (None: the default);
     a repo's needs its mirror (git_dir)."""
-    BUILD_LOGS.pop(p.key, None)
+    BUILD_LOGS.pop((kind or runtime.default(), p.key), None)
     served = []
     try:
         if p.base is None:
@@ -335,7 +336,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
         hidden = [token for token, _ in served]
         try:
             return runtime.build_template(t, alias=p.name, cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],
-                                          disk_mb=p.size["disk_mb"], on_log=build_logger(p.key, hidden), kind=kind)
+                                          disk_mb=p.size["disk_mb"], on_log=build_logger(p.key, hidden, kind), kind=kind)
         except Exception as error:
             # The runtime's error repeats the command that failed.
             raise BuildFailed(mask(str(error), hidden)) from None
