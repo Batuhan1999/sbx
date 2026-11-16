@@ -7,7 +7,7 @@ import { keys, useAction, useCatalog, useCatalogEntry, useCatalogProblems, useCo
 import type { CatalogPackage, SharedConnection } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PackageHeading, PackageLogo, PackagePicker } from '@/components/PackageLogo'
-import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
@@ -161,6 +161,7 @@ function ConnectionFields({ inputs, defaultKey, description, onSubmit, onCancel,
     defaultValues: { key: defaultKey, inputs: Object.fromEntries(inputs.map(([n, i]) => [n, i.default ?? ''])) as Record<string, string> },
     onSubmit: ({ value }) => onSubmit(value),
   })
+  const submitting = useStore(form.store, s => s.isSubmitting)
   return <AppForm form={form} className="space-y-3">
     <p className="text-[13px] text-muted">{description}</p>
     <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>{field => <field.TextField label="Key" className="font-mono" autoComplete="off" help="Packages refer to it by this key." />}</form.AppField>
@@ -168,7 +169,7 @@ function ConnectionFields({ inputs, defaultKey, description, onSubmit, onCancel,
       {field => <field.TextField label={<span className="font-mono text-[12px]">{n}</span>} optional={!i.required} type={i.secret ? 'password' : 'text'} help={i.help} autoComplete="off" spellCheck={false} />}
     </form.AppField>)}
     <div className="flex justify-between gap-2">
-      <Button variant="ghost" onClick={onBack}>Back</Button>
+      <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button>
       <div className="flex gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><SubmitButton form={form}>Check and save</SubmitButton></div>
     </div>
   </AppForm>

@@ -122,6 +122,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack }: {
     onSubmit: async ({ value }) => { await attach.mutateAsync(value); onDone() },
   })
   const result = useStore(form.store, s => s.isSubmitSuccessful)
+  const submitting = useStore(form.store, s => s.isSubmitting)
   return <AppForm form={form} className="space-y-4">
     {!attachment && <PackageHeading logo={entry.logo} title={entry.title} />}
     {entry.description && <p className="text-[13px] text-muted">{entry.description}</p>}
@@ -151,7 +152,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack }: {
     {entry.checks && <p className="text-[12px] text-muted">Saving runs the package's check first; nothing is stored when it fails.</p>}
     {result && <p role="status" className="text-[12.5px] text-ok">Saved.</p>}
     <div className="flex justify-between gap-2">
-      {onBack ? <Button variant="ghost" onClick={onBack}>Back</Button> : <span />}
+      {onBack ? <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : <span />}
       <div className="flex gap-2"><Button variant="ghost" onClick={onDone}>Cancel</Button><SubmitButton form={form}>{attachment ? 'Save' : 'Attach'}</SubmitButton></div>
     </div>
   </AppForm>

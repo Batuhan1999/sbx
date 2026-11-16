@@ -1,6 +1,6 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import ExtensionsPage from '@/pages/extensions/ExtensionsPage'
 import { ME, renderApp, stubApi } from './render'
 
@@ -38,5 +38,26 @@ describe('package logos', () => {
     expect(dialog.querySelector('img')?.getAttribute('src')).toBe(LOGO)
     await user.click(within(dialog).getByRole('button', { name: 'Back' }))
     expect(await within(dialog).findByRole('button', { name: /Postgres server/ })).toBeTruthy()
+  })
+
+  it('keeps Back disabled while a connection is being saved', async () => {
+    stubApi({
+      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
+      'GET /api/catalog/postgres-server': { ...SERVER, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': CATALOG,
+      'POST /api/catalog/connections': { key: 'postgres-server' },
+    })
+    const answer = globalThis.fetch
+    let release = () => {}
+    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => init.method === 'POST'
+      ? new Promise(resolve => { release = () => resolve(answer(url, init)) }) : answer(url, init))
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Postgres server/ }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Check and save' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Back' })).toHaveProperty('disabled', true))
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })
