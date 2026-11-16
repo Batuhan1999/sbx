@@ -67,6 +67,8 @@ def detect_ports(sandbox_id: str, a: recipes.App) -> dict:
         _detected[sandbox_id] = core.detected_ports(listening, a)
         if addressing.mode() == "ip":
             ip_previews.observe(sandbox_id, addressing.ports(a).values(), _detected[sandbox_id])
+    except runtime.NotRunning:
+        pass  # it paused or went meanwhile
     except Exception as error:
         print(f"detecting ports in {sandbox_id}: {error!r}", flush=True)
     return known_ports(sandbox_id)

@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime
 import os
 
-from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, Snapshot, TemplateSpec, Timeout
+from ..base import Busy, Capabilities, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateSpec, Timeout
 from . import capacity, storage
 
 
@@ -21,6 +21,23 @@ def _info(item) -> Info:
                 cpu_count=getattr(item, "cpu_count", None), memory_mb=getattr(item, "memory_mb", None))
 
 
+def _not_running(error) -> bool:
+    """The SDK's answers for a sandbox that is not running: the API has no
+    such running sandbox (404), or the proxy in front of it found none."""
+    from e2b.exceptions import SandboxNotFoundException, SandboxNotRunningException
+    return isinstance(error, (SandboxNotFoundException, SandboxNotRunningException))
+
+
+def _call(function, *args, **kwargs):
+    """function's result, a sandbox that is not running as NotRunning."""
+    try:
+        return function(*args, **kwargs)
+    except Exception as error:
+        if _not_running(error):
+            raise NotRunning(str(error)) from error
+        raise
+
+
 def _time(value):
     return value if value is None or isinstance(value, datetime.datetime) else None
 
@@ -33,7 +50,7 @@ class _Commands:
         from e2b import TimeoutException
         from e2b.sandbox.commands.command_handle import CommandExitException
         try:
-            return self._commands.run(cmd, **kwargs)
+            return _call(self._commands.run, cmd, **kwargs)
         except CommandExitException as error:
             raise CommandFailed(str(error), stdout=error.stdout, stderr=error.stderr,
                                 exit_code=error.exit_code) from error
@@ -46,12 +63,12 @@ class _Files:
         self._files = files
 
     def write(self, path, data, **kwargs):
-        return self._files.write(path, data, **kwargs)
+        return _call(self._files.write, path, data, **kwargs)
 
     def read(self, path, **kwargs):
         from e2b import TimeoutException
         try:
-            return self._files.read(path, **kwargs)
+            return _call(self._files.read, path, **kwargs)
         except TimeoutException as error:
             raise Timeout(str(error)) from error
 
@@ -137,7 +154,7 @@ class Embed:
 
     def connect(self, sandbox_id, *, timeout=None):
         from e2b import Sandbox
-        return _Handle(Sandbox.connect(sandbox_id) if timeout is None else Sandbox.connect(sandbox_id, timeout=timeout))
+        return _Handle(_call(Sandbox.connect, sandbox_id, **({} if timeout is None else {"timeout": timeout})))
 
     def sandboxes(self, metadata=None, states=None):
         from e2b import Sandbox, SandboxQuery, SandboxState
@@ -150,7 +167,7 @@ class Embed:
 
     def info(self, sandbox_id):
         from e2b import Sandbox
-        return _info(Sandbox.get_info(sandbox_id))
+        return _info(_call(Sandbox.get_info, sandbox_id))
 
     def kill(self, sandbox_id):
         from e2b import Sandbox
@@ -160,17 +177,17 @@ class Embed:
         from e2b import Sandbox
         from e2b.exceptions import ServiceBusyException
         try:
-            Sandbox.pause(sandbox_id)
+            _call(Sandbox.pause, sandbox_id)
         except ServiceBusyException as error:
             raise Busy(str(error)) from error
 
     def set_timeout(self, sandbox_id, seconds):
         from e2b import Sandbox
-        Sandbox.set_timeout(sandbox_id, seconds)
+        _call(Sandbox.set_timeout, sandbox_id, seconds)
 
     def snapshot(self, sandbox_id, name):
         from e2b import Sandbox
-        return Snapshot(Sandbox.create_snapshot(sandbox_id, name=name, mode="filesystem").snapshot_id)
+        return Snapshot(_call(Sandbox.create_snapshot, sandbox_id, name=name, mode="filesystem").snapshot_id)
 
     def delete_snapshot(self, snapshot_id):
         from e2b import Sandbox
