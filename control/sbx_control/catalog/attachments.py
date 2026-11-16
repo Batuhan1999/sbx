@@ -209,10 +209,13 @@ def attach(repo: str, name: str, key: str | None, inputs: dict, chosen: dict, *,
         raise PackageError(f"{key!r} is not a key (a-z, 0-9, - and _)")
     declared = next((m for m in merged(repo) if m[0] == key), None)
     given = {k: v for k, v in inputs.items() if v != ""}
-    # A blank secret keeps what is saved; any other input given blank goes back to its default.
+    # A blank secret keeps what is saved; any other input given blank drops its saved value, so it goes
+    # back to what sbx.yaml gives it, else its default. The check sees what merged() will give the scripts.
     cleared = {k for k, v in inputs.items() if v == "" and not package.secret(k)}
-    base = {k: v for k, v in (declared[2] if declared else {}).items() if k not in cleared}
-    values = package.with_defaults({**base, **given}, key)
+    use = (recipes.load(repo).spec.get("services") or {}).get(key)
+    recipe = {k: str(v) for k, v in ((use.get("with") if isinstance(use, dict) else None) or {}).items()}
+    saved = (declared[6].get("inputs") or {}) if declared else {}
+    values = package.with_defaults({**recipe, **{k: v for k, v in saved.items() if k not in cleared}, **given}, key)
     bind(package, {**(declared[3] if declared else {}), **chosen}, key)
     why = check(package, values) if run_check else ""
     if why:

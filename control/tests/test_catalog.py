@@ -282,6 +282,20 @@ class CatalogTests(Server):
         self.assertEqual(given["token"], "fixture-token")
         self.assertEqual(self.catalog.get("tokened").with_defaults(given, "t")["mode"], "plain")
 
+    def test_clearing_an_input_the_recipe_sets_checks_the_recipes_value(self):
+        self.repo_admin()
+        self.recipe("owner/app", "services:\n  t:\n    uses: tokened\n    with: {mode: fancy}\n")
+        self.connect()
+        self.package("tokened", f"inputs: {{log: {{default: '{self.log}'}}, mode: {{default: plain, choices: [plain, fancy]}}}}\n"
+                                "requires: {server: {kind: fixture-server, expose: {url: PG_ADMIN_URL}}}\n")
+        post = lambda inputs: self.client.post("/api/repos/owner/app/attachments", json={"package": "tokened", "key": "t", "inputs": inputs})
+        self.assertEqual(post({"mode": "plain"}).status_code, 200)
+        with patch("sbx_control.catalog.attachments.check", return_value="") as checked:
+            self.assertEqual(post({"mode": ""}).status_code, 200)
+        self.assertEqual(checked.call_args[0][1]["mode"], "fancy")
+        [(_, _, given, _)] = [a for a in self.attachments.for_create("owner/app") if a[0] == "t"]
+        self.assertEqual(given["mode"], "fancy")
+
     def test_an_input_can_name_itself_for_people_and_offer_choices(self):
         spec = ("kind: connection\ninputs:\n"
                 "  limit: {label: Credit limit (USD), required: true}\n"
