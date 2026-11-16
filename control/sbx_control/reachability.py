@@ -97,7 +97,7 @@ def check() -> Check:
                      "run sbx-admin doctor again once the base template is built")
     url = base + PATH
     try:
-        sbx = runtime.create(template, timeout=TIMEOUT, metadata={"sbx": "reachability"}, on_timeout="kill")
+        sbx = runtime.create(template, timeout=TIMEOUT, metadata={"sbx_check": "reachability"}, on_timeout="kill")
     except Exception as error:
         return Check(NAME, False, f"no sandbox to check from: {error}", "see the runtime's own checks")
     try:

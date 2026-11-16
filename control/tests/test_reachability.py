@@ -29,6 +29,7 @@ class ReachabilityTests(Installation):
         self.assertIn("https://login.sbx.example.com/dist/version", check.detail)
         self.assertEqual(self.create.call_args.args[0], "sbx-base-1234")
         self.assertEqual(self.create.call_args.kwargs["on_timeout"], "kill")
+        self.assertNotIn("sbx", self.create.call_args.kwargs["metadata"])   # not a workspace (core.find)
         self.assertIn("https://login.sbx.example.com/dist/version", self.sandbox.commands.run.call_args.args[0])
         self.sandbox.kill.assert_called_once()
 
