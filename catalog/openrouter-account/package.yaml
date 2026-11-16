@@ -1,0 +1,46 @@
+kind: connection
+name: openrouter-account
+title: OpenRouter account
+description: >
+  An OpenRouter account, reached with a management key that stays on the
+  server. openrouter-key gives each sandbox its own API key with a credit
+  limit and deletes it with the sandbox.
+docs: https://openrouter.ai/docs/guides/overview/auth/management-api-keys
+inputs:
+  management_key:
+    required: true
+    secret: true
+    help: a read/write management key from openrouter.ai/settings/management-keys; not an inference API key
+check: |
+  python3 - <<'CHECK'
+  import json, os, sys
+  from urllib.error import HTTPError
+  from urllib.request import Request, urlopen
+  KEYS = 'https://openrouter.ai/api/v1/keys'
+  def status(url, method='GET', body=None):
+      request = Request(url, method=method, data=None if body is None else json.dumps(body).encode(), headers={
+          'Authorization': 'Bearer ' + os.environ['INPUT_MANAGEMENT_KEY'], 'Content-Type': 'application/json',
+          'User-Agent': 'sbx'})
+      try:
+          with urlopen(request, timeout=8) as response:
+              return response.status, json.load(response)
+      except HTTPError as error:
+          error.close()
+          return error.code, None
+  try:
+      code, listed = status(KEYS + '?include_disabled=true')
+      if code == 401:
+          sys.exit('OpenRouter refused the key: enter a management key that has not expired, not an inference API key')
+      if code != 200 or not isinstance((listed or {}).get('data'), list):
+          sys.exit(f'OpenRouter could not list API keys with it (HTTP {code})')
+      # Writes are refused before the key is looked up, so updating a key that
+      # cannot exist tells a read-only management key (403) from one that can
+      # write (404) without changing anything.
+      code, _ = status(KEYS + '/' + '0' * 64, 'PATCH', {'disabled': False})
+      if code in (401, 403):
+          sys.exit('the management key is read-only (or scoped to another workspace); it can list API keys but not create them')
+      if code != 404:
+          sys.exit(f'OpenRouter did not say whether the key can create API keys (HTTP {code}); try the check again')
+  except (OSError, ValueError):
+      sys.exit('OpenRouter did not answer; check the key and try again')
+  CHECK
