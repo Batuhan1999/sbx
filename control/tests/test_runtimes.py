@@ -472,6 +472,23 @@ class Review(TwoRuntimes, Installation):
             self.assertNotIn(template_builds.OLD_TABLE, state.tables(conn))
         self.assertEqual(template_builds.built("sbx-base"), "b-2")
 
+    def test_sealing_rewrites_only_the_secret_lines(self):
+        from sbx_control import vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        file.write_text("# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=test-only\n"
+                        "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=test-only-fake\n"
+                        "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed:{key}"):
+                self.assertEqual(vault.seal_runtime_file(), 1)
+            self.assertEqual(file.read_text(),
+                             "# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=sealed:runtime/E2B_API_KEY\n"
+                             "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=sealed:runtime/FAKE_RUNTIME_TOKEN\n"
+                             "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+        finally:
+            file.write_text(before)
+
     def test_a_recipe_is_refused_only_when_no_runtime_runs_it(self):
         import tempfile
         from pathlib import Path

@@ -157,21 +157,25 @@ def runtime_sealed() -> bool:
 
 def seal_runtime_file() -> int:
     """Each enabled runtime's secret (Runtime.secret_key) as a reference into
-    the store (store enable); the runtimes' selection (SBX_RUNTIMES) stays as it is."""
+    the store (store enable): those lines are rewritten in place, every other
+    line of runtime.env (comments, the runtimes' selection, other keys)
+    stays as it is."""
     from . import runtime as sandbox_runtime
     file = paths.runtime_env()
     found = runtime()
-    secrets = [b.secret_key for b in sandbox_runtime.backends() if found.get(b.secret_key)]
+    secrets = {b.secret_key for b in sandbox_runtime.backends() if found.get(b.secret_key)}
     if not secrets or runtime_sealed():
         return 0
-    selection = {k: v for k, v in _runtime_file(sandbox_runtime.CONFIG_KEYS).items() if v}
-    lines = {**selection, **found,
-             **{s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets}}
-    titles = ", ".join(b.title for b in sandbox_runtime.backends())
+    sealed = {s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets}
+    out = []
+    for line in file.read_text().splitlines():
+        name, sep, _ = line.partition("=")
+        if sep and not line.lstrip().startswith("#") and name in sealed:
+            line = f"{name}={shlex.quote(sealed[name])}"
+        out.append(line)
     temporary = file.with_suffix(".new")
     temporary.touch(mode=0o600)
-    temporary.write_text(f"# This host's sandbox runtimes ({titles}). Written by install.sh; not backed up.\n"
-                         + "".join(f"{k}={shlex.quote(v)}\n" for k, v in lines.items()))
+    temporary.write_text("\n".join(out) + "\n")
     temporary.replace(file)
     return 1
 
