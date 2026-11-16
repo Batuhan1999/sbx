@@ -1,89 +1,117 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Lock, Package, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Lock, Package, Plus, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router'
 import { api } from '@/api/endpoints'
-import { keys, useAction, useCatalog, useCatalogEntry, useSharedConnections } from '@/api/queries'
-import type { Attachment, AttachmentState, CatalogEntry } from '@/api/types'
+import { keys, useAction, useCatalog, useSharedConnections } from '@/api/queries'
+import type { Attachment, AttachmentState, CatalogPackage, SharedConnection } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { PackageHeading, PackageLogo, PackagePicker } from '@/components/PackageLogo'
-import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
+import { EntryForm } from '@/components/AttachForm'
+import { PackageLogo, PackagePicker } from '@/components/PackageLogo'
 import { EmptyState, ErrorState, Loading, QueryView } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
-import { Button } from '@/components/ui/button'
+import { Button, LinkButton } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Badge, Code, Panel } from '@/components/ui/primitives'
+import { Panel } from '@/components/ui/primitives'
+import { article, inputLabel } from '@/lib/packages'
 import type { Tone } from '@/lib/status'
-import { keyError, required } from '@/lib/validation'
 import { useRepo } from './RepoLayout'
+import { LinkedText } from '@/components/LinkedText'
 
-export const ATTACHMENT_STATE: Record<AttachmentState, { label: string; tone: Tone }> = {
+const ATTACHMENT_STATE: Record<AttachmentState, { label: string; tone: Tone }> = {
   ready: { label: 'Ready', tone: 'ok' },
-  needs_values: { label: 'Needs values', tone: 'warn' },
+  needs_values: { label: 'Needs settings', tone: 'warn' },
   needs_connection: { label: 'Needs a connection', tone: 'warn' },
   check_failed: { label: 'Check failed', tone: 'bad' },
-  disabled: { label: 'Disabled', tone: 'idle' },
+  disabled: { label: 'Off', tone: 'idle' },
   error: { label: 'Error', tone: 'bad' },
 }
-const KIND_LABEL: Record<string, string> = { provision: 'per sandbox', connection: 'shared' }
 
 export default function RepoPackages() {
   const { repo, env, envError, trusted, me } = useRepo()
+  const admin = !!me?.admin
+  const catalog = useCatalog()
+  const shared = useSharedConnections(admin && trusted)
   const [adding, setAdding] = useState(false)
-  if (!trusted) return <EmptyState icon={Lock} title="No packages for public repositories">Packages provision databases and credentials; public repositories get none.</EmptyState>
+  if (!trusted) return <EmptyState icon={Lock} title="No packages for public repositories">Packages give sandboxes databases and API keys; public repositories get none.</EmptyState>
   if (envError) return <ErrorState error={envError} />
   if (!env) return <Loading />
-  const admin = !!me?.admin
   return <div className="space-y-4">
-    <Panel title="Attached packages" bodyClassName="p-0"
-      description={<>Databases, object stores and credentials each sandbox gets. Your agent declares them in sbx.yaml under <Code>services:</Code>; {admin ? 'you set their values and shared connections here.' : 'an admin sets their values and shared connections.'}</>}
-      actions={admin && <Button size="sm" variant="primary" onClick={() => setAdding(true)}><Plus />Attach package</Button>}>
+    <Panel title="Packages" bodyClassName="p-0"
+      description={`What each sandbox of this repository gets. Your agent adds packages to the recipe; ${admin ? 'you pick' : 'an admin picks'} their connection and settings here.`}
+      actions={admin && <Button size="sm" variant="primary" onClick={() => setAdding(true)}><Plus />Add package</Button>}>
       {env.attachments.length === 0
-        ? <EmptyState icon={Package} title="No packages" className="py-10">This repository's sandboxes need no databases or third-party credentials, or the recipe does not declare them yet.</EmptyState>
-        : <ul className="divide-y divide-line">{env.attachments.map(a => <AttachmentRow key={a.key} a={a} repo={repo} admin={admin} />)}</ul>}
+        ? <EmptyState icon={Package} title="No packages" className="py-10">This repository’s sandboxes get no databases or API keys, or the recipe doesn’t name them yet.</EmptyState>
+        : <ul className="divide-y divide-line">{env.attachments.map(a => <AttachmentRow key={a.key} a={a} repo={repo} admin={admin}
+          catalog={catalog.data ?? []} shared={shared.data} />)}</ul>}
     </Panel>
-    {admin && <Dialog open={adding} onOpenChange={setAdding} title="Attach a package" description="The package's inputs are stored on the server; sandboxes get what it exports." wide>
+    {admin && <Dialog open={adding} onOpenChange={setAdding} title="Add a package" description={`Each sandbox of ${repo} gets its own.`} wide>
       <AttachPicker repo={repo} onDone={() => setAdding(false)} />
     </Dialog>}
   </div>
 }
 
-function AttachmentRow({ a, repo, admin }: { a: Attachment; repo: string; admin: boolean }) {
+/** What a row says under its title: the one thing to know, in words, from the attachment's state. */
+function rowNote(a: Attachment, catalog: CatalogPackage[], shared: SharedConnection[] | undefined, admin: boolean) {
+  const pkg = catalog.find(p => p.name === a.package)
+  const title = (kind: string) => catalog.find(p => p.name === kind)?.title ?? kind
+  if (a.state === 'needs_connection' && pkg) {
+    const kinds = Object.values(pkg.requires).map(r => r.kind)
+    const none = kinds.find(k => shared && !shared.some(s => s.package === k))
+    if (none) return { text: `Needs ${article(title(none))}, and none is connected yet.`, connect: none }
+    if (kinds[0]) return { text: admin ? `Choose which ${title(kinds[0])} it uses.` : `Needs ${article(title(kinds[0]))}; an admin picks which.` }
+  }
+  if (a.state === 'needs_values' && a.problem?.startsWith('needs ')) {
+    const names = a.problem.slice(6).split(', ')
+    return { text: `Needs ${names.map(n => inputLabel(n, pkg?.inputs[n])).join(', ')}.` }
+  }
+  if (a.state === 'disabled') return { text: 'New sandboxes don’t get it.' }
+  if (a.problem) return { text: a.problem, bad: a.state !== 'needs_connection' && a.state !== 'needs_values' }
+  const on = Object.values(a.connections).map(key => {
+    const found = shared?.find(s => s.key === key)
+    return found ? `${found.title} ${key}` : key
+  })
+  return { text: on.length ? `Made on ${on.join(', ')}` : '' }
+}
+
+function AttachmentRow({ a, repo, admin, catalog, shared }: {
+  a: Attachment; repo: string; admin: boolean; catalog: CatalogPackage[]; shared: SharedConnection[] | undefined
+}) {
   const qc = useQueryClient()
-  const [fixing, setFixing] = useState(false)
+  const [editing, setEditing] = useState(false)
   const check = useAction(() => api.attachments.check(repo, a.key), keys.env(repo))
   const state = ATTACHMENT_STATE[a.state] ?? { label: a.state, tone: 'idle' as Tone }
-  const fixable = admin && (a.state === 'needs_values' || a.state === 'needs_connection' || a.state === 'check_failed')
+  const note = rowNote(a, catalog, shared, admin)
+  const pkg = catalog.find(p => p.name === a.package)
+  const configurable = !!pkg && (Object.keys(pkg.inputs).length > 0 || Object.keys(pkg.requires).length > 0)
+  const fix = admin && (a.state === 'needs_values' || a.state === 'needs_connection' || a.state === 'check_failed')
   return <li className="px-4 py-3">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <PackageLogo logo={a.logo} large />
       <div className="min-w-0 grow basis-60">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{a.key}</span>
-          <span className="text-[12.5px] text-muted">{a.title !== a.key ? a.title : a.package}</span>
-          <Badge>{KIND_LABEL[a.kind] ?? a.kind}</Badge>
-          {a.origin !== 'here' && <Badge tone="info" title="Declared in .sbx/sbx.yaml">sbx.yaml</Badge>}
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-medium">{a.title}</span>
+          {a.key !== a.title && <span className="text-[12.5px] text-muted">{a.key}</span>}
+          {a.origin !== 'here' && <span className="text-[12px] text-faint" title="Declared in .sbx/sbx.yaml">from the recipe</span>}
         </div>
-        {a.problem && <p className="mt-0.5 text-[12.5px] text-warn">{a.problem}</p>}
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-muted">
-          {a.exports.length > 0 && <span>Exports <span className="font-mono">{a.exports.join(', ')}</span></span>}
-          {Object.entries(a.connections).map(([slot, key]) => <span key={slot}>{slot} → <span className="font-mono">{key}</span></span>)}
-          {Object.entries(a.secret_inputs).map(([k, set]) => <span key={k} className="inline-flex items-center gap-0.5"><Lock className="size-3" />{k}{set ? '' : ' (not set)'}</span>)}
-        </div>
+        {note.text && <p className={note.bad ? 'mt-0.5 text-[12.5px] text-bad' : 'mt-0.5 text-[12.5px] text-muted'}><LinkedText text={note.text} /></p>}
       </div>
       <StateBadge tone={state.tone} label={state.label} />
       <div className="flex items-center gap-1.5">
-        {fixable && <Button size="sm" variant="primary" onClick={() => setFixing(true)}>{a.state === 'needs_connection' ? 'Choose connection' : 'Provide values'}</Button>}
-        {!a.project && <Button size="sm" busy={check.isPending} onClick={() => check.mutate()}><ShieldCheck />Check</Button>}
-        {admin && a.origin !== 'sbx.yaml' && <ConfirmDialog trigger={<Button size="icon-sm" variant="ghost" aria-label={`Detach ${a.key}`}><Trash2 /></Button>}
-          title={`Detach ${a.key}?`} description={a.origin === 'both' ? 'Removes the values set here; sbx.yaml still declares it.' : 'New sandboxes stop getting it. Existing sandboxes keep what was provisioned until they are deleted.'}
-          confirm="Detach" onConfirm={async () => { await api.attachments.detach(repo, a.key); await qc.invalidateQueries({ queryKey: keys.env(repo) }) }} />}
+        {fix && note.connect ? <LinkButton size="sm" variant="primary" to="/app/extensions#connections" state={{ connect: note.connect }}>Connect</LinkButton>
+          : fix ? <Button size="sm" variant="primary" onClick={() => setEditing(true)}>{a.state === 'needs_connection' ? 'Choose' : 'Set up'}</Button>
+          : admin && configurable && a.state !== 'disabled' ? <Button size="sm" onClick={() => setEditing(true)}><Settings2 />Edit</Button> : null}
+        {!a.project && (a.state === 'ready' || a.state === 'check_failed') && <Button size="sm" busy={check.isPending} onClick={() => check.mutate()}><ShieldCheck />Test</Button>}
+        {admin && a.origin !== 'sbx.yaml' && <ConfirmDialog trigger={<Button size="icon-sm" variant="ghost" aria-label={`Remove ${a.key}`}><Trash2 /></Button>}
+          title={a.origin === 'both' ? `Turn off ${a.title}?` : `Remove ${a.title}?`}
+          description={a.origin === 'both' ? 'The recipe still names it, so it stays here, turned off: new sandboxes stop getting it, and its settings are kept.' : 'New sandboxes stop getting it. Existing sandboxes keep theirs until they are deleted.'}
+          confirm={a.origin === 'both' ? 'Turn off' : 'Remove'} onConfirm={async () => { await api.attachments.detach(repo, a.key); await qc.invalidateQueries({ queryKey: keys.env(repo) }) }} />}
       </div>
     </div>
-    {check.data && <p role="status" className={check.data.ok ? 'mt-2 text-[12.5px] text-ok' : 'mt-2 text-[12.5px] text-bad'}>{check.data.ok ? 'Check passed.' : check.data.detail || 'Check failed.'}</p>}
+    {check.data && <p role="status" className={check.data.ok ? 'mt-2 text-[12.5px] text-ok' : 'mt-2 text-[12.5px] text-bad'}>{check.data.ok ? 'Test passed.' : <LinkedText text={check.data.detail || 'Test failed.'} />}</p>}
     <ErrorState error={check.error} compact className="mt-2" />
-    {fixable && <Dialog open={fixing} onOpenChange={setFixing} title={`Configure ${a.key}`} description={a.title} wide>
-      <EntryForm repo={repo} name={a.package} attachment={a} onDone={() => setFixing(false)} />
+    {admin && <Dialog open={editing} onOpenChange={setEditing} title={<span className="flex items-center gap-3"><PackageLogo logo={a.logo} large />{a.title}</span>}
+      description={`Settings for ${repo}’s sandboxes.`} wide>
+      <EntryForm repo={repo} name={a.package} attachment={a} onDone={() => setEditing(false)} />
     </Dialog>}
   </li>
 }
@@ -96,64 +124,4 @@ function AttachPicker({ repo, onDone }: { repo: string; onDone: () => void }) {
     const usable = packages.filter(p => p.kind === 'provision')
     return usable.length === 0 ? <EmptyState title="The catalog is empty" /> : <PackagePicker packages={usable} onChoose={setChosen} />
   }}</QueryView>
-}
-
-function EntryForm(props: { repo: string; name: string; attachment?: Attachment; onDone: () => void; onBack?: () => void }) {
-  const entry = useCatalogEntry(props.name)
-  return <QueryView query={entry}>{e => <AttachForm {...props} entry={e} />}</QueryView>
-}
-
-/** Secret inputs are write-only. */
-export function AttachForm({ repo, entry, attachment, onDone, onBack }: {
-  repo: string; entry: CatalogEntry; attachment?: Attachment; onDone: () => void; onBack?: () => void
-}) {
-  const shared = useSharedConnections(Object.keys(entry.requires).length > 0)
-  const attach = useAction((v: { key: string; inputs: Record<string, string>; connections: Record<string, string> }) => api.attachments.attach(repo, {
-    package: entry.name, key: v.key, inputs: Object.fromEntries(Object.entries(v.inputs).filter(([, x]) => x !== '')),
-    connections: Object.fromEntries(Object.entries(v.connections).filter(([, x]) => x)), check: true,
-  }), keys.env(repo), keys.readiness(repo), keys.repos)
-  const inputs = Object.entries(entry.inputs)
-  const form = useAppForm({
-    defaultValues: {
-      key: attachment?.key ?? entry.name.split('/').pop()!.replace(/[^a-z0-9_-]/g, '-'),
-      inputs: Object.fromEntries(inputs.map(([n, i]) => [n, i.secret ? '' : attachment?.inputs[n] ?? i.default ?? ''])) as Record<string, string>,
-      connections: Object.fromEntries(Object.keys(entry.requires).map(slot => [slot, attachment?.connections[slot] ?? ''])) as Record<string, string>,
-    },
-    onSubmit: async ({ value }) => { await attach.mutateAsync(value); onDone() },
-  })
-  const result = useStore(form.store, s => s.isSubmitSuccessful)
-  const submitting = useStore(form.store, s => s.isSubmitting)
-  return <AppForm form={form} className="space-y-4">
-    {!attachment && <PackageHeading logo={entry.logo} title={entry.title} />}
-    {entry.description && <p className="text-[13px] text-muted">{entry.description}</p>}
-    {!attachment && <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
-      {field => <field.TextField label="Key" help="How sbx.yaml and the env refer to it; one package can be attached under several keys." className="font-mono" autoComplete="off" />}
-    </form.AppField>}
-    {inputs.length > 0 && <fieldset className="space-y-3"><legend className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">Inputs</legend>
-      {inputs.map(([n, i]) => {
-        const set = attachment?.secret_inputs[n]
-        return <form.AppField key={n} name={`inputs.${n}`} validators={{ onChange: ({ value }) => i.required && !set && !i.default && !attachment?.inputs[n] ? required(value ?? '') : undefined }}>
-          {field => <field.TextField label={<span className="font-mono text-[12px]">{n}</span>} optional={!i.required} type={i.secret ? 'password' : 'text'} autoComplete="off" spellCheck={false}
-            placeholder={i.secret && set ? 'set · empty keeps it' : i.default ?? ''} help={<>{i.help}{!i.agent && i.secret ? ' Hidden from the coding agent.' : ''}</>} />}
-        </form.AppField>
-      })}
-    </fieldset>}
-    {Object.keys(entry.requires).length > 0 && <fieldset className="space-y-3"><legend className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted">Shared connections</legend>
-      {Object.entries(entry.requires).map(([slot, need]) => {
-        const options = (shared.data ?? []).filter(s => s.package === need.kind)
-        return <form.AppField key={slot} name={`connections.${slot}`}>
-          {field => <field.SelectField label={<>{slot} <span className="font-normal text-muted">({need.kind})</span></>} help={options.length ? 'Each sandbox gets its own resource on this server.' : <>No {need.kind} connection yet. <Link className="text-accent hover:underline" to="/app/extensions#connections">Add one in Extensions</Link>.</>}>
-            <option value="">{options.length === 1 ? `Only one: ${options[0].key}` : 'Choose…'}</option>
-            {options.map(s => <option key={s.key} value={s.key}>{s.key} · {s.title}</option>)}
-          </field.SelectField>}
-        </form.AppField>
-      })}
-    </fieldset>}
-    {entry.checks && <p className="text-[12px] text-muted">Saving runs the package's check first; nothing is stored when it fails.</p>}
-    {result && <p role="status" className="text-[12.5px] text-ok">Saved.</p>}
-    <div className="flex justify-between gap-2">
-      {onBack ? <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : <span />}
-      <div className="flex gap-2"><Button variant="ghost" onClick={onDone}>Cancel</Button><SubmitButton form={form}>{attachment ? 'Save' : 'Attach'}</SubmitButton></div>
-    </div>
-  </AppForm>
 }

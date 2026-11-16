@@ -68,7 +68,21 @@ function CheckboxField({ label, help }: { label: ReactNode; help?: ReactNode }) 
   </div>
 }
 
-export const { useAppForm } = createFormHook({ fieldContext, formContext, fieldComponents: { TextField, SelectField, TextareaField, CheckboxField }, formComponents: {} })
+/** A checkbox for a text value that is "true" or "false" (a package's yes/no input). */
+function ToggleField({ label, help }: { label: ReactNode; help?: ReactNode }) {
+  const field = useFieldContext<string>()
+  const id = useId()
+  return <div className="flex items-start gap-2.5">
+    <input id={id} type="checkbox" className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" name={field.name} checked={field.state.value === 'true'}
+      onBlur={field.handleBlur} onChange={e => field.handleChange(e.target.checked ? 'true' : 'false')} aria-describedby={help ? `${id}-hint` : undefined} />
+    <label htmlFor={id} className="text-[13px] font-medium">{label}{help && <span id={`${id}-hint`} className="block text-[12px] font-normal text-muted">{help}</span>}</label>
+  </div>
+}
+
+/** The field components a form.AppField render prop gets, for helpers that render one. */
+export type FieldControls = { TextField: typeof TextField; SelectField: typeof SelectField; ToggleField: typeof ToggleField }
+
+export const { useAppForm } = createFormHook({ fieldContext, formContext, fieldComponents: { TextField, SelectField, TextareaField, CheckboxField, ToggleField }, formComponents: {} })
 export { useStore }
 
 export function AppForm({ form, children, ...props }: Omit<ComponentProps<'form'>, 'onSubmit'> & { form: AnyFormApi }) {

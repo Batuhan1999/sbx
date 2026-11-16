@@ -1,13 +1,12 @@
 kind: provision
 name: upstash-redis
-title: Upstash Redis database (per sandbox)
+title: Upstash Redis database
 logo: logo.svg
 description: >
-  A separate, initially empty Redis database per sandbox on an existing Upstash
-  account. Reuses that database on retry and deletes it with the sandbox. It
-  does not share a Redis database index or key prefix, clone production data,
-  create an anonymous account, or upgrade a plan automatically. Confirm provider
-  limits and paid-plan choices before provisioning.
+  An empty Redis database per sandbox on your Upstash account, deleted with the
+  sandbox. A retry reuses the same database. It never shares a database index or
+  key prefix, copies production data, creates an account or upgrades a plan by
+  itself. Check a plan's limits and costs before choosing a paid one.
 docs: https://upstash.com/docs/devops/developer-api/redis/create_database_global
 requires:
   account:
@@ -17,17 +16,34 @@ requires:
       api_key: UPSTASH_API_KEY
 inputs:
   region:
+    label: Primary region
+    help: Provider primary_region, such as eu-central-1; select from the account's supported regions.
     required: true
-    description: Provider primary_region, such as eu-central-1; select from the account's supported regions.
   platform:
+    label: Cloud
+    choices:
+      aws: AWS
+      gcp: Google Cloud
+    help: Cloud platform, aws or gcp; the selected region must belong to it.
     default: aws
-    description: Cloud platform, aws or gcp; the selected region must belong to it.
   plan:
+    label: Plan
+    choices:
+      free: Free
+      payg: Pay as you go
+      fixed_250mb: Fixed 250 MB
+      fixed_1gb: Fixed 1 GB
+      fixed_5gb: Fixed 5 GB
+      fixed_10gb: Fixed 10 GB
+      fixed_50gb: Fixed 50 GB
+      fixed_100gb: Fixed 100 GB
+      fixed_500gb: Fixed 500 GB
+    help: A paid plan is never chosen for you.
     default: free
-    description: Explicit Upstash plan; free does not silently fall back to a paid plan.
   budget:
+    label: Monthly budget (USD)
+    help: A whole number, sent to Upstash when the database is made.
     default: '1'
-    description: Positive integer provider monthly budget sent at creation; confirm provider billing semantics.
 outputs:
   url: { sensitive: true }
   rest_url: {}

@@ -1,9 +1,10 @@
 kind: provision
 name: temporal-namespace
-title: Temporal namespace (per sandbox)
+title: Temporal namespace
 logo: logo.svg
-description: A namespace per sandbox, sbx-<name>, on a shared Temporal server (the temporal CLI on this
-  host).
+description: >
+  A namespace per sandbox on your Temporal server. Each namespace is named sbx-
+  and the sandbox's name, and made with the temporal CLI on this host.
 requires:
   server:
     kind: temporal-server
@@ -11,9 +12,11 @@ requires:
       address: TEMPORAL_SERVER_ADDRESS
 inputs:
   address:
+    label: Server address
+    help: The frontend, host:port. Blank uses the connected Temporal server's.
     required: false
-    description: the server's frontend, host:port (else the connected temporal-server's)
   retention:
+    help: How long finished workflow histories are kept, such as 72h.
     default: 72h
 outputs:
   address: {}

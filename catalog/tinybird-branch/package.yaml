@@ -1,11 +1,11 @@
 kind: provision
 name: tinybird-branch
-title: Tinybird branch (per sandbox)
+title: Tinybird branch
 logo: logo.svg
 description: >
-  A Tinybird Forward branch and independent token per sandbox. Copies workspace
-  resources without data by default; last_partition explicitly includes the
-  latest eligible partition. Uses Tinybird HTTP APIs, not native ClickHouse SQL.
+  A Tinybird Forward branch and its own token per sandbox. Each branch copies
+  the workspace's resources without data, unless you choose to include the
+  latest partition.
 docs: https://www.tinybird.co/docs/forward/core-concepts/branches
 requires:
   workspace:
@@ -16,8 +16,12 @@ requires:
       token: TINYBIRD_ADMIN_TOKEN
 inputs:
   data:
+    label: Data
+    choices:
+      schema: Resources without data
+      last_partition: Include the latest partition
+    help: The latest partition is the newest eligible partition of each data source.
     default: schema
-    description: 'schema: resources without data; last_partition: explicitly attach the latest eligible source partitions'
 outputs:
   url: {}
   workspace: {}

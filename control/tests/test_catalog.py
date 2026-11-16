@@ -268,6 +268,61 @@ class CatalogTests(Server):
         package = self.catalog.parse("brand", {"package.yaml": "kind: connection\nlogo: logo.svg\n", "logo.svg": svg}, "repo")
         self.assertEqual(package.logo, "logo.svg")
 
+    def test_a_blank_input_goes_back_to_its_default_and_a_blank_secret_is_kept(self):
+        self.repo_admin()
+        self.recipe("owner/app", "services: {}\n")
+        self.connect()
+        self.package("tokened", f"inputs: {{log: {{default: '{self.log}'}}, mode: {{default: plain, choices: [plain, fancy]}}, "
+                                "token: {secret: true}}\nrequires: {server: {kind: fixture-server, expose: {url: PG_ADMIN_URL}}}\n")
+        post = lambda inputs: self.client.post("/api/repos/owner/app/attachments", json={"package": "tokened", "key": "t", "inputs": inputs})
+        self.assertEqual(post({"mode": "fancy", "token": "fixture-token"}).status_code, 200)
+        self.assertEqual(post({"mode": "", "token": ""}).status_code, 200)
+        [(_, _, given, _)] = [a for a in self.attachments.for_create("owner/app") if a[0] == "t"]
+        self.assertNotIn("mode", given)
+        self.assertEqual(given["token"], "fixture-token")
+        self.assertEqual(self.catalog.get("tokened").with_defaults(given, "t")["mode"], "plain")
+
+    def test_clearing_an_input_the_recipe_sets_checks_the_recipes_value(self):
+        self.repo_admin()
+        self.recipe("owner/app", "services:\n  t:\n    uses: tokened\n    with: {mode: fancy}\n")
+        self.connect()
+        self.package("tokened", f"inputs: {{log: {{default: '{self.log}'}}, mode: {{default: plain, choices: [plain, fancy]}}}}\n"
+                                "requires: {server: {kind: fixture-server, expose: {url: PG_ADMIN_URL}}}\n")
+        post = lambda inputs: self.client.post("/api/repos/owner/app/attachments", json={"package": "tokened", "key": "t", "inputs": inputs})
+        self.assertEqual(post({"mode": "plain"}).status_code, 200)
+        with patch("sbx_control.catalog.attachments.check", return_value="") as checked:
+            self.assertEqual(post({"mode": ""}).status_code, 200)
+        self.assertEqual(checked.call_args[0][1]["mode"], "fancy")
+        [(_, _, given, _)] = [a for a in self.attachments.for_create("owner/app") if a[0] == "t"]
+        self.assertEqual(given["mode"], "fancy")
+
+    def test_an_input_can_name_itself_for_people_and_offer_choices(self):
+        spec = ("kind: connection\ninputs:\n"
+                "  limit: {label: Credit limit (USD), required: true}\n"
+                "  reset:\n    default: ''\n    choices: {'': Never, daily: Daily, weekly: Weekly}\n"
+                "  size: {default: small, choices: [small, large]}\n")
+        package = self.catalog.parse("budget", {"package.yaml": spec}, "repo")
+        inputs = package.as_dict()["inputs"]
+        self.assertEqual(inputs["limit"]["label"], "Credit limit (USD)")
+        self.assertNotIn("choices", inputs["limit"])
+        self.assertEqual(inputs["reset"]["choices"], [{"value": "", "label": "Never"}, {"value": "daily", "label": "Daily"},
+                                                      {"value": "weekly", "label": "Weekly"}])
+        self.assertEqual([c["label"] for c in inputs["size"]["choices"]], ["small", "large"])
+        self.assertEqual(package.with_defaults({"limit": "5", "reset": "daily"}, "x")["reset"], "daily")
+        self.assertEqual(package.with_defaults({"limit": "5"}, "x")["reset"], "")
+        with self.assertRaisesRegex(self.catalog.PackageError, r"x: reset is one of \(blank\), daily, weekly, not 'hourly'"):
+            package.with_defaults({"limit": "5", "reset": "hourly"}, "x")
+        refused = {
+            "a default that is not a choice": "  a: {default: tiny, choices: [small, large]}\n",
+            "no choices": "  a: {choices: []}\n",
+            "choices that are text": "  a: {choices: small}\n",
+            "the same value twice": "  a: {choices: [small, small]}\n",
+            "a blank value without a label": "  a: {choices: ['', small]}\n",
+        }
+        for why, line in refused.items():
+            with self.subTest(why), self.assertRaisesRegex(self.catalog.PackageError, "input a"):
+                self.catalog.parse("budget", {"package.yaml": "kind: connection\ninputs:\n" + line}, "repo")
+
     def recipe(self, repo, text):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / repo / ".sbx").mkdir(parents=True)

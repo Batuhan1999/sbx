@@ -3,20 +3,25 @@ name: aws-role
 title: AWS development role
 logo: logo.svg
 description: >
-  Connect a development AWS role with an access key pair that stays on the server.
-  Sandboxes receive renewable temporary role credentials through a named AWS
-  profile. An existing host profile is available for advanced authentication.
+  Connects to a development AWS role with an access key pair that stays on this
+  server; sandboxes only ever get temporary credentials for it. An existing host
+  profile can sign in instead, for advanced setups.
 docs: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
 inputs:
   role_arn:
+    help: ARN of the existing development role. Its trust policy must admit this host's identity.
     required: true
-    help: ARN of the existing development role; its trust policy must admit the host identity
   region:
     required: true
     help: AWS region for STS and the sandbox profile, for example eu-central-1
   auth_method:
+    label: Sign-in method
+    choices:
+      '': From the fields filled in
+      access_key: Access key (normal setup)
+      host_profile: Host profile (advanced)
+    help: How this server signs in before it assumes the role.
     default: ""
-    help: access_key (normal setup) or host_profile (advanced)
   access_key_id:
     default: ""
     secret: true
@@ -30,8 +35,9 @@ inputs:
     secret: true
     help: only for temporary source credentials; these expire and are not unattended access
   source_profile:
-    default: ""
+    label: Host profile
     help: advanced existing host profile; supports credential_process or Roles Anywhere, while SSO requires reauthorization
+    default: ""
   external_id:
     default: ""
     secret: true

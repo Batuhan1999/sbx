@@ -1,6 +1,6 @@
 kind: provision
 name: electric-source
-title: ElectricSQL source (per sandbox)
+title: ElectricSQL source
 description: A private Electric source on the installation's service network, using one sandbox's Postgres database and its own source secret.
 inputs:
   database_url: {required: true, secret: true}

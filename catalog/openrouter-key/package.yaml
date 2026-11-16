@@ -1,26 +1,34 @@
 kind: provision
 name: openrouter-key
-title: OpenRouter API key (per sandbox)
+title: OpenRouter API key
 logo: logo.svg
 description: >
-  An OpenRouter API key per sandbox with its own credit limit, made with the
-  account's management key and deleted with the sandbox. The limit caps what
-  the key spends; the account's prepaid balance still pays for it, so other
-  keys can use that balance up first. Changing an input of an existing sandbox
-  replaces its key on the next prepare, and the new key starts with no usage.
+  An OpenRouter API key per sandbox, with its own credit limit, deleted with the
+  sandbox. The limit caps what the key spends; the account's prepaid balance
+  still pays for it, so other keys can use that balance up first. Changing a
+  setting for an existing sandbox replaces its key the next time the sandbox is
+  prepared, and the new key starts with no usage.
 docs: https://openrouter.ai/docs/features/provisioning-api-keys
 requires:
   account: { kind: openrouter-account, expose: { management_key: OPENROUTER_MANAGEMENT_KEY } }
 inputs:
   limit:
+    label: Credit limit (USD)
+    help: What each sandbox's key may spend, for example 5. There is no unlimited key.
     required: true
-    help: credit limit of each sandbox's key in USD, for example 5; there is no unlimited key
   limit_reset:
+    label: Limit resets
+    choices:
+      '': 'Never: the limit covers the key''s lifetime'
+      daily: Daily
+      weekly: Weekly
+      monthly: Monthly
+    help: Resets happen at midnight UTC.
     default: ""
-    help: blank for a limit over the key's lifetime, or daily, weekly or monthly (resets at midnight UTC)
   include_byok_in_limit:
+    label: Count BYOK usage toward the limit
+    help: Usage on the account's own provider keys (BYOK) counts against the same limit.
     default: "true"
-    help: true counts usage on the account's own provider keys (BYOK) against the limit too
 outputs:
   key: { sensitive: true }
   hash: {}

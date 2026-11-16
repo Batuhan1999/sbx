@@ -1,16 +1,26 @@
 kind: provision
 name: clickhouse-database
-title: ClickHouse database (per sandbox)
+title: ClickHouse database
 logo: logo.svg
 description: >
-  A database per sandbox, sbx_<name>, on a ClickHouse server you connect,
-  with its own user. A development template can supply empty schemas or
-  native data-sharing clones of local MergeTree tables.
+  A database per sandbox on your ClickHouse server, with its own user. The
+  database and its user are named sbx_ and the sandbox's name. Each starts with
+  the empty tables of a development database, or with native clones of that
+  database's local MergeTree tables.
 requires:
   server: { kind: clickhouse-server, expose: { url: CH_URL, user: CH_USER, password: CH_PASSWORD } }
 inputs:
-  template: { default: "", description: development database to copy schemas or clone local MergeTree data from }
-  mode: { default: schema, description: 'schema: empty tables; clone: seeded CoW copies of supported local MergeTree tables' }
+  template:
+    label: Development database
+    help: The database to take empty tables or MergeTree data from.
+    default: ''
+  mode:
+    label: Start with
+    choices:
+      schema: Empty tables
+      clone: Clones of its local MergeTree tables
+    help: Clones share data with the development database instead of copying it.
+    default: schema
 outputs:
   url: { sensitive: true }
   http_url: { sensitive: true }

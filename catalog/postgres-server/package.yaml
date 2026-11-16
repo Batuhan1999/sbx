@@ -3,15 +3,15 @@ name: postgres-server
 title: Postgres server
 logo: logo.svg
 description: >
-  A Postgres you run, reachable from sandboxes (its address in the ranges
-  sandboxes may reach). Provisioners such as postgres-clone make a database
-  per sandbox on it with the admin role given here.
+  Connects to a Postgres server you run, at an address sandboxes may reach, with
+  an admin role that can create roles and databases.
 docs: https://www.postgresql.org/docs/current/sql-createrole.html
 inputs:
   url:
+    label: Admin URL
+    help: "postgresql://role:password@host:5432/postgres, a role that may create roles and databases"
     required: true
     secret: true
-    help: "postgresql://role:password@host:5432/postgres, a role that may create roles and databases"
 check: |
   command -v psql >/dev/null || { echo "psql is not installed on this host"; exit 1; }
   PGCONNECT_TIMEOUT=10 psql "$INPUT_URL" -X -q -tAc "select 1" >/dev/null 2>&1 || { echo "could not connect as that role"; exit 1; }

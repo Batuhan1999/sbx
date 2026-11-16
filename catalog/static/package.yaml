@@ -1,6 +1,7 @@
 kind: connection
 name: static
 title: Static values
-description: 'Values only, no scripts: its with: values are its outputs, for a service the sandbox only
-  needs the address or keys of (uses: static, with: { base_url: http://10.10.0.20:3010 }), then ${services.<key>.base_url}
-  in env.'
+description: >
+  Fixed values, such as the address or keys of a service a sandbox only needs to
+  reach. A recipe gives them with uses: static and with:, and reads them as
+  ${services.<key>.<name>}, for example ${services.api.base_url}.

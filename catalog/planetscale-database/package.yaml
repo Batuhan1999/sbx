@@ -3,22 +3,22 @@ name: planetscale-database
 title: PlanetScale Postgres database
 logo: logo.svg
 description: >
-  An existing PlanetScale PostgreSQL database. planetscale-branch creates a
-  separate development branch per sandbox. Connect a database-scoped service
-  token with branch read/create/delete and development role create/connect access.
-  This connection does not create databases or alter the production branch.
+  Connects to an existing PlanetScale PostgreSQL database with a database-scoped
+  service token that can read, create and delete branches, and create and
+  connect development roles.
 docs: https://planetscale.com/docs/api/service-tokens
 inputs:
   organization:
+    help: The organization's slug.
     required: true
-    help: Organization slug
   database:
     required: true
     help: PostgreSQL database slug; Vitess/MySQL and Neki need different adapters
   service_token_id:
+    label: Service token ID
+    help: ID of a database-scoped service token
     required: true
     secret: true
-    help: ID of a database-scoped service token
   service_token:
     required: true
     secret: true
