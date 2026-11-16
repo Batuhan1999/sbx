@@ -173,8 +173,12 @@ login and access, and when to pause or delete. A runtime only carries them
 out: it enforces the network ranges, and its `ingress` and `upstream_host`
 are where nginx sends a preview. It also names what it reads from
 `/etc/sbx/runtime.env` (`credential_keys`, and the `secret_key` that store
-enable seals) and what it needs from the host (`capabilities`: managed
-servers need `private_networks`, Amp's project caches need `snapshots`).
+enable seals) and what it can do (`capabilities`): `private_networks` (its
+sandboxes reach this host's private ranges) for `network.internal_cidrs` and
+managed servers, `egress_rules` (it applies each sandbox's `deny_out`) for
+`access.public_repos`, `snapshots` for Amp's project caches. Settings a
+runtime can't enforce are refused by the capability's name and not offered
+on the settings page (`reach.py`).
 
 Two settings effects are the runtime's. `runtime-env` follows a domain
 change: `sbx-apply runtime-env` calls `apply_host`, and Embed writes the

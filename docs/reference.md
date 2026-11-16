@@ -185,7 +185,10 @@ writes the operator's setting and changing that setting never drops a managed
 server's network. The first `server up` asks for the host's routes and leaves
 `sbx-admin network apply` pending for Embed. Managed servers and
 `access.public_repos` exclude each other, as `internal_cidrs` and
-`public_repos` do.
+`public_repos` do: the runtime opens private ranges to every sandbox alike.
+A runtime whose sandboxes can't reach this host's private ranges refuses
+`internal_cidrs` and managed servers; one that can't apply per-sandbox egress
+rules refuses `public_repos`.
 
 Managed Postgres is PostgreSQL 18 on an owned, reflink-enabled XFS image
 (default 32 GiB, `--storage-gb N`, or `--data-root DIR` on an existing XFS

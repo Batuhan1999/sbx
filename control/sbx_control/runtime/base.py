@@ -63,7 +63,13 @@ class Capabilities:
     """What a runtime can do beyond the basics; extensions and settings that
     need one check it."""
     snapshots: bool = False         # filesystem snapshots a new sandbox can start from
-    private_networks: bool = False  # sandboxes reach private ranges of this host's network (managed servers)
+    # Sandboxes reach private ranges of this host's network: the operator's
+    # network.internal_cidrs and the managed servers', opened to every
+    # sandbox alike (Runtime.apply_network).
+    private_networks: bool = False
+    # The runtime applies each sandbox's own deny_out, so an untrusted repo's
+    # sandbox can be fenced (access.public_repos).
+    egress_rules: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,7 +199,8 @@ class Runtime(Protocol):
     def create(self, template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
                deny_out: list | None = None, on_timeout: str | None = None,
                auto_resume: bool | None = None) -> Handle:
-        """A new sandbox from a template or snapshot. on_timeout: "pause" or
+        """A new sandbox from a template or snapshot. deny_out: ranges it may
+        not reach, given only with egress_rules; on_timeout: "pause" or
         "kill" when its timeout passes; auto_resume: traffic resumes it."""
 
     def connect(self, sandbox_id: str, *, timeout: int | None = None) -> Handle:
@@ -232,7 +239,8 @@ class Runtime(Protocol):
 
     def apply_network(self) -> dict:
         """Make the runtime enforce what sandboxes may reach now
-        (hosted_services.allowed_cidrs) and take what extensions add to it:
+        (hosted_services.allowed_cidrs, empty without private_networks) and
+        take what extensions add to it:
         {"status": "applied" or "unchanged", "allowed_cidrs": [...]};
         refused (ValueError) when it can't while sandboxes exist."""
 

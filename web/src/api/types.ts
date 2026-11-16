@@ -353,6 +353,7 @@ export type Settings = {
   revision: number
   repos: string[]
   access: { admins: string[]; public_repos: boolean }
+  offered: { public_repos: boolean; internal_cidrs: boolean }
   sandboxes: { paused_days: number; detected_previews: 'owner' | 'team' | 'off'; [key: string]: unknown }
   domain: { name: string; address: string; acme: string; acme_email: string; [key: string]: unknown }
   sign_in: { method: 'oidc' | 'password' | 'none'; allowed_emails: string[]; [key: string]: unknown }

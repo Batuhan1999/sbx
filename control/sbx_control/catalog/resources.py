@@ -141,7 +141,7 @@ def _in_runner(package: Package, action: str, env: dict, label: str) -> tuple[in
     from .. import template_builds, templates
     try:
         sbx = runtime.create(template_builds.built(templates.BASE), timeout=package.timeout + 300,
-                             deny_out=["169.254.169.254/32"],
+                             deny_out=runtime.deny_out("169.254.169.254/32"),
                              metadata={"sbx-service": package.name, "repo": package.repo})
     except Exception as error:
         raise PackageError(f"{label}: {action}: its runner sandbox did not start: {error}") from error

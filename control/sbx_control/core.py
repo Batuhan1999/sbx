@@ -441,11 +441,11 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
            hidden: set = frozenset(), operation=None, metadata=None) -> dict:
     name, slug = env["SBX_NAME"], env["SBX_SLUG"]
     envs, layer = runtime_layer(name, a, _envs(env, app_env), trusted, metadata)
-    # The cloud metadata service, denied per sandbox on every runtime (one
-    # may deny it already). Private ranges are the runtime's to enforce
-    # (Runtime.apply_network), not per sandbox.
+    # The cloud metadata service, denied per sandbox where the runtime
+    # applies egress rules (one without them may deny it already). Private
+    # ranges are the runtime's to enforce (Runtime.apply_network), not per sandbox.
     sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
-                         deny_out=["169.254.169.254/32"],
+                         deny_out=runtime.deny_out("169.254.169.254/32"),
                          metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
                                    "repo": a.repo},
                          on_timeout="pause", auto_resume=True)

@@ -54,7 +54,7 @@ SETUP_OPEN = 3  # setup-infer's exit status while the first-run setup is open (i
 
 
 def do_config_set(section: str, text: str) -> int:
-    from . import extensions
+    from . import extensions, hosted_services, reach  # noqa: F401  (their settings checks)
     try:
         value = json.loads(text)
         if section == "repos":

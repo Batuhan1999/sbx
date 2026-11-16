@@ -83,7 +83,7 @@ function AccessForm({ settings }: { settings: Settings }) {
         const bad = emails.find(e => emailError(e))
         return bad ? `${bad} is not an email address.` : undefined
       } }}>{field => <field.TextareaField label="Admins" rows={4} help="One email per line." />}</form.AppField>
-      <form.AppField name="public_repos">{field => <field.CheckboxField label="Serve any public repository" help="Untrusted: cloned anonymously, with no secrets or services." />}</form.AppField>
+      {(settings.offered.public_repos || settings.access.public_repos) && <form.AppField name="public_repos">{field => <field.CheckboxField label="Serve any public repository" help="Untrusted: cloned anonymously, with no secrets or services." />}</form.AppField>}
       <div className="flex items-center justify-end gap-3">{save.isSuccess && <span role="status" className="text-[12.5px] text-ok">Saved</span>}<SubmitButton form={form}>Save</SubmitButton></div>
     </AppForm>
   </Panel>
