@@ -105,19 +105,23 @@ method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
 
 ## Install
 
-1. Clone this repository onto the server and check out a
-   [release](https://github.com/Batuhan1999/sbx/releases), the latest one
-   unless you need another:
+1. Download a [release](https://github.com/Batuhan1999/sbx/releases) onto
+   the server, the latest one unless you need another, check it against its
+   checksum and unpack it:
 
    ```sh
-   git clone https://github.com/Batuhan1999/sbx.git && cd sbx
-   git checkout "$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' origin/main)"
+   v=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Batuhan1999/sbx/releases/latest)
+   v=${v##*/} url=https://github.com/Batuhan1999/sbx/releases/download
+   curl -fsSLO "$url/$v/sbx-$v.tar.gz" && curl -fsSL "$url/$v/sbx-$v.tar.gz.sha256" | sha256sum -c \
+     && tar -xzf "sbx-$v.tar.gz" && cd "sbx-$v"
    ```
 
-   Each release also has an archive with a checksum
-   ([pinning a release](docs/reference.md#operating-the-host)); `main` itself
-   runs the newest, unreleased changes.
-2. Run `sh install.sh` from the checkout as root. It installs the runtime, the
+   The archive carries the web app built, so the server needs no Node. A git
+   checkout (a release tag, or `main` for the newest, unreleased changes)
+   installs too once its web app is built, with Node 22:
+   `npm --prefix web ci && npm --prefix web run build`
+   ([pinning a release](docs/reference.md#operating-the-host)).
+2. Run `sh install.sh` from that directory as root. It installs the runtime, the
    control service, Infisical and the base templates, then prints a setup link.
 3. Open the link, accept the temporary certificate, choose IP access or a
    domain, and create the admin login. `sbx-admin setup-link` makes a new link

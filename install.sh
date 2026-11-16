@@ -95,7 +95,10 @@ die() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
   die "--public-repos and --internal can't go together: Embed lets every sandbox reach the internal ranges, untrusted repos' too"
 
 src=$(cd "$(dirname "$0")" && pwd)
-[ -f "$src/control/host-install.sh" ] || die "run install.sh from a checkout of the platform"
+[ -f "$src/control/host-install.sh" ] || die "run install.sh from a release archive or a checkout of the platform"
+# A release archive carries the web app's bundle; a checkout must build it.
+[ -f "$src/control/sbx_control/web_dist/index.html" ] || \
+  die "the web app is not built in $src: install from a release archive (README, Install), or build it first with Node 22: npm --prefix web ci && npm --prefix web run build"
 
 say "Preflight"
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"

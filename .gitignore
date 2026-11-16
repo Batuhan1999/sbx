@@ -7,6 +7,7 @@
 !.env.template
 __pycache__/
 control/dist/
+control/sbx_control/web_dist/
 web/node_modules/
 .claude/
 

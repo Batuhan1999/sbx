@@ -11,7 +11,7 @@ How to work on sbx itself. Contribution rules are in
 | `control/sbx_control/connectors/` | Built-in agent connectors ([extensions](extensions.md)). |
 | `catalog/` | Shipped catalog packages and their shared helper `catalog/_lib/`. |
 | `cli/sbx.py` | The desktop CLI ([macOS only](reference.md#limits)). |
-| `web/` | The web app; its build is committed to `control/sbx_control/web_dist`. |
+| `web/` | The web app; it builds into `control/sbx_control/web_dist`, which is not committed. |
 | `embed/` | sbx's configuration and optional builds for the E2B runtime. |
 | `vendor/e2b-embed/` | The vendored runtime Compose stack; not edited. |
 | `install.sh`, `control/*.sh` | Host installation, releases and activation. |
@@ -27,10 +27,10 @@ python3 -m venv .venv
 npm --prefix web ci
 
 .venv/bin/ruff check .
+npm --prefix web test
+npm --prefix web run build   # before the tests: the release test lays it out
 PYTHONPATH=control .venv/bin/python -m unittest discover -s control/tests -q
 .venv/bin/python -m unittest discover -s embed/tests -q
-npm --prefix web test
-npm --prefix web run build
 ```
 
 Every test class gets a throwaway installation of its own (settings, state
@@ -38,9 +38,9 @@ database and runtime directory under a temporary directory; see
 `control/tests/support.py`), so the whole suite runs in one process. Checks
 that need Linux process handling skip on macOS; CI
 (`.github/workflows/check.yml`, the `check` job) runs everything on Ubuntu for
-every pull request and every push to `main`, and also checks shell syntax,
-release packaging and that the committed web bundle matches `web/src`. The
-desktop CLI's tests are in `control/tests/test_cli.py`.
+every pull request and every push to `main`, and also builds the web app and
+checks shell syntax and release packaging. The desktop CLI's tests are in
+`control/tests/test_cli.py`.
 
 Unit tests do not prove a fresh installation, runtime recovery or a working app.
 For lifecycle and service changes, run the
@@ -48,8 +48,11 @@ For lifecycle and service changes, run the
 
 ## Web app
 
-Edit `web/src`, never the generated bundle, and commit the rebuilt
-`control/sbx_control/web_dist` with the change so a server needs no Node.
+Edit `web/src`. `npm --prefix web run build` writes the bundle to
+`control/sbx_control/web_dist`, which git ignores: the release workflow builds
+it into each release archive, so a server installed from a release needs no
+Node. A checkout needs that build before `install.sh` or `control/release.sh`,
+which refuse without it, and before sbx-control serves the web app.
 `npm --prefix web run dev` proxies the API and sign-in routes to a control
 service on port 8080. Form conventions are in [web/README.md](../web/README.md).
 
@@ -103,10 +106,11 @@ git fetch origin && git tag -a v0.2.0 origin/main -m "sbx v0.2.0"
 git push origin v0.2.0
 ```
 
-`.github/workflows/release.yml` runs the checks on the tag, builds
-`sbx-v0.2.0.tar.gz` (the source tree with a `VERSION` file) and its `.sha256`,
-lays a release out from the unpacked archive with `control/release.sh` to
-check it, and publishes the GitHub release. Its notes list the titles of the
+`.github/workflows/release.yml` runs the checks on the tag, builds the web
+app, then `sbx-v0.2.0.tar.gz` (the source tree with a `VERSION` file and the
+web app's bundle) and its `.sha256`, lays a release out from the unpacked
+archive with `control/release.sh` to check it, and publishes the GitHub
+release. Its notes list the titles of the
 PRs merged since the previous release (grouped by
 [`.github/release.yml`](../.github/release.yml)). When an upgrade needs steps,
 write them in the tag's message below its first line (a second `-m`, or
@@ -119,9 +123,10 @@ version builds and checks the archive of any branch and publishes nothing. A
 published tag never moves: fix a bad release with the next patch.
 
 An installation [pins a release](reference.md#operating-the-host) by
-installing from that tag's checkout or archive; `install.sh` names its release
-after the archive's `VERSION`, or the checkout's nearest tag (`v0.2.0`, or
-`v0.2.0-3-g<commit>` for `main` past it), and the web app shows it.
+installing from that release's archive (or a checkout of its tag, with the web
+app built); `install.sh` names its release after the archive's `VERSION`, or
+the checkout's nearest tag (`v0.2.0`, or `v0.2.0-3-g<commit>` for `main` past
+it), and the web app shows it.
 
 ### Release layout
 

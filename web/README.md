@@ -5,7 +5,7 @@ The browser interface of sbx-control: a Vite and React single-page app.
 ```sh
 npm ci
 npm test
-npm run build    # writes control/sbx_control/web_dist, which is committed
+npm run build    # writes control/sbx_control/web_dist (not committed; releases carry it)
 npm run dev      # proxies the API to a control service on port 8080
 ```
 
