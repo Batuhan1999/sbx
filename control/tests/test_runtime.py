@@ -26,6 +26,8 @@ class Boundary(unittest.TestCase):
 
     def test_only_the_runtime_package_imports_a_backend(self):
         runtime = PACKAGE / "runtime"
+        backends = [f"sbx_control.runtime.{p.name}" for p in runtime.iterdir() if (p / "__init__.py").exists()]
+        self.assertEqual(sorted(backends), ["sbx_control.runtime.embed", "sbx_control.runtime.fake"])
         found = []
         for path in PACKAGE.rglob("*.py"):
             if runtime in path.parents:
@@ -40,14 +42,14 @@ class Boundary(unittest.TestCase):
                     names = [base, *(f"{base}.{a.name}" for a in node.names)]
                 else:
                     continue
-                if any(n == "sbx_control.runtime.embed" or n.startswith("sbx_control.runtime.embed.") for n in names):
+                if any(n == b or n.startswith(f"{b}.") for n in names for b in backends):
                     found.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
         self.assertEqual(found, [], "reach the runtime's backend through sbx_control.runtime")
 
     def test_a_runtime_without_a_loopback_preview_says_so(self):
         from sbx_control import runtime
-        hosted = SimpleNamespace(title="Hosted")
-        with patch.object(runtime, "_current", hosted), self.assertRaisesRegex(ValueError, "Hosted has no loopback"):
+        hosted = SimpleNamespace(title="Hosted", kind="embed", sandboxes=lambda *_: [])
+        with patch.dict(runtime._backends, {"embed": hosted}), self.assertRaisesRegex(ValueError, "Hosted has no loopback"):
             runtime.preview("box", None, 0)
 
     def test_the_settings_effects_name_no_runtime(self):
@@ -224,7 +226,7 @@ class Limits(unittest.TestCase):
         self.limits = runtime.Limits(timeout_seconds=3600, cpu=8, memory_mb=8192, disk_mb=10240, sandboxes=20,
                                      source="your plan", keys={"memory_mb": "MAX_MEMORY_MB", "cpu": "MAX_CPU",
                                                                "sandboxes": "MAX_SANDBOXES"})
-        for patcher in (patch.object(runtime, "_current", self.backend),
+        for patcher in (patch.dict(runtime._backends, {"embed": self.backend}),
                         patch.object(self.backend, "limits", side_effect=lambda: self.limits),
                         patch.object(self.backend, "capacity", return_value={"known": False})):
             patcher.start()
@@ -241,7 +243,7 @@ class Limits(unittest.TestCase):
         self.limits = self.runtime.Limits()
         self.assertEqual(self.runtime.beyond_limits({"cpu": 64, "memory_mb": 1 << 20, "disk_mb": 1 << 20}), "")
         self.assertEqual(self.runtime.too_many(), "")
-        self.assertEqual(self.runtime._capped(7200), 7200)
+        self.assertEqual(self.runtime._capped(7200, self.backend), 7200)
 
     def test_timeouts_stay_within_the_limit(self):
         from e2b import Sandbox

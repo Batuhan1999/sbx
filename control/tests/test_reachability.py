@@ -101,12 +101,12 @@ class ReachabilityTests(Installation):
     def test_doctor_and_setup_run_it_after_the_runtime_checks_pass(self):
         from sbx_control import connections, runtime, setup
         from sbx_control.connections.base import Check
-        fake = MagicMock(capabilities=runtime.Capabilities())
+        fake = MagicMock(capabilities=runtime.Capabilities(), kind="embed")
         fake.test.return_value = [Check("Embed API", True, "answers")]
         fake.readiness.return_value = []
         fake.disk.return_value = None
         self.sandbox.commands.run.return_value = SimpleNamespace(stdout="6 000\n", stderr="", exit_code=0)
-        with patch.object(runtime, "_current", fake):
+        with patch.dict(runtime._backends, {"embed": fake}):
             names = [c.name for c in connections.get("runtime").test()]
             ready = setup.readiness()
             fake.test.return_value = [Check("Embed API", False, "down")]

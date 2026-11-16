@@ -128,11 +128,11 @@ def extras() -> list[str]:
         return sorted(r[0][6:] for r in conn.execute("select key from sealed where key like 'extra:%'"))
 
 
-def _runtime_file() -> dict:
+def _runtime_file(keys=None) -> dict:
     """runtime.env as written: plain values, or references into the store,
-    of the keys the installed runtime reads (Runtime.credential_keys)."""
+    of the keys the enabled runtimes read (Runtime.credential_keys)."""
     from . import runtime as sandbox_runtime
-    keys = sandbox_runtime.current().credential_keys
+    keys = sandbox_runtime.credential_keys() if keys is None else keys
     file = paths.runtime_env()
     out = {}
     for line in file.read_text().splitlines() if file.exists() else ():
@@ -156,18 +156,21 @@ def runtime_sealed() -> bool:
 
 
 def seal_runtime_file() -> int:
-    """The runtime's secret (Runtime.secret_key) as a reference into the store (store enable)."""
+    """Each enabled runtime's secret (Runtime.secret_key) as a reference into
+    the store (store enable); the runtimes' selection (SBX_RUNTIMES) stays as it is."""
     from . import runtime as sandbox_runtime
-    current = sandbox_runtime.current()
     file = paths.runtime_env()
     found = runtime()
-    secret = current.secret_key
-    if not found.get(secret) or runtime_sealed():
+    secrets = [b.secret_key for b in sandbox_runtime.backends() if found.get(b.secret_key)]
+    if not secrets or runtime_sealed():
         return 0
-    lines = {**found, secret: secret_store.seal(found[secret], key=f"runtime/{secret}")}
+    selection = {k: v for k, v in _runtime_file(sandbox_runtime.CONFIG_KEYS).items() if v}
+    lines = {**selection, **found,
+             **{s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets}}
+    titles = ", ".join(b.title for b in sandbox_runtime.backends())
     temporary = file.with_suffix(".new")
     temporary.touch(mode=0o600)
-    temporary.write_text(f"# This host's sandbox runtime ({current.title}). Written by install.sh; not backed up.\n"
+    temporary.write_text(f"# This host's sandbox runtimes ({titles}). Written by install.sh; not backed up.\n"
                          + "".join(f"{k}={shlex.quote(v)}\n" for k, v in lines.items()))
     temporary.replace(file)
     return 1

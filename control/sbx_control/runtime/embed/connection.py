@@ -20,7 +20,7 @@ def status() -> Status:
     running = _running()
     facts["running"] = running
     from ... import core
-    room = core.capacity()
+    room = core.capacity(kind="embed")
     if room.get("known"):
         facts["slots"] = f"{room['slots_total'] - room['slots_free']} of {room['slots_total']} in use ({room['memory_mb'] // 1024} GB each)"
     disk = storage.disk()

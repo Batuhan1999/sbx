@@ -25,6 +25,7 @@ class Check:
     ok: bool
     detail: str = ""
     fix: str = ""
+    runtime: str | None = None        # the kind of the sandbox runtime it checks, if it checks one
 
 
 @dataclasses.dataclass(frozen=True)
