@@ -35,7 +35,7 @@ import threading
 import time
 
 from . import extensions, recipes, runtime, settings, templates
-from .state import Schema, columns, db
+from .state import Schema, columns, db, tables
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
 CHECK_SECONDS = 300
@@ -689,18 +689,31 @@ TABLE = """create table if not exists template_builds (
     primary key (runtime, repo));"""
 
 
+OLD_TABLE = "template_builds_by_repo"
+
+
 def _per_runtime(conn):
     """A template_builds keyed by repo alone (from before several runtimes):
-    its rows become the installation's default runtime's."""
-    if "runtime" in columns(conn, "template_builds"):
+    its rows become the installation's default runtime's, in one
+    transaction. An upgrade that stopped part way (the old table renamed and
+    kept) is finished: its rows are copied when the new table has none."""
+    if "runtime" in columns(conn, "template_builds") and OLD_TABLE not in tables(conn):
         return
-    kept = [c for c in ("repo", "error", "started_at", "finished_at", *FIELDS) if c in columns(conn, "template_builds")]
-    kept = list(dict.fromkeys(kept))
-    conn.execute("alter table template_builds rename to template_builds_by_repo")
-    conn.execute(TABLE)
-    conn.execute(f"insert into template_builds (runtime, {', '.join(kept)}) "
-                 f"select ?, {', '.join(kept)} from template_builds_by_repo", (runtime.default(),))
-    conn.execute("drop table template_builds_by_repo")
+    conn.execute("begin immediate")
+    try:
+        if "runtime" not in columns(conn, "template_builds"):
+            conn.execute(f"alter table template_builds rename to {OLD_TABLE}")
+            conn.execute(TABLE)
+        if not conn.execute("select 1 from template_builds limit 1").fetchone():
+            kept = list(dict.fromkeys(c for c in ("repo", "error", "started_at", "finished_at", *FIELDS)
+                                      if c in columns(conn, OLD_TABLE)))
+            conn.execute(f"insert into template_builds (runtime, {', '.join(kept)}) "
+                         f"select ?, {', '.join(kept)} from {OLD_TABLE}", (runtime.default(),))
+        conn.execute(f"drop table {OLD_TABLE}")
+        conn.execute("commit")
+    except BaseException:
+        conn.execute("rollback")
+        raise
 
 
 # A template's latest build on a runtime, keyed by repo or by the platform's

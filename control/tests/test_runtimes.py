@@ -430,3 +430,44 @@ class Upgrade(Installation):
             self.assertEqual(runtime.of("anything").kind, "embed")
         get.assert_called_once_with("embed")
         self.assertNotIn("anything", runtime._index)
+
+
+class Review(TwoRuntimes, Installation):
+    """One runtime down leaves the others working and stops what deletes;
+    the template table's upgrade is atomic; and the smaller fixes."""
+
+    def test_the_template_table_upgrade_is_one_transaction(self):
+        import sqlite3
+        from sbx_control import state, template_builds
+        with state.db() as conn:
+            conn.execute("drop table template_builds")
+            conn.execute("create table template_builds (repo text primary key, status text not null, "
+                         "started_at text, finished_at text, error text, built_template text)")
+            conn.execute("insert into template_builds (repo, status, built_template) values ('sbx-base', 'built', 'b-1')")
+
+            class Crashing:
+                def __init__(self, conn):
+                    self.conn = conn
+
+                def execute(self, sql, *args):
+                    if sql.startswith("drop table"):
+                        raise sqlite3.OperationalError("disk I/O error (test)")
+                    return self.conn.execute(sql, *args)
+            with self.assertRaisesRegex(sqlite3.OperationalError, "test"):
+                template_builds._per_runtime(Crashing(conn))
+            self.assertNotIn("runtime", state.columns(conn, "template_builds"))     # all of it rolled back
+            self.assertNotIn(template_builds.OLD_TABLE, state.tables(conn))
+        state.migrate()
+        self.assertEqual(template_builds.built("sbx-base"), "b-1")
+
+    def test_an_upgrade_stopped_part_way_is_finished(self):
+        from sbx_control import state, template_builds
+        with state.db() as conn:   # renamed, then stopped before the new table: the old rows wait there
+            conn.execute("drop table template_builds")
+            conn.execute(f"create table {template_builds.OLD_TABLE} (repo text primary key, status text not null, "
+                         "built_template text)")
+            conn.execute(f"insert into {template_builds.OLD_TABLE} values ('sbx-base', 'built', 'b-2')")
+        state.migrate()   # makes the new, empty table, then copies the old one's rows into it
+        with state.db() as conn:
+            self.assertNotIn(template_builds.OLD_TABLE, state.tables(conn))
+        self.assertEqual(template_builds.built("sbx-base"), "b-2")
