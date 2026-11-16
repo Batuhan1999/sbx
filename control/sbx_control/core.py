@@ -194,6 +194,12 @@ def sandboxes(metadata=None, state=None):
     return runtime.sandboxes(metadata, state)
 
 
+def sandboxes_complete(metadata=None, state=None):
+    """sandboxes(), or runtime.Incomplete when a runtime did not answer: for
+    whoever acts on what is not listed (deletes, forgets, prunes)."""
+    return runtime.complete(sandboxes(metadata, state))
+
+
 def find(name):
     return next(iter(sandboxes({"sbx": name})), None)
 
@@ -302,7 +308,7 @@ def create_services(a: recipes.App, env: dict) -> dict:
 
 
 def reconcile_services():
-    existing = {(i.metadata or {}).get("sbx") for i in sandboxes()} | lifecycle.busy()
+    existing = {(i.metadata or {}).get("sbx") for i in sandboxes_complete()} | lifecycle.busy()
     for name in variables.kept() - existing:
         try:
             variables.forget(name)

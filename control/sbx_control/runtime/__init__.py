@@ -191,11 +191,57 @@ def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
     return backend.connect(sandbox_id, timeout=_capped(timeout, backend))
 
 
-def sandboxes(metadata: dict | None = None, states=None) -> list[Info]:
+class Listing(list):
+    """What the runtimes listed. failed: kind -> the error of each runtime
+    that did not answer, whose sandboxes are missing from it."""
+
+    def __init__(self, items=(), failed: dict | None = None):
+        super().__init__(items)
+        self.failed = dict(failed or {})
+
+    @property
+    def complete(self) -> bool:
+        return not self.failed
+
+
+class Incomplete(Failed):
+    """A listing that misses a runtime's sandboxes, where acting on what is
+    missing would be wrong (deleting, pruning, forgetting)."""
+
+
+def sandboxes(metadata: dict | None = None, states=None) -> Listing:
     """Every sandbox on every enabled runtime whose metadata has these
     values, each tagged with its runtime (Info.runtime); states: RUNNING and
-    PAUSED, None for what each runtime lists by default."""
-    return [_tag(info, backend.kind) for backend in backends() for info in backend.sandboxes(metadata, states)]
+    PAUSED, None for what each runtime lists by default. A runtime that does
+    not answer is left out and named in the listing's failed, so the others'
+    sandboxes keep working; when none answers (with one runtime: when it
+    doesn't), its error is raised. Whoever deletes or forgets what is not
+    listed asks complete() instead."""
+    found = Listing()
+    kinds_now = enabled()
+    for backend in backends():
+        try:
+            listed = backend.sandboxes(metadata, states)
+        except Exception as error:
+            if len(kinds_now) == 1:
+                raise
+            print(f"runtime {backend.kind} did not list its sandboxes: {error!r}", flush=True)
+            found.failed[backend.kind] = error
+            continue
+        found += [_tag(info, backend.kind) for info in listed]
+    if len(found.failed) == len(kinds_now):
+        raise next(iter(found.failed.values()))
+    return found
+
+
+def complete(listing) -> list:
+    """The listing, or Incomplete naming the runtimes it misses."""
+    failed = getattr(listing, "failed", None)
+    if failed:
+        raise Incomplete("not every runtime listed its sandboxes ("
+                         + "; ".join(f"{kind}: {type(error).__name__}: {error}" for kind, error in failed.items())
+                         + "); nothing is deleted or pruned until they all answer")
+    return listing
 
 
 def info(sandbox_id: str) -> Info:

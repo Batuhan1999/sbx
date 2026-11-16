@@ -431,10 +431,56 @@ class Upgrade(Installation):
         get.assert_called_once_with("embed")
         self.assertNotIn("anything", runtime._index)
 
+    def test_the_only_runtime_failing_raises_as_before(self):
+        from sbx_control import core, runtime
+        embed = runtime.get("embed")
+        with patch.object(embed, "sandboxes", side_effect=runtime.Failed("Embed is down")), \
+                self.assertRaisesRegex(runtime.Failed, "Embed is down"):
+            core.sandboxes()
+
 
 class Review(TwoRuntimes, Installation):
     """One runtime down leaves the others working and stops what deletes;
     the template table's upgrade is atomic; and the smaller fixes."""
+
+    def test_one_runtime_down_leaves_the_others_listed_and_stops_what_deletes(self):
+        from sbx_control import core, keeper, runtime, template_builds
+        on_embed = runtime.create("tpl", timeout=600, metadata={"sbx": "kept"})
+        with patch.object(self.fake, "sandboxes", side_effect=runtime.Failed("fake is down")):
+            listing = core.sandboxes()
+            self.assertEqual([i.sandbox_id for i in listing], [on_embed.sandbox_id])
+            self.assertFalse(listing.complete)
+            self.assertEqual(list(listing.failed), ["fake"])
+            with self.assertRaisesRegex(runtime.Incomplete, "fake: Failed: fake is down"):
+                core.sandboxes_complete()
+            with self.assertRaises(runtime.Incomplete):
+                core.reconcile_services()               # forgets nothing
+            with self.assertRaises(runtime.Incomplete):
+                template_builds.prune("embed")          # deletes no template
+            self.assertEqual(template_builds.prune(), [])   # each runtime's prune refused, logged
+            with patch.object(keeper.sandboxes, "registered", side_effect=lambda infos: list(infos)), \
+                    patch.object(keeper, "look_at", return_value=False) as look_at, \
+                    patch.object(keeper.sandboxes, "deliver_waiting"), patch.object(keeper.sandboxes, "prepare_waiting"):
+                keeper.look_once()
+            self.assertEqual(look_at.call_args.kwargs, {"may_delete": False})   # no long-paused one deleted
+            with patch.object(self.embed, "sandboxes", side_effect=runtime.Failed("embed is down too")), \
+                    self.assertRaisesRegex(runtime.Failed, "down"):
+                core.sandboxes()                        # none answered: as with one runtime
+
+    def test_the_keeper_deletes_long_paused_ones_only_on_a_complete_listing(self):
+        import datetime
+        from types import SimpleNamespace
+        from sbx_control import keeper
+        info = SimpleNamespace(sandbox_id="vm", state="paused", metadata={"sbx": "old"},
+                               end_at=datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+        days = SimpleNamespace(sandboxes=SimpleNamespace(paused_days=7, detected_previews="off"))
+        with patch.object(keeper.settings, "current", return_value=days), \
+                patch.object(keeper.sandboxes, "record_transition"), \
+                patch.object(keeper, "delete_paused") as delete:
+            keeper.look_at(info, may_delete=False)
+            delete.assert_not_called()
+            keeper.look_at(info)
+            delete.assert_called_once_with(info)
 
     def test_the_template_table_upgrade_is_one_transaction(self):
         import sqlite3

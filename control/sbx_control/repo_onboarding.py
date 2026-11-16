@@ -165,7 +165,7 @@ def remove_recipe(repo: str) -> dict:
     its own has its templates and build record removed too."""
     from . import core, runtime
     using = sorted((i.metadata or {}).get("sbx") or i.sandbox_id
-                   for i in core.sandboxes(state=[runtime.RUNNING, runtime.PAUSED])
+                   for i in core.sandboxes_complete(state=[runtime.RUNNING, runtime.PAUSED])
                    if (i.metadata or {}).get("repo") == repo)
     if using:
         raise HTTPException(409, f"{repo} has sandboxes ({', '.join(using)}); delete them first (sbx down NAME)")

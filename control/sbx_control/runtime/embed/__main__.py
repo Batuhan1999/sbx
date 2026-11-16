@@ -29,7 +29,7 @@ def upgrade_check(source: pathlib.Path, hugepages: int | None = None) -> int:
         return 0
     platform.connect()
     from . import Embed
-    count = len([i for i in runtime.sandboxes() if getattr(i, "runtime", Embed.kind) == Embed.kind])
+    count = len([i for i in runtime.complete(runtime.sandboxes()) if getattr(i, "runtime", Embed.kind) == Embed.kind])
     if not count:
         print(f"Embed: this release recreates {', '.join(recreated)} (no sandboxes)")
         return 0

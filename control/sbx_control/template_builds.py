@@ -438,7 +438,7 @@ def in_use(kind: str | None = None) -> set:
     from . import core
     kind = _kind(kind)
     return {(info.metadata or {}).get("template")
-            for info in core.sandboxes(state=[runtime.RUNNING, runtime.PAUSED])
+            for info in core.sandboxes_complete(state=[runtime.RUNNING, runtime.PAUSED])
             if (getattr(info, "runtime", "") or kind) == kind} - {None, ""}
 
 
@@ -457,7 +457,15 @@ def prune(kind: str | None = None) -> list:
     builds still running. A key nothing serves loses its row once its
     template is gone. Returns what was deleted."""
     if kind is None:
-        return sorted(name for one in runtime.enabled() for name in prune(one))
+        deleted = []
+        for one in runtime.enabled():
+            try:
+                deleted += prune(one)
+            except Exception as error:  # the others are pruned all the same
+                if len(runtime.enabled()) == 1:
+                    raise
+                print(f"template prune on {one}: {error!r}", flush=True)
+        return sorted(deleted)
     wanted = keys(kind)
     with db() as conn:
         rows = _rows(conn, kind)

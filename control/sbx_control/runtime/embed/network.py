@@ -59,7 +59,7 @@ def _apply():
     unchanged = host.render_embed_env(before, host.embed_env()) == before
     # The installed Embed revision has not passed restart/resume acceptance.
     # A pause is not a proven maintenance barrier, so never restart under a sandbox.
-    if not unchanged and core.sandboxes():
+    if not unchanged and core.sandboxes_complete():
         raise ValueError('apply this before creating sandboxes: the runtime is recreated, which existing sandboxes '
                          'do not survive')
     if not unchanged:

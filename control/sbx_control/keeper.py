@@ -106,16 +106,19 @@ def keep_awake(info):
     gate.forget_preview_resume(info.sandbox_id)
 
 
-def look_at(info, held=frozenset()) -> bool:
+def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     """One sandbox's round; whether it runs. held: the sandboxes a lifecycle
     operation holds (lifecycle.busy), kept awake whatever their use: a setup
-    may run longer than a runtime's timeout limit (runtime.limits)."""
+    may run longer than a runtime's timeout limit (runtime.limits).
+    may_delete: the round's listing is complete (every runtime answered), so
+    a long-paused sandbox may be deleted."""
     vm = core.runtime_state(info)
     sandboxes.record_transition(info, vm)
     if vm != "running":
         gate.forget_preview_resume(info.sandbox_id)
     if vm == "paused" and settings.current().sandboxes.paused_days and info.end_at \
-            and time.time() - info.end_at.timestamp() > settings.current().sandboxes.paused_days * 86400:
+            and time.time() - info.end_at.timestamp() > settings.current().sandboxes.paused_days * 86400 \
+            and may_delete:
         delete_paused(info)
     if vm != "running":
         return False
@@ -138,13 +141,16 @@ def look_at(info, held=frozenset()) -> bool:
 
 def look_once():
     """A deleted paused preview comes back with the PR's next push."""
-    infos = sandboxes.registered(core.sandboxes())
-    routing.forget_except(i.sandbox_id for i in infos)
+    listing = core.sandboxes()
+    complete = not getattr(listing, "failed", None)   # a runtime that did not answer: nothing is deleted
+    infos = sandboxes.registered(listing)
+    if complete:
+        routing.forget_except(i.sandbox_id for i in infos)
     running = set()
     held = lifecycle.busy()
     for info in infos:
         try:
-            if look_at(info, held):
+            if look_at(info, held, may_delete=complete):
                 running.add((info.metadata or {}).get("sbx"))
         except runtime.NotRunning:
             # The runtime paused or deleted it since the listing (its own
