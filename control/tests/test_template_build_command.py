@@ -57,7 +57,7 @@ class BuildCommand(Installation):
                                         "owner/app rebuilds in the background afterwards")
             # A build that failed on this plan is not the scheduler's to retry.
             with template_builds.db() as conn:
-                conn.execute("insert into template_builds (repo, status, fingerprint) values (?, 'failed', ?)",
+                conn.execute("insert into template_builds (runtime, repo, status, fingerprint) values ('embed', ?, 'failed', ?)",
                              ("owner/app", template_builds.plan("owner/app").fingerprint))
             self.assertEqual(summary(), "Templates: sbx-base and default rebuild now (about 10 minutes); "
                                         "owner/app failed on this plan: fix and build again with "

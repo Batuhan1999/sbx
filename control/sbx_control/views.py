@@ -41,6 +41,7 @@ def collect() -> list:
         if status in ("creating", "failed"):
             meta = row["metadata"]
             out.append({"name": name, "owner": row["owner"], "branch": row["branch"], "status": status,
+                        "runtime": row.get("runtime") or runtime.default(),
                         "error": current["error"], "urls": {}, "ports": [], "app": "", "vm": "", "sandbox_id": "",
                         "audience": core.audience(meta), "shared": core.shared(meta),
                         "actions": lifecycle.actions(current, status),
@@ -99,7 +100,7 @@ def known_repos() -> list:
         print(f"views: listing sandboxes for repos: {error!r}", flush=True)
     found |= variables.repos()
     found |= {r.lower() for r in recipes.with_recipe()}
-    found |= set(template_builds.builds())
+    found |= template_builds.build_keys()
     found |= set(attachments.repos())
     return sorted(r for r in found if r.count("/") == 1)
 

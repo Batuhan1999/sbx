@@ -761,7 +761,7 @@ class WorkspaceTests(Server):
         self.assertEqual(template_builds.state(key)['status'], 'built')
         self.assertTrue(template_builds.state(key)['template'].startswith('default-'))
         release = threading.Event()
-        with patch('sbx_control.templates.build', side_effect=lambda *a: release.wait(5)):
+        with patch('sbx_control.templates.build', side_effect=lambda *a, **k: release.wait(5)):
             before = set(threading.enumerate())
             self.assertTrue(template_builds.start(key))
             worker = next(t for t in threading.enumerate() if t not in before)

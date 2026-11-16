@@ -26,8 +26,8 @@ class TemplateRoomTests(Installation):
 
     def built(self, key, name):
         with self.state.db() as conn:
-            conn.execute("insert into template_builds (repo, status, built_template, built_fingerprint) "
-                         "values (?, 'built', ?, 'x')", (key, name))
+            conn.execute("insert into template_builds (runtime, repo, status, built_template, built_fingerprint) "
+                         "values ('embed', ?, 'built', ?, 'x')", (key, name))
 
     # Before a build starts.
 
@@ -67,7 +67,7 @@ class TemplateRoomTests(Installation):
     def test_a_build_that_filled_the_disk_says_so_and_its_layers_are_collected(self):
         free = iter([40 * 1024] * 3 + [2 * 1024] * 1000)
 
-        def fill(*_):
+        def fill(*_, **__):
             time.sleep(0.2)
             raise RuntimeError("polling received unrecoverable error: 127.0.0.1:5008: connection refused")
         with patch.object(self.builds, "WATCH_SECONDS", 0.01), patch.object(self.storage, "free_mb", side_effect=lambda: next(free)), \
@@ -92,7 +92,7 @@ class TemplateRoomTests(Installation):
         sandboxes = [SimpleNamespace(metadata={"sbx": f"s{i}", "template": n}) for i, n in enumerate(used)]
         deleted = []
         self.enterContext(patch.object(self.templates, "listing", return_value=listed))
-        self.enterContext(patch.object(self.templates, "delete", side_effect=lambda n: deleted.append(n) or True))
+        self.enterContext(patch.object(self.templates, "delete", side_effect=lambda n, kind=None: deleted.append(n) or True))
         self.enterContext(patch.object(self.core, "sandboxes", return_value=sandboxes))
         self.enterContext(patch.object(self.builds, "collect_storage"))
         return deleted
@@ -118,7 +118,7 @@ class TemplateRoomTests(Installation):
 
     def test_remove_deletes_a_key_s_templates_and_its_failed_build(self):
         with self.state.db() as conn:
-            conn.execute("insert into template_builds (repo, status, error) values ('owner/app', 'failed', 'disk full')")
+            conn.execute("insert into template_builds (runtime, repo, status, error) values ('embed', 'owner/app', 'failed', 'disk full')")
         deleted = self.runtime(["owner-app-aaaaaaaa", "owner-app-bbbbbbbb", "owner-other-cccccccc"],
                                used=["owner-app-aaaaaaaa"])
         self.assertEqual(self.builds.remove("owner/app"), {"key": "owner/app", "deleted": ["owner-app-bbbbbbbb"],
@@ -127,8 +127,8 @@ class TemplateRoomTests(Installation):
         self.assertEqual(self.builds.state("owner/app"), {})
 
     def test_remove_refuses_a_running_build(self):
-        self.builds._running.add("owner/app")
-        self.addCleanup(self.builds._running.discard, "owner/app")
+        self.builds._running.add(("embed", "owner/app"))
+        self.addCleanup(self.builds._running.discard, ("embed", "owner/app"))
         self.runtime([])
         with self.assertRaisesRegex(self.builds.Busy, "is building"):
             self.builds.remove("owner/app")

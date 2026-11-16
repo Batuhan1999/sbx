@@ -74,17 +74,24 @@ def explain(url: str, rc: int, status: str, body: str, error: str, expected: str
     return Check(NAME, True, f"a sandbox fetched {url}")
 
 
-def check() -> Check:
-    """Start a sandbox from the base template, fetch PATH over base_url
-    from inside it, and kill it, whatever happened."""
+def check(kind: str | None = None) -> Check:
+    """Start a sandbox from the base template on the runtime of kind (None:
+    the default), fetch PATH over base_url from inside it, and kill it,
+    whatever happened. The check names the runtime (Check.runtime)."""
+    kind = kind or runtime.default()
+    found = _check(kind)
+    return Check(found.name, found.ok, found.detail, found.fix, runtime=kind)
+
+
+def _check(kind: str) -> Check:
     from . import dist_api, template_builds, templates
     base = settings.current().base_url
     if not base:
         return Check(NAME, False, "this server has no public address yet", "choose a domain or an IP address")
     try:
-        template = template_builds.built(templates.BASE)
+        template = template_builds.built(templates.BASE, kind)
     except template_builds.NotBuilt as not_built:
-        build = template_builds.state(templates.BASE)
+        build = template_builds.state(templates.BASE, kind)
         if build.get("status") == "failed":
             error = (build.get("error") or "").strip()[-300:] or "no error recorded"
             return Check(NAME, False, f"no sandbox to check from: the base template's build failed: {error}",
@@ -97,7 +104,8 @@ def check() -> Check:
                      "run sbx-admin doctor again once the base template is built")
     url = base + PATH
     try:
-        sbx = runtime.create(template, timeout=TIMEOUT, metadata={"sbx_check": "reachability"}, on_timeout="kill")
+        sbx = runtime.create(template, timeout=TIMEOUT, metadata={"sbx_check": "reachability"}, on_timeout="kill",
+                             kind=kind)
     except Exception as error:
         return Check(NAME, False, f"no sandbox to check from: {error}", "see the runtime's own checks")
     try:

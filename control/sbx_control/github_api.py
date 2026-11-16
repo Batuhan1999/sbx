@@ -64,7 +64,8 @@ async def github_webhook(request: Request):
             return {"ignored": "not the default branch"}
         if any(p.startswith(".sbx/") for p in touched):
             try:
-                if template_builds.start(repo):
+                from . import runtimes
+                if template_builds.start(repo, runtimes.of_repo(repo)):   # the other runtimes' on the next round
                     return {"template": "building"}
             except template_builds.NoRoom as error:  # the scheduler builds it once there is room
                 return {"template": f"not now: {error}"}
