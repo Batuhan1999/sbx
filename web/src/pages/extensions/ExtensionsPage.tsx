@@ -98,6 +98,13 @@ function connectionState(status: string | null | undefined) {
   return status ? { tone: 'idle' as const, label: status } : null
 }
 
+/** "Connected" for the connections whose check did not fail, "Can't connect" when every one failed, else nothing. */
+function connectedBadge(connections: SharedConnection[]) {
+  const working = connections.filter(c => c.check_status !== 'failed')
+  if (working.length) return <StateBadge tone="ok" label={working.length > 1 ? `${working.length} connected` : 'Connected'} />
+  return connections.length ? <StateBadge tone="bad" label="Can’t connect" /> : null
+}
+
 /** Where a connection is used: repositories as links, sandboxes as a count. */
 function UsedIn({ usedBy }: { usedBy: string[] }) {
   const repos = repositories(usedBy)
@@ -179,12 +186,13 @@ function ConnectionForm({ name, existing, onDone, onBack, onCancel, inline }: {
   const shared = useSharedConnections()
   const add = useAction((v: { key: string; inputs: Record<string, string> }) => api.catalog.connect({ package: name, key: v.key, inputs: v.inputs }), keys.sharedConnections)
   if (shared.isPending) return <SkeletonRows rows={2} />
+  if (!shared.data) return <ErrorState error={shared.error} compact retry={() => shared.refetch()} />
   return <QueryView query={catalog}>{list => {
     const e = list.find(p => p.name === name)
     if (!e) return <EmptyState title="This package isn’t in the catalog" />
     return <div className="space-y-4">
       {!inline && <PackageHeading logo={e.logo} title={e.title} description={e.description} docs={e.docs} />}
-      <ConnectionFields inputs={Object.entries(e.inputs)} existing={existing} defaultKey={existing?.key ?? suggestKey(name, (shared.data ?? []).map(s => s.key))}
+      <ConnectionFields inputs={Object.entries(e.inputs)} existing={existing} taken={shared.data.map(s => s.key)} defaultKey={existing?.key ?? suggestKey(name, (shared.data ?? []).map(s => s.key))}
         onSubmit={async v => { await add.mutateAsync(v); onDone() }} onCancel={inline ? onCancel : onCancel ?? onDone} onBack={onBack} />
     </div>
   }}</QueryView>
@@ -192,8 +200,8 @@ function ConnectionForm({ name, existing, onDone, onBack, onCancel, inline }: {
 
 /** existing: edit that connection; its saved values fill the form, a secret left empty keeps its saved value,
  * and its name stays (the server merges what is sent over what it has). */
-function ConnectionFields({ inputs, existing, defaultKey, onSubmit, onCancel, onBack }: {
-  inputs: [string, CatalogPackage['inputs'][string]][]; existing?: SharedConnection; defaultKey: string
+function ConnectionFields({ inputs, existing, taken, defaultKey, onSubmit, onCancel, onBack }: {
+  inputs: [string, CatalogPackage['inputs'][string]][]; existing?: SharedConnection; taken: string[]; defaultKey: string
   onSubmit: (v: { key: string; inputs: Record<string, string> }) => Promise<void>; onCancel?: () => void; onBack?: () => void
 }) {
   const saved = (n: string) => existing?.inputs[n] === '(set)'
@@ -209,7 +217,7 @@ function ConnectionFields({ inputs, existing, defaultKey, onSubmit, onCancel, on
     {inputs.map(([n, i]) => <form.AppField key={n} name={`inputs.${n}`} validators={{ onChange: ({ value }) => i.required && !i.default && !saved(n) ? required(value ?? '') : undefined }}>
       {field => <PackageInputControl field={field} name={n} input={i} placeholder={saved(n) ? 'Saved; leave empty to keep it' : undefined} />}
     </form.AppField>)}
-    {!existing && <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
+    {!existing && <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) ?? (taken.includes(value) ? `A connection named ${value} exists already; edit it instead.` : undefined) }}>
       {field => <field.TextField label="Name" autoComplete="off" spellCheck={false} help="Repositories pick the connection by this name." />}
     </form.AppField>}
     <div className="flex items-center justify-between gap-2">
@@ -248,8 +256,7 @@ function ProviderCard({ p, connected, admin, onOpen }: { p: Provider; connected:
     <span className="flex items-center gap-3"><PackageLogo logo={p.logo} large /><span className="font-medium">{p.title}</span></span>
     <span className="mt-2 line-clamp-2 text-[12.5px] text-muted">{p.tagline}</span>
     <span className="mt-auto flex flex-wrap items-center gap-2 pt-3 text-[12px] text-muted">
-      {connected.length > 0 ? <StateBadge tone="ok" label={connected.length > 1 ? `${connected.length} connected` : 'Connected'} />
-        : admin && connectable ? <span>Not connected</span> : null}
+      {connectedBadge(connected) ?? (admin && connectable ? <span>Not connected</span> : null)}
       {repos.length > 0 && <span>{`In ${plural(repos.length, 'repository', 'repositories')}`}</span>}
     </span>
   </button>
@@ -277,8 +284,7 @@ function ProviderPanel({ p, admin, connections, onClose }: { p: Provider; admin:
     {unchosen && !repo && <p role="alert" className="text-[12.5px] text-bad">Choose a repository first.</p>}
     <Button variant="primary" onClick={() => repo && pkg ? setStep('settings') : setUnchosen(true)}>Continue</Button>
   </div> : undefined
-  const status = connections.length > 0 ? <StateBadge tone="ok" label={connections.length > 1 ? `${connections.length} connected` : 'Connected'} />
-    : connectable ? <StateBadge tone="idle" label="Not connected" /> : null
+  const status = connectedBadge(connections) ?? (connectable ? <StateBadge tone="idle" label="Not connected" /> : null)
   return <SidePanel open onOpenChange={o => !o && onClose()} description={p.tagline} footer={footer}
     title={<span className="flex items-center gap-3"><PackageLogo logo={p.logo} large />{p.title}</span>}>
     <div className="space-y-6 text-[13px]">

@@ -4,7 +4,7 @@ import { keys, useAction, useCatalog, useSharedConnections } from '@/api/queries
 import type { Attachment, CatalogPackage } from '@/api/types'
 import { PackageHeading, PackageInputControl } from '@/components/PackageLogo'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
-import { EmptyState, QueryView } from '@/components/states'
+import { EmptyState, ErrorState, QueryView } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { article } from '@/lib/packages'
 import { keyError, required } from '@/lib/validation'
@@ -48,6 +48,10 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
     {Object.entries(entry.requires).map(([slot, need]) => {
       const title = titleOf(need.kind)
       const options = (shared.data ?? []).filter(s => s.package === need.kind)
+      if (shared.error && !shared.data) return <div key={slot} className="text-[12.5px]">
+        <p className="mb-1 font-medium">{title}</p>
+        <ErrorState error={shared.error} compact retry={() => shared.refetch()} />
+      </div>
       if (shared.isSuccess && options.length === 0) return <div key={slot} className="text-[12.5px]">
         <p className="mb-1 font-medium">{title}</p>
         <p className="text-muted">None connected yet. <Link className="text-accent hover:underline" to="/app/extensions#connections" state={{ connect: need.kind }}>Connect {article(title)}</Link> first; then each sandbox gets its own {entry.title} on it.</p>

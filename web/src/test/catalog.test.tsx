@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import ExtensionsPage from '@/pages/extensions/ExtensionsPage'
 import { webAddresses } from '@/components/LinkedText'
+import { AttachForm } from '@/components/AttachForm'
 import { inputLabel, providers, sentence, sentences, summary, suggestKey } from '@/lib/packages'
 import { ME, renderApp, stubApi } from './render'
 
@@ -205,6 +206,49 @@ describe('adding a package from the catalog', () => {
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ package: 'openrouter-key', inputs: { limit: '5' } }))
     expect(await within(panel).findByRole('status')).toHaveProperty('textContent', expect.stringContaining('Added to acme/api'))
     expect(within(panel).getByRole('link', { name: 'Open acme/api' }).getAttribute('href')).toBe('/app/repos/acme/api/packages')
+  })
+})
+
+describe('when connections fail or cannot be loaded', () => {
+  const failed = { key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, inputs: {}, used_by: [], known: true, check_status: 'failed' }
+
+  it('says a provider cannot connect when its only connection failed its check', async () => {
+    stubApi({ 'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [failed] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] } })
+    renderApp(<ExtensionsPage />)
+    const catalog = within((await screen.findByRole('heading', { name: 'Package catalog' })).closest('section')!)
+    const card = (await catalog.findByText('OpenRouter account')).closest('button')!
+    expect(await within(card).findByText('Can’t connect')).toBeTruthy()
+    expect(within(card).queryByText('Connected')).toBeNull()
+  })
+
+  it('refuses a name another connection has', async () => {
+    const calls = stubApi({
+      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [{ ...failed, check_status: 'passed' }] },
+      'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] }, 'POST /api/catalog/connections': {},
+    })
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /OpenRouter account/ }))
+    const name = await within(dialog).findByLabelText('Name') as HTMLInputElement
+    expect(name.value).toBe('openrouter-2')
+    await user.type(within(dialog).getByLabelText('Management key'), 'fixture-key')
+    await user.clear(name)
+    await user.type(name, 'openrouter')
+    await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
+    expect(await within(dialog).findByText('A connection named openrouter exists already; edit it instead.')).toBeTruthy()
+    expect(calls.some(c => c.method === 'POST')).toBe(false)
+  })
+
+  it('shows the error with a retry instead of a form while connections cannot be loaded', async () => {
+    stubApi({
+      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { status: 500, body: { detail: 'the store is down' } },
+      'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
+    })
+    renderApp(<AttachForm repo="acme/api" entry={KEY as never} onDone={() => {}} />)
+    expect(await screen.findByRole('button', { name: /Retry/ })).toBeTruthy()
+    expect(screen.queryByRole('combobox')).toBeNull()
   })
 })
 
