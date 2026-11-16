@@ -1,12 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Bot, Github, Network, Package, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Bot, Github, Network, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useCatalog, useCatalogEntry, useCatalogProblems, useConnections, useMe, useSharedConnections } from '@/api/queries'
 import type { CatalogPackage, SharedConnection } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { PackageHeading, PackageLogo, PackagePicker } from '@/components/PackageLogo'
+import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
@@ -111,6 +112,7 @@ function ConnectionRow({ s, onRemoved }: { s: SharedConnection; onRemoved: () =>
   const status = check.data ? (check.data.ok ? 'passed' : 'failed') : s.check_status
   return <li className="px-4 py-3">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <PackageLogo logo={s.logo} large />
       <div className="min-w-0 grow basis-56">
         <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{s.key}</span><span className="text-[12.5px] text-muted">{s.title}</span>{!s.known && <Badge tone="warn">unknown package</Badge>}</div>
         <p className="mt-0.5 truncate text-[12px] text-muted">
@@ -131,44 +133,45 @@ function ConnectionRow({ s, onRemoved }: { s: SharedConnection; onRemoved: () =>
 
 function AddConnection({ onDone }: { onDone: () => void }) {
   const catalog = useCatalog()
-  const [name, setName] = useState('')
-  const kinds = (catalog.data ?? []).filter(p => p.kind === 'connection')
-  return <div className="space-y-4">
-    <label className="block"><span className="mb-1 block text-[12.5px] font-medium">Kind</span>
-      <select value={name} onChange={e => setName(e.target.value)}>
-        <option value="">Choose…</option>
-        {kinds.map(p => <option key={p.name} value={p.name}>{p.title}</option>)}
-      </select>
-    </label>
-    {name && <ConnectionForm key={name} name={name} onDone={onDone} />}
-  </div>
+  const [name, setName] = useState<string | null>(null)
+  if (name) return <ConnectionForm key={name} name={name} onDone={onDone} onBack={() => setName(null)} />
+  return <QueryView query={catalog}>{packages => {
+    const kinds = packages.filter(p => p.kind === 'connection')
+    return kinds.length === 0 ? <EmptyState title="No connection packages in the catalog" /> : <PackagePicker packages={kinds} onChoose={setName} />
+  }}</QueryView>
 }
 
-function ConnectionForm({ name, onDone }: { name: string; onDone: () => void }) {
+function ConnectionForm({ name, onDone, onBack }: { name: string; onDone: () => void; onBack: () => void }) {
   const entry = useCatalogEntry(name)
   const add = useAction((v: { key: string; inputs: Record<string, string> }) => api.catalog.connect({ package: name, key: v.key, inputs: v.inputs }), keys.sharedConnections)
   return <QueryView query={entry}>{e => {
     const inputs = Object.entries(e.inputs)
-    return <ConnectionFields inputs={inputs} defaultKey={name.split('/').pop()!} description={e.description}
-      onSubmit={async v => { await add.mutateAsync(v); onDone() }} onCancel={onDone} />
+    return <div className="space-y-3"><PackageHeading logo={e.logo} title={e.title} />
+      <ConnectionFields inputs={inputs} defaultKey={name.split('/').pop()!} description={e.description}
+        onSubmit={async v => { await add.mutateAsync(v); onDone() }} onCancel={onDone} onBack={onBack} />
+    </div>
   }}</QueryView>
 }
 
-function ConnectionFields({ inputs, defaultKey, description, onSubmit, onCancel }: {
+function ConnectionFields({ inputs, defaultKey, description, onSubmit, onCancel, onBack }: {
   inputs: [string, CatalogPackage['inputs'][string]][]; defaultKey: string; description: string
-  onSubmit: (v: { key: string; inputs: Record<string, string> }) => Promise<void>; onCancel: () => void
+  onSubmit: (v: { key: string; inputs: Record<string, string> }) => Promise<void>; onCancel: () => void; onBack: () => void
 }) {
   const form = useAppForm({
     defaultValues: { key: defaultKey, inputs: Object.fromEntries(inputs.map(([n, i]) => [n, i.default ?? ''])) as Record<string, string> },
     onSubmit: ({ value }) => onSubmit(value),
   })
+  const submitting = useStore(form.store, s => s.isSubmitting)
   return <AppForm form={form} className="space-y-3">
     <p className="text-[13px] text-muted">{description}</p>
     <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>{field => <field.TextField label="Key" className="font-mono" autoComplete="off" help="Packages refer to it by this key." />}</form.AppField>
     {inputs.map(([n, i]) => <form.AppField key={n} name={`inputs.${n}`} validators={{ onChange: ({ value }) => i.required && !i.default ? required(value ?? '') : undefined }}>
       {field => <field.TextField label={<span className="font-mono text-[12px]">{n}</span>} optional={!i.required} type={i.secret ? 'password' : 'text'} help={i.help} autoComplete="off" spellCheck={false} />}
     </form.AppField>)}
-    <div className="flex justify-end gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><SubmitButton form={form}>Check and save</SubmitButton></div>
+    <div className="flex justify-between gap-2">
+      <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button>
+      <div className="flex gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><SubmitButton form={form}>Check and save</SubmitButton></div>
+    </div>
   </AppForm>
 }
 
@@ -176,6 +179,7 @@ function Catalog({ admin }: { admin: boolean }) {
   const catalog = useCatalog()
   const problems = useCatalogProblems(admin)
   const [open, setOpen] = useState<string | null>(null)
+  const chosen = catalog.data?.find(p => p.name === open)
   return <Section id="packages" title="Package catalog" description="Declarative add-ons a recipe uses in its services section. Your agent picks them from evidence in the repository; you attach and configure them per repository.">
     {admin && !!problems.data?.length && <div role="alert" className="mb-3 rounded-lg border border-warn/30 bg-warn-soft px-4 py-3 text-[13px]">
       <p className="font-medium">{plural(problems.data.length, 'package')} in this server’s catalog could not be read</p>
@@ -185,12 +189,13 @@ function Catalog({ admin }: { admin: boolean }) {
       : catalog.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows rows={3} /></div>
       : <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {catalog.data.map(p => <button key={p.name} type="button" onClick={() => setOpen(p.name)} className="flex flex-col items-start rounded-lg border border-line bg-panel p-3 text-left transition-colors hover:border-line-strong hover:bg-hover/40">
-          <span className="flex items-center gap-2"><Package className="size-3.5 text-muted" /><span className="font-medium">{p.title}</span></span>
+          <span className="flex items-center gap-2.5"><PackageLogo logo={p.logo} /><span className="font-medium">{p.title}</span></span>
           <span className="mt-1 line-clamp-2 text-[12.5px] text-muted">{p.description}</span>
           <span className="mt-auto flex flex-wrap items-center gap-1.5 pt-2"><Badge>{KIND_LABEL[p.kind]}</Badge>{p.used_by.length > 0 && <span className="text-[11.5px] text-muted">{plural(p.used_by.length, 'repository', 'repositories')}</span>}</span>
         </button>)}
       </div>}
-    <Dialog open={!!open} onOpenChange={o => !o && setOpen(null)} title={catalog.data?.find(p => p.name === open)?.title ?? open} wide>
+    <Dialog open={!!open} onOpenChange={o => !o && setOpen(null)} wide
+      title={<span className="flex items-center gap-2.5"><PackageLogo logo={chosen?.logo} />{chosen?.title ?? open}</span>}>
       {open && <PackageDetail name={open} admin={admin} />}
     </Dialog>
   </Section>

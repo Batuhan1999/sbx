@@ -6,6 +6,7 @@ import { api } from '@/api/endpoints'
 import { keys, useAction, useCatalog, useCatalogEntry, useSharedConnections } from '@/api/queries'
 import type { Attachment, AttachmentState, CatalogEntry } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PackageHeading, PackageLogo, PackagePicker } from '@/components/PackageLogo'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { EmptyState, ErrorState, Loading, QueryView } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
@@ -55,6 +56,7 @@ function AttachmentRow({ a, repo, admin }: { a: Attachment; repo: string; admin:
   const fixable = admin && (a.state === 'needs_values' || a.state === 'needs_connection' || a.state === 'check_failed')
   return <li className="px-4 py-3">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <PackageLogo logo={a.logo} large />
       <div className="min-w-0 grow basis-60">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{a.key}</span>
@@ -92,12 +94,7 @@ function AttachPicker({ repo, onDone }: { repo: string; onDone: () => void }) {
   if (chosen) return <EntryForm repo={repo} name={chosen} onDone={onDone} onBack={() => setChosen(null)} />
   return <QueryView query={catalog}>{packages => {
     const usable = packages.filter(p => p.kind === 'provision')
-    return usable.length === 0 ? <EmptyState title="The catalog is empty" /> : <ul className="-mx-2 space-y-0.5">
-      {usable.map(p => <li key={p.name}><button type="button" onClick={() => setChosen(p.name)} className="w-full rounded-md px-2 py-2 text-left hover:bg-hover">
-        <span className="flex items-center gap-2"><span className="font-medium">{p.title}</span><Badge>{KIND_LABEL[p.kind]}</Badge><span className="font-mono text-[11.5px] text-faint">{p.name}</span></span>
-        <span className="mt-0.5 line-clamp-2 text-[12.5px] text-muted">{p.description}</span>
-      </button></li>)}
-    </ul>
+    return usable.length === 0 ? <EmptyState title="The catalog is empty" /> : <PackagePicker packages={usable} onChoose={setChosen} />
   }}</QueryView>
 }
 
@@ -125,7 +122,9 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack }: {
     onSubmit: async ({ value }) => { await attach.mutateAsync(value); onDone() },
   })
   const result = useStore(form.store, s => s.isSubmitSuccessful)
+  const submitting = useStore(form.store, s => s.isSubmitting)
   return <AppForm form={form} className="space-y-4">
+    {!attachment && <PackageHeading logo={entry.logo} title={entry.title} />}
     {entry.description && <p className="text-[13px] text-muted">{entry.description}</p>}
     {!attachment && <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
       {field => <field.TextField label="Key" help="How sbx.yaml and the env refer to it; one package can be attached under several keys." className="font-mono" autoComplete="off" />}
@@ -153,7 +152,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack }: {
     {entry.checks && <p className="text-[12px] text-muted">Saving runs the package's check first; nothing is stored when it fails.</p>}
     {result && <p role="status" className="text-[12.5px] text-ok">Saved.</p>}
     <div className="flex justify-between gap-2">
-      {onBack ? <Button variant="ghost" onClick={onBack}>Back</Button> : <span />}
+      {onBack ? <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : <span />}
       <div className="flex gap-2"><Button variant="ghost" onClick={onDone}>Cancel</Button><SubmitButton form={form}>{attachment ? 'Save' : 'Attach'}</SubmitButton></div>
     </div>
   </AppForm>

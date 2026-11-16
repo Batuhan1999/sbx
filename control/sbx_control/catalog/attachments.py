@@ -144,14 +144,14 @@ def merged(repo: str, *, values: bool = True) -> list:
 
 
 def effective(repo: str) -> list:
-    """The repo's attachments for people: key, package, kind, title, origin
+    """The repo's attachments for people: key, package, kind, title, logo, origin
     (sbx.yaml | here | both), inputs (non-secret), secret inputs by name
     (set?), connections, exports (the env names it gives), state and a
     problem when it has one."""
     out = []
     for key, uses, with_, chosen, disabled, origin, rec in merged(repo):
         project = uses.startswith("./")
-        item = {"key": key, "package": uses, "kind": "provision", "title": uses, "origin": origin, "inputs": {},
+        item = {"key": key, "package": uses, "kind": "provision", "title": uses, "logo": "", "origin": origin, "inputs": {},
                 "secret_inputs": {}, "connections": {}, "exports": [], "disabled": disabled, "state": "ready",
                 "problem": None, "project": project}
         try:
@@ -160,7 +160,8 @@ def effective(repo: str) -> list:
             item.update(state="error", problem=str(error))
             out.append(item)
             continue
-        item.update(kind=package.kind, title=package.title, exports=list(package.env), connections=chosen,
+        item.update(kind=package.kind, title=package.title, logo=package.logo_url(), exports=list(package.env),
+                    connections=chosen,
                     inputs={k: v for k, v in with_.items() if not package.secret(k)},
                     secret_inputs={k: k in with_ for k, v in package.inputs.items() if v["secret"]})
         try:

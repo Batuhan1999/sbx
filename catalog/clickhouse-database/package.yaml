@@ -1,6 +1,7 @@
 kind: provision
 name: clickhouse-database
 title: ClickHouse database (per sandbox)
+logo: logo.svg
 description: >
   A database per sandbox, sbx_<name>, on a ClickHouse server you connect,
   with its own user. A development template can supply empty schemas or

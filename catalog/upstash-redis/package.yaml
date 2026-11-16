@@ -1,6 +1,7 @@
 kind: provision
 name: upstash-redis
 title: Upstash Redis database (per sandbox)
+logo: logo.svg
 description: >
   A separate, initially empty Redis database per sandbox on an existing Upstash
   account. Reuses that database on retry and deletes it with the sandbox. It

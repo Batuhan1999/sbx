@@ -1,6 +1,7 @@
 kind: provision
 name: temporal-namespace
 title: Temporal namespace (per sandbox)
+logo: logo.svg
 description: A namespace per sandbox, sbx-<name>, on a shared Temporal server (the temporal CLI on this
   host).
 requires:

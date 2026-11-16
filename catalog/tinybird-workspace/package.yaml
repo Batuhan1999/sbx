@@ -1,6 +1,7 @@
 kind: connection
 name: tinybird-workspace
 title: Tinybird Forward workspace
+logo: logo.svg
 description: >
   An existing Tinybird Forward workspace. tinybird-branch creates an isolated
   branch and branch token for each sandbox. This is Tinybird's API, not a

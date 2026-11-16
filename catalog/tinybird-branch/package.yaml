@@ -1,6 +1,7 @@
 kind: provision
 name: tinybird-branch
 title: Tinybird branch (per sandbox)
+logo: logo.svg
 description: >
   A Tinybird Forward branch and independent token per sandbox. Copies workspace
   resources without data by default; last_partition explicitly includes the

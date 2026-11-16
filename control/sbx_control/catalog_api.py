@@ -77,7 +77,7 @@ def api_catalog_entry(name: str, email: str = Depends(api_user)):
     found = ([c for c in _connections() if c["package"] == name]
              if package.kind == "connection" and is_admin(email) else [])
     return {**package.as_dict(sorted(attachments.used_by().get(name, ()))), "readme": package.files.get("README.md", ""),
-            "connections": found, "scripts": sorted(k for k in package.files if k != "package.yaml")}
+            "connections": found, "scripts": sorted(k for k in package.files if k not in ("package.yaml", package.logo))}
 
 
 class PackageFiles(BaseModel):

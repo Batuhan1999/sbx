@@ -27,7 +27,8 @@ def listing() -> list:
         inputs = {k: (v if package and k in package.inputs and not package.secret(k) else "(set)")
                   for k, v in row["inputs"].items()}
         out.append({**{k: v for k, v in row.items() if k != "connections"}, "inputs": inputs,
-                    "title": package.title if package else row["package"], "known": package is not None,
+                    "title": package.title if package else row["package"], "logo": package.logo_url() if package else "",
+                    "known": package is not None,
                     "used_by": users(row["key"])})
     return out
 

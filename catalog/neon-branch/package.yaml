@@ -1,6 +1,7 @@
 kind: provision
 name: neon-branch
 title: Neon branch (per sandbox)
+logo: logo.svg
 description: >
   A branch of a Neon project per sandbox, copied from the selected development parent, with its own direct Postgres
   endpoint; deleted with the sandbox. Blank selectors discover the default

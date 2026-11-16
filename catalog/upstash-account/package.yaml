@@ -1,6 +1,7 @@
 kind: connection
 name: upstash-account
 title: Upstash Redis account
+logo: logo.svg
 description: >
   An existing Upstash account. upstash-redis creates a separate development
   Redis database per sandbox, with its own Redis and REST credentials.

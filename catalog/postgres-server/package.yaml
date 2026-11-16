@@ -1,6 +1,7 @@
 kind: connection
 name: postgres-server
 title: Postgres server
+logo: logo.svg
 description: >
   A Postgres you run, reachable from sandboxes (its address in the ranges
   sandboxes may reach). Provisioners such as postgres-clone make a database

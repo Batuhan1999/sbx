@@ -1,6 +1,7 @@
 kind: connection
 name: neon-project
 title: Neon project
+logo: logo.svg
 description: >
   An existing Postgres project on Neon. neon-branch provisions a separate
   branch and writable compute endpoint for each sandbox; no local server is needed.
