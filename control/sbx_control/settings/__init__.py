@@ -246,13 +246,6 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def check(self):
-        # Embed lets every sandbox reach internal_cidrs (its slot firewall
-        # accepts them before a sandbox's own deny_out), so an untrusted
-        # repo's sandbox would reach the shared services too.
-        if self.access.public_repos and self.network.internal_cidrs:
-            raise ValueError("public_repos and network.internal_cidrs can't both be set: Embed lets every sandbox "
-                             "reach internal_cidrs, so untrusted repos would reach your shared services. Serve "
-                             "public repos from another installation.")
         for repo in self.repos:
             if not REPO_RE.match(repo):
                 raise ValueError(f"repos: {repo} is not owner/repo or owner/*")

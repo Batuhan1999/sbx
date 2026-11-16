@@ -92,7 +92,7 @@ say() { printf '\n==> %s\n' "$*"; }
 configured() { [ -f /var/lib/sbx/sbx.db ]; }
 die() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 [ -n "$public_repos" ] && [ -n "$internal" ] && \
-  die "--public-repos and --internal can't go together: Embed lets every sandbox reach the internal ranges, untrusted repos' too"
+  die "--public-repos and --internal can't go together: the internal ranges are open to every sandbox, untrusted repos' too"
 
 src=$(cd "$(dirname "$0")" && pwd)
 [ -f "$src/control/host-install.sh" ] || die "run install.sh from a release archive or a checkout of the platform"

@@ -27,6 +27,13 @@ def create(template: str, *, timeout: int, envs: dict | None = None, metadata: d
                             on_timeout=on_timeout, auto_resume=auto_resume)
 
 
+def deny_out(*cidrs: str) -> list | None:
+    """A sandbox's deny_out for create: these ranges where the runtime
+    applies them (egress_rules), None where it can't; the settings refuse
+    what would need them there (reach)."""
+    return list(cidrs) if capabilities().egress_rules else None
+
+
 def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
     return current().connect(sandbox_id, timeout=timeout)
 
