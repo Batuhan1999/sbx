@@ -11,8 +11,9 @@ and all of it is cleaned up when the sandbox goes. `sbx up`, Claude Code
 sessions, Amp threads and PR previews all start from that recipe; Codex and
 any other agent work over SSH.
 
-Each sandbox is a Firecracker VM on your own server, with
-[E2B Embed](vendor/e2b-embed/compose/README.md) as the runtime.
+Each sandbox is a VM on a runtime the installation enables. Built in is
+[E2B Embed](vendor/e2b-embed/compose/README.md): Firecracker VMs on your own
+server.
 
 ## Quick start with your coding agent
 
@@ -22,7 +23,9 @@ commands, and fill in the two values in angle brackets:
 ```text
 Set up sbx (https://github.com/Batuhan1999/sbx) for me.
 
-Server: <ssh user@host of an Ubuntu 24.04 machine with /dev/kvm>
+Server: <ssh user@host of an Ubuntu 24.04 machine>
+(With /dev/kvm, the server runs the sandboxes itself on E2B Embed. Runtimes at
+a provider, which need no KVM, are coming; until then the server needs /dev/kvm.)
 Repository to run in sandboxes: <owner/name on GitHub>
 
 1. Clone the sbx repository, check out its latest release tag, and read
@@ -88,6 +91,9 @@ See [Extensions](docs/extensions.md) for the interfaces and the
 [reference](docs/reference.md) for the recipe format and lifecycle.
 
 ## Host requirements
+
+These are for running sandboxes on the server itself (E2B Embed, the built-in
+runtime). Runtimes at a provider, which need no `/dev/kvm`, are coming.
 
 - Ubuntu 24.04 with `/dev/kvm`: bare metal, or a cloud VM with nested
   virtualization.
@@ -178,7 +184,7 @@ sbx is early software.
 
 | Area | Status |
 | --- | --- |
-| Host | Ubuntu 24.04 with KVM. A cloud VM without nested virtualization does not work. |
+| Host | Ubuntu 24.04. Running sandboxes on the server (E2B Embed) needs KVM, so a cloud VM without nested virtualization does not work; provider runtimes that need no KVM are coming. |
 | Desktop CLI | macOS only ([details](docs/reference.md#limits)). Host administration uses `sbx-admin` as root. |
 | Previews | With a domain, named HTTPS hosts. IP-only, HTTPS on assigned ports (21000–21255 by default). |
 | Development data | Per-sandbox databases, branches or namespaces through catalog packages; you verify isolation per repository. |
