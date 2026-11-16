@@ -13,9 +13,9 @@
   font-display: swap;
 }
 
-/* The theme is resolved in JS (lib/theme.ts) and written to <html data-theme>,
-   so one attribute drives both the tokens and Tailwind's dark: variant. */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* ThemeProvider puts "light" or "dark" on <html>; that class drives both the
+   tokens and Tailwind's dark: variant. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
@@ -67,7 +67,7 @@
   --info-soft: #eef4ff;
 }
 
-:root[data-theme="dark"] {
+:root.dark {
   color-scheme: dark;
   --bg: #0c0c0e;
   --panel: #131316;

@@ -3,9 +3,9 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useMe } from '@/api/queries'
 import { ErrorState } from '@/components/states'
+import { useTheme, type Theme } from '@/components/ThemeProvider'
 import { Drawer } from '@/components/ui/dialog'
 import { Kbd, Skeleton } from '@/components/ui/primitives'
-import { applyTheme, themeChoice, type ThemeChoice } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { UpdateNotice } from './UpdateNotice'
 
@@ -35,14 +35,14 @@ function NavItem({ to, icon: Icon, label, hint, onClick }: { to: string; icon: R
 }
 
 function ThemeSwitch() {
-  const [choice, setChoice] = useState<ThemeChoice>(themeChoice)
-  const options: { value: ThemeChoice; icon: typeof Sun; label: string }[] = [
+  const { theme, setTheme } = useTheme()
+  const options: { value: Theme; icon: typeof Sun; label: string }[] = [
     { value: 'light', icon: Sun, label: 'Light' }, { value: 'system', icon: Monitor, label: 'System' }, { value: 'dark', icon: Moon, label: 'Dark' },
   ]
   return <div role="radiogroup" aria-label="Theme" className="flex rounded-md border border-line p-0.5">
-    {options.map(o => <button key={o.value} role="radio" aria-checked={choice === o.value} aria-label={o.label} title={o.label}
-      onClick={() => { applyTheme(o.value); setChoice(o.value) }}
-      className={cn('grid h-6 grow place-items-center rounded-[5px] text-muted transition-colors hover:text-ink', choice === o.value && 'bg-hover text-ink')}>
+    {options.map(o => <button key={o.value} role="radio" aria-checked={theme === o.value} aria-label={o.label} title={o.label}
+      onClick={() => setTheme(o.value)}
+      className={cn('grid h-6 grow place-items-center rounded-[5px] text-muted transition-colors hover:text-ink', theme === o.value && 'bg-hover text-ink')}>
       <o.icon className="size-3.5" />
     </button>)}
   </div>
