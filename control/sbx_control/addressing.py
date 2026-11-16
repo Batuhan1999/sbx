@@ -116,9 +116,10 @@ def preview_pattern(suffix: str, path: str = "") -> str:
     return (f"<name>{suffix}.{current}" if current else f"{settings.current().base_url}:<assigned-port>") + path
 
 
-def vite_allowed_hosts() -> str:
-    """Vite rejects unknown Host headers; a leading dot allows subdomains."""
-    return host_suffix() or f".{runtime.current().internal_suffix}"
+def vite_allowed_hosts(kind: str | None = None) -> str:
+    """Vite rejects unknown Host headers; a leading dot allows subdomains.
+    Without a domain, the internal host of the sandbox's runtime (kind)."""
+    return host_suffix() or f".{runtime.internal_suffix(kind)}"
 
 
 def control_origin(request_origin: str) -> str:
