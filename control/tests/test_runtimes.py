@@ -663,6 +663,20 @@ class CodeReview(TwoRuntimes, Installation):
                 api.check_room(order)
         self.assertEqual(check.call_args.args, (2048, "fake"))   # room on its own runtime
 
+    def test_a_new_claude_session_without_a_repo_checks_the_default_repo_s_runtime(self):
+        from types import SimpleNamespace
+        from sbx_control import core, runtimes, settings
+        from sbx_control.connectors.claude_code import api
+        order = SimpleNamespace(session_id="s2", primary_repo_url="")
+        current = settings.current()
+        with patch.object(api, "sandbox_of", return_value=None), \
+                patch.object(settings, "current", return_value=SimpleNamespace(**{**vars(current), "default_repo": "owner/app"})), \
+                patch.object(runtimes, "of_repo", side_effect=lambda repo: "fake" if repo == "owner/app" else "embed") as of_repo, \
+                patch.object(core, "check_capacity") as check:
+            api.check_room(order)
+        of_repo.assert_called_with("owner/app")      # the repo creation will use, not the installation's default
+        self.assertEqual(check.call_args.args[1], "fake")
+
     def test_find_does_not_take_a_runtime_that_did_not_answer_for_absence(self):
         from sbx_control import core
         self.runtime.create("tpl", timeout=600, metadata={"sbx": "here"})

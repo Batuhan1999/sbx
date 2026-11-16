@@ -5,7 +5,7 @@ import threading
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ... import addressing, auth, core, extensions, recipes, sandboxes, state
+from ... import addressing, auth, core, extensions, recipes, sandboxes, settings, state
 from . import runner
 from .sessions import KIND, bind, sandbox_of
 
@@ -25,7 +25,8 @@ def check_room(order: runner.Order):
         memory = getattr(info, "memory_mb", None) or core.app_of(info).size["memory_mb"]
         core.check_capacity(memory, runtime.kind_of(info))
         return
-    repo = recipes.repo_of(order.primary_repo_url) if order.primary_repo_url else None
+    # The repo creation will use: the order's, else the installation's default (sandboxes.create).
+    repo = recipes.repo_of(order.primary_repo_url) or settings.current().default_repo or None
     core.check_capacity(recipes.load(repo).size["memory_mb"] if repo else None, runtimes.of_repo(repo))
 
 
