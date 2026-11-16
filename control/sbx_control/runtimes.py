@@ -56,8 +56,9 @@ def set_setting(repo: str, kind: str | None, *, by: str) -> str | None:
 
 
 def of_repo(repo: str | None) -> str:
-    """The runtime a new sandbox of the repo runs on unless the request names
-    one: its setting while that runtime is enabled, else the default."""
+    """The runtime the repo's templates and room are counted on: its setting
+    while that runtime is enabled, else the default. A create with a setting
+    that is not enabled is refused (choose), never moved to the default."""
     found = setting(repo)
     return found if found in runtime.enabled() else runtime.default()
 
@@ -88,6 +89,11 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
     and its sandboxes don't reach this host's private network, or when the
     recipe's size (when given) is beyond its limits; sbx never falls back to
     another runtime."""
+    chosen = setting(repo)
+    if not requested and chosen and chosen not in runtime.enabled():
+        raise Refused(f"{repo}'s runtime setting is {chosen}, which is not enabled on this installation (enabled: "
+                      f"{', '.join(runtime.enabled())}); change it on the repository's page or with "
+                      f"PUT /api/repos/{repo}/runtime, or name a runtime in the request")
     kind = requested or of_repo(repo)
     if kind not in runtime.enabled():
         if kind in runtime.kinds():

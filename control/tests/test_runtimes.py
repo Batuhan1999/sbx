@@ -559,6 +559,14 @@ class Review(TwoRuntimes, Installation):
             with self.assertRaisesRegex(recipes.RecipeError, "resources.memory_mb is 4096.*E2B Embed"):
                 recipes.validate("owner/app", Path(folder))
 
+    def test_a_repo_setting_no_longer_enabled_is_refused_not_replaced(self):
+        from sbx_control import runtimes, state
+        with state.db() as conn:
+            conn.execute("insert into repo_runtimes (repo, runtime, updated_by) values ('owner/app', 'gone', 'test')")
+        with self.assertRaisesRegex(runtimes.Refused, r"owner/app's runtime setting is gone.*PUT /api/repos/owner/app/runtime"):
+            runtimes.choose("owner/app")
+        self.assertEqual(runtimes.choose("owner/app", "fake"), "fake")   # a request that names one still works
+
     def test_build_logs_are_per_runtime(self):
         from sbx_control import template_builds, templates
         template_builds.build_now(templates.BASE, "fake")

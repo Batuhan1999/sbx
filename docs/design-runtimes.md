@@ -61,7 +61,8 @@ runtime; it asks the registry.
    `PUT /api/repos/{repo}/runtime`), the installation's default. sbx then
    checks the choice against what the recipe needs, and refuses with the
    reason instead of picking another runtime:
-   - the runtime is enabled;
+   - the runtime is enabled (a repo setting naming one that no longer is
+     is refused, naming the setting, never replaced by the default);
    - managed servers attached to the repo need `capabilities.private_networks`;
    - the recipe's resources fit the runtime's limits (from #29).
 8. **Templates are built per runtime.** The template-builds table is keyed by

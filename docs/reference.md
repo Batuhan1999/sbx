@@ -426,7 +426,9 @@ Recipe & template tab of the repository's page), then the installation's
 default. sbx then checks the choice and refuses with the reason, naming the
 runtime, instead of picking another:
 
-- the runtime is enabled;
+- the runtime is enabled (a repository setting that names a runtime no
+  longer enabled is refused too, naming the setting to change, rather than
+  moved to the default);
 - managed servers attached to the repository need a runtime whose sandboxes
   reach this host's private ranges (`capabilities.private_networks`);
 - the recipe's `resources` fit the runtime's limits.
