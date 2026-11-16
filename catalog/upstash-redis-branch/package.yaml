@@ -7,8 +7,8 @@ description: >
   were when the sandbox started, with its own endpoint and password, deleted
   with the sandbox. Writes on either side stay separate. Only global databases
   on a paid plan can be branched, on an account with a payment method. Every
-  branch is billed as Pay as You Go, so copy from a development database whose
-  size you accept paying for per sandbox.
+  branch is billed as Pay as You Go, up to the monthly budget you set for it, so
+  copy from a development database whose size you accept paying for per sandbox.
 docs: https://upstash.com/docs/redis/features/branching
 requires:
   account:
@@ -21,6 +21,10 @@ inputs:
     label: Copy from
     required: true
     help: The name or ID of the database, or of one of its branches, each sandbox copies. Use the ID when a name is not unique.
+  budget:
+    label: Monthly budget (USD)
+    help: A whole number, set as each branch's monthly budget in Upstash before the sandbox gets it.
+    default: '1'
 outputs:
   url: { sensitive: true }
   rest_url: {}

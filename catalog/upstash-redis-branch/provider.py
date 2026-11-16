@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Upstash Redis branches: a copy of a parent database per sandbox."""
+import re
 from urllib.parse import quote
 
 import sbx_provider as sbx
@@ -53,6 +54,9 @@ class UpstashBranch(Upstash):
             if branch:
                 self.request('/redis/database/' + quote(branch['database_id'], safe=''), 'DELETE', missing_ok=True)
             return
+        budget = sbx.option('budget', '1')
+        if not re.fullmatch(r'[1-9][0-9]*', budget):
+            raise sbx.ProviderError('choose a positive whole number of US dollars as the monthly budget')
         if branch:
             expected_root = branch['root_database_id']
         else:
@@ -63,7 +67,10 @@ class UpstashBranch(Upstash):
             # Recorded before polling: a retry then finds this branch, or reports it gone, instead of making another.
             sbx.write_outputs({'database_id': branch['database_id']})
         identifier = branch['database_id']
-        sbx.write_outputs(connection(sbx.wait('Upstash branch', lambda: self.ready(identifier, name, expected_root), 150)))
+        ready = sbx.wait('Upstash branch', lambda: self.ready(identifier, name, expected_root), 150)
+        if ready.get('budget') != int(budget):
+            self.request('/redis/update-budget/' + quote(identifier, safe=''), 'PATCH', {'budget': int(budget)})
+        sbx.write_outputs(connection(ready))
 
 
 if __name__ == '__main__':

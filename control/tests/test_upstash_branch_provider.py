@@ -17,7 +17,7 @@ def database(**changes):
 def branch(**changes):
     return database(**{'database_id': 'db-branch', 'database_name': 'sbx-audit-resource',
                        'root_database_id': 'db-parent', 'source_database_id': 'db-parent', 'endpoint': 'branch-fixture',
-                       'password': 'branch:@?# /', 'rest_token': 'branch-token', **changes})
+                       'password': 'branch:@?# /', 'rest_token': 'branch-token', 'budget': 1, **changes})
 
 
 class FakeUpstash(FakeApi):
@@ -34,6 +34,9 @@ class FakeUpstash(FakeApi):
     def handle(self, method, path, body):
         if (method, path) == ('GET', '/redis/databases'):
             return list(self.databases.values())
+        if method == 'PATCH' and path.startswith('/redis/update-budget/'):
+            self.databases[path.removeprefix('/redis/update-budget/')]['budget'] = body['budget']
+            return None
         identifier = path.removeprefix('/redis/database/')
         if method == 'POST' and identifier.endswith('/branch'):
             source = self.databases.get(identifier.removesuffix('/branch'))
@@ -96,6 +99,26 @@ class UpstashBranchProviderTests(ScriptCase):
             self.api.run('create')
         self.assertEqual(upstash.created, [('db-staging', {'name': 'sbx-audit-resource'})])
         self.assertEqual(upstash.databases['db-new']['root_database_id'], 'db-parent')
+
+    def test_the_budget_is_set_before_credentials_and_only_when_it_differs(self):
+        upstash = self.upstash(database())
+        with patch.dict(os.environ, {'INPUT_BUDGET': '5'}):
+            self.api.run('create')
+            first = self.values()
+            self.output.unlink()
+            with self.previous(first):
+                self.api.run('create')
+        self.assertEqual(upstash.mutations, [('POST', '/redis/database/db-parent/branch'),
+                                             ('PATCH', '/redis/update-budget/db-new')])
+        self.assertEqual((upstash.databases['db-new']['budget'], self.values()), (5, first))
+
+    def test_an_invalid_budget_never_creates_a_branch(self):
+        upstash = self.upstash(database())
+        for value in ('0', '-1', '1.5', 'ten'):
+            with self.subTest(budget=value), patch.dict(os.environ, {'INPUT_BUDGET': value}), \
+                    self.assertRaisesRegex(ValueError, 'monthly budget'):
+                self.api.run('create')
+        self.assertEqual(upstash.mutations, [])
 
     def test_a_creating_branch_is_polled_until_active(self):
         upstash = self.upstash(database())
