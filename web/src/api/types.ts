@@ -142,8 +142,6 @@ export type SandboxInspection = {
 /** runtime: a kind from GET /api/runtimes; left out, the repo's setting or the installation's default. */
 export type CreateSandbox = { name: string; branch?: string; repo?: string; public_keys: string; runtime?: string }
 
-/** The most a runtime allows, by field; a field is missing where it sets no limit or can't say. */
-export type RuntimeLimits = { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number }
 /** An enabled sandbox runtime (GET /api/runtimes). host: it runs on this server, not at a provider. */
 export type SandboxRuntime = {
   kind: string
