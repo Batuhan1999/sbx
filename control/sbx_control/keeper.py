@@ -143,6 +143,7 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
 
 def look_once():
     """A deleted paused preview comes back with the PR's next push."""
+    pin = tls_pin.observed()
     listing = core.sandboxes()
     complete = not getattr(listing, "failed", None)   # a runtime that did not answer: nothing is deleted
     infos = sandboxes.registered(listing)
@@ -159,7 +160,7 @@ def look_once():
             # timeout): nothing failed, the next round sees it as it is.
             waking.forget_preview_resume(info.sandbox_id)
     try:   # a new certificate's pin; delivered for good once every runtime listed (complete)
-        tls_pin.redeliver(((i.metadata or {}).get("sbx") for i in infos), complete)
+        tls_pin.redeliver(((i.metadata or {}).get("sbx") for i in infos), complete, pin)
     except Exception as error:   # the round's other work goes on; tried again next round
         print(f"keeper: certificate pin delivery: {error!r}", flush=True)
     sandbox_layers.round(infos, running)

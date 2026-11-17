@@ -473,6 +473,20 @@ class CredentialHelper(Installation):
         self.assertEqual(delivery.waiting(), {"a"})
         delivery.forget("a")
 
+    def test_a_pin_that_changed_while_the_sandboxes_were_listed_is_delivered_again_next_round(self):
+        from sbx_control import delivery, templates, tls_pin
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
+            tls_pin.redeliver(["a"])
+        delivery.forget("a")
+        # "b" is made after the listing, with pin one; the key changes before the pin is read.
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
+            self.assertTrue(tls_pin.redeliver(["a"], seen="--pinnedpubkey sha256//one="))
+            delivery.forget("a")
+            self.assertTrue(tls_pin.redeliver(["a", "b"], seen="--pinnedpubkey sha256//two="))
+            self.assertEqual(delivery.waiting(), {"b"})
+            delivery.forget("b")
+            self.assertFalse(tls_pin.redeliver(["a", "b"], seen="--pinnedpubkey sha256//two="))
+
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
         from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value=""):

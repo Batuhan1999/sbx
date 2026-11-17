@@ -11,15 +11,26 @@ from . import delivery, state
 DELIVERED = state.Setting("tls_pin", encoded=True)
 
 
-def redeliver(names, complete: bool = True) -> bool:
+def observed() -> str | None:
+    """The pin now, read before the sandboxes are listed (redeliver's seen); None when it can't be read."""
+    from . import templates
+    try:
+        return templates.pinned_key()
+    except Exception:   # redeliver says why
+        return None
+
+
+def redeliver(names, complete: bool = True, seen: str | None = None) -> bool:
     """When the key changed (or the sandboxes do not have it yet): queue
     their runtime layers again, without an app restart. names: the
     sandboxes listed; running ones get it at this round's deliveries, paused
     ones when they resume. A listing that missed a runtime (complete False)
     queues those it has, once each, and the pin counts as delivered only
-    after a complete one. Whether it queued any."""
+    after a complete one; so does one that began under another pin (seen),
+    as a sandbox made while it listed holds that one. Whether it queued any."""
     from . import templates
     pin, record = templates.pinned_key(), DELIVERED.get()
+    complete = complete and seen in (None, pin)
     if record is None and not pin:
         DELIVERED.set({"pin": pin, "queued": [], "complete": True})
         return False
