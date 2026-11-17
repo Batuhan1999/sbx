@@ -54,18 +54,32 @@ def keychain_set(service, value):
 
 
 class Refused(Exception):
-    """sbx-control answered with an error, or there is no session."""
+    """sbx-control answered with an error (status: its HTTP status), or there is no session."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+# sbx setup: the first-run setup link's token stands in for a session (Authorization: Setup <token>),
+# and the link's own certificate may be the self-signed one the installer made (--insecure).
+SETUP_TOKEN = None
+SSL_CONTEXT = None
 
 
 def request(method, path, body=None, raw=False, timeout=600):
-    token = keychain_get(API_TOKEN_SERVICE)
-    if not token:
-        raise Refused("not signed in: run `sbx login`")
+    if SETUP_TOKEN:
+        authorization = f"Setup {SETUP_TOKEN}"
+    else:
+        token = keychain_get(API_TOKEN_SERVICE)
+        if not token:
+            raise Refused("not signed in: run `sbx login`")
+        authorization = f"Bearer {token}"
     call = urllib.request.Request(f"{CONTROL}{path}", method=method,
                                   data=json.dumps(body).encode() if body is not None else None,
-                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                  headers={"Authorization": authorization, "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(call, timeout=timeout) as response:
+        with urllib.request.urlopen(call, timeout=timeout, context=SSL_CONTEXT) as response:
             server = response.headers.get("X-Sbx-Version")
             if server and VERSION not in ("dev", server):
                 print(f"sbx {server} is available (you have {VERSION}): sbx update", file=sys.stderr)
@@ -77,9 +91,13 @@ def request(method, path, body=None, raw=False, timeout=600):
             detail = json.loads(detail).get("detail", detail)
         except (ValueError, AttributeError):
             pass
+        if isinstance(detail, dict):   # {message, checks}: what failed, each check that did
+            detail = "; ".join([detail.get("message") or "refused", *(f"{c.get('name')}: {c.get('detail')}"
+                                                                      for c in detail.get("checks") or [] if not c.get("ok"))])
         if error.code == 401:
-            raise Refused("session expired: run `sbx login`") from None
-        raise Refused(f"sbx-control: {detail}") from None
+            raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a new one)"
+                          if SETUP_TOKEN else "session expired: run `sbx login`", 401) from None
+        raise Refused(f"sbx-control: {detail}", error.code) from None
 
 
 def api(method, path, body=None, raw=False, timeout=600):
@@ -529,19 +547,32 @@ def runtime_test(args):
         sys.exit(1)
 
 
-def _runtime_values(args, runtime):
-    """The values a change sends: --plan's (a plan fixes its limits but those it
-    leaves adjustable), then --set over them where the plan allows, then each
-    --secret read from stdin (one line each, in order; hidden at a terminal)."""
+def _read_secret(prompt):
+    """One line of stdin (hidden at a terminal), never argv or the environment."""
+    value = getpass.getpass(f"{prompt} (hidden): ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+    return value.strip()
+
+
+def _runtime_values(args, runtime, adding):
+    """The values a change sends, as the web app's form does: --plan's (Hobby when
+    adding without one; a plan fixes its limits but those it leaves adjustable,
+    which keep the runtime's values now on set, or start at the plan's), then
+    --set over them where the plan allows, then each --secret read from stdin
+    (one line each, in order; hidden at a terminal). set without --plan sends
+    only what --set and --secret name."""
     settings = {s["key"]: s for s in runtime.get("settings") or []}
+    presets = runtime.get("presets") or []
     values = {}
+    plan = args.plan or (presets[0]["name"] if adding and presets else None)
     preset = None
-    if args.plan and args.plan != "custom":
-        preset = next((p for p in runtime.get("presets") or [] if p["name"] == args.plan), None)
+    if plan and plan != "custom":
+        preset = next((p for p in presets if p["name"] == plan), None)
         if preset is None:
-            names = [p["name"] for p in runtime.get("presets") or []] + ["custom"]
-            sys.exit(f"{runtime['title']} has no plan {args.plan}; its plans: {', '.join(names)}")
-        values.update(preset["values"])
+            sys.exit(f"{runtime['title']} has no plan {plan}; its plans: {', '.join([p['name'] for p in presets] + ['custom'])}")
+        now = runtime.get("values") or {}
+        for key, value in preset["values"].items():
+            kept = now.get(key) if not adding and key in (preset.get("adjustable") or []) else ""
+            values[key] = kept or value
     for pair in args.set or []:
         key, sep, value = pair.partition("=")
         if not sep:
@@ -558,17 +589,17 @@ def _runtime_values(args, runtime):
         setting = settings.get(key)
         if setting is None or not setting.get("secret"):
             sys.exit(f"{key} is no secret of {runtime['title']}; sbx runtimes available lists them")
-        value = (getpass.getpass(f"{setting['label']} for {runtime['title']} (hidden): ") if sys.stdin.isatty()
-                 else sys.stdin.readline().rstrip("\n"))
-        if not value.strip():
+        value = _read_secret(f"{setting['label']} for {runtime['title']}")
+        if not value:
             sys.exit(f"no value for {key} on stdin")
-        values[key] = value.strip()
+        values[key] = value
     return values
 
 
 def runtime_change(args):
-    """sbx runtimes add | set | remove | default KIND: queued by sbx-control, applied
-    by the host, which restarts sbx-control; waits for it unless --no-wait."""
+    """sbx runtimes add | set | remove | default KIND (and sbx setup runtime add):
+    queued by sbx-control, applied by the host, which restarts sbx-control;
+    waits for it unless --no-wait."""
     if not args.kind:
         sys.exit(f"sbx runtimes {args.action} KIND (sbx runtimes available lists them)")
     kind = urllib.parse.quote(args.kind, safe="")
@@ -576,7 +607,9 @@ def runtime_change(args):
         runtime = next((r for r in api("GET", "/api/runtimes/available") if r["kind"] == args.kind), None)
         if runtime is None:
             sys.exit(f"there is no runtime {args.kind}: sbx runtimes available lists them")
-        values = _runtime_values(args, runtime)
+        if runtime.get("not_editable") and args.action == "add":
+            sys.exit(runtime["not_editable"])
+        values = _runtime_values(args, runtime, adding=args.action == "add")
         if args.action == "add":
             queued = api("POST", "/api/runtimes", {"kind": args.kind, "values": values})
         else:
@@ -586,23 +619,27 @@ def runtime_change(args):
     else:
         queued = api("PUT", "/api/runtimes/default", {"kind": args.kind})
     if args.no_wait:
-        print(f"queued: {args.action} {args.kind} (sbx runtimes to see it once applied)")
+        print(json.dumps(queued) if args.json else f"queued: {args.action} {args.kind} (sbx runtimes to see it once applied)")
         return
-    wait_runtime_change(queued, args.timeout)
+    done = wait_runtime_change(queued, args.timeout)
+    print(json.dumps(done) if args.json else done.get("message") or "done")
+
+
+RETRIED = (502, 503, 504)   # sbx-control restarting behind nginx
 
 
 def wait_runtime_change(change, timeout, interval=2.0):
-    """Until the change failed, or is done and a restarted sbx-control answers (as
-    the web app follows it); a request that fails meanwhile (the restart: 502,
-    refused connections) is retried. Exits non-zero when it failed."""
+    """The change once it is done and a restarted sbx-control answers (as the
+    web app follows it). A poll the restart fails (502, 503, 504, a refused or
+    dropped connection) is retried; any other refusal ends it at once. Exits
+    non-zero when the change failed."""
     deadline, said = time.monotonic() + timeout, None
     while True:
         state = change.get("state")
         if state == "failed":
             sys.exit(f"the runtime change failed: {change.get('message') or 'see the server log'}")
         if state == "done" and not change.get("restarting"):
-            print(change.get("message") or "done")
-            return
+            return change
         now = {"queued": "queued; waiting for the host to apply it", "applying": "applying",
                "done": "applied; waiting for sbx-control to restart"}.get(state, state)
         if now != said:
@@ -613,9 +650,132 @@ def wait_runtime_change(change, timeout, interval=2.0):
         time.sleep(interval)
         try:
             change = request("GET", "/api/runtimes/change", timeout=30)
-        except (Refused, OSError) as error:   # sbx-control restarting: ask again
-            if "not signed in" in str(error) or "session expired" in str(error):
+        except Refused as error:
+            if error.status not in RETRIED:
                 sys.exit(str(error))
+        except OSError:   # refused or dropped connections while it restarts
+            pass
+
+
+# sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
+
+
+def _setup_link(args):
+    """The setup link from SBX_SETUP_LINK or --link-file (never argv: it is a
+    credential, and stdin is the secrets'); sets where requests go and the
+    Setup authorization."""
+    global CONTROL, SETUP_TOKEN, SSL_CONTEXT
+    if args.link_file:
+        link = pathlib.Path(args.link_file).expanduser().read_text().strip()
+    else:
+        link = os.environ.get("SBX_SETUP_LINK", "").strip()
+    if not link:
+        sys.exit("the setup link install.sh printed (or sbx-admin setup-link): in SBX_SETUP_LINK, or a file named "
+                 "by --link-file; never on the command line")
+    url = urllib.parse.urlsplit(link)
+    token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
+    if url.scheme not in ("https", "http") or not url.netloc or not token:
+        sys.exit("that is not a setup link: https://HOST/setup#t=TOKEN")
+    CONTROL, SETUP_TOKEN = f"{url.scheme}://{url.netloc}", token
+    if args.insecure:
+        import ssl
+        SSL_CONTEXT = ssl.create_default_context()
+        SSL_CONTEXT.check_hostname = False
+        SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+
+def setup_cmd(args):
+    _setup_link(args)
+    {"status": setup_status, "address": setup_address, "runtime": setup_runtime, "admin": setup_admin,
+     "finish": setup_finish}[args.step](args)
+
+
+def _steps(state):
+    return {s["step"]: s for s in state.get("steps") or []}
+
+
+def setup_status(args):
+    state = api("GET", "/api/setup")
+    if args.json:
+        print(json.dumps(state))
+        return
+    if state.get("complete"):
+        print(f"set up: {state['access']['url']} (sign in, then: sbx login)")
+        return
+    names = {"address": "address", "runtime": "runtime", "sign_in": "admin"}
+    for step in ("address", "runtime", "sign_in"):
+        found = _steps(state).get(step)
+        if found:
+            print(f"{'done' if found['done'] else 'todo':<5} {names[step]:<8} {found['summary']}")
+    print(f"server address: {state['host'].get('address') or 'unknown'}; link: {state.get('link', '')}")
+    print("ready to finish: sbx setup finish" if state.get("can_complete") else
+          "next: sbx setup address | runtime add | admin, then sbx setup finish")
+
+
+def setup_address(args):
+    """IP access or a domain (its certificate follows on its own), then waits until HTTPS works there."""
+    state = api("GET", "/api/setup")
+    if args.domain:
+        values = {"name": args.domain, "address": state["host"].get("address", ""), "acme": args.dns,
+                  "acme_email": args.email or ""}
+        for key in args.secret or []:   # the DNS provider's credentials (cloudflare_api_token, aws_...)
+            value = _read_secret(key)
+            if not value:
+                sys.exit(f"no value for {key} on stdin")
+            values[key] = value
+        api("PUT", "/api/connections/domain", {"values": values})
+    else:
+        address = args.ip or state["host"].get("address", "")
+        if not address:
+            sys.exit("the server's address is unknown: give it (sbx setup address --ip ADDRESS)")
+        api("POST", "/api/setup/address", {"address": address})
+    if args.no_wait:
+        return
+    deadline, said = time.monotonic() + args.timeout, None
+    while True:
+        state = api("GET", "/api/setup")
+        if _steps(state).get("address", {}).get("done"):
+            print(f"address ready: {state['access']['url']}"
+                  + (f"; the setup link is now {state['link']}" if args.domain else ""))
+            return
+        error = state["access"].get("certificate_error")
+        now = f"waiting for the certificate{': ' + error if error else ''}"
+        if now != said:
+            note(now)
+            said = now
+        if time.monotonic() > deadline:
+            sys.exit(f"HTTPS is not ready after {args.timeout} s ({error or 'no certificate yet'}); sbx setup status")
+        time.sleep(5)
+
+
+def setup_runtime(args):
+    if args.action == "available":
+        return runtimes_available(args)
+    return runtime_change(args)
+
+
+def setup_admin(args):
+    """The first admin's email; the password on stdin."""
+    password = _read_secret(f"password for {args.email}")
+    if len(password) < 8:
+        sys.exit("the password comes on stdin: at least 8 characters")
+    api("POST", "/api/setup/admin", {"email": args.email, "password": password})
+    print(f"{args.email} is the admin; next: sbx setup finish --admin {args.email} (the password on stdin again)")
+
+
+def setup_finish(args):
+    """Finish the setup; with --admin, as that admin (the password on stdin)."""
+    body = None
+    if args.admin:
+        password = _read_secret(f"password for {args.admin}")
+        if not password:
+            sys.exit("the admin's password comes on stdin")
+        body = {"email": args.admin, "password": password}
+    state = api("POST", "/api/setup/complete", body)
+    if args.json:
+        print(json.dumps(state))
+        return
+    print(f"set up: {state['access']['url']}; the setup link no longer works. Next: sbx login")
 
 
 def ls(args):
@@ -1126,6 +1286,19 @@ def detach_cmd(args):
     print(f"{args.key}: {'disabled (declared in .sbx/sbx.yaml; remove it there)' if r.get('disabled') else 'removed'}")
 
 
+def change_flags(p):
+    """The flags of a runtime change (sbx runtimes add | set | remove | default, sbx setup runtime add)."""
+    p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom; add "
+                   "without one is on the first plan (hobby)")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="add, set: a setting, in its unit (seconds, MiB); repeatable; a plan fixes its own limits")
+    p.add_argument("--secret", action="append", metavar="KEY",
+                   help="add, set: a secret setting, its value read from stdin (one line each), never argv")
+    p.add_argument("--no-wait", action="store_true", help="return once the change is queued")
+    p.add_argument("--timeout", type=int, default=600, help="seconds to wait for the change (default 600)")
+    p.add_argument("--json", action="store_true", help="as the API answers (a change: its outcome)")
+
+
 def parser():
     top = argparse.ArgumentParser(prog="sbx", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = top.add_subparsers(required=True, metavar="COMMAND")
@@ -1156,14 +1329,36 @@ def parser():
                    help="none: list the enabled ones; available: what can run here, its plans and settings; "
                         "test: an enabled one's checks")
     p.add_argument("kind", nargs="?", help="test, add, set, remove, default: the runtime (e2b-cloud, ...)")
-    p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom")
-    p.add_argument("--set", action="append", metavar="KEY=VALUE",
-                   help="add, set: a setting, in its unit (seconds, MiB); repeatable; a plan fixes its own limits")
-    p.add_argument("--secret", action="append", metavar="KEY",
-                   help="add, set: a secret setting, its value read from stdin (one line each), never argv")
-    p.add_argument("--no-wait", action="store_true", help="return once the change is queued")
-    p.add_argument("--timeout", type=int, default=600, help="seconds to wait for the change (default 600)")
-    p.add_argument("--json", action="store_true", help="list, available, test: as the API answers")
+    change_flags(p)
+
+    p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the link install.sh "
+                "printed (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")
+    steps = p.add_subparsers(dest="step", required=True, metavar="STEP")
+    link = argparse.ArgumentParser(add_help=False)
+    link.add_argument("--link-file", metavar="FILE", help="a file holding the setup link (else SBX_SETUP_LINK)")
+    link.add_argument("--insecure", action="store_true",
+                      help="accept the self-signed certificate the server answers with before its own")
+    s = steps.add_parser("status", parents=[link], help="each step and what is left")
+    s.add_argument("--json", action="store_true")
+    s = steps.add_parser("address", parents=[link], help="IP access, or a domain whose certificate follows; waits "
+                         "until HTTPS works")
+    s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
+    s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at login.D")
+    s.add_argument("--email", help="for the certificate's expiry notices (with --domain)")
+    s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53"])
+    s.add_argument("--secret", action="append", metavar="KEY",
+                   help="the DNS provider's credential (cloudflare_api_token, aws_access_key_id, ...) on stdin")
+    s.add_argument("--no-wait", action="store_true")
+    s.add_argument("--timeout", type=int, default=900)
+    s = steps.add_parser("runtime", parents=[link], help="what can run here, and add the first sandbox runtime")
+    s.add_argument("action", choices=["available", "add"])
+    s.add_argument("kind", nargs="?")
+    change_flags(s)
+    s = steps.add_parser("admin", parents=[link], help="the first admin's email; the password on stdin")
+    s.add_argument("email")
+    s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (the password on stdin)")
+    s.add_argument("--admin", metavar="EMAIL")
+    s.add_argument("--json", action="store_true")
     p = command("down", down, "delete the sandbox and what was provisioned for it")
     p.add_argument("name")
     p = command("ls", ls, "your sandboxes")

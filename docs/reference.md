@@ -434,15 +434,17 @@ sbx-control, nginx and the secret store.
 | `E2B_CLOUD_DOMAIN` | E2B's domain; default `e2b.app`. |
 | `E2B_CLOUD_MAX_TIMEOUT` | Seconds a sandbox runs before its timeout pauses it; default 3600 (the Hobby plan's most). The keeper renews it while the sandbox is used. |
 | `E2B_CLOUD_MAX_CPU`, `E2B_CLOUD_MAX_MEMORY_MB`, `E2B_CLOUD_MAX_DISK_MB` | Per sandbox; default 8 vCPUs, 8192 MiB, 10240 MiB (Hobby). A recipe beyond them is refused, naming the key. |
-| `E2B_CLOUD_MAX_SANDBOXES` | Running at once; default 20. |
+| `E2B_CLOUD_MAX_SANDBOXES` | Running at once; default 10 (Hobby). |
 
 Raise the limits to what your E2B plan allows: in Settings → Sandbox
 runtimes (Change settings, then a plan or Custom), or in the file and then
 `sbx-admin runtime apply`. The web app offers E2B's plans as presets, from
 [E2B's pricing](https://e2b.dev/pricing) as read on 2026-11-17: Hobby (1 h,
 8 vCPUs, 8192 MiB, 10240 MiB of disk, 10 at once) and Pro (24 h, 8 vCPUs,
-8192 MiB, 20480 MiB, 100 at once). The defaults above stay as they were
-(20 at once), so an installation that never chose a plan behaves as before.
+8192 MiB, 20480 MiB, 100 at once). The defaults above are Hobby's, so an
+installation that never chose a plan is on Hobby. A save in the web app sends
+only what was changed (or what a newly chosen plan sets): a limit raised by
+hand in `runtime.env` beyond the form's range is left as it is.
 
 When E2B refuses a timeout past the plan's ("Timeout cannot be greater than
 1 hours"), sbx says so, naming the setting to change ("E2B refused a 2 h
@@ -635,15 +637,56 @@ sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail and 
   `pro`) or `custom`; a plan fixes its limits but those it leaves adjustable
   (Pro's `E2B_CLOUD_MAX_CPU` and `E2B_CLOUD_MAX_MEMORY_MB`), so `--set` on a
   fixed one is refused before anything is sent. `--set KEY=VALUE` is in the
-  setting's unit (seconds, MiB) and repeatable; without `--plan` it changes
+  setting's unit (seconds, MiB) and repeatable. `add` without `--plan` is on
+  the first plan (Hobby), as the web form starts; `set --plan pro` keeps the
+  runtime's vCPUs and memory now (Pro leaves them adjustable). `set` without `--plan` changes
   only what it names.
 - A secret is never on the command line: `--secret KEY` reads its value from
   stdin, one line per `--secret` in order (hidden at a terminal); `--set` on
   a secret is refused.
 - Each change waits until it failed, or is done and the restarted sbx-control
   answers (it rides out the restart's 502s), prints the outcome and exits
-  non-zero when it failed; `--no-wait` returns once it is queued. A refusal
-  prints the API's `detail` and exits non-zero.
+  non-zero when it failed; `--no-wait` returns once it is queued. Only a
+  restart's answers (502, 503, 504, a refused connection) are waited out; any
+  other refusal prints the API's `detail` and exits non-zero. `--json` prints
+  the change's outcome (or, with `--no-wait`, the queued change) as the API
+  answers it.
+- A value that is itself a reference into the secret store
+  (`infisical:...`) is refused (400): the API takes values, so no caller can
+  have another secret of the installation unsealed and sent to a provider.
+- `PUT /api/runtimes/default` for the runtime that is the default already
+  answers 200, done, without queueing or restarting anything. A runtime whose
+  key is missing (or whose reference no longer resolves) can still be
+  removed: it lists no sandboxes, and the removal says so.
+
+### The first-run setup without a browser
+
+On a fresh server (one without `/dev/kvm` installs with no runtime, and the
+setup can't finish without one, so `sbx login` can't sign in yet), an agent
+takes every step of the wizard with `sbx setup`, as the holder of the setup
+link install.sh printed. The link is a credential: it goes in
+`SBX_SETUP_LINK` or a file named by `--link-file`, never on the command line,
+and stdin is left to the secrets (one line per secret, in the order asked).
+`--insecure` accepts the self-signed certificate the server answers with
+before it has its own.
+
+```sh
+export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/setup#t=TOKEN
+sbx setup status [--json]                      # each step, done or to do
+sbx setup address --domain sbx.example.com --email ops@example.com   # or: --ip; waits for HTTPS
+sbx setup runtime available
+sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
+sbx setup admin ops@example.com < password-file
+sbx setup finish --admin ops@example.com < password-file
+```
+
+Each uses `Authorization: Setup <token>`. `address --domain` takes the DNS
+provider's credentials with `--secret` (`cloudflare_api_token`, ...) and waits
+until the certificate works; `runtime add` takes the flags of `sbx runtimes
+add` and waits through the restart; `finish --admin` signs in with the
+admin's password (`POST /api/setup/complete` with `{"email", "password"}`,
+for a client without a browser session). The link stops working once the
+setup is finished; then `sbx login`.
 
 ### No runtime yet
 

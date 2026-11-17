@@ -118,9 +118,20 @@ def api_setup_admin(body: Admin, request: Request, who: str = Depends(setup_or_a
         return setup.state(email, request.url.hostname or "")
 
 
+class Finish(BaseModel):
+    """An admin's sign-in, for a client without a browser session (sbx setup finish --admin)."""
+    email: str
+    password: SecretStr
+
+
 @router.post("/api/setup/complete")
-def api_setup_complete(request: Request, who: str = Depends(setup_or_admin)):
+def api_setup_complete(request: Request, body: Finish | None = None, who: str = Depends(setup_or_admin)):
     email = _email(request, who)
+    if not email and body is not None:
+        given = body.email.strip().lower()
+        if not (auth.password_admits(given, body.password.get_secret_value()) and given in settings.current().admins):
+            raise HTTPException(403, "The email or password is incorrect.")
+        email = given
     s = setup.state(email, request.url.hostname or "")
     if not s["steps"][0]["done"] or not s["steps"][1]["done"]:
         raise HTTPException(400, "Choose the server address and configure admin access first.")

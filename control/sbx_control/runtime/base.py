@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import datetime
 import pathlib
+import re
 from typing import Any, Callable, ContextManager, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
@@ -148,6 +149,11 @@ LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
 MIN_TIMEOUT_SECONDS = 5 * 60
 
 
+# A host name, lowercase, without a trailing dot: what a "hostname" setting
+# takes (SettingField.view hands the web app the same pattern).
+HOSTNAME = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+
+
 @dataclasses.dataclass(frozen=True)
 class SettingField:
     """One of a backend's settings, as the web app's form shows it: a key of
@@ -174,7 +180,8 @@ class SettingField:
     unit: str = ""
 
     def view(self) -> dict:
-        return dataclasses.asdict(self)
+        """As the API shows it; a hostname's pattern (HOSTNAME) for the web app's own check."""
+        return {**dataclasses.asdict(self), **({"pattern": HOSTNAME.pattern} if self.kind == "hostname" else {})}
 
 
 @dataclasses.dataclass(frozen=True)

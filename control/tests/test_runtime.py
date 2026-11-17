@@ -437,7 +437,7 @@ class Cloud(unittest.TestCase):
 
     def test_limits_default_to_the_hobby_plan_and_follow_the_keys(self):
         self.assertEqual(self.cloud.limits().known(), {"timeout_seconds": 3600, "cpu": 8, "memory_mb": 8192,
-                                                       "disk_mb": 10240, "sandboxes": 20})
+                                                       "disk_mb": 10240, "sandboxes": 10})
         self.assertEqual(self.cloud.limits().keys["memory_mb"], "E2B_CLOUD_MAX_MEMORY_MB")
         self.cloud.configure({**CLOUD_KEYS, "E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_SANDBOXES": "100"})
         self.assertEqual((self.cloud.limits().timeout_seconds, self.cloud.limits().sandboxes), (86400, 100))

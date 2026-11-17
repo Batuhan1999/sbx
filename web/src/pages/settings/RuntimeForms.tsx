@@ -38,18 +38,37 @@ export function useRuntimeChangeFlow(enabled = true) {
   return { change: change.data, busy, mine, submit }
 }
 
-/** The change in flight or the last one's outcome: applying, failed (why), or done (only right after this page asked for it). */
-export function ChangeStatus({ flow, title }: { flow: ChangeFlow; title?: (kind: string) => string }) {
+/** How long a change that failed is shown to anyone who did not make it here. */
+const FAILURE_SHOWN_MS = 10 * 60_000
+
+/** Whether the last change's outcome is still news on this page: one this page made, or a failure of the last
+ * ten minutes nobody dismissed; a change in flight always. */
+export function changeShown(flow: ChangeFlow, dismissed: string | null): boolean {
   const c = flow.change
-  if (!c || c.state === 'idle') return null
+  if (!c || c.state === 'idle') return false
+  if (flow.busy || flow.mine) return true
+  const at = Date.parse(c.at)
+  return c.state === 'failed' && dismissed !== c.at && Number.isFinite(at) && Date.now() - at < FAILURE_SHOWN_MS
+}
+
+/** The change in flight or the last one's outcome: applying, failed (why, with a dismiss), or done (only right
+ * after this page asked for it). */
+export function ChangeStatus({ flow, title, className }: { flow: ChangeFlow; title?: (kind: string) => string; className?: string }) {
+  const [dismissed, setDismissed] = useState<string | null>(null)
+  const c = flow.change
+  if (!c || !changeShown(flow, dismissed)) return null
   const what = `${VERBS[c.operation] ?? 'Changing'} ${title?.(c.kind) || c.kind}`
-  if (flow.busy) return <div role="status" className="rounded-lg border border-line bg-sunken px-3 py-2 text-[13px]">
-    <Spinner label={`${what}…`} />
-    <p className="mt-1 text-[12.5px] text-muted">The server applies it and restarts; this page follows on its own.</p>
+  return <div className={className}>
+    {flow.busy ? <div role="status" className="rounded-lg border border-line bg-sunken px-3 py-2 text-[13px]">
+      <Spinner label={`${what}…`} />
+      <p className="mt-1 text-[12.5px] text-muted">The server applies it and restarts; this page follows on its own.</p>
+    </div>
+      : c.state === 'failed' ? <div className="flex items-start gap-2">
+        <ErrorState compact className="min-w-0 flex-1" error={`${what} failed: ${c.message || 'see the server log'}`} />
+        <Button size="sm" variant="ghost" onClick={() => setDismissed(c.at)}>Dismiss</Button>
+      </div>
+      : <p role="status" className="text-[12.5px] text-ok">{c.message || 'Done.'}</p>}
   </div>
-  if (c.state === 'failed') return <ErrorState compact error={`${what} failed: ${c.message || 'see the server log'}`} />
-  if (c.state === 'done' && flow.mine) return <p role="status" className="text-[12.5px] text-ok">{c.message || 'Done.'}</p>
-  return null
 }
 
 // Limits, in people's units: a run in minutes and hours, memory and disk in GB, counts as they are.
@@ -85,11 +104,6 @@ export function presetSummary(r: { settings: RuntimeSetting[] }, values: Record<
   }).join(' · ')
 }
 
-/** The preset whose fixed values the current ones are, else custom. */
-function presetOf(r: AvailableRuntime) {
-  const effective = (key: string) => r.values[key] || r.settings.find(s => s.key === key)?.default || ''
-  return r.presets.find(p => Object.entries(p.values).every(([k, v]) => p.adjustable?.includes(k) || effective(k) === v))?.name ?? CUSTOM
-}
 
 /** A runtime's settings: its key first (write-only: "set" until a new one is typed), its plan as
  * cards (a plan's limits are known, so not editable; Custom shows a slider per limit), and the
@@ -101,9 +115,15 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
   const limits = r.settings.filter(s => s.limit)
   const advanced = r.settings.filter(s => !s.secret && !s.limit)
   const keySet = !!secret && r.secrets_set.includes(secret.key)
-  const [plan, setPlan] = useState(mode === 'add' ? (r.presets[0]?.name ?? CUSTOM) : presetOf(r))
+  // The plan the server says the runtime is on (adding: the first plan, as an unchosen one reads).
+  const startPlan = mode === 'add' ? (r.presets[0]?.name ?? CUSTOM) : (r.plan?.name ?? CUSTOM)
+  const [plan, setPlan] = useState(startPlan)
+  // What the sliders show (held to their range); only those the admin moves are sent, so a value
+  // set higher in runtime.env by hand is never lowered by a save that did not touch it.
   const [custom, setCustom] = useState<Record<string, number>>(() => Object.fromEntries(
     limits.map(s => [s.key, clamp(s, Number(r.values[s.key] || s.default))])))
+  const [touched, setTouched] = useState<Set<string>>(() => new Set())
+  const move = (key: string, v: number) => { setCustom(c => ({ ...c, [key]: v })); setTouched(t => new Set(t).add(key)) }
   const initial: Record<string, string> = Object.fromEntries([
     ...(secret ? [[secret.key, '']] : []), ...advanced.map(s => [s.key, r.values[s.key] ?? ''])])
   const form = useAppForm({
@@ -113,11 +133,15 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       if (secret && value[secret.key]?.trim()) values[secret.key] = value[secret.key].trim()
       for (const s of advanced) {
         const v = (value[s.key] ?? '').trim()
-        if (v || mode === 'change') values[s.key] = v
+        if (mode === 'add' ? !!v : v !== (initial[s.key] ?? '')) values[s.key] = v
       }
+      // Adding: every limit the plan (or Custom) sets. Changing: a new plan's values, and the limits moved.
       const preset = r.presets.find(p => p.name === plan)
+      const replanned = mode === 'add' || plan !== startPlan
       for (const s of limits) {
-        values[s.key] = preset && !preset.adjustable?.includes(s.key) ? preset.values[s.key] ?? s.default : String(clamp(s, custom[s.key]))
+        const fixed = preset && !preset.adjustable?.includes(s.key)
+        if (fixed && replanned) values[s.key] = preset.values[s.key] ?? s.default
+        else if (!fixed && (touched.has(s.key) || (replanned && (mode === 'add' || !!preset)))) values[s.key] = String(clamp(s, custom[s.key]))
       }
       await flow.submit(() => mode === 'add' ? api.runtimeSettings.add(r.kind, values) : api.runtimeSettings.update(r.kind, values))
       onDone?.()
@@ -134,7 +158,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
     const p = r.presets.find(x => x.name === name)
     for (const key of p?.adjustable ?? []) {
       const s = limits.find(x => x.key === key)
-      if (s && !r.values[key]) setCustom(c => ({ ...c, [key]: clamp(s, Number(p!.values[key])) }))
+      if (s && !r.values[key] && !touched.has(key)) setCustom(c => ({ ...c, [key]: clamp(s, Number(p!.values[key])) }))
     }
     setPlan(name)
   }
@@ -162,7 +186,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       </div>
       {(plan === CUSTOM || adjustable.length > 0) && <div className="mt-3 space-y-4 rounded-lg border border-line bg-sunken/60 p-3 sm:p-4">
         {chosen?.note && <p className="text-[12.5px] text-muted">{chosen.note}</p>}
-        {(plan === CUSTOM ? limits : adjustable).map(s => <LimitSlider key={s.key} setting={s} value={custom[s.key]} onChange={v => setCustom(c => ({ ...c, [s.key]: v }))} />)}
+        {(plan === CUSTOM ? limits : adjustable).map(s => <LimitSlider key={s.key} setting={s} value={custom[s.key]} onChange={v => move(s.key, v)} />)}
       </div>}
     </fieldset>}
 
@@ -239,6 +263,7 @@ function LimitSlider({ setting: s, value, onChange }: { setting: RuntimeSetting;
 function fieldError(s: RuntimeSetting, value: string) {
   const v = (value ?? '').trim()
   if (!v) return undefined
-  if (s.kind === 'hostname' && !/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.?$/i.test(v)) return 'Enter a host name such as e2b.app.'
+  // The server's own pattern (runtime.base.HOSTNAME); it checks again.
+  if (s.kind === 'hostname' && s.pattern && !new RegExp(`^(?:${s.pattern})\\.?$`, 'i').test(v)) return 'Enter a host name such as e2b.app.'
   return undefined
 }

@@ -187,7 +187,10 @@ function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => vo
       : <>
         <RuntimeChoices choices={choices} value={chosen?.kind ?? ''} onChange={setKind} />
         <ChangeStatus flow={flow} title={k => choices.find(c => c.kind === k)?.title ?? k} />
-        {chosen && !flow.busy && (chosen.not_editable ? <ErrorState compact error={chosen.not_editable} />
+        {chosen && !flow.busy && (chosen.not_editable ? <div className="space-y-2">
+          <ErrorState compact error={chosen.not_editable} />
+          {chosen.needs_domain && <Button size="sm" onClick={onBack}><Globe />Choose a domain</Button>}
+        </div>
           : <RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} />)}
         {!chosen && <p className="text-[13px] text-muted">No runtime can run here. Run install.sh again on a server with /dev/kvm, or with a provider's key.</p>}
       </>}

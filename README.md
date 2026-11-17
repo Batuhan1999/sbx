@@ -114,7 +114,7 @@ Running them at E2B Cloud (any small VPS, no KVM):
   "Sandbox runtime" step.
   Sandboxes then run at E2B, within your E2B plan's limits (Hobby: one hour
   before a sandbox pauses, renewed while it is used; 8 vCPUs, 8 GiB, 10 GiB
-  disk each; 20 at once).
+  disk each; 10 at once).
 - A domain: E2B's sandboxes call the server back at `login.D` on 443
   (repository bundles, git credentials). Managed servers on the host's
   private network are not available to them.

@@ -238,6 +238,17 @@ def may_sign_in(email: str) -> bool:
     s = settings.current()
     return s.sign_in.admits(email, s.admins)
 
+def password_admits(email: str, password: str) -> bool:
+    """The shared password sign-in: the password is the installation's and
+    the sign-in method admits email (may_sign_in). The web's sign-in form, and
+    sbx setup finish --admin (the first-run setup's last step, without a
+    browser)."""
+    expected = vault.platform_secrets().get("LOGIN_PASSWORD", "")
+    if settings.current().sign_in.method != "password" or not expected or "@" not in email:
+        return False
+    return hmac.compare_digest(password.encode(), expected.encode()) and may_sign_in(email)
+
+
 @router.post("/auth/login")
 async def auth_password(request: Request):
     if settings.current().sign_in.method != "password":
@@ -245,11 +256,8 @@ async def auth_password(request: Request):
     form = urllib.parse.parse_qs((await request.body()).decode())
     email = (form.get("email") or [""])[0].strip().lower()
     password = (form.get("password") or [""])[0]
-    expected = vault.platform_secrets().get("LOGIN_PASSWORD", "")
-    if not expected or not hmac.compare_digest(password.encode(), expected.encode()) or "@" not in email:
+    if not password_admits(email, password):
         await asyncio.sleep(1)  # slows guessing
-        return JSONResponse({"detail": "The email or password is incorrect."}, status_code=401)
-    if not may_sign_in(email):
         return JSONResponse({"detail": "The email or password is incorrect."}, status_code=401)
     request.session["email"] = email
     request.session["name"] = email

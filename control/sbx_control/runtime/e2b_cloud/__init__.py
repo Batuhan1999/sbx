@@ -19,7 +19,7 @@ import re
 import threading
 import time
 
-from ..base import Capabilities, Failed, HostSide, LimitRefused, Limits, Preset, SettingField
+from ..base import HOSTNAME, Capabilities, Failed, HostSide, LimitRefused, Limits, Preset, SettingField
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute
 
 KIND = "e2b-cloud"
@@ -28,10 +28,11 @@ DOMAIN_KEY = "E2B_CLOUD_DOMAIN"
 TOKEN_HEADER = "e2b-traffic-access-token"
 # The limits, by Limits field: the runtime.env key that sets each and its
 # default, E2B's Hobby plan (a sandbox runs an hour before its timeout, up
-# to 8 vCPUs, 8 GiB and 10 GiB of disk; 20 at once).
+# to 8 vCPUs, 8 GiB and 10 GiB of disk; 10 at once): an installation that
+# never chose a plan is on Hobby (PRESETS).
 LIMITS = {"timeout_seconds": ("E2B_CLOUD_MAX_TIMEOUT", 3600), "cpu": ("E2B_CLOUD_MAX_CPU", 8),
           "memory_mb": ("E2B_CLOUD_MAX_MEMORY_MB", 8192), "disk_mb": ("E2B_CLOUD_MAX_DISK_MB", 10240),
-          "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 20)}
+          "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 10)}
 # How each limit is shown and set in the web app: its label, unit and the
 # range its slider covers. Timeout, disk and sandboxes at once go up to what
 # E2B's plans publish (PRESETS: 24 h, 20 GiB, 100; the timeout no shorter
@@ -60,8 +61,7 @@ SETTINGS = (
 # per sandbox session", "Up to 100 concurrently running sandboxes", "20 GiB
 # of sandbox disk" are fixed; its vCPUs and RAM are "8+" ("Custom sandbox CPU
 # and RAM"), no published number, so they stay adjustable from 8 and 8 GiB.
-# LIMITS' defaults stay as they were (20 at once), so an installation that
-# never chose a plan behaves as before.
+# LIMITS' defaults are Hobby's.
 _PLAN_SOURCE = "https://e2b.dev/pricing"
 PRESETS = (
     Preset("hobby", "Hobby", {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8",
@@ -91,7 +91,7 @@ def _limits(secrets: dict) -> Limits:
         raise SystemExit(f"{LIMITS['timeout_seconds'][0]} in /etc/sbx/runtime.env: {error}") from None
 
 
-DOMAIN_RE = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
 
 
@@ -151,7 +151,7 @@ class Cloud(Compute, HostSide):
             raise SystemExit(f"missing platform secret: {API_KEY} (/etc/sbx/runtime.env), an API key from E2B's "
                              f"dashboard: sbx-admin runtime add {KIND} reads it from stdin")
         domain = secrets.get(DOMAIN_KEY) or DEFAULT_DOMAIN
-        if not DOMAIN_RE.fullmatch(domain):   # it goes into nginx's upstream and the API's URL
+        if not HOSTNAME.fullmatch(domain):   # it goes into nginx's upstream and the API's URL
             raise SystemExit(f"{DOMAIN_KEY}={domain!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
         self._domain = domain
         self._limits = _limits(secrets)
@@ -164,7 +164,7 @@ class Cloud(Compute, HostSide):
         if self._domain is None:
             from ... import vault
             found = vault.runtime((DOMAIN_KEY,)).get(DOMAIN_KEY) or DEFAULT_DOMAIN
-            if not DOMAIN_RE.fullmatch(found):
+            if not HOSTNAME.fullmatch(found):
                 raise SystemExit(f"{DOMAIN_KEY}={found!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
             return found
         return self._domain

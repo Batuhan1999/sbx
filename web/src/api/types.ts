@@ -165,6 +165,8 @@ export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
 export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean
+  /** A hostname's pattern, the server's own (runtime.base.HOSTNAME). */
+  pattern?: string
   /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
   min?: number | null; max?: number | null; step?: number | null; unit?: string }
 /** adjustable: keys the plan does not fix (no published number), set from values; note says why. */
@@ -182,6 +184,8 @@ export type AvailableRuntime = {
   managed_by: string
   /** Why the web app can't add or change it ("" when it can). */
   not_editable: string
+  /** A provider's runtime needs the installation's domain first (its sandboxes call it back). */
+  needs_domain?: boolean
   settings: RuntimeSetting[]
   presets: RuntimePreset[]
   values: Record<string, string>

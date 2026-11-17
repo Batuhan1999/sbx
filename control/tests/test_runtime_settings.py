@@ -419,6 +419,77 @@ class Web(TwoRuntimes, Server):
         self.request_file.unlink()                                       # taken, and its process gone
         self.assertEqual(runtime_changes.status()["state"], "failed")
 
+    def test_a_change_finished_while_status_looked_is_done_not_failed(self):
+        from sbx_control import runtime_changes
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        self.request_file.unlink()                                       # taken by the root side...
+        record = json.loads((self.root / "state/runtime-change.json").read_text())
+
+        def finished():   # ...which finishes between status()'s first read and its checks
+            (self.root / "state/runtime-change.json").write_text(json.dumps({**record, "state": "done", "message": "ok"}))
+            return False
+        with patch.object(runtime_changes, "_applying", side_effect=finished):
+            self.assertEqual(runtime_changes.status()["state"], "done")
+
+    def test_a_store_reference_is_never_taken_as_a_value(self):
+        from sbx_control import secret_store
+        self.store["infisical-ref-77"] = "the platform's own secret"
+        for values in ({"E2B_CLOUD_API_KEY": "infisical-ref-77"}, {"E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_DOMAIN": "infisical-ref-77"}):
+            with self.subTest(values=values), patch.object(secret_store, "unseal", side_effect=AssertionError("unsealed")):
+                response = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": values})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("a reference into the secret store is not a value", response.json()["detail"])
+        self.assertFalse(self.request_file.exists())
+
+    def test_an_installation_that_never_chose_a_plan_is_on_hobby(self):
+        from sbx_control import runtimes
+        from sbx_control.runtime.e2b_cloud import Cloud
+        cloud = Cloud()
+        self.assertEqual(cloud.limits().sandboxes, 10)
+        self.assertEqual(runtimes.plan_of(cloud, {}), {"name": "hobby", "title": "Hobby"})
+
+    def test_a_provider_without_a_domain_is_said_up_front(self):
+        from sbx_control import settings
+        settings.update("domain", {**settings.current().domain.model_dump(), "name": ""}, by="test")
+        cloud = next(r for r in self.call("GET", "/api/runtimes/available").json() if r["kind"] == "e2b-cloud")
+        self.assertTrue(cloud["needs_domain"])
+        self.assertIn("connect a domain first", cloud["not_editable"])
+
+    def test_the_default_again_is_done_at_once(self):
+        from sbx_control import runtime_changes
+        response = self.call("PUT", "/api/runtimes/default", {"kind": "embed"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.json()["state"], response.json()["restarting"]), ("done", False))
+        self.assertIn("is the default already", response.json()["message"])
+        self.assertFalse(self.request_file.exists())
+        self.assertEqual(runtime_changes.status()["state"], "idle")
+
+    def test_a_runtime_that_cannot_be_configured_can_still_be_removed(self):
+        with patch.object(self.fake, "configure", side_effect=SystemExit("missing platform secret: FAKE_RUNTIME_TOKEN")):
+            listed = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
+            self.assertEqual(listed["fake"]["removable"], "")
+            self.assertEqual(self.call("DELETE", "/api/runtimes/fake").status_code, 202)
+            code, said = self.apply()
+        self.assertEqual(code, 0, said)
+        self.assertIn("Its sandboxes could not be listed (missing platform secret: FAKE_RUNTIME_TOKEN)", said)
+        self.assertEqual(self.runtime.enabled(), ["embed"])
+
+    def test_install_sh_s_runtime_is_refused_before_any_listing(self):
+        from sbx_control import runtimes
+        with patch.object(runtimes, "removal_refused", side_effect=AssertionError("listed")):
+            response = self.call("DELETE", "/api/runtimes/embed")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("set up by install.sh", response.json()["detail"])
+
+    def test_the_last_runtime_points_at_the_cli_and_the_settings(self):
+        from sbx_control import runtimes
+        self.assertEqual(self.call("DELETE", "/api/runtimes/fake").status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        with patch.object(self.runtime, "enabled", return_value=["fake"]):
+            with self.assertRaises(runtimes.Conflict) as refused:
+                runtimes.removal_refused("fake")
+        self.assertIn("sbx runtimes add KIND, or Settings → Sandbox runtimes", str(refused.exception))
+
 
 class LearnedLimits(TwoRuntimes, Installation):
     def test_a_refused_limit_is_recorded_named_and_never_raised_by_sbx(self):
@@ -561,6 +632,26 @@ class NoRuntimeYet(Server):
         self.assertEqual(self.runtime.enabled(), ["e2b-cloud"])
         with self.assertRaisesRegex(runtimes.Conflict, "only runtime"):
             runtimes.removal_refused("e2b-cloud")
+
+
+class SetupWithoutABrowser(Server):
+    """sbx setup finish --admin: the last step with the setup link and the admin's password, no session."""
+
+    def test_finish_with_the_admin_s_password_instead_of_a_session(self):
+        from fastapi.testclient import TestClient
+        self.choose_ip()
+        self.create_admin()
+        fresh = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session cookie: an agent's CLI
+        self.addCleanup(fresh.close)
+        wrong = fresh.post("/api/setup/complete", headers=self.headers,
+                           json={"email": "operator@example.com", "password": "not-the-password"})
+        self.assertEqual(wrong.status_code, 403)
+        self.assertEqual(fresh.post("/api/setup/complete", headers=self.headers).status_code, 400)   # nobody signed in
+        done = fresh.post("/api/setup/complete", headers=self.headers,
+                          json={"email": "Operator@example.com", "password": "test-only-password-123"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
+        self.assertNotIn("test-only-password-123", done.text)
 
 
 class InstallerWithoutARuntime(Installation):

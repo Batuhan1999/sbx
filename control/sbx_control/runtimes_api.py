@@ -6,6 +6,7 @@ here and queued for the root side (runtime_changes), which applies them and
 restarts sbx-control; GET /api/runtimes/change follows it."""
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import auth, runtime, runtime_changes, runtimes, setup
@@ -86,6 +87,10 @@ def api_add(body: Added, who: str = Depends(setup_or_admin)):
 
 @router.put("/api/runtimes/default", status_code=202)
 def api_default(body: Default, who: str = Depends(setup_or_admin)):
+    """202 with the queued change; 200, done, for the runtime that is the default already (nothing to restart)."""
+    if runtimes.is_default(body.kind):
+        return JSONResponse({"state": "done", "operation": "default", "kind": body.kind, "at": "", "restarting": False,
+                             "message": f"{runtime.title(body.kind)} ({body.kind}) is the default already"})
     return _queue("default", body.kind, who, lambda: runtimes.default_refused(body.kind))
 
 
@@ -109,9 +114,9 @@ async def api_test(kind: str, who: str = Depends(setup_or_admin)):
 def api_remove(kind: str, who: str = Depends(setup_or_admin)):
     """Refused (409) while sandboxes run on it, naming them, or when it is the last one."""
     def check():
-        runtimes.removal_refused(kind)
-        backend = runtime.get(kind)
-        if getattr(backend, "host", False):
+        backend = runtime.get(kind) if kind in runtime.enabled() else None
+        if getattr(backend, "host", False):   # before any listing: install.sh's runtime is the server's to remove
             raise runtimes.Conflict(f"{backend.title} is set up by install.sh on this server; remove it there: "
                                     f"sbx-admin runtime remove {kind}")
+        runtimes.removal_refused(kind)
     return _queue("remove", kind, who, check)

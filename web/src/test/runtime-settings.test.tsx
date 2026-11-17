@@ -130,7 +130,7 @@ describe('Settings → Sandbox runtimes', () => {
   it('preselects the plan the stored limits are, keeps the key, and moves to another plan', async () => {
     const calls = stubApi({
       'GET /api/me': ME,
-      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { ...HOBBY } })],
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { ...HOBBY }, plan: { name: 'hobby', title: 'Hobby' } })],
       'GET /api/runtimes/change': IDLE,
       'PUT /api/runtimes/e2b-cloud': change('queued', 'change'),
       'GET /api/runtimes': { default: 'e2b-cloud', runtimes: [{ ...CLOUD, default: true, limit_hit: null, plan: { name: 'hobby', title: 'Hobby' },
@@ -154,13 +154,13 @@ describe('Settings → Sandbox runtimes', () => {
     await user.type(within(form).getByLabelText('vCPUs: exact value'), '16{Enter}')
     await user.click(within(form).getByRole('button', { name: 'Save settings' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
-    expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { E2B_CLOUD_DOMAIN: '', ...PRO, E2B_CLOUD_MAX_CPU: '16' } })   // no key: kept
+    expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { ...PRO, E2B_CLOUD_MAX_CPU: '16' } })   // no key: kept; the domain is as it was
   })
 
   it('shows Custom for limits no plan has, and asks for the key again when the domain moves', async () => {
     const calls = stubApi({
       'GET /api/me': ME,
-      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { ...HOBBY, E2B_CLOUD_MAX_SANDBOXES: '20' } })],
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { ...HOBBY, E2B_CLOUD_MAX_SANDBOXES: '200' }, plan: { name: 'custom', title: 'Custom limits' } })],
       'GET /api/runtimes/change': IDLE,
       'PUT /api/runtimes/e2b-cloud': change('queued', 'change'),
       'GET /api/runtimes': { default: 'e2b-cloud', runtimes: [{ ...CLOUD, default: true, limit_hit: null, plan: { name: 'custom', title: 'Custom limits' }, limits: { sandboxes: 20 } }] },
@@ -171,7 +171,7 @@ describe('Settings → Sandbox runtimes', () => {
     await user.click(await screen.findByRole('button', { name: 'Change settings' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     expect(within(form).getByRole('radio', { name: /Custom/ })).toHaveProperty('checked', true)
-    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('20 at once')
+    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100 at once')   // 200 by hand in runtime.env: the slider's top
     const advanced = within(form).getByText('Advanced').closest('details')!
     expect(advanced.open).toBe(false)                                   // the domain is out of the way
     await user.click(within(form).getByText('Advanced'))
@@ -183,14 +183,14 @@ describe('Settings → Sandbox runtimes', () => {
     await user.type(within(form).getByLabelText('API key'), 'test-only-key')
     await user.click(within(form).getByRole('button', { name: 'Save settings' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
-    expect(calls.find(c => c.method === 'PUT')!.body).toMatchObject({ values: { E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_DOMAIN: 'e2b.example.com', E2B_CLOUD_MAX_SANDBOXES: '20' } })
+    expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_DOMAIN: 'e2b.example.com' } })   // the untouched 200 is never lowered
   })
 
   it('shows the server’s refusal, and what to do on a local secret store instead of the form', async () => {
     stubApi({
       'GET /api/me': ME,
       'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, not_editable: 'set up the secret store first, or on the server: sbx-admin runtime add e2b-cloud' })],
-      'GET /api/runtimes/change': change('failed', 'add', 'E2B Cloud did not take the settings: E2B Cloud API: HTTP 401'),
+      'GET /api/runtimes/change': { ...change('failed', 'add', 'E2B Cloud did not take the settings: E2B Cloud API: HTTP 401'), at: new Date().toISOString() },
       'GET /api/runtimes': { default: 'embed', runtimes: [EMBED] },
     })
     renderApp(<Runtimes />)
@@ -199,6 +199,21 @@ describe('Settings → Sandbox runtimes', () => {
     await user.click(await screen.findByRole('button', { name: 'Add a runtime' }))
     expect(screen.getByText(/sbx-admin runtime add e2b-cloud/)).toBeTruthy()
     expect(screen.queryByRole('form', { name: 'E2B Cloud settings' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(/Adding E2B Cloud failed/)).toBeNull()
+  })
+
+  it('does not show someone else’s old failure', async () => {
+    stubApi({
+      'GET /api/me': ME,
+      'GET /api/runtimes/available': [AV_EMBED],
+      'GET /api/runtimes/change': { ...change('failed', 'add', 'HTTP 401'), at: new Date(Date.now() - 60 * 60_000).toISOString() },
+      'GET /api/runtimes': { default: 'embed', runtimes: [EMBED] },
+    })
+    renderApp(<Runtimes />)
+    expect(await screen.findByRole('heading', { name: 'E2B Embed' })).toBeTruthy()
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByText(/failed/)).toBeNull()
   })
 
   it('shows nothing to change for someone who is not an admin', async () => {
@@ -255,4 +270,22 @@ describe('first-run setup without a runtime', () => {
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
     expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)
+
+  it('says up front that a provider needs a domain, and goes back to the address step', async () => {
+    setSetupToken('one-time-token')
+    stubApi({
+      'GET /api/setup/checks': { ok: true, checks: [] },
+      'GET /api/setup': { ...SETUP(false), access: { ...SETUP(false).access, mode: 'ip', domain: '' } },
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, needs_domain: true,
+        not_editable: "E2B Cloud's sandboxes call this server back at its login address: connect a domain first (the server address step, or Settings → General)" })],
+      'GET /api/runtimes/change': IDLE,
+      'GET /api/runtimes': { default: '', runtimes: [] },
+    })
+    renderApp(<SetupPage />, '/app/setup')
+    const user = userEvent.setup()
+    expect((await screen.findByRole('alert')).textContent).toContain('connect a domain first')
+    expect(screen.queryByRole('form', { name: 'E2B Cloud settings' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Choose a domain' }))
+    expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
+  })
 })

@@ -151,7 +151,11 @@ def status() -> dict:
         record = _give_up_unclaimed(record)
         found = record.get("state") or found
     if found in ("queued", "applying") and not _request_file().exists() and not _applying():
-        found, record = "failed", {**record, "message": "the change stopped before it finished; nothing to wait for"}
+        # The root side may have finished between the first read and these checks: read again.
+        record = _read_record()
+        found = record.get("state") or "idle"
+        if found in ("queued", "applying"):
+            found, record = "failed", {**record, "message": "the change stopped before it finished; nothing to wait for"}
     finished = record.get("finished")
     restarting = (found == "done" and record.get("restarts", False) and finished is not None
                   and STARTED < finished and time.time() - finished < RESTART_SECONDS)
@@ -202,9 +206,7 @@ def perform(operation: str, kind: str, values: dict | None = None) -> runtimes.C
     leaves the change made (said says so). Call it holding locked():
     sbx-admin runtime add | remove | default and apply-pending."""
     from . import platform
-    if operation in ("remove", "default"):
-        platform.connect()   # the enabled backends configured: removal lists the runtime's sandboxes
-    change = None
+    change = None   # removal configures the one runtime it lists (runtimes.removal_refused)
     try:
         if operation in ("add", "change"):
             change = runtimes.add(kind, values or {})

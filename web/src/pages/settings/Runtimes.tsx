@@ -26,7 +26,7 @@ export function Runtimes() {
   return <Panel id="runtimes" title="Sandbox runtimes" bodyClassName="p-0"
     description="Where sandboxes run. Each sandbox runs on one, chosen when it is created; repositories without a choice of their own use the default."
     actions={admin && addable.length > 0 && !adding ? <Button size="sm" disabled={flow.busy} onClick={() => setAdding(true)}>Add a runtime</Button> : undefined}>
-    {admin && (flow.busy || flow.change?.state === 'failed' || (flow.change?.state === 'done' && flow.mine)) && <div className="border-b border-line px-4 py-3"><ChangeStatus flow={flow} title={title} /></div>}
+    {admin && <ChangeStatus flow={flow} title={title} className="border-b border-line px-4 py-3" />}
     {adding && <AddRuntime choices={addable} flow={flow} onClose={() => setAdding(false)} />}
     <QueryView query={runtimes} inline loading={<SkeletonRows rows={1} />}>{d => d.runtimes.length === 0
       ? <EmptyState title="No sandbox runtime yet">Sandboxes need one to run on.{admin && addable.length > 0 ? ' Add one above.' : ''}</EmptyState>
