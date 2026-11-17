@@ -188,6 +188,12 @@ class Gate(GateCase):
             response = self.ask("memos-a.example.test", self.owner)
         self.assertEqual(response.headers.get("x-sbx-page"), "failed")
 
+    def test_a_sandbox_running_again_drops_the_last_resume_s_error(self):
+        from types import SimpleNamespace
+        self.waking._wake_errors[self.vm] = "RuntimeError: the listing after the resume failed"
+        self.assertTrue(self.waking.wake(self.vm, lambda fresh: SimpleNamespace(state="running")))
+        self.assertIsNone(self.waking.failed(self.vm))
+
     def test_an_app_that_stopped_offers_its_owner_a_restart(self):
         from sbx_control import lifecycle
         op = lifecycle.begin("memos-a", "restart")
