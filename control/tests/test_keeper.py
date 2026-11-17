@@ -27,6 +27,8 @@ class Keeper(unittest.TestCase):
                     (keeper.tls_pin, "redeliver", None),
                     (keeper.routing, "forget_except", None),
                     (keeper.routing, "detect_ports", None),
+                    (keeper.sandbox_layers, "tick", None),
+                    (keeper.sandbox_layers, "round", None),
                     (keeper, "notice_stopped_app", None),
                     (keeper.extensions, "keeper_policy", lambda info, use: None),
                     (keeper, "use_of", lambda info, running: used)):

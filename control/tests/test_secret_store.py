@@ -479,9 +479,10 @@ class DeliveryTests(Server):
 
     def env(self, wanted, written):
         """The env sbx-control would write now, and what the VM's env files hold (one read per call)."""
-        self.enterContext(patch.object(self.core, "runtime_values", return_value=(wanted, set(), Mock())))
-        self.enterContext(patch.object(self.core, "written_env", side_effect=written))
-        return self.enterContext(patch.object(self.core, "write_runtime"))
+        from sbx_control import sandbox_runtime
+        self.enterContext(patch.object(sandbox_runtime, "runtime_values", return_value=(wanted, set(), Mock())))
+        self.enterContext(patch.object(sandbox_runtime, "written_env", side_effect=written))
+        return self.enterContext(patch.object(sandbox_runtime, "write_runtime"))
 
     def test_a_failed_delivery_is_retried_and_a_newer_change_is_not_acknowledged(self):
         from sbx_control import core

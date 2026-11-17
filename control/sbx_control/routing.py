@@ -63,9 +63,8 @@ def detect_ports(sandbox_id: str, a: recipes.App) -> dict:
     resumes a paused one. On failure, what was known before."""
     _detected_at[sandbox_id] = time.time()
     try:
-        output = runtime.connect(sandbox_id).commands.run(core.LISTENING_AND_FORWARDER, timeout=10).stdout
-        listening, forwarder = core.listening_and_forwarder(output)
-        _detected[sandbox_id] = core.detected_ports(listening, a, exclude=forwarder)
+        listening = runtime.connect(sandbox_id).commands.run(core.LISTENING, timeout=10).stdout
+        _detected[sandbox_id] = core.detected_ports(listening, a)
         if addressing.mode() == "ip":
             ip_previews.observe(sandbox_id, addressing.ports(a).values(), _detected[sandbox_id])
     except runtime.NotRunning:

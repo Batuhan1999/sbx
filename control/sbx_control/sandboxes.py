@@ -276,16 +276,15 @@ def advise_endpoints(name: str, repo: str | None, kind: str):
     runtime won't reach (no endpoint, or not granted to the repo): not a
     refusal, an event that says what would make it reachable."""
     from . import endpoints, runtime
-    try:
-        if not repo or runtime.capabilities(kind).private_networks:
-            return
-        found = endpoints.missing(repo, sources=("env",))
-    except Exception:
+    if not repo or runtime.capabilities(kind).private_networks:
         return
-    domain = "" if endpoints.domain() else " (endpoints need a domain: connect one first)"
-    for what, command in found:
-        state.event(name, "endpoint suggested", f"its sandboxes on this runtime don't reach {what}; an admin adds "
-                                                f"it: {command}{domain}")
+    try:
+        said = endpoints.advice(repo)
+    except Exception as error:   # advice only: the create goes on
+        print(f"endpoints: advice for {repo}: {error!r}", flush=True)
+        return
+    for line in said:
+        state.event(name, "endpoint suggested", line)
 
 
 def restart(name: str, info, prepare: bool = False):

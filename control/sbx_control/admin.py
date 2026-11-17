@@ -140,7 +140,7 @@ def do_doctor() -> int:
     found = endpoints.describe()
     if found["endpoints"]:
         print(f"Endpoints: {len(found['endpoints'])} exposed to sandboxes on provider runtimes")
-        for line in endpoints.doctor_lines():
+        for line in endpoints.doctor_lines(found):
             print(line)
         bad += sum(e["state"] == "failed" for e in found["endpoints"])
     return 1 if bad else 0

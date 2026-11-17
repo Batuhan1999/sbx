@@ -6,7 +6,7 @@
 #   <service>.<domain>     the operator's services, behind the login
 #   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
 #   <endpoint>.<domain>    this host's private services for sandboxes on provider runtimes,
-#                          mutual TLS (endpoints.py)
+#                          mutual TLS (sbx_control/endpoints)
 # All on 443: nginx's stream module owns it and picks by the TLS server name,
 # without decrypting, an endpoint's TLS server or the HTTPS server below, which
 # listens on loopback and takes the client's address from the PROXY protocol.
@@ -33,13 +33,13 @@ dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
 # nginx's main configuration: the image's own, the client's address from the
-# PROXY protocol, and the stream block (sbx_control/endpoints.py; written in
+# PROXY protocol, and the stream block (sbx_control/tls_front.py; written in
 # place, the container mounts this file). The stream front on 443 always; the
 # endpoints' servers and CAs follow the records.
-venv/bin/python -m sbx_control.endpoints main-conf > "$dir/nginx.conf"
+venv/bin/python -m sbx_control.tls_front main-conf > "$dir/nginx.conf"
 venv/bin/python -m sbx_control.endpoints nginx "$dir/nginx"
 # Where every HTTPS server below listens: behind the stream front.
-https_listen=$(venv/bin/python -m sbx_control.endpoints https-listen)
+https_listen=$(venv/bin/python -m sbx_control.tls_front https-listen)
 
 # nginx in its container, started once, then told to read its configuration
 # again: here and after every certificate a renewal script gets.

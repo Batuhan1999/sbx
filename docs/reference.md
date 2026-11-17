@@ -301,10 +301,10 @@ How it works:
 - **Certificates.** An endpoint's CA is made with it; its key is sealed in
   the secret store (sbx-control issues the sandboxes' certificates on
   demand), its certificate is public. A sandbox's certificate for an
-  endpoint is valid 24 hours. It is issued whenever the sandbox's runtime is
-  written (create, a cold boot, an env delivery; the keeper renews a running
-  one with less than 12 hours left), pushed when sbx resumes the sandbox
-  (the gate, the API, the keeper), and pulled by the forwarder itself (`POST
+  endpoint is valid 24 hours. It is issued once the sandbox's runtime is
+  written (create, a cold boot, an env delivery), pushed when sbx resumes
+  the sandbox (the gate, the API, the keeper) and by the keeper to a running
+  one with less than 12 hours left, and pulled by the forwarder itself (`POST
   /api/sandbox/endpoint-certs`): with less than an hour left it asks in the
   background, one request at a time, waiting a minute after a failure and
   doubling that up to 15 minutes, and keeps using the certificate it has
@@ -312,14 +312,16 @@ How it works:
   sandbox woken after a long pause by anyone) waits for the renewal. The
   forwarder's credential is the sandbox's own: random, made anew with each
   runtime write and bound to its repository, so a sandbox made again under
-  the same name gets another, and an old one is refused. Renewed keys and
-  certificates are written as one file each, replaced whole. Open
+  the same name gets another, and an old one is refused; it counts once the
+  runtime that holds it is written. The sandbox's keys and certificates are
+  one store in `/run/sbx/endpoint-certs`, one file per endpoint, replaced
+  whole; a revoked endpoint's file goes. Open
   connections keep the certificate they began with. No key appears in a log,
   an event or an admin's API answer.
 - **The sandbox.** The guest helper's forwarder (`sbx_guest.py forward`)
-  listens on `127.0.0.1:<local port>` (17400 and up, one per endpoint; when
-  something else in the sandbox listens there already, the next free port,
-  and the values below follow it) for
+  listens on `127.0.0.1:<local port>` (17400 to 17799, one per endpoint; when
+  something else in the sandbox listens there already, the next free port
+  in that range, and the values below follow it) for
   each endpoint the sandbox may use and wraps each connection into TLS to
   `<name>.<domain>:443` with that endpoint's certificate, verifying the
   server as `<name>.<domain>` (against the public CAs, or the installation's
@@ -328,12 +330,10 @@ How it works:
   login (`postgres-clone`'s per-sandbox role) stays on top. One thread
   carries each connection; when either side ends, what is pending goes out
   and both close (as nginx's stream proxy does: no half-closed
-  connections). sbx starts the forwarder again when it died, and replaces
-  one an earlier release started (after an upgrade, with the sandbox's
-  guest helper of this release): with each runtime write, on resume and in
-  the keeper's round. A port it can't
-  listen on is a sandbox event, said once. Its ports are never offered as
-  previews.
+  connections). sbx starts the forwarder again when it died: with each
+  runtime write, on resume and in the keeper's round. A port it can't
+  listen on is a sandbox event, said once. Ports 17400 to 17799 are never
+  offered as previews, in any sandbox.
 - **The values.** On such a runtime, every `host:port` in a sandbox's env
   and its services' outputs that is the target of an endpoint it may use (a
   URL, an address, or `host` and `port` outputs) becomes the forwarder's

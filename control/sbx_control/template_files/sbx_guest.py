@@ -482,8 +482,9 @@ def usage():
 # connection into TLS to <address>:<port>, with the sandbox's certificate for
 # that endpoint, the server verified as <address> (against the public CAs, or
 # the installation's self-signed certificate when the config names one).
-# Each new connection takes the newest certificate it has: the config's, or
-# one sbx pushed or the forwarder pulled since (RENEWED). With less than
+# Its certificates are one store (RENEWED), which sbx writes after each
+# runtime write, on resume and before they run out, and the forwarder itself
+# when it pulls new ones; each new connection takes the one there. With less than
 # RENEW_BEFORE left it asks sbx-control for new ones in the background, one
 # request at a time, backing off after a failure; a connection waits for that
 # only when its certificate has run out. Open connections keep the
@@ -499,13 +500,8 @@ FORWARD_STATUS = "forwarder-status.json"  # in RUN: {"unbound": {name: port}}
 FORWARD_POLL = 2.0
 FORWARD_GONE = 15.0                     # seconds without a config before it exits
 RENEWED = "endpoint-certs"              # in RUN: BUNDLE files and BUNDLE_INDEX
-# Each endpoint's renewed key and certificate in one file, and their times. Names a forwarder of
-# before FORWARD_VERSION 2 never reads (it read <name>.pem, <name>-key.pem and renewed.json), so
-# one still running until sbx replaces it can't pair a new file with an old one.
-BUNDLE = "{}.bundle.pem"
+BUNDLE = "{}.bundle.pem"                # an endpoint's key and certificate in one file, replaced whole
 BUNDLE_INDEX = "bundles.json"           # {name: not_after}
-# What the running forwarder is, in its pid file: ensure replaces one of another version.
-FORWARD_VERSION = 2
 RENEW_BEFORE = 3600                     # seconds left on a certificate that start a renewal
 RENEW_RETRY = 60                        # seconds before a failed renewal is tried again, doubling
 RENEW_RETRY_MAX = 900
@@ -528,14 +524,11 @@ def _write_private(path, text):
         Path(temporary).unlink(missing_ok=True)
 
 
-def _certificate(endpoint, folder, renewed):
-    """(certificate file, key file or None when the first holds both, not_after) of the newest for the endpoint."""
-    found = [(str(folder / endpoint["cert"]), str(folder / endpoint["key"]), float(endpoint.get("not_after") or 0))]
-    later = read_json(Path(renewed) / BUNDLE_INDEX).get(endpoint["name"])
+def _certificate(endpoint, renewed):
+    """(the endpoint's bundle, its not_after); not_after 0 when there is none yet."""
+    not_after = read_json(Path(renewed) / BUNDLE_INDEX).get(endpoint["name"])
     bundle = Path(renewed) / BUNDLE.format(endpoint["name"])
-    if later and bundle.exists():
-        found.append((str(bundle), None, float(later)))
-    return max(found, key=lambda f: f[2])
+    return (str(bundle), float(not_after)) if not_after and bundle.exists() else (str(bundle), 0.0)
 
 
 def renew(config, folder, renewed):
@@ -612,16 +605,16 @@ def forward_context(config_path, endpoint, renewed, renewer=None, now=None):
     config = json.loads(Path(config_path).read_text())
     folder = Path(config_path).parent
     renewer = renewer or Renewer(config_path, renewed)
-    cert, key, not_after = _certificate(endpoint, folder, renewed)
+    bundle, not_after = _certificate(endpoint, renewed)
     if not_after - (time.time() if now is None else now) < RENEW_BEFORE and config.get("renew"):
         renewer.start()
         if not_after <= (time.time() if now is None else now):
             renewer.wait(RENEW_WAIT)
-            cert, key, not_after = _certificate(endpoint, folder, renewed)
+            bundle, not_after = _certificate(endpoint, renewed)
     trust = config.get("trust")
     context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(cert, key)
+    context.load_cert_chain(bundle)
     return context
 
 
@@ -807,26 +800,19 @@ class Forwarder:
 
 
 def forward(action, config_path, state_file=None):
-    """ensure: start the forwarder unless one of this FORWARD_VERSION runs
-    (detached); one of another version (a release before, still running
-    after an upgrade) is stopped first. run: be it."""
+    """ensure: start the forwarder (detached) unless one runs. run: be it."""
     state_file = Path(state_file) if state_file else RUN / FORWARD_PID
     if action == "run":
-        write_json(state_file, {**record(os.getpid()), "version": FORWARD_VERSION})
+        write_json(state_file, record(os.getpid()))
         Forwarder(config_path).run()
         return
-    running = read_json(state_file)
-    if alive(running):
-        if running.get("version") == FORWARD_VERSION:
-            return
-        say(f"forward: replacing the forwarder of version {running.get('version', 1)} (pid {running['pid']})")
-        if not terminate(running["pid"], lambda: alive(running)):
-            raise GuestError(f"the forwarder of before (pid {running['pid']}) did not stop")
+    if alive(read_json(state_file)):
+        return
     with open("/tmp/sbx-endpoints.log", "a") as log:
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
                                    start_new_session=True)
-    write_json(state_file, {**record(process.pid), "version": FORWARD_VERSION})
+    write_json(state_file, record(process.pid))
 
 
 def main(argv=None):

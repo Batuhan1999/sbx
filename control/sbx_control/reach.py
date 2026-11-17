@@ -16,16 +16,17 @@ def _fence() -> bool:
     return all(runtime.capabilities(kind).egress_rules for kind in runtime.enabled())
 
 
-def _private() -> bool:
-    """Whether internal ranges do something: a runtime's sandboxes reach them,
-    or, with a domain, sandboxes on any runtime through endpoints (endpoints.py)."""
+def private_reachable() -> bool:
+    """Whether this host's private network is in sandboxes' reach: a
+    runtime's sandboxes reach it themselves, or, with a domain, sandboxes on
+    any runtime through endpoints (sbx_control/endpoints)."""
     return any(runtime.capabilities(kind).private_networks for kind in runtime.enabled()) \
         or bool(settings.current().domain.name)
 
 
 def offered() -> dict:
     """The settings the runtimes can enforce, by name: what the settings page offers."""
-    return {"public_repos": _fence(), "internal_cidrs": _private()}
+    return {"public_repos": _fence(), "internal_cidrs": private_reachable()}
 
 
 @settings.check("access")
@@ -43,7 +44,7 @@ def _access(before, after):
 def _network(before, after):
     if not after.internal_cidrs:
         return
-    if not _private():
+    if not private_reachable():
         raise ValueError("network.internal_cidrs needs a runtime whose sandboxes reach this host's private network "
                          "(private_networks), and this one's don't: the ranges would do nothing until a domain is "
                          "connected and they get endpoints")

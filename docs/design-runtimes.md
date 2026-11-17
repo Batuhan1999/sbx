@@ -105,7 +105,7 @@ runtime; it asks the registry.
 ## Phase 4: shared services over one TLS path
 
 Sandboxes on a runtime without `private_networks` reach this host's managed
-servers and internal hosts through endpoints (`endpoints.py`;
+servers and internal hosts through endpoints (`sbx_control/endpoints/`;
 [reference](reference.md#endpoints)).
 
 1. **One generic path, on 443.** nginx's stream module owns 443 and
