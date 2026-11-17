@@ -152,7 +152,7 @@ check_report() {
     at=$(printf '%s\n' "$line" | awk '{print $5}')
     printf '%-12sin use%s on %s\n' "port $port:" "${by:+ by $by}" "$at"
   done
-  if configured; then echo "sbx:        installed (runtimes: ${installed:-none}); install.sh upgrades it"
+  if configured || [ -n "$has_env" ]; then echo "sbx:        installed (runtimes: ${installed:-none}); install.sh upgrades it"
   else echo "sbx:        not installed"
   fi
   echo "runtimes this host can run:"
@@ -166,6 +166,9 @@ check_report() {
     fi
   done
   [ -z "$small" ] || verdict=1
+  if [ -n "$embed" ] && [ -n "$unfit" ]; then
+    echo "verdict:    the upgrade refuses: this installation enables embed, and $unfit"; return 1
+  fi
   if [ "$verdict" != 0 ]; then echo "verdict:    sbx can't be installed on this host"
   elif [ -z "$unfit" ]; then echo "verdict:    embed (a provider runtime can be added too)"
   else echo "verdict:    a provider runtime (e2b-cloud or boat): it needs the owner's API key and a domain"
@@ -200,10 +203,14 @@ first=""; configured || first=1
 # install writes the file. An installation without the file runs Embed, as
 # sbx reads it: never an empty selection written over it.
 installed="" has_env=""
-if [ -f /etc/sbx/runtime.env ]; then
+reader=$src/control/sbx_control/runtime/env_file.py
+if [ -n "$check" ] && [ -e /etc/sbx ] && { [ "$(id -u)" != 0 ] || [ ! -f "$reader" ]; }; then
+  # --check without root (runtime.env is root-only) or install.sh alone (no reader): not read.
+  installed=unknown has_env=1
+elif [ -f /etc/sbx/runtime.env ]; then
   has_env=1
   # As sbx reads it: its own reader, before a release is unpacked.
-  installed=$(python3 -I "$src/control/sbx_control/runtime/env_file.py" runtimes /etc/sbx/runtime.env) ||
+  installed=$(python3 -I "$reader" runtimes /etc/sbx/runtime.env) ||
     die "could not read /etc/sbx/runtime.env (above)"
 elif configured; then
   installed=embed
@@ -229,7 +236,8 @@ need_gib=60; ! configured || need_gib=15
 # explicit change (the web app, sbx-admin runtime, a key given here).
 embed=""
 if [ -n "$installed" ]; then
-  if enables embed; then embed=1; [ -z "$unfit" ] || die "$unfit"; fi
+  # --check reports this refusal (check_report) instead of stopping before its report.
+  if enables embed; then embed=1; [ -z "$unfit" ] || [ -n "$check" ] || die "$unfit"; fi
 elif [ -z "$has_env" ] && [ -z "$unfit" ]; then
   embed=1
 fi
