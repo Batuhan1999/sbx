@@ -3,7 +3,7 @@
   /opt/sbx-control/releases/<id>/   a release (control/release.sh), with its own venv
   /opt/sbx-control/current          the active release (host-install.sh switches it)
   /usr/local/sbin/sbx-admin, sbx-apply, sbx-host-guard, and the runtime's
-  (runtime.Runtime.host_commands)    commands into the active release
+  (runtime.Backend.host_commands)    commands into the active release
 
 Every unit and command below runs the active release from CURRENT, so
 switching releases is one symlink and a restart. Host scripts (tls.sh,

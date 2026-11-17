@@ -6,8 +6,8 @@ import shlex
 import threading
 import time
 
-from . import (core, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandbox_layers, sandboxes,
-               settings, state, tls_pin, views)
+from . import (core, extensions, github_app, lifecycle, platform, routing, runtime, sandbox_layers, sandboxes,
+               settings, state, tls_pin, views, waking)
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -54,7 +54,7 @@ def notice_stopped_app(info):
 
 def use_of(info, running: bool) -> extensions.Use:
     """What the keeper knows about the sandbox's use; a paused one is not looked into."""
-    return extensions.Use(gate.last_access(info.sandbox_id), gate.resumed_for_preview(info.sandbox_id),
+    return extensions.Use(waking.last_access(info.sandbox_id), waking.resumed_for_preview(info.sandbox_id),
                           (lambda: probe(info.sandbox_id)) if running else extensions.Probe)
 
 
@@ -104,7 +104,7 @@ def keep_awake(info):
     """Push its timeout out: it is used. A use that is not a preview's
     request ends what a preview request's resume holds open (gate)."""
     runtime.set_timeout(info.sandbox_id, core.TIMEOUT_SECONDS)
-    gate.forget_preview_resume(info.sandbox_id)
+    waking.forget_preview_resume(info.sandbox_id)
 
 
 def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
@@ -116,7 +116,7 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     vm = core.runtime_state(info)
     sandboxes.record_transition(info, vm)
     if vm != "running":
-        gate.forget_preview_resume(info.sandbox_id)
+        waking.forget_preview_resume(info.sandbox_id)
     if vm == "paused" and settings.current().sandboxes.paused_days and info.end_at \
             and time.time() - info.end_at.timestamp() > settings.current().sandboxes.paused_days * 86400 \
             and may_delete:
@@ -157,7 +157,7 @@ def look_once():
         except runtime.NotRunning:
             # The runtime paused or deleted it since the listing (its own
             # timeout): nothing failed, the next round sees it as it is.
-            gate.forget_preview_resume(info.sandbox_id)
+            waking.forget_preview_resume(info.sandbox_id)
     try:   # a new certificate's pin; delivered for good once every runtime listed (complete)
         tls_pin.redeliver(((i.metadata or {}).get("sbx") for i in infos), complete)
     except Exception as error:   # the round's other work goes on; tried again next round

@@ -1,6 +1,6 @@
 """E2B Cloud: E2B's hosted sandboxes, through the same SDK adapter as Embed
 (runtime.e2b) with the VMs at E2B instead of on this host. It has no host
-side (HostSide): no KVM, units, firewall, disk or capacity here, so a small
+side (Backend.host): no KVM, units, firewall, disk or capacity here, so a small
 server without /dev/kvm runs it.
 
 Its sandboxes call back to this installation's public address (template

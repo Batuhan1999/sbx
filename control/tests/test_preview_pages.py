@@ -171,8 +171,8 @@ class Gate(GateCase):
             with patch.object(self.gate, "_listens", return_value=True):
                 self.assertEqual(self.ask("memos-a.example.test", self.owner, "/gate/status").json()["state"], "ready")
             self.assertEqual(self.ask("memos-a.example.test", self.owner).status_code, 200)
-        self.assertTrue(self.gate.resumed_for_preview(self.vm))
-        self.gate.forget_preview_resume(self.vm)
+        self.assertTrue(self.waking.resumed_for_preview(self.vm))
+        self.waking.forget_preview_resume(self.vm)
 
     def test_a_resume_that_fails_says_what_to_do(self):
         from sbx_control import core

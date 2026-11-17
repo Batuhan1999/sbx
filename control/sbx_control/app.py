@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import (auth, catalog_api, connections_api, core, dist_api, endpoints_api, env, extensions, gate, infisical_api, keeper,
                lifecycle, platform, recipes, repo_onboarding, repos_api, runtime, runtimes_api, sandboxes_api, secret_store,
-               settings_api, setup_api, setup_pr, spa, state, template_builds, updates, users_api)
+               settings_api, setup_api, setup_pr, spa, state, template_builds, template_scheduler, updates,
+               users_api)
 
 # In the order they match: a path two routers could answer goes to the first;
 # the extensions' come after the platform's API and before the web app's.
@@ -27,7 +28,7 @@ async def lifespan(_app):
     platform.connect()
     lifecycle.recover_interrupted()
     stop = threading.Event()
-    for name, work in (("keeper", keeper.run), ("templates", template_builds.schedule),
+    for name, work in (("keeper", keeper.run), ("templates", template_scheduler.schedule),
                        ("infisical-poll", infisical_api.poll), ("updates", updates.watch)):
         threading.Thread(target=work, args=(stop,), name=name, daemon=True).start()
     extensions.start(stop)

@@ -283,8 +283,7 @@ class Preset:
         return dataclasses.replace(self, keys={s.field: s.key for s in specs})
 
     def _key(self, field: str) -> str:
-        # Unbound (the phase-5 backend, Boat, until it keys its presets by field): values are by key already.
-        return self.keys.get(field, field)
+        return self.keys[field]
 
     def by_key(self) -> dict:
         """Its values by runtime.env key, as strings."""
@@ -504,14 +503,6 @@ class Backend(abc.ABC):
     def test(self) -> list:
         """Its checks (connections.Check), as sbx-admin doctor runs them."""
 
-    def __init_subclass__(cls, **kwargs):
-        # Shim for the phase-5 backend (Boat) until it declares upstream_token_at.
-        super().__init_subclass__(**kwargs)
-        for place in ("header", "cookie"):
-            name = cls.__dict__.get(f"upstream_token_{place}")
-            if name and "upstream_token_at" not in cls.__dict__:
-                cls.upstream_token_at = TokenPlace(place, name)
-
     def failure(self, error: BaseException) -> bool:
         """Whether an error is the runtime's or the connection's to it."""
         return False
@@ -621,6 +612,3 @@ class Backend(abc.ABC):
         the last room."""
         return contextlib.nullcontext()
 
-
-# The names before Backend: the phase-5 backend (Boat) still subclasses HostSide.
-Runtime = HostSide = Backend

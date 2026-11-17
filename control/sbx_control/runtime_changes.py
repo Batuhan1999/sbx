@@ -24,6 +24,7 @@ import sys
 import time
 
 from . import host_requests, paths, runtime, runtime_settings, runtimes, settings
+from .runtime import env_file
 from .settings import HostUnit
 
 KEY = HostUnit.RUNTIME_CHANGE
@@ -154,14 +155,14 @@ def perform(operation: str, kind: str, values: dict | None = None) -> str:
     that puts the file back, drops the references it made and raises. A
     failure letting go of an old reference leaves the change made (it says
     so). Call it holding host_requests.lock(KEY)."""
-    from . import platform, secret_store, vault
+    from . import platform, secret_store
     plan = _PLANS.get(operation)
     if plan is None:
         raise runtimes.Refused(f"no runtime change {operation}")
     before = _file_now()
     edit = plan(kind, values or {})
     try:
-        vault.edit_runtime_file(edit.writes)
+        env_file.edit(edit.writes)
         said = edit.says()
         platform.connect()
     except (Exception, SystemExit):
@@ -195,7 +196,7 @@ def commit(operation: str, kind: str, values: dict, *, made=lambda said: None) -
     settings.request_effects(HostUnit.TLS, HostUnit.CONTROL)
     print("nginx is regenerated and sbx-control restarts within seconds", flush=True)
     if operation == "add":
-        from .admin import start_template_builds
+        from .template_scheduler import start_template_builds
         start_template_builds(kind)
     return said
 

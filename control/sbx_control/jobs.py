@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import core, infisical_api, keeper, runtime, settings, template_builds, templates, updates
+from . import core, infisical_api, keeper, runtime, settings, template_builds, template_scheduler, templates, updates
 
 @dataclass(frozen=True)
 class Job:
@@ -146,7 +146,7 @@ def run_now(job_id: str, *, detached: bool = False) -> str:
             kind = kind or runtime.default()
             if why := template_builds.base_not_ready(repo, kind):
                 raise RuntimeError(why)
-            where, started = template_builds.start_detached(kind, [["key", repo]], if_stale=False)
+            where, started = template_scheduler.start_detached(kind, [["key", repo]], if_stale=False)
             if not started:
                 raise RuntimeError(f"a template build runs on {kind} already; follow it: {where}, then run this again")
             return f"building {repo} on {kind} in {where}; sbx-admin jobs shows its status"

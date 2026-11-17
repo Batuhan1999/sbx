@@ -16,7 +16,7 @@ import threading
 from types import SimpleNamespace
 
 from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Backend, Info, Limits, NoRoom,
-                    NotRunning, Snapshot, TemplateGone, TemplateSpec)
+                    NotRunning, SettingField, Snapshot, TemplateGone, TemplateSpec)
 
 INTERNAL_HOST_SUFFIX = "fake.sandboxes.internal"
 CONTROL_PORT = 49999        # its own daemon in every sandbox: never a preview
@@ -107,6 +107,7 @@ class Fake(Backend):
     ports = frozenset({CONTROL_PORT})
     credential_keys = ("FAKE_RUNTIME_TOKEN",)
     secret_key = "FAKE_RUNTIME_TOKEN"
+    settings = (SettingField("FAKE_RUNTIME_TOKEN", "Token", secret=True),)
     id_prefix = "fk"
 
     def __init__(self):

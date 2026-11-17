@@ -1,4 +1,4 @@
-"""Runtime settings (phase 3): each backend declares its settings; admins
+"""Runtime settings: each backend declares its settings; admins
 add, change, remove a runtime and make one the default from the web app,
 checked by sbx-control and queued for the root side (runtime_changes), a
 secret only ever as a reference into the managed store; an installation
@@ -48,12 +48,6 @@ class Schema(Installation):
         self.assertEqual(list(runtime_settings.fields(cloud)), [f.key for f in cloud.settings])
 
 
-# The fake runtime's key, as a provider's backend declares its secret (Runtime.settings).
-def fake_settings(fake):
-    from sbx_control.runtime import SettingField
-    return patch.object(fake, "settings", (SettingField("FAKE_RUNTIME_TOKEN", "Token", secret=True),), create=True)
-
-
 class Web(TwoRuntimes, Server):
     """Embed (a stand-in) and the fake enabled; E2B Cloud offered, its
     provider calls stood in for."""
@@ -85,7 +79,6 @@ class Web(TwoRuntimes, Server):
                         patch.object(secret_store, "unseal", side_effect=lambda r: self.store[r]),
                         patch.object(secret_store, "discard", side_effect=lambda r: self.store.pop(r, None))):
             self.enterContext(patcher)
-        self.enterContext(fake_settings(self.fake))
         self.request_file = self.root / "run/apply/runtime-change"
         self.addCleanup(lambda: (self.root / "state/runtime-change.json").unlink(missing_ok=True))
         self.addCleanup(self.request_file.unlink, missing_ok=True)

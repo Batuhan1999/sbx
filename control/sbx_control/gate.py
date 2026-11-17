@@ -40,8 +40,6 @@ from . import (addressing, auth, core, ip_previews, lifecycle, preview_pages, pr
                waking)
 from .preview_pages import Page
 from .runtime.listening import listening
-# What the keeper reads of preview resumes (waking).
-from .waking import _resumed_for_preview, forget_preview_resume, last_access, resumed_for_preview  # noqa: F401
 
 router = APIRouter()
 GONE = "X-Sbx-Gone"

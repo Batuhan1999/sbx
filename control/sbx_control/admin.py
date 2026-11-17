@@ -284,12 +284,6 @@ def do_runtime_change(a) -> int:
     return 0
 
 
-def start_template_builds(kind: str) -> None:
-    # Moved to template_scheduler; runtime_changes.py (not this change's file) still imports it from here.
-    from .template_scheduler import start_template_builds as start
-    start(kind)
-
-
 def do_runtime(a) -> int:
     from . import platform, runtime, runtime_changes, runtimes
     if a.action == "apply-pending":

@@ -29,6 +29,7 @@ def backends():
         host_unit = "e2b-embed.service"
         credential_keys = ("E2B_API_KEY", "E2B_API_URL")
         secret_key = "E2B_API_KEY"
+        settings = ()            # install.sh writes its keys: no form
 
         def host_units(self):
             return ["embed-unit"]
@@ -129,7 +130,7 @@ class Registry(TwoRuntimes, Installation):
         self.assertEqual(self.runtime.too_many(), "")
 
     def test_the_host_side_runs_over_every_runtime(self):
-        self.assertEqual(self.runtime.host_units(), ["embed-unit"])        # the fake has none (HostSide)
+        self.assertEqual(self.runtime.host_units(), ["embed-unit"])        # the fake has none (Backend default)
         self.assertEqual(self.runtime.host_unit_names(), ["e2b-embed.service"])
         self.assertTrue(self.runtime.apply_host("runtime-env"))
         self.assertFalse(self.runtime.apply_host("something-else"))

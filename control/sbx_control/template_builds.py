@@ -40,13 +40,6 @@ from .state import Schema, columns, db, tables
 NIGHTLY_REBUILD_HOUR = 2  # host time
 CHECK_SECONDS = 300
 
-
-def __getattr__(name):
-    # The scheduler moved to template_scheduler; app.py and jobs.py (not this change's files) still name it here.
-    if name in ("schedule", "start_detached"):
-        from . import template_scheduler
-        return getattr(template_scheduler, name)
-    raise AttributeError(name)
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
           "built_memory_mb")
 # The machine: a build starts from any settled state and settles as built or

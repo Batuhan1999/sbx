@@ -129,7 +129,7 @@ def extras() -> list[str]:
 
 def _runtime_file(keys=None) -> dict:
     """runtime.env as written: plain values, or references into the store,
-    of the keys the enabled runtimes read (Runtime.credential_keys)."""
+    of the keys the enabled runtimes read (Backend.credential_keys)."""
     from . import runtime as sandbox_runtime
     from .runtime import env_file
     return env_file.read(sandbox_runtime.credential_keys() if keys is None else keys)
@@ -149,7 +149,7 @@ def runtime_sealed() -> bool:
 
 
 def seal_runtime_file() -> int:
-    """Each enabled runtime's secret (Runtime.secret_key) as a reference into
+    """Each enabled runtime's secret (Backend.secret_key) as a reference into
     the store, once that is Infisical (store enable; sbx-admin runtime add
     and install.sh when it is already): the lines that still hold a plain
     value are rewritten in place; every other line of runtime.env (comments,
@@ -211,12 +211,6 @@ def sealing() -> bool:
     """Whether runtime.env's secrets go into the store: once it is Infisical
     (the local store's values are no references runtime() could follow)."""
     return settings.current().store.mode == "infisical"
-
-
-def edit_runtime_file(values: dict) -> None:
-    """runtime.env's env_file.edit (runtimes.py, phase 3's, still calls it here)."""
-    from .runtime import env_file
-    env_file.edit(values)
 
 
 def platform_secrets() -> dict:

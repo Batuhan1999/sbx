@@ -51,12 +51,12 @@ class Keeper(unittest.TestCase):
                 raise runtime.NotRunning("The sandbox was not found: it reached its timeout")
             kept.append(sandbox_id)
 
-        keeper.gate._resumed_for_preview.add("a-vm")
+        keeper.waking._resumed_for_preview.add("a-vm")
         delivered, printed = self.round([listed("a"), listed("b")], set_timeout)
         self.assertEqual(kept, ["b-vm"])         # the round went on to the next sandbox
         self.assertEqual(delivered, {"b"})        # nothing is delivered to one that no longer runs
         self.assertEqual(printed, "")
-        self.assertFalse(keeper.gate.resumed_for_preview("a-vm"))
+        self.assertFalse(keeper.waking.resumed_for_preview("a-vm"))
 
     def test_a_real_failure_still_ends_the_round_and_is_logged(self):
         def set_timeout(sandbox_id, seconds):

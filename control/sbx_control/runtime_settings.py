@@ -26,14 +26,14 @@ CUSTOM = "custom"
 
 
 def fields(backend) -> dict:
-    """The backend's settings by key (Runtime.settings)."""
+    """The backend's settings by key (Backend.settings)."""
     return {f.key: f for f in backend.settings}
 
 
 def _raw(backend) -> dict:
     """runtime.env's values of the backend's keys as written (a secret as its store reference)."""
-    from . import vault
-    return vault._runtime_file(backend.credential_keys)
+    from .runtime import env_file
+    return env_file.read(backend.credential_keys)
 
 
 def plan_of(backend, raw: dict | None = None) -> dict | None:
@@ -340,7 +340,7 @@ def prepare(kind: str, values: dict, *, adding: bool, plan: str | None = None) -
 
 def add(kind: str, values: dict) -> Edit:
     """Enable a runtime that runs elsewhere (a provider) with its settings
-    (values by key: Runtime.settings), or change an enabled one's: checked
+    (values by key: Backend.settings), or change an enabled one's: checked
     first (its configure, then its own checks against the provider). A
     secret goes into the store under a new reference once that is Infisical
     (one sealed already, from the web app's queue, is written as it is); the

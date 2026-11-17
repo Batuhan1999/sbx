@@ -33,7 +33,7 @@ class HostUnit(enum.StrEnum):
     HOST_GUARD = "host-guard"        # sbx-host-guard: public ports, the egress rules
     RUNTIME_NETWORK = "runtime-network"  # what recreates the runtime: pending until sbx-admin network apply
     CONTROL = "control"              # sbx-control restart (what it reads at start: the cookie domain)
-    RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Runtime.apply_host)
+    RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Backend.apply_host)
     UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
     RUNTIME_CHANGE = "runtime-change"  # add, change, remove a runtime or make one the default (runtime_changes.py)
     ENDPOINTS = "endpoints"          # nginx's stream configuration for the endpoints (endpoints.py)

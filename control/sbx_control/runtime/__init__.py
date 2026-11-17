@@ -26,13 +26,13 @@ import threading
 
 from . import env_file
 from .env_file import ENABLED_KEY, listed
-from .base import (FAILED, PAUSED, RUNNING, Backend, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info,
-                   LimitRefused, Limits, LimitSpec, NoRoom, NotRunning, Preset, Runtime, RuntimeLayer, SettingField,
+from .base import (FAILED, PAUSED, RUNNING, Backend, Busy, Capabilities, CommandFailed, Failed, Handle, Info,
+                   LimitRefused, Limits, LimitSpec, NoRoom, NotRunning, Preset, RuntimeLayer, SettingField,
                    Snapshot, TemplateGone, TemplateSpec, Timeout, TokenPlace)
 from .scoped import INSTALL_KEY, plain_name, scoped
 
 __all__ = ["FAILED", "PAUSED", "RUNNING", "Backend", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle",
-           "HostSide", "Info", "Limits", "LimitSpec", "LimitRefused", "NoRoom", "NotRunning", "Preset", "Runtime",
+           "Info", "Limits", "LimitSpec", "LimitRefused", "NoRoom", "NotRunning", "Preset",
            "RuntimeLayer", "SettingField", "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "TokenPlace",
            "INSTALL_KEY", "plain_name", "kinds", "enabled", "default", "get", "of"]
 
@@ -397,15 +397,6 @@ def upstream_token_places() -> dict:
     return {b.kind: b.upstream_token_at for b in backends() if b.upstream_token_at}
 
 
-# Shims for gate.py and ip_previews.py (phase 5's files) until they read upstream_token_places().
-def upstream_token_headers() -> dict:
-    return {k: p.name for k, p in upstream_token_places().items() if p.place == "header"}
-
-
-def upstream_token_cookies() -> dict:
-    return {k: p.name for k, p in upstream_token_places().items() if p.place == "cookie"}
-
-
 def desktop(kind: str | None = None) -> str:
     """Which desktop the runtime's sandboxes have: "sbx" (sbx's noVNC) or
     "provider" (its own, opened through desktop_url)."""
@@ -418,7 +409,7 @@ def desktop_url(sandbox_id: str) -> str:
 
 
 def cold_resume(kind: str | None = None) -> bool:
-    """Whether every resume on the runtime boots the sandbox afresh (Runtime.cold_resume)."""
+    """Whether every resume on the runtime boots the sandbox afresh (Backend.cold_resume)."""
     return get(kind).cold_resume
 
 
@@ -433,7 +424,7 @@ def snapshot_usage(sandbox_id: str) -> dict:
 
 def own_route(host: str, sandbox_id: str, port: str):
     """(kind, answer) of the enabled runtime whose own host this is
-    (Runtime.own_route: True or (port, sandbox_id)); None for any other host."""
+    (Backend.own_route: True or (port, sandbox_id)); None for any other host."""
     for backend in backends():
         found = backend.own_route(host, sandbox_id, port)
         if found is not None:
@@ -451,7 +442,7 @@ def preview(name: str, port: int | None, listen: int, *, preserve_host: bool = F
 # Limits, per runtime
 
 
-def _capped(seconds: int | None, backend: Runtime) -> int | None:
+def _capped(seconds: int | None, backend: Backend) -> int | None:
     """A timeout within the runtime's limit: the keeper extends it while
     the sandbox is used, so a shorter one only pauses an idle sandbox sooner.
     The limit is never below base.MIN_TIMEOUT_SECONDS, several renewals."""
