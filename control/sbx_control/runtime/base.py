@@ -232,8 +232,11 @@ class SettingField:
         if not value:
             return None
         if self.kind == "int":
-            if not (value.isdigit() and int(value) >= 1):
+            # ASCII digits only (str.isdigit takes "²" and other scripts' digits), a sane length,
+            # kept canonical ("0100" is "100") so a plan's values match it.
+            if not (value.isascii() and value.isdigit() and len(value) <= 12 and int(value) >= 1):
                 raise ValueError(f"{self.label} ({self.key}) is a whole number, at least 1, not {value!r}")
+            value = str(int(value))
             if (self.min is not None and int(value) < self.min) or (self.max is not None and int(value) > self.max):
                 raise ValueError(f"{self.label} ({self.key}) is from {self.min} to {self.max}"
                                  f"{' ' + self.unit if self.unit else ''}, not {value}")

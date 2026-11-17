@@ -20,8 +20,10 @@ class Settings(unittest.TestCase):
         self.assertIsNone(number.parse(""))
         with self.assertRaisesRegex(ValueError, r"vCPUs \(X_CPU\) is from 1 to 32"):
             number.parse("64")
-        with self.assertRaisesRegex(ValueError, "whole number"):
-            number.parse("two")
+        for bad in ("two", "²", "٣", "1" * 13, "0", "-1", "1.0"):
+            with self.assertRaisesRegex(ValueError, "whole number"):
+                number.parse(bad)
+        self.assertEqual(number.parse("0016"), "16")   # canonical: a plan's values match it
         host = SettingField("X_DOMAIN", "Domain", kind="hostname")
         self.assertEqual(host.parse("E2B.App."), "e2b.app")
         with self.assertRaisesRegex(ValueError, "host name"):
