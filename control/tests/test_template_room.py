@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from support import Installation
+from support import Installation, _builds_settled
 
 
 class TemplateRoomTests(Installation):
@@ -77,6 +77,11 @@ class TemplateRoomTests(Installation):
             template_scheduler.schedule(stop)
         build.assert_called_once_with("owner/app", "embed")
         self.assertEqual(self.builds.moved(), ["owner/app"])
+
+    def test_a_build_left_running_after_a_test_fails_it_by_name(self):
+        with patch.object(self.builds, "_running", {("embed", "owner/app")}):
+            with self.assertRaisesRegex(AssertionError, "still running after 0.1 s: .*owner/app"):
+                _builds_settled(0.1)
 
     # While it runs.
 
