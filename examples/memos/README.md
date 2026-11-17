@@ -40,7 +40,7 @@ backup. Optional storage backends, SSO and AI providers are not configured.
 ## How this recipe was made
 
 Model for a single-binary app whose state is SQLite and files on disk: no
-`services:`, nothing to clean up outside the VM. Recipe: `examples/memos/.sbx/`.
+`services:`, nothing to clean up outside the VM. Recipe: [`examples/memos/.sbx/`](.sbx/).
 
 **What the repository showed.** `go.mod` names the Go version and `cmd/memos` is
 the server. The frontend lives in `web/`; `web/package.json` pins pnpm in

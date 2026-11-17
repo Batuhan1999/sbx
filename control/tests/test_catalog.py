@@ -406,15 +406,22 @@ class CatalogTests(Server):
         (folder / "examples/plain").mkdir()
         (folder / "examples/README.md").write_text("# Examples\n\n- alpha: a database per sandbox\n")
         (folder / "examples/alpha/README.md").write_text(
-            "# Alpha\n\n## Run it\n\nsbx up\n\n## How this recipe was made\n\nIt chose postgres-clone.\n\n## Later\n\nnot this\n")
+            "# Alpha\n\n## Run it\n\nsbx up\n\n## How this recipe was made\n\nIt chose postgres-clone "
+            "([recipe](.sbx/), [services](../../docs/reference.md#services)).\n\n## Later\n\nnot this\n")
         (folder / "examples/plain/README.md").write_text("# Plain\n\n## Run it\n\nsbx up\n")
         real = paths.shipped
         with patch.object(paths, "shipped", lambda name: folder / name if name == "examples" else real(name)):
             guides = repos.guides()
         self.assertEqual([g.splitlines()[0] for g in guides],
-                         ["# Examples", "# How this recipe was made: Alpha (examples/alpha)", "# Service selection",
-                          "# Acceptance checklist", "# Resource guide"])
-        self.assertEqual(guides[1].split("\n\n", 1)[1], "It chose postgres-clone.")
+                         ["# Examples", f"# How this recipe was made: Alpha ({repos.SOURCE}/examples/alpha)",
+                          "# Service selection", "# Acceptance checklist", "# Resource guide"])
+        # The agent reading the brief has no sbx source: relative links go to GitHub, anchors and URLs stay.
+        self.assertEqual(guides[1].split("\n\n", 1)[1],
+                         f"It chose postgres-clone ([recipe]({repos.SOURCE}/examples/alpha/.sbx), "
+                         f"[services]({repos.SOURCE}/docs/reference.md#services)).")
+        self.assertEqual(repos.linked("[a](#x) [b](https://e.test/y) [c](reference.md)", "docs"),
+                         f"[a](#x) [b](https://e.test/y) [c]({repos.SOURCE}/docs/reference.md)")
+        self.assertNotRegex("\n".join(guides), r"\]\((?!https://|#)")
 
 
 class ManagedServerTests(Server):

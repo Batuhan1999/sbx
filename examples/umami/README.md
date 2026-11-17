@@ -44,7 +44,7 @@ Redis and ClickHouse modes are not configured.
 ## How this recipe was made
 
 Model for a Node app on Postgres whose ORM migrates during the build, and for
-any app that ships a default admin password. Recipe: `examples/umami/.sbx/`.
+any app that ships a default admin password. Recipe: [`examples/umami/.sbx/`](.sbx/).
 
 **What the repository showed.** `package.json` pins pnpm under `engines.pnpm`;
 its `build` script runs Prisma client generation and `prisma migrate deploy`
