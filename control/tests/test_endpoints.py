@@ -448,6 +448,15 @@ class RouteTests(Setup, Installation):
             self.assertEqual([r["name"] for r in self.endpoints.routes("fake", "public/repo").rows], ["temporal"])
             self.assertEqual(self.endpoints.routes("fake", "nobody/repo").rows, [])
 
+    def test_the_forwarder_s_ports_are_never_previews(self):
+        from sbx_control import core, recipes
+        listening = ("LISTEN 0 64 127.0.0.1:17400 0.0.0.0:*\nLISTEN 0 64 127.0.0.1:17401 0.0.0.0:*\n"
+                     "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\n")
+        app = recipes.App("owner/app", Path("/nonexistent"), {})
+        self.assertEqual(core.detected_ports(listening, app), {3000: False})
+        self.assertFalse(any(core.detectable_port(p) for p in self.endpoints.LOCAL_PORTS))
+        self.assertIsNone(core.suffix_port("-17400"))   # no preview host for it either
+
     def test_embed_keeps_its_values(self):
         routes = self.endpoints.routes("embed", "owner/app")
         self.assertEqual(routes.outputs(self.created), self.created)
