@@ -63,8 +63,15 @@ class Sandboxes:
                 raise TemplateGone(template, f"Boat has no saved snapshot {saved_name(template)}") from error
             raise
         sandbox_id = created.sandbox.id
-        self._ready(sandbox_id)
-        self._machine_ready(sandbox_id)
+        try:
+            self._ready(sandbox_id)
+            self._machine_ready(sandbox_id)
+        except Exception:
+            try:
+                self.kill(sandbox_id)   # else it runs, and bills, until its timeout
+            except Exception:   # its timeout still ends it
+                pass
+            raise
         return Handle(self, sandbox_id)
 
     def _ready(self, sandbox_id: str, seconds: float = 600):
