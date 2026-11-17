@@ -389,6 +389,8 @@ def identity(workspace, ssh_port):
         if previous.get("workspace_id") == workspace and previous.get("phase") == "ready":
             if public.read_text().split()[:2] != previous.get("ed25519_public"):
                 restore_host_keys(previous.get("ed25519_public"))
+            elif not (KEPT_KEYS / "ssh_host_ed25519_key.pub").exists():
+                keep_host_keys()   # a workspace from before the copy was kept
             key_permissions(SSH)
             return
         sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
