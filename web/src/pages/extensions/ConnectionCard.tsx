@@ -7,7 +7,6 @@ import type { Check, Connection, ConnectionState } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { ErrorState } from '@/components/states'
-import { StateBadge } from '@/components/StatusBadge'
 import { AnchorButton, Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import type { Tone } from '@/lib/status'
@@ -18,6 +17,16 @@ export const CONNECTION_STATE: Record<ConnectionState, { label: string; tone: To
   attention: { label: 'Needs attention', tone: 'warn' },
   not_connected: { label: 'Not connected', tone: 'idle' },
   off: { label: 'Off', tone: 'idle' },
+}
+
+/** A connection's (or runtime's) state, quiet when all is well: a small muted dot and label; only
+ * a state that needs action takes the warning color. */
+export function ConnectionMark({ state }: { state: ConnectionState | string }) {
+  const s = CONNECTION_STATE[state as ConnectionState] ?? { label: state, tone: 'idle' as Tone }
+  return <span className={cn('inline-flex items-center gap-1.5 text-[12px]', s.tone === 'warn' ? 'font-medium text-warn' : 'text-muted')}>
+    <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', s.tone === 'ok' ? 'bg-ok/60' : s.tone === 'warn' ? 'bg-warn' : 'bg-faint')} />
+    {s.label}
+  </span>
 }
 
 export function Checks({ checks }: { checks: Check[] }) {
@@ -34,14 +43,13 @@ export function ConnectionCard({ c, icon, children }: { c: Connection; icon?: Re
   const [open, setOpen] = useState(false)
   const [checks, setChecks] = useState<Check[] | null>(null)
   const test = useAction(async () => setChecks((await api.connections.test(c.kind)).checks), keys.connections)
-  const state = CONNECTION_STATE[c.state] ?? { label: c.state, tone: 'idle' as Tone }
   const canConnect = c.actions.includes('connect') && c.fields.length > 0
   const installUrl = typeof c.facts.install_url === 'string' ? c.facts.install_url : ''
   return <article className="rounded-lg border border-line bg-panel">
     <div className="flex flex-wrap items-start gap-x-3 gap-y-2 p-4">
       {icon && <span className="grid size-8 shrink-0 place-items-center rounded-md border border-line bg-sunken text-muted">{icon}</span>}
       <div className="min-w-0 grow basis-56">
-        <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{c.title}</h3><StateBadge tone={state.tone} label={state.label} /></div>
+        <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{c.title}</h3><ConnectionMark state={c.state} /></div>
         <p className="mt-0.5 break-words text-[13px] text-muted">{c.summary}</p>
         {c.display.length > 0 && <p className="mt-1 break-words text-[12px] text-muted">{c.display.map(d => `${d.label}: ${d.value}`).join(' · ')}</p>}
       </div>

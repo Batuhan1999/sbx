@@ -152,7 +152,8 @@ export type SandboxRuntime = {
   host: boolean
   capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean }
   limits: RuntimeLimits
-  status: { state: ConnectionState | string; summary: string }
+  /** running: how many of this installation's sandboxes run there, when it says. */
+  status: { state: ConnectionState | string; summary: string; running?: number | null }
   /** The last limit its provider refused, until its settings change. */
   limit_hit?: LimitHit | null
   /** The plan its limits match ("custom": none), for a runtime with plans; null otherwise. */

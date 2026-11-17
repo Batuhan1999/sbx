@@ -48,7 +48,7 @@ LIMIT_FORM = {"timeout_seconds": ("Longest run", "seconds", 300, 86400, 300),
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
     SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True,
-                 help="E2B's domain, for a self-hosted E2B; empty is E2B Cloud (e2b.app)."),
+                 help="Only for a self-hosted E2B."),
     *(SettingField(key, LIMIT_FORM[field][0], default=str(default), kind="int", limit=field, unit=LIMIT_FORM[field][1],
                    min=LIMIT_FORM[field][2], max=LIMIT_FORM[field][3], step=LIMIT_FORM[field][4])
       for field, (key, default) in LIMITS.items()),
@@ -71,7 +71,7 @@ PRESETS = (
                           "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "20480",
                           "E2B_CLOUD_MAX_SANDBOXES": "100"}, _PLAN_SOURCE,
            adjustable=("E2B_CLOUD_MAX_CPU", "E2B_CLOUD_MAX_MEMORY_MB"),
-           note="Pro allows more than 8 vCPUs and 8 GB if E2B raised it for your team; E2B says so when it doesn't."),
+           note="E2B may allow more on Pro."),
 )
 FETCH_RETRY_SECONDS = 15   # a failed token fetch answers from memory this long (an outage)
 INGRESS_NAME = "sbx-ingress"   # any name under the sandboxes' wildcard: the apex resolves elsewhere

@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError, required } from '@/lib/validation'
 import { Checks } from '../extensions/ConnectionCard'
 import { ChangeStatus, RuntimeSettingsForm, useRuntimeChangeFlow } from '../settings/RuntimeForms'
-import { RuntimeChoices, RuntimeList } from '../settings/Runtimes'
+import { blockedText, RuntimeChoices, RuntimeList } from '../settings/Runtimes'
 
 type Step = 'address' | 'runtime' | 'admin'
 
@@ -178,21 +178,20 @@ function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => vo
   return <div className="space-y-6">
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Where will sandboxes run?</h1>
-      <p className="mt-1.5 text-muted">{done ? 'Sandboxes run on these runtimes. Add or change them later in Settings.'
-        : 'This server runs no sandbox runtime yet. Choose one; its sandboxes call this server back at its address.'}</p>
+      <p className="mt-1.5 text-muted">{done ? 'You can change this later in Settings.' : 'Choose a runtime for your sandboxes.'}</p>
     </div>
     {done ? <RuntimeList runtimes={runtimes.data?.runtimes ?? []} className="rounded-lg border border-line bg-panel" />
-      : available.isPending ? <Spinner label="Reading the runtimes…" />
+      : available.isPending ? <Spinner label="Loading…" />
       : available.error ? <ErrorState error={available.error} compact retry={() => available.refetch()} />
       : <>
         <RuntimeChoices choices={choices} value={chosen?.kind ?? ''} onChange={setKind} />
-        <ChangeStatus flow={flow} title={k => choices.find(c => c.kind === k)?.title ?? k} />
+        <ChangeStatus flow={flow} />
         {chosen && !flow.busy && (chosen.not_editable ? <div className="space-y-2">
-          <ErrorState compact error={chosen.not_editable} />
+          <ErrorState compact error={blockedText(chosen)} />
           {chosen.needs_domain && <Button size="sm" onClick={onBack}><Globe />Choose a domain</Button>}
         </div>
           : <RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} />)}
-        {!chosen && <p className="text-[13px] text-muted">No runtime can run here. Run install.sh again on a server with /dev/kvm, or with a provider's key.</p>}
+        {!chosen && <p className="text-[13px] text-muted">None can run here. Rerun install.sh on a server with /dev/kvm.</p>}
       </>}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
