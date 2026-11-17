@@ -8,6 +8,8 @@ import { EmptyState, ErrorState, QueryView } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { article } from '@/lib/packages'
 import { keyError, required } from '@/lib/validation'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { toast } from 'sonner'
 
 /** A package's settings for one repository: new, or an attachment it already has. */
 export function EntryForm(props: { repo: string; name: string; attachment?: Attachment; onDone: () => void; onBack?: () => void; onCancel?: () => void; bare?: boolean }) {
@@ -38,9 +40,8 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
       inputs: Object.fromEntries(inputs.map(([n, i]) => [n, i.secret ? '' : attachment?.inputs[n] ?? i.default ?? ''])) as Record<string, string>,
       connections: Object.fromEntries(Object.keys(entry.requires).map(slot => [slot, attachment?.connections[slot] ?? ''])) as Record<string, string>,
     },
-    onSubmit: async ({ value }) => { await attach.mutateAsync(value); onDone() },
+    onSubmit: async ({ value }) => { await attach.mutateAsync(value); toast.success(`${entry.title} saved`); onDone() },
   })
-  const result = useStore(form.store, s => s.isSubmitSuccessful)
   const submitting = useStore(form.store, s => s.isSubmitting)
   const titleOf = (kind: string) => catalog.data?.find(p => p.name === kind)?.title ?? kind
   return <AppForm form={form} className="space-y-4">
@@ -70,14 +71,13 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
           note={!i.agent && i.secret ? 'Hidden from the coding agent.' : undefined} />}
       </form.AppField>
     })}
-    {!attachment && <details className="text-[13px]">
-      <summary className="cursor-pointer text-[12.5px] text-muted hover:text-ink">Name in the recipe</summary>
-      <div className="mt-2"><form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
+    {!attachment && <Collapsible>
+      <CollapsibleTrigger className="w-auto text-[12.5px]">Name in the recipe</CollapsibleTrigger>
+      <CollapsibleContent><div className="mt-2"><form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
         {field => <field.TextField label="Name" help="How the recipe refers to it. Add the same package again under another name for a second one." className="font-mono" autoComplete="off" spellCheck={false} />}
-      </form.AppField></div>
-    </details>}
+      </form.AppField></div></CollapsibleContent>
+    </Collapsible>}
     {entry.checks && <p className="text-[12px] text-muted">Checked before it’s saved.</p>}
-    {result && <p role="status" className="text-[12.5px] text-ok">Saved.</p>}
     <div className="flex justify-between gap-2">
       {onBack ? <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : <span />}
       <div className="flex gap-2"><Button variant="ghost" onClick={onCancel ?? onDone}>Cancel</Button><SubmitButton form={form}>{attachment ? 'Save' : 'Add'}</SubmitButton></div>

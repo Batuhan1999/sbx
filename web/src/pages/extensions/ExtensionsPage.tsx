@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUpRight, Bot, Check, CircleCheck, FolderGit2, Github, Network, Plus, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
-import { Fragment, useEffect, useId, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useCatalog, useCatalogProblems, useConnections, useMe, useRepos, useSharedConnections } from '@/api/queries'
@@ -15,6 +15,7 @@ import { StateBadge } from '@/components/StatusBadge'
 import { Button, LinkButton } from '@/components/ui/button'
 import { Dialog, SidePanel } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/primitives'
+import { RadioCard, RadioGroup } from '@/components/ui/radio-group'
 import { ago, plural } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { providers, repositories, sandboxes, sentences, suggestKey, type Provider } from '@/lib/packages'
@@ -345,21 +346,16 @@ function Step({ n, title, state, summary, last, children }: { n: number; title: 
 
 /** A list to pick one item from, drawn as radio rows. */
 function Choices({ label, items, value, onChoose }: { label: string; items: { value: string; label: string; note?: string; href?: string; aside?: string }[]; value: string | null; onChoose: (value: string) => void }) {
-  const group = useId()
-  const row = 'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-hover'
-  return <fieldset className="divide-y divide-line overflow-hidden rounded-lg border border-line">
-    <legend className="sr-only">{label}</legend>
+  const row = 'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors duration-150 ease-out hover:bg-hover'
+  return <RadioGroup aria-label={label} value={value ?? ''} onValueChange={onChoose} className="gap-0 divide-y divide-line overflow-hidden rounded-lg border border-line">
     {items.map(item => item.href
       ? <Link key={item.value} to={item.href} className={row}>
         <FolderGit2 className="size-4 shrink-0 text-faint" /><span className="grow font-medium text-muted">{item.label}</span>
         <span className="text-[12px] text-muted">{item.aside}</span><ArrowUpRight className="size-3.5 text-muted" />
       </Link>
-      : <label key={item.value} className={cn(row, 'cursor-pointer', value === item.value && 'bg-accent-soft hover:bg-accent-soft')}>
-        <input type="radio" name={group} value={item.value} checked={value === item.value} onChange={() => onChoose(item.value)}
-          className="size-4 shrink-0 accent-[var(--accent)]" />
-        <span className="min-w-0 grow"><span className="block font-medium">{item.label}</span>{item.note && <span className="block text-[12px] text-muted">{item.note}</span>}</span>
-      </label>)}
-  </fieldset>
+      : <RadioCard key={item.value} value={item.value} title={item.label} description={item.note}
+        className="rounded-none border-0 px-3 py-2.5 hover:bg-hover active:scale-100 data-[state=checked]:bg-accent-soft" />)}
+  </RadioGroup>
 }
 
 /** The repositories this server trusts, to add a package to; one that has it already links to its Packages tab. */

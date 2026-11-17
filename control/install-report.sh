@@ -3,18 +3,19 @@
 # while the first-run setup is open, else the server's address and what to do
 # next. An installation whose settings are complete counts as set up
 # (sbx-admin setup-infer: exit 0 set up, 3 still open).
-#   SBX_PASSWORD=... install-report.sh   (a password install.sh generated, shown once)
+#   SBX_PASSWORD=... install-report.sh   ("EMAIL: PASSWORD" lines install.sh generated, shown once)
 #   SBX_ROLLBACK=... install-report.sh   (an upgrade's rollback script, host-install.sh)
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 
-# The shared password admits the admins (and allowed_emails), whoever holds it.
+# The admins' generated passwords: each person has their own.
 password() {
   [ -z "${SBX_PASSWORD:-}" ] && return
-  echo "Sign in with an admin's email and the password: $SBX_PASSWORD"
-  echo "  Whoever holds it can sign in as any admin. For a team, connect OIDC: sbx-admin connect sign_in method=oidc ..."
+  echo "Sign in with (change it under CLI & access):"
+  printf '%s\n' "$SBX_PASSWORD" | sed 's/^/  /'
+  echo "  Add people under Settings → People (or sbx-admin user add EMAIL); each sets their own password."
 }
 
 status=0

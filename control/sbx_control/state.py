@@ -31,7 +31,7 @@ class Schema:
 # The modules that keep rows, in the order their upgrades run. Named, not
 # imported, so this module depends on none of them.
 OWNERS = ("sbx_control.state", "sbx_control.settings", "sbx_control.secret_store", "sbx_control.vault",
-          "sbx_control.auth", "sbx_control.sandboxes", "sbx_control.lifecycle", "sbx_control.variables",
+          "sbx_control.auth", "sbx_control.users", "sbx_control.sandboxes", "sbx_control.lifecycle", "sbx_control.variables",
           "sbx_control.catalog", "sbx_control.catalog.attachments", "sbx_control.catalog.resources",
           "sbx_control.hosted_services", "sbx_control.ip_previews", "sbx_control.template_builds",
           "sbx_control.setup_pr", "sbx_control.extensions", "sbx_control.delivery", "sbx_control.runtimes")

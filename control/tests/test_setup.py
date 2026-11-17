@@ -134,6 +134,7 @@ class SetupTests(Server):
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
 
     def test_validation_and_existing_admin_cannot_be_overwritten(self):
+        from sbx_control import users
         body = {"email": "operator@example.com", "password": "test-only-password-123"}
         self.assertEqual(self.client.post("/api/setup/admin", headers=self.headers, json=body).status_code, 400)
         self.assertEqual(self.client.post("/api/setup/address", headers=self.headers,
@@ -142,7 +143,7 @@ class SetupTests(Server):
         for invalid in ({**body, "email": "invalid"}, {**body, "password": "short"}):
             response = self.client.post("/api/setup/admin", headers=self.headers, json=invalid)
             self.assertEqual(response.status_code, 400)
-            self.assertFalse(self.vault.facts(self.vault.LOGIN_PASSWORD).set)
+            self.assertFalse(users.any_password())
         self.create_admin()
         self.assertEqual(self.client.post("/api/setup/admin", headers=self.headers, json=body).status_code, 409)
         self.assertEqual(self.settings.current().access.admins, ("operator@example.com",))
@@ -153,7 +154,8 @@ class SetupTests(Server):
                                 headers={"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
                                          "Origin": "https://203.0.113.10"}).status_code
 
-    def test_admins_the_installer_named_still_get_a_login(self):
+    def test_admins_the_installer_named_get_a_login_through_a_link(self):
+        from sbx_control import users
         self.settings.update("access", {"admins": ["named@example.com"]}, by="install.sh")
         self.choose_ip()
         response = self.client.post("/api/setup/admin", headers=self.headers, json={
@@ -161,69 +163,118 @@ class SetupTests(Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.settings.current().access.admins, ("named@example.com", "operator@example.com"))
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
+        self.assertEqual(self.password_login("named%40example.com"), 401)  # no password of their own yet
+        users.use_link(users.mint_link("named@example.com", by="test"), "test-only-password-123")
         self.assertEqual(self.password_login("named%40example.com"), 200)
 
-    def test_the_shared_password_admits_only_the_admins_and_allowed_emails(self):
-        self.choose_ip()
-        self.create_admin()
-        self.client.post("/api/setup/complete", headers=self.headers)
-        # Whoever holds the password types any email: with no list, only the admins'.
-        self.settings.update("sign_in", {"method": "password", "allowed_emails": []}, by="install.sh")
+    def set_password(self, link, password="colleague-password-1"):
+        token = link.split("#t=", 1)[1]
+        return self.client.post("/auth/set-password", json={"token": token, "password": password},
+                                headers={"Origin": "https://203.0.113.10"})
+
+    def test_each_person_has_their_own_password(self):
+        self.repo_admin()
+        origin = {"Origin": "https://203.0.113.10"}
+        added = self.client.post("/api/users", json={"email": "Colleague@example.com"}, headers=origin)
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual({u["email"]: u["admin"] for u in added.json()["users"]},
+                         {"operator@example.com": True, "colleague@example.com": False})
+        link = added.json()["link"]
+        self.assertEqual(self.client.post("/api/users", json={"email": "colleague@example.com"},
+                                          headers=origin).status_code, 400)
+        # The admin's password is not theirs, and they have none until they use the link.
         self.assertEqual(self.password_login("colleague%40example.com"), 401)
+        self.assertEqual(self.set_password(link, "short").status_code, 400)
+        self.assertEqual(self.set_password(link).status_code, 200)
+        self.assertEqual(self.client.get("/api/me").json()["email"], "colleague@example.com")
+        self.assertFalse(self.client.get("/api/me").json()["admin"])
+        self.assertEqual(self.client.get("/api/users").status_code, 403)
+        self.assertEqual(self.set_password(link).status_code, 400)  # once
+        # Changing one's password ends the other sessions.
+        from fastapi.testclient import TestClient
+        with TestClient(self.app.app, base_url="https://203.0.113.10") as laptop:
+            laptop.post("/auth/login", content="email=colleague%40example.com&password=colleague-password-1",
+                        headers={"content-type": "application/x-www-form-urlencoded", **origin})
+            self.assertEqual(laptop.get("/api/me").status_code, 200)
+            changed = self.client.post("/api/me/password", headers=origin,
+                                       json={"current": "colleague-password-1", "password": "colleague-password-2"})
+            self.assertEqual(changed.status_code, 200, changed.text)
+            self.assertEqual(self.client.get("/api/me").status_code, 200)   # this one stays
+            self.assertEqual(laptop.get("/api/me").status_code, 401)
+        # Removing them ends their session and their API tokens.
+        from sbx_control import auth
+        token = auth.mint_token("colleague@example.com", "cli")
+        self.client.get("/auth/logout")
         self.assertEqual(self.password_login("operator%40example.com"), 200)
-        self.settings.update("sign_in", {**self.settings.current().sign_in.model_dump(),
-                                         "allowed_emails": ["*@example.com"]}, by="test")
-        self.assertEqual(self.password_login("colleague%40example.com"), 200)
-        self.assertEqual(self.password_login("someone%40example.org"), 401)
+        removed = self.client.delete("/api/users/colleague@example.com", headers=origin)
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertIsNone(auth.token_email(token))
+        self.assertEqual(self.client.delete("/api/users/operator@example.com", headers=origin).status_code, 400)
+        self.assertEqual(self.client.put("/api/users/operator@example.com", json={"admin": False},
+                                         headers=origin).status_code, 400)  # the last admin
+
+    def test_promoting_someone_makes_them_an_admin(self):
+        self.repo_admin()
+        origin = {"Origin": "https://203.0.113.10"}
+        link = self.client.post("/api/users", json={"email": "lead@example.com"}, headers=origin).json()["link"]
+        self.assertEqual(self.client.put("/api/users/lead@example.com", json={"admin": True},
+                                         headers=origin).status_code, 200)
+        self.assertIn("lead@example.com", self.settings.current().admins)
+        newer = self.client.post("/api/users/lead@example.com/link", headers=origin).json()["link"]
+        self.assertEqual(self.set_password(link).status_code, 400)  # the newer link replaced it
+        self.assertEqual(self.set_password(newer).status_code, 200)
+        self.assertTrue(self.client.get("/api/me").json()["admin"])
 
     def test_both_first_installs_set_the_same_password_sign_in(self):
         import contextlib
         import io
-        from sbx_control import admin
+        from sbx_control import admin, users
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(admin.main(["sign-in", "password"]), 1)  # no admin: nobody could sign in
-        self.assertFalse(self.vault.facts(self.vault.LOGIN_PASSWORD).set)
+        self.assertFalse(users.any_password())
         self.settings.update("access", {"admins": ["operator@example.com"]}, by="install.sh")
         with contextlib.redirect_stdout(out):
             self.assertEqual(admin.main(["sign-in", "password"]), 0)
-        self.assertIn("generated password: ", out.getvalue())
+        generated = out.getvalue().split("generated password for operator@example.com: ", 1)[1].strip()
+        self.assertIsNotNone(users.check_password("operator@example.com", generated))
         installed = self.settings.current().sign_in
-        self.assertEqual((installed.method, installed.allowed_emails), ("password", ()))
+        self.assertEqual(installed.method, "password")
         self.headers = {"Authorization": f"Setup {self.setup.reset(sign_in=True)}"}
+        self.assertFalse(users.any_password())
         self.settings.update("access", {"admins": ["named@example.com"]}, by="install.sh")
         self.choose_ip()
         self.create_admin()
         self.assertEqual(self.settings.current().sign_in, installed)
 
-    def test_oidc_names_who_may_sign_in_whoever_writes_it(self):
+    def test_sbx_admin_manages_people(self):
         import contextlib
         import io
-        from sbx_control import admin, auth, connections
-        from sbx_control.connections import Refused
+        from sbx_control import admin, users
+        self.settings.update("access", {"admins": ["operator@example.com"]}, by="install.sh")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(admin.main(["user", "add", "dev@example.com"]), 0)
+            self.assertEqual(admin.main(["user", "admin", "dev@example.com", "on"]), 0)
+            self.assertEqual(admin.main(["user", "rm", "operator@example.com"]), 0)
+            self.assertEqual(admin.main(["user", "rm", "dev@example.com"]), 1)   # the last admin
+            self.assertEqual(admin.main(["user", "link", "nobody@example.com"]), 1)
+            self.assertEqual(admin.main(["user", "ls"]), 0)
+        self.assertIn("/app/set-password#t=", out.getvalue())
+        self.assertEqual(self.settings.current().access.admins, ("dev@example.com",))
+        self.assertEqual([u["email"] for u in users.ls()], ["dev@example.com"])
+
+    def test_oidc_admits_the_listed_the_admins_and_the_people_added(self):
+        from sbx_control import auth, connections, users
         sign_in = connections.get("sign_in")
         oidc = {"method": "oidc", "oidc_issuer": "https://accounts.google.com", "oidc_client_id": "fixture-client"}
-        with self.assertRaisesRegex(Refused, "allowed_emails"):
-            sign_in.connect({**oidc, "oidc_client_secret": "fixture-secret"}, by="test")
-        self.assertFalse(self.vault.facts(self.vault.OIDC_CLIENT_SECRET).set)
-        with self.assertRaisesRegex(self.settings.Invalid, "allowed_emails"):
-            self.settings.update("sign_in", oidc, by="test")
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(admin.main(["config", "set", "sign_in", '{"method": "oidc"}']), 1)
-        response = self.client.put("/api/settings/sign_in", headers=self.headers, json={"value": oidc})
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertEqual(self.settings.current().sign_in.method, "password")
-        # An installation that stored it before the rule admits nobody.
-        from sbx_control import state
-        with state.db() as conn:
-            conn.execute("insert into config (section, value, updated_by) values ('sign_in', ?, 'old')",
-                         (__import__("json").dumps(oidc),))
-        self.settings.REVISION.set(self.settings.current().revision + 1)
-        self.settings.forget()
-        self.assertEqual(self.settings.current().sign_in.method, "oidc")
+        self.settings.update("access", {"admins": ["operator@example.com"]}, by="test")
+        self.settings.update("sign_in", oidc, by="test")
         self.assertFalse(auth.may_sign_in("anyone@gmail.com"))
+        self.assertTrue(auth.may_sign_in("operator@example.com"))
+        users.add("guest@gmail.com", by="test")
+        self.assertTrue(auth.may_sign_in("guest@gmail.com"))
         self.vault.put(self.vault.OIDC_CLIENT_SECRET, "fixture-secret", by="test")
-        self.assertEqual(sign_in.status().state, "attention")
         self.settings.update("sign_in", {**oidc, "allowed_emails": ["*@example.com"]}, by="test")
         self.assertEqual(sign_in.status().state, "connected")
         self.assertTrue(auth.may_sign_in("dev@example.com"))
@@ -245,12 +296,13 @@ class SetupTests(Server):
                 self.assertEqual(response.status_code, status, claims)
 
     def test_admin_password_boundary_is_eight_characters(self):
+        from sbx_control import users
         self.choose_ip()
         for password in ("1234567", "x" * 1025):
             response = self.client.post("/api/setup/admin", headers=self.headers,
                                         json={"email": "operator@example.com", "password": password})
             self.assertEqual(response.status_code, 400)
-            self.assertFalse(self.vault.facts(self.vault.LOGIN_PASSWORD).set)
+            self.assertFalse(users.any_password())
         response = self.client.post("/api/setup/admin", headers=self.headers,
                                     json={"email": "operator@example.com", "password": "12345678"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -340,7 +392,7 @@ class SettingsTests(Server):
         self.effects()
         vault.put(vault.CLOUDFLARE_API_TOKEN, "fixture-token", by="test")
         self.assertEqual(self.effects(), ["tls"])
-        vault.put(vault.LOGIN_PASSWORD, "fixture-password", by="test")
+        vault.put(vault.OIDC_CLIENT_SECRET, "fixture-secret", by="test")
         self.assertEqual(self.effects(), [])
 
     def test_the_domains_effects_depend_on_what_changed(self):

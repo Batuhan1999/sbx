@@ -26,21 +26,21 @@ const TONES = {
 export type BadgeTone = keyof typeof TONES
 
 export function Badge({ tone = 'neutral', className, children, ...props }: ComponentProps<'span'> & { tone?: BadgeTone }) {
-  return <span className={cn('inline-flex h-5 items-center gap-1 whitespace-nowrap rounded border px-1.5 text-[11.5px] font-medium', TONES[tone], className)} {...props}>{children}</span>
+  return <span className={cn('inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-[11.5px] font-medium [&_svg]:size-3', TONES[tone], className)} {...props}>{children}</span>
 }
 
 export function Panel({ title, description, actions, children, className, bodyClassName, id }: {
   title?: ReactNode; description?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; bodyClassName?: string; id?: string
 }) {
-  return <section id={id} aria-labelledby={title && id ? `${id}-title` : undefined} className={cn('rounded-lg border border-line bg-panel', className)}>
-    {(title || actions) && <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-line px-4 py-3">
+  return <section id={id} aria-labelledby={title && id ? `${id}-title` : undefined} className={cn('rounded-xl border border-line bg-panel shadow-[0_1px_2px_rgb(0_0_0/0.04)]', className)}>
+    {(title || actions) && <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-line px-5 py-4">
       <div className="min-w-0 flex-1 basis-64">
-        {title && <h2 id={id ? `${id}-title` : undefined} className="text-[13.5px] font-semibold">{title}</h2>}
-        {description && <p className="mt-0.5 text-[12.5px] text-muted">{description}</p>}
+        {title && <h2 id={id ? `${id}-title` : undefined} className="text-[14px] font-semibold leading-tight tracking-tight">{title}</h2>}
+        {description && <p className="mt-1 text-[12.5px] text-muted">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </header>}
-    <div className={cn('p-4', bodyClassName)}>{children}</div>
+    <div className={cn('p-5', bodyClassName)}>{children}</div>
   </section>
 }
 

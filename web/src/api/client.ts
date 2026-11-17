@@ -60,7 +60,7 @@ export function setupToken(): string | null {
 }
 
 /** Pages that work signed out; a 401 there must not bounce to the sign-in. */
-const PUBLIC_PATHS = ['/app/setup', '/app/sign-in']
+const PUBLIC_PATHS = ['/app/setup', '/app/sign-in', '/app/set-password']
 
 export async function request<T>(method: string, url: string, body?: unknown, accept: 'json' | 'text' = 'json'): Promise<T> {
   const headers: Record<string, string> = { accept: accept === 'json' ? 'application/json' : 'text/plain' }

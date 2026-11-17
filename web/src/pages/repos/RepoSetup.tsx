@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { NewSandboxForm } from '../sandboxes/NewSandboxForm'
 import { AgentHandoff } from './AgentHandoff'
 import { useRepo } from './RepoLayout'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 
 const ACTOR: Record<Actor, { label: string; icon: typeof Bot }> = {
   agent: { label: 'Your agent', icon: Bot },
@@ -57,10 +58,10 @@ export default function RepoSetup() {
         </ol>
       </Panel>
       {envError ? <ErrorState error={envError} compact /> : null}
-      {!showHandoff && <details className="rounded-lg border border-line bg-panel px-4 py-3">
-        <summary className="cursor-pointer text-[13px] font-medium">Change or repair the recipe with your agent</summary>
-        <div className="mt-3"><AgentHandoff repo={repo} configured /></div>
-      </details>}
+      {!showHandoff && <Collapsible className="rounded-xl border border-line bg-panel px-4 py-3">
+        <CollapsibleTrigger className="font-medium text-ink">Change or repair the recipe with your agent</CollapsibleTrigger>
+        <CollapsibleContent><div className="mt-3"><AgentHandoff repo={repo} configured /></div></CollapsibleContent>
+      </Collapsible>}
     </div>
     <div className="min-w-0 space-y-4">
       <Panel title="Repository">

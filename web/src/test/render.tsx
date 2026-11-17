@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { vi } from 'vitest'
@@ -31,3 +31,22 @@ export function renderApp(ui: ReactNode, path = '/') {
 }
 
 export const ME = { email: 'ada@example.com', admin: true, login: 'password', domain: 'sbx.example.com', base_url: 'https://sbx.example.com', setup_complete: true, version: 'dev', repos: ['usememos/memos'], agents: {} }
+
+type User = ReturnType<typeof import('@testing-library/user-event').default.setup>
+
+/** Picks an option from a Select: opens its trigger, clicks the option by name. */
+export async function choose(user: User, trigger: HTMLElement, name: string | RegExp) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name }))
+}
+
+/** A Select's option names, read by opening and closing it. */
+export async function optionNames(user: User, trigger: HTMLElement) {
+  await user.click(trigger)
+  const names = (await screen.findAllByRole('option')).map(o => o.textContent)
+  await user.keyboard('{Escape}')
+  return names
+}
+
+/** Whether a Radix checkbox or switch is on. */
+export const isChecked = (el: HTMLElement) => el.getAttribute('aria-checked') === 'true'

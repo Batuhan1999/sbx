@@ -16,15 +16,15 @@
 #                     instance role, or AWS keys: sbx-admin secret set),
 #                     cloudflare (CLOUDFLARE_API_TOKEN), or none: self-signed,
 #                     for a first test
-#   --login L         password (the default with --domain on a first install;
-#                     generated and printed): one shared password that admits
-#                     the admins (and sign_in.allowed_emails) only. Whoever
-#                     holds it can sign in as any of them, admins included:
-#                     for a team, use oidc. none (no sign-in: everyone is an
-#                     admin; a private network only), or oidc, connected with
-#                     sbx-admin connect sign_in method=oidc oidc_issuer=...
-#                     allowed_emails='*@example.com' ... (OIDC admits only
-#                     whom allowed_emails names; * for anyone)
+#   --login L         password (the default with --domain on a first install):
+#                     each person has their own; the admins get a generated
+#                     one, printed once. Add people in the web app (Settings
+#                     → People) or with sbx-admin user add EMAIL. none (no
+#                     sign-in: everyone is an admin; a private network only),
+#                     or oidc, connected with sbx-admin connect sign_in
+#                     method=oidc oidc_issuer=... allowed_emails='*@example.com'
+#                     ... (OIDC admits the admins, the people added, and whom
+#                     allowed_emails names; * for anyone)
 #   --repos LIST      trusted repos, comma-separated: owner/repo or owner/*
 #                     (their secrets, services, private network)
 #   --public-repos    also any other repo, public ones included, untrusted
@@ -124,11 +124,11 @@ need_gib=60; ! configured || need_gib=15
 [ "$disk_gib" -ge "$need_gib" ] || die "$need_gib GiB of free disk at least, this has $disk_gib GiB"
 first=""; configured || first=1
 # A first install defaults the admin to --email and, with a domain, signs in
-# with a generated password, which admits the admins only: it needs one.
+# with a generated password for the admin: it needs one.
 if [ -n "$first" ]; then
   [ -n "$admin" ] || admin=$email
   [ -n "$sign_in" ] || [ -z "$domain" ] || sign_in=password
-  [ "$sign_in" != password ] || [ -n "$admin" ] || die "password sign-in admits the admins only: give --admin EMAIL (or --email)"
+  [ "$sign_in" != password ] || [ -n "$admin" ] || die "password sign-in needs an admin to sign in: give --admin EMAIL (or --email)"
 fi
 echo "ok: $PRETTY_NAME, $mem_mib MiB, $disk_gib GiB free, /dev/kvm"
 
@@ -211,9 +211,9 @@ fi
 password=""
 case "$sign_in" in
   "") ;;
-  password)  # the wizard's too (sign_in.use_password); generates one when none is set, and says it once
+  password)  # a generated password for each admin without one, said once
     said=$(release_admin sign-in password) || die "could not set password sign-in (above)"
-    password=$(printf '%s\n' "$said" | sed -n 's/^generated password: //p') ;;
+    password=$(printf '%s\n' "$said" | sed -n 's/^generated password for //p') ;;
   oidc)  # refused until the provider and who may sign in (allowed_emails) are named
     release_admin config set sign_in '{"method": "oidc"}' >/dev/null 2>&1 || \
       echo "OIDC is not connected yet: sbx-admin connect sign_in method=oidc oidc_issuer=URL oidc_client_id=ID oidc_client_secret=- allowed_emails='*@example.com'" ;;

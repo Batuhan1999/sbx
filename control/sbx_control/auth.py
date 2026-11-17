@@ -1,10 +1,10 @@
 """Who is asking, and what they may do.
 
 Sign-in: the settings' sign_in method is oidc (the operator's identity provider),
-password (one shared password; whoever holds it signs in as any listed email,
-the admins' included, so teams use OIDC), or
-none (no login: everyone is ANONYMOUS and every preview is open; for a
-private network only). The CLI and host tools use API tokens.
+password (each person's own, users.py), or none (no login: everyone is
+ANONYMOUS and every preview is open; for a private network only). The CLI
+and host tools use API tokens. A session holds the person's generation
+(users.py): a new password or their removal ends it.
 
 The access policy, in one place for every route, the gate and the views:
 admins (the settings' access.admins; everyone with login: none) manage the
@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import addressing, core, ip_previews, platform, sandboxes, settings, setup, state, vault
+from . import addressing, core, ip_previews, platform, sandboxes, settings, setup, state, users, vault
 from .state import db
 
 ANONYMOUS = "anonymous"
@@ -61,7 +61,22 @@ class Sessions:
 
 
 def session_email(request: Request):
-    return ANONYMOUS if settings.current().sign_in.method == "none" else request.session.get("email")
+    """Who the session is for while it still holds: they may still sign in
+    and their password has not changed since (users.generation)."""
+    if settings.current().sign_in.method == "none":
+        return ANONYMOUS
+    email = request.session.get("email")
+    if not email:
+        return None
+    if request.session.get("gen") != users.generation(email) or not may_sign_in(email):
+        request.session.clear()
+        return None
+    return email
+
+
+def start_session(request: Request, email: str, generation: int, name: str = ""):
+    request.session.clear()
+    request.session.update(email=email, name=name or email, gen=generation)
 
 
 def mint_token(email: str, label: str) -> str:
@@ -76,6 +91,10 @@ def mint_token(email: str, label: str) -> str:
 def revoke_token(token: str):
     with db() as conn:
         conn.execute("delete from tokens where hash = ?", (hashlib.sha256(token.encode()).hexdigest(),))
+    _tokens.clear()
+
+
+def forget_tokens():
     _tokens.clear()
 
 
@@ -232,11 +251,15 @@ async def auth_login(request: Request, next: str = "/"):
 
 
 def may_sign_in(email: str) -> bool:
-    """The sign-in method's allow-list (settings.SignIn.admits): OIDC only
-    whom allowed_emails names, the shared password only the admins and
-    allowed_emails."""
-    s = settings.current()
-    return s.sign_in.admits(email, s.admins)
+    """OIDC: whom allowed_emails names, the admins and the people an admin
+    added. With passwords, the people (their password is checked at sign-in)."""
+    s = settings.current().sign_in
+    if s.method == "oidc":
+        return (s.listed(email) or email.lower() in settings.current().admins
+                or users.generation(email.lower()) is not None)
+    if s.method == "password":
+        return users.generation(email.lower()) is not None
+    return True
 
 @router.post("/auth/login")
 async def auth_password(request: Request):
@@ -245,19 +268,42 @@ async def auth_password(request: Request):
     form = urllib.parse.parse_qs((await request.body()).decode())
     email = (form.get("email") or [""])[0].strip().lower()
     password = (form.get("password") or [""])[0]
-    expected = vault.platform_secrets().get("LOGIN_PASSWORD", "")
-    if not expected or not hmac.compare_digest(password.encode(), expected.encode()) or "@" not in email:
+    generation = await asyncio.to_thread(users.check_password, email, password) if email and password else None
+    if generation is None:
         await asyncio.sleep(1)  # slows guessing
         return JSONResponse({"detail": "The email or password is incorrect."}, status_code=401)
-    if not may_sign_in(email):
-        return JSONResponse({"detail": "The email or password is incorrect."}, status_code=401)
-    request.session["email"] = email
-    request.session["name"] = email
+    target = request.session.get("next", "/")
+    start_session(request, email, users.signed_in(email, by="password"))
     setup.first_admin(email)
-    target = request.session.pop("next", "/")
     if "application/json" in request.headers.get("accept", ""):
         return JSONResponse({"next": target})
     return RedirectResponse(target, status_code=303)
+
+
+class SetPassword(BaseModel):
+    token: str
+    password: str = ""
+
+
+@router.post("/auth/set-password/check")
+def auth_set_password_check(body: SetPassword):
+    """Whose set-password link it is, while it is good."""
+    email = users.link_email(body.token)
+    if not email:
+        raise HTTPException(400, "This link is used or expired. Ask an admin for a new one.")
+    return {"email": email, "login": settings.current().sign_in.method}
+
+
+@router.post("/auth/set-password")
+def auth_set_password(body: SetPassword, request: Request):
+    """Spends a set-password link and, with password sign-in, signs its person in."""
+    try:
+        email, generation = users.use_link(body.token, body.password)
+    except users.Refused as error:
+        raise HTTPException(400, str(error))
+    if settings.current().sign_in.method == "password":
+        start_session(request, email, users.signed_in(email, by="password"))
+    return {"email": email, "next": "/app/repos"}
 
 
 @router.get("/auth/callback")
@@ -276,10 +322,10 @@ async def auth_callback(request: Request):
         raise HTTPException(403, f"the provider has not verified {email}")
     if not may_sign_in(email):
         raise HTTPException(403, f"{email} may not sign in here")
-    request.session["email"] = email
-    request.session["name"] = claims.get("name", email)
+    target = request.session.get("next", "/")
+    start_session(request, email, users.signed_in(email, by="oidc"), claims.get("name", email))
     setup.first_admin(email)
-    return RedirectResponse(request.session.pop("next", "/"))
+    return RedirectResponse(target)
 
 
 @router.get("/auth/logout")

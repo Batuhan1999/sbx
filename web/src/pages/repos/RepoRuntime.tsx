@@ -4,6 +4,7 @@ import type { Runtimes } from '@/api/types'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { QueryView } from '@/components/states'
 import { Panel } from '@/components/ui/primitives'
+import { toast } from 'sonner'
 
 /** Admins: where the repository's new sandboxes run. Shown only when more than one runtime is enabled. */
 export function RepoRuntime({ repo }: { repo: string }) {
@@ -17,13 +18,13 @@ export function RepoRuntime({ repo }: { repo: string }) {
 }
 
 function RuntimeForm({ current, choice, save }: { current: string; choice: Runtimes; save: { mutateAsync: (runtime: string) => Promise<unknown>; isSuccess: boolean } }) {
-  const form = useAppForm({ defaultValues: { runtime: current }, onSubmit: async ({ value }) => { await save.mutateAsync(value.runtime) } })
+  const form = useAppForm({ defaultValues: { runtime: current }, onSubmit: async ({ value }) => { await save.mutateAsync(value.runtime); toast.success('Runtime saved') } })
   const fallback = choice.runtimes.find(r => r.kind === choice.default)?.title ?? choice.default
   return <AppForm form={form} className="space-y-3">
     <form.AppField name="runtime">{field => <field.SelectField label="Runtime">
       <option value="">Installation default ({fallback})</option>
       {choice.runtimes.map(r => <option key={r.kind} value={r.kind}>{r.title}</option>)}
     </field.SelectField>}</form.AppField>
-    <div className="flex items-center justify-end gap-3">{save.isSuccess && <span role="status" className="text-[12.5px] text-ok">Saved</span>}<SubmitButton form={form}>Save</SubmitButton></div>
+    <div className="flex items-center justify-end gap-3"><SubmitButton form={form}>Save</SubmitButton></div>
   </AppForm>
 }

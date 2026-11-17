@@ -501,6 +501,8 @@ The desktop CLI and the web app use the control service's HTTP API at the
 installation's address (its base URL); any HTTP client can. Requests carry
 `Authorization: Bearer <token>`. A token acts as the email it was made for:
 admin routes need one of the installation's admins (`access.admins`).
+Removing a person (`DELETE /api/users/EMAIL`, `sbx-admin user rm EMAIL`)
+revokes their tokens.
 
 - `sbx login` (the desktop CLI, macOS) keeps a token in the Keychain.
 - On the host, for Linux, CI or an agent without the desktop CLI:
@@ -543,6 +545,9 @@ building or has no room), with `Retry-After` when waiting helps.
 | `POST /api/sandboxes/NAME/exec` | owner | Run a script as the sandbox's user: body `{"script": "...", "timeout": 120}`, answers `exit_code`, `stdout`, `stderr`. |
 | `GET /api/sandboxes/NAME/inspect?lines=N` | owner | The checkout's commit and the tails of the setup and process logs. |
 | `POST /api/sandboxes/NAME/restart`, `/prepare`, `/pause`, `/resume`; `DELETE /api/sandboxes/NAME` | owner | The [lifecycle](#lifecycle) operations. |
+| `GET /api/users`, `POST /api/users` | admin | The people (email, admin, whether they have a password, last sign-in, API tokens); `POST` with `{"email": "...", "admin": false}` adds one and answers a one-time `link` to set their password, good for 7 days. `sbx-admin user ls`, `user add`. |
+| `PUT /api/users/EMAIL`, `POST /api/users/EMAIL/link`, `DELETE /api/users/EMAIL` | admin | `{"admin": true}` makes them an admin (400 for the last admin); a new set-password link (the older one stops working); remove them, ending their sessions and API tokens (not yourself). |
+| `POST /api/me/password` | anyone signed in with a password | `{"current": "...", "password": "..."}` changes your password and signs you out everywhere else. |
 | `GET /api/updates`, `POST /api/updates`, `POST /api/updates/check` | admin | The installed release, the newer ones with their notes, and the last upgrade with its steps and progress; `POST` with `{"tag": "v0.3.0"}`, the newest release, [installs it](#operating-the-host): 400 for any other tag, 409 while an upgrade runs. `check` asks GitHub now. |
 
 ## Operating the host

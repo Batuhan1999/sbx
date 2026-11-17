@@ -13,7 +13,7 @@ import { CapacityNote } from '@/pages/sandboxes/SandboxesPage'
 import { SandboxTable } from '@/pages/sandboxes/SandboxTable'
 import RepoRecipe from '@/pages/repos/RepoRecipe'
 import { Runtimes } from '@/pages/settings/Runtimes'
-import { ME, renderApp, stubApi } from './render'
+import { choose, ME, renderApp, stubApi } from './render'
 
 const runtime = (kind: string, title: string, extra: Partial<SandboxRuntime> = {}): SandboxRuntime => ({
   kind, title, default: false, host: false, capabilities: { snapshots: false, private_networks: false, egress_rules: false }, limits: {}, status: { state: 'connected', summary: '' }, ...extra,
@@ -78,9 +78,8 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
-    const select = await screen.findByLabelText('Runtime') as HTMLSelectElement
-    expect(select.value).toBe('')
-    expect(await screen.findByRole('option', { name: 'Repository’s choice (Hosted runtime)' })).toBeTruthy()
+    const select = await screen.findByLabelText('Runtime')
+    await waitFor(() => expect(select.textContent).toBe('Repository’s choice (Hosted runtime)'))
     await user.type(screen.getByLabelText(/Branch/), 'login')
     await user.click(screen.getByRole('button', { name: 'Create sandbox' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
@@ -94,8 +93,8 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
-    expect(await screen.findByRole('option', { name: 'Installation default (E2B Embed)' })).toBeTruthy()
-    await user.selectOptions(screen.getByLabelText('Runtime'), 'hosted')
+    await waitFor(() => expect(screen.getByLabelText('Runtime').textContent).toBe('Installation default (E2B Embed)'))
+    await choose(user, screen.getByLabelText('Runtime'), /^Hosted runtime/)
     await user.type(screen.getByLabelText(/Branch/), 'login')
     await user.click(screen.getByRole('button', { name: 'Create sandbox' }))
     expect((await screen.findByRole('alert')).textContent).toContain('Hosted runtime cannot run usememos/memos')
@@ -109,8 +108,8 @@ describe('with several runtimes', () => {
     })
     renderApp(<RepoRuntime repo="usememos/memos" />)
     const user = userEvent.setup()
-    await waitFor(() => expect((screen.getByLabelText('Runtime') as HTMLSelectElement).value).toBe('hosted'))
-    await user.selectOptions(screen.getByLabelText('Runtime'), '')
+    await waitFor(() => expect(screen.getByLabelText('Runtime').textContent).toMatch(/^Hosted runtime/))
+    await choose(user, screen.getByLabelText('Runtime'), /^Installation default/)
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
     expect(calls.find(c => c.method === 'PUT')).toMatchObject({ url: '/api/repos/usememos/memos/runtime', body: { runtime: null } })
