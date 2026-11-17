@@ -235,12 +235,30 @@ def add(*, server: str | None = None, name: str | None = None, target: str | Non
             REVISION.set(revision, conn=conn)
             conn.execute("commit")
     settings.request_effects(settings.HostUnit.ENDPOINTS)
-    return one(name)
+    added = one(name)
+    deliver(name, added["repos"])
+    return added
+
+
+def deliver(name: str, repos):
+    """Bring the repos' sandboxes an endpoint change without restarting their
+    apps: their runtime written again (sandboxes.deliver_env), so the
+    forwarder's config and certificates and SBX_ENDPOINT_<NAME> in the env
+    are what the repo may use now. Running ones get it within seconds,
+    paused ones when they resume; running processes keep their env until
+    they restart."""
+    from . import sandboxes
+    for repo in sorted(set(repos)):
+        try:
+            sandboxes.deliver_env(repo, [env_name(name)], restart=False)
+        except Exception as error:   # the change is recorded; the next runtime write brings it
+            print(f"endpoints: delivering {name} to {repo}'s sandboxes: {error!r}", file=sys.stderr, flush=True)
 
 
 def set_repos(name: str, repos) -> dict:
     """Replace an internal host's grants: the repos whose sandboxes may use it.
-    A revoked repo's sandboxes get no new certificate; the ones they hold run out."""
+    The sandboxes of a repo granted or revoked get the change at once
+    (deliver): a revoked one's forwarder config and certificates go."""
     grants = _repos(repos)
     row = next((r for r in _rows() if r["name"] == name), None)
     if row is None:
@@ -253,6 +271,7 @@ def set_repos(name: str, repos) -> dict:
         conn.execute("delete from endpoint_repos where endpoint = ?", (name,))
         conn.executemany("insert into endpoint_repos (endpoint, repo) values (?, ?)", [(name, r) for r in grants])
         conn.execute("commit")
+    deliver(name, set(grants) ^ set(row["grants"]))
     return one(name)
 
 
@@ -270,6 +289,7 @@ def remove(name: str) -> dict:
 
 
 def _delete(name: str):
+    row = next((r for r in _rows() if r["name"] == name), None)
     with state.db() as conn:
         conn.execute("begin immediate")
         conn.execute("delete from endpoint_repos where endpoint = ?", (name,))
@@ -277,6 +297,8 @@ def _delete(name: str):
         REVISION.set(int(REVISION.get("0", conn=conn)) + 1, conn=conn)
         conn.execute("commit")
     settings.request_effects(settings.HostUnit.ENDPOINTS)
+    if row:
+        deliver(name, repos_of(row))
 
 
 def forget_server(server: str):

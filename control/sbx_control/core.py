@@ -588,7 +588,7 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
         f"chmod 600 {staging}/sbx-env {staging}/sbx-app-env {modes}"
         f"&& mv {staging}/sbx-env {RUN}/env && mv {staging}/sbx-app-env {RUN}/app-env "
         f"&& rm -rf {contributions.EXT}.old && {{ [ ! -e {contributions.EXT} ] || mv {contributions.EXT} {contributions.EXT}.old; }} "
-        f"&& mv {ext} {contributions.EXT} && rm -rf {contributions.EXT}.old {dirs}"
+        f"&& mv {ext} {contributions.EXT} && rm -rf {contributions.EXT}.old {RUN}/{endpoints.RENEWED} {dirs}"
         f"&& chmod -R go-rwx {RUN} && mkdir -p {HOME}/.ssh && chmod 700 {HOME}/.ssh "
         f"&& touch {HOME}/.ssh/authorized_keys && chmod 600 {HOME}/.ssh/authorized_keys "
         f"{git}&& cat /etc/ssh/ssh_host_ed25519_key.pub").stdout.split()[:2]
@@ -1105,7 +1105,9 @@ def restart(name: str, operation=None):
 
 def _restart(name, operation):
     sbx, info = connect(name, "to restart its app")
-    restore_runtime(sbx, info)
+    if not restore_runtime(sbx, info):
+        # Its runtime as it would be written now (the env, the endpoints its repo may use), before the app starts.
+        _refresh_env(sbx, info, False)
     operation.configure_workspace(app_of(info).repo)
     _bring_up(sbx, info, operation)
 

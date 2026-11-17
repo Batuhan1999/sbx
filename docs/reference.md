@@ -246,6 +246,14 @@ repository (`access.public_repos`) may be granted an internal host's too.
 The rule is kept with certificates, not addresses: each endpoint has a CA of
 its own, nginx checks a client against that endpoint's CA only, and a
 sandbox gets certificates only for the endpoints its repository may use.
+A grant, a revoke, a new endpoint or a removed one reaches the
+repository's running sandboxes within seconds, without restarting their
+apps: the forwarder's configuration and certificates and
+`SBX_ENDPOINT_<NAME>` in `/run/sbx/env` are written again (a paused
+sandbox gets them when it resumes; `sbx sandbox restart` writes them too).
+Processes already running keep the env they started with until they
+restart; the forwarder follows its configuration by itself, and a revoked
+endpoint's listener and certificates go.
 
 How it works:
 
