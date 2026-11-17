@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -172,6 +173,24 @@ class IdentityTests(unittest.TestCase):
                     else:
                         self.assertEqual(sbx_guest.listener_pid(), expected)
 
+
+    def test_the_standalone_sshd_starts_again_only_once_the_old_one_has_let_go_of_the_port(self):
+        with tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
+            root = Path(directory)
+            for path, text in {"proc/1/comm": "init\n", "run/sshd.pid": "456\n"}.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(text)
+            (root / "proc/456").mkdir()
+            old = root / "proc/456/exe"
+            old.symlink_to("/usr/sbin/sshd")
+            started = []
+            with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
+                    patch.object(sbx_guest, "PROC", root / "proc"), \
+                    patch.object(sbx_guest.os, "kill", lambda pid, sig: threading.Timer(0.3, old.unlink).start()), \
+                    patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(old.is_symlink())), \
+                    patch.object(sbx_guest, "listener_alive", return_value=True):
+                sbx_guest.restart_listener()
+            self.assertEqual(started, [False])
 
 @unittest.skipUnless(sys.platform == "linux", "sandbox process identities use Linux /proc")
 class ProcessTests(unittest.TestCase):
