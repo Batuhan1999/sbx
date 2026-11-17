@@ -180,6 +180,56 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
             self.assertEqual(template_builds.forget_missing("fake"), [])
         listed.assert_not_called()
 
+    def legacy_base(self):
+        """The base only under its name from before (as on the lab), and the
+        default's last build failed starting from the prefixed name."""
+        from sbx_control.state import db
+        builds, templates, _ = self.built()
+        prefixed = builds.built(templates.BASE, "fake")
+        legacy = prefixed.partition("--")[2]
+        del self.shared.built[prefixed]
+        self.shared.built[legacy] = "ready"
+        with db() as conn:
+            conn.execute("update template_builds set built_template = ? where runtime = 'fake' and repo = ?",
+                         (legacy, templates.BASE))
+            # Never built since (the lab's repo template): nothing to start a sandbox from.
+            conn.execute("update template_builds set built_template = null, built_fingerprint = null "
+                         "where runtime = 'fake' and repo = ?", (templates.DEFAULT,))
+        builds._transition(templates.DEFAULT, "building", "fake", started_at=builds._utc(), pid=None,
+                           fingerprint=builds.plan(templates.DEFAULT).fingerprint,
+                           error=f"template '{prefixed}' not found")   # no process: failed
+        self.assertEqual(builds.status(templates.DEFAULT, builds.state_row(templates.DEFAULT, "fake"), "fake"),
+                         "failed")
+        return builds, templates, prefixed, legacy
+
+    def test_a_child_waits_for_its_base_under_the_name_planned_now(self):
+        builds, templates, prefixed, legacy = self.legacy_base()
+        # A create in that window: building (and it starts), not "its last build failed".
+        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
+            builds.template_for(None, "fake")
+        self.assertIn(f"the {templates.DEFAULT} template is building", str(refused.exception))
+        start.assert_called_once_with(templates.DEFAULT, "fake")
+        # The scheduler's round: the base first, then what starts from it.
+        self.assertEqual(builds.stale("fake")[:2], [templates.BASE, templates.DEFAULT])
+        builds.build_now(templates.DEFAULT, "fake")      # its own build makes the base first
+        self.assertEqual(builds.built(templates.BASE, "fake"), prefixed)
+        self.assertIn(prefixed, self.shared.built)
+        self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
+        self.assertEqual(builds.stale("fake"), [])
+
+    def test_a_failure_with_its_base_current_stays_failed(self):
+        import time
+        builds, templates, prefixed, _ = self.legacy_base()
+        builds.build_now(templates.BASE, "fake")
+        time.sleep(1.1)                                   # a later attempt, the base unchanged since
+        builds._transition(templates.DEFAULT, "building", "fake", started_at=builds._utc(), pid=None,
+                           fingerprint=builds.plan(templates.DEFAULT).fingerprint, error="apt failed")
+        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
+            builds.template_for(None, "fake")
+        self.assertIn("its last build failed (apt failed)", str(refused.exception))
+        start.assert_not_called()
+        self.assertNotIn(templates.DEFAULT, builds.stale("fake"))
+
     def test_the_e2b_adapter_names_a_missing_template(self):
         from e2b import Sandbox
         from e2b.exceptions import SandboxException

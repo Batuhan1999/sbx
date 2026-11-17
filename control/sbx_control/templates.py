@@ -310,16 +310,17 @@ def build_logger(key: str, hidden, kind: str | None = None):
     return log
 
 
-def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = None):
+def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = None, base: str | None = None):
     """Build the plan as p.name on the runtime of kind (None: the default);
-    a repo's needs its mirror (git_dir)."""
+    a repo's needs its mirror (git_dir). base: the name the base template was
+    built under (its build row), which it starts from; default: the name planned now."""
     BUILD_LOGS.pop((kind or runtime.default(), p.key), None)
     served = []
     try:
         if p.base is None:
             t = base_template()
         else:
-            t = runtime.TemplateSpec().from_template(runtime.template_name(p.base.name, kind))
+            t = runtime.TemplateSpec().from_template(base or runtime.template_name(p.base.name, kind))
             if p.recipe:
                 token, bundle = serve_bundle(git_dir)
                 served.append((token, bundle))

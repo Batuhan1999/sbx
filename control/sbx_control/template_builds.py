@@ -315,11 +315,53 @@ def template_for(repo: str | None, kind: str | None = None) -> str:
     raise NotBuilt(_building(key, row, kind))
 
 
+BASE_WAIT_SECONDS = 3600   # how long a build waits for the base another build is making
+
+
+def _parent_current(kind: str | None = None) -> dict | None:
+    """The base template's row when what builds on it can start from it: built
+    as planned now, under the name planned now on this runtime (a name from
+    before installations were told apart is not); else None."""
+    with db() as conn:
+        base = _read(conn, templates.BASE, kind)
+    p = plan(templates.BASE)
+    if base and status(templates.BASE, base, kind) == "built" and base["built_template"] \
+            and base["built_fingerprint"] == p.fingerprint \
+            and base["built_template"] == runtime.template_name(p.name, _kind(kind)):
+        return base
+    return None
+
+
+def _wait_for_base(kind: str | None = None) -> dict | None:
+    """While another build (here or in another process) makes the base: its
+    row once it is current; None when nobody is building it (or it failed)."""
+    deadline = time.monotonic() + BASE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        with db() as conn:
+            row = _read(conn, templates.BASE, kind)
+        if not ((_kind(kind), templates.BASE) in _running or (row and status(templates.BASE, row, kind) == "building")):
+            return _parent_current(kind)
+        time.sleep(5)
+    raise RuntimeError(f"the {templates.BASE} template has been building{_on(kind)} for over an hour")
+
+
+def _stuck(key: str, row: dict | None, kind: str | None = None) -> bool:
+    """Whether key's last build failed on the plan of now, and building again
+    would fail the same way: not when what it starts from (the base) was not
+    current then or changed since; such a failure is retried once the base is."""
+    if not row or status(key, row, kind) != "failed" or row["fingerprint"] != plan(key).fingerprint:
+        return False
+    if key == templates.BASE:
+        return True
+    base = _parent_current(kind)
+    return bool(base) and (base["finished_at"] or "") <= (row["started_at"] or "")
+
+
 def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     """Start key's build unless it is running or failed on this plan; what a refused create says."""
     on = _on(kind)
     try:
-        failed = status(key, row, kind) == "failed" and row["fingerprint"] == plan(key).fingerprint
+        failed = _stuck(key, row, kind)
     except (recipes.RecipeError, OSError) as error:
         return f"the {key} template is not built{on} yet and cannot be planned: {error}"
     if failed:
@@ -467,11 +509,14 @@ def _build(key: str, kind: str | None = None):
     try:
         try:
             platform_owned = key == templates.BASE or templates.is_default(key)
+            base_name = None
             if key != templates.BASE:
-                with db() as conn:
-                    base = _read(conn, templates.BASE, kind)
-                if not base or base["built_fingerprint"] != plan(templates.BASE).fingerprint:
+                # What it starts from first: the base as planned now, under
+                # the name planned now (not one from before installations
+                # were told apart), waited for while another build makes it.
+                if _parent_current(kind) is None and _wait_for_base(kind) is None:
                     build_now(templates.BASE, kind)
+                base_name = built(templates.BASE, kind)
             git_dir = None
             if not platform_owned:
                 git_dir = recipes.mirror(key, extensions.git_access(key))
@@ -490,7 +535,7 @@ def _build(key: str, kind: str | None = None):
             print(f"template build {key}{_on(kind)}: {p.name}", flush=True)
             with Watch(key, p, kind) as watch:
                 try:
-                    templates.build(p, git_dir, kind=_kind(kind))
+                    templates.build(p, git_dir, kind=_kind(kind), base=base_name)
                 except Exception as error:
                     if watch.why():
                         raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
@@ -637,9 +682,9 @@ def stale(kind: str | None = None) -> list:
         if (_kind(kind), key) in _running or (row and status(key, row, kind) == "building"):
             continue
         fingerprint = plan(key).fingerprint
-        if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
+        if _stuck(key, row, kind):
             continue
-        if not _current(row, fingerprint):
+        if not _current(row, fingerprint) or not _named_now(key, row, kind):
             out.append(key)
     return out
 
@@ -681,6 +726,13 @@ def _current(row: dict | None, fingerprint: str) -> bool:
     """Whether the template built last (row) is the one planned now. A row
     without a built template (built while the repo had none of its own) is not."""
     return bool(row) and bool(row["built_template"]) and row["built_fingerprint"] == fingerprint
+
+
+def _named_now(key: str, row: dict | None, kind: str | None = None) -> bool:
+    """Whether the template built last has the name planned now on the
+    runtime: not one from before installations were told apart (which builds
+    again, once, under its prefixed name)."""
+    return bool(row) and row["built_template"] == runtime.template_name(plan(key).name, _kind(kind))
 
 
 def mark_moved(repo: str):
@@ -759,7 +811,7 @@ def main(argv=None) -> int:
     kind = args.runtime
     with db() as conn:
         row = _read(conn, key, kind)
-    if args.if_stale and _current(row, plan(key).fingerprint):
+    if args.if_stale and _current(row, plan(key).fingerprint) and _named_now(key, row, kind):
         print(f"CURRENT {row['built_template'] or key}", file=sys.stderr)
         return 0
     try:

@@ -84,8 +84,9 @@ class TemplateBundleTests(Installation):
             on_log(f"running {fetch}")
             raise RuntimeError(f"the step failed: {fetch}")
         with db() as conn:
+            base = template_builds.plan(self.templates.BASE)   # built, under the name planned now
             conn.execute("insert into template_builds (runtime, repo, status, built_fingerprint, built_template) "
-                         "values ('embed', ?, 'built', ?, 'base-fixture')", (self.templates.BASE, template_builds.plan(self.templates.BASE).fingerprint))
+                         "values ('embed', ?, 'built', ?, ?)", (self.templates.BASE, base.fingerprint, base.name))
         journal = io.StringIO()
         with patch.object(extensions, "contributions_for", return_value=[tool]), \
                 patch.object(runtime, "build_template", Mock(side_effect=refuse)), \
