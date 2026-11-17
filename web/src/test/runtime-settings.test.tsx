@@ -277,6 +277,25 @@ describe('first-run setup without a runtime', () => {
     expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)
 
+  it('keeps what was typed when applying the runtime fails', async () => {
+    setSetupToken('one-time-token')
+    const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('failed', 'add', 'E2B Cloud refused the key') })
+    stubApi({
+      'GET /api/setup/checks': { ok: true, checks: [] },
+      'GET /api/setup': SETUP(false),
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
+      'GET /api/runtimes/change': () => polls(),
+      'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
+      'GET /api/runtimes': { default: '', runtimes: [] },
+    })
+    renderApp(<SetupPage />, '/app/setup')
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText('API key'), 'test-only-key')
+    await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
+    expect(await screen.findByText(/E2B Cloud refused the key/, undefined, { timeout: 10000 })).toBeTruthy()
+    await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('test-only-key'))
+  }, 20000)
+
   it('says up front that a provider needs a domain, and goes back to the address step', async () => {
     setSetupToken('one-time-token')
     stubApi({

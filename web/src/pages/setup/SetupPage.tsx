@@ -184,11 +184,12 @@ function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => vo
       : <>
         <RuntimeChoices choices={choices} value={chosen?.kind ?? ''} onChange={setKind} />
         <ChangeStatus flow={flow} />
-        {chosen && !flow.busy && (chosen.edit_blocker ? <div className="space-y-2">
+        {chosen && (chosen.edit_blocker ? !flow.busy && <div className="space-y-2">
           <ErrorState compact error={blockedText(chosen.edit_blocker, chosen.kind)} />
           {chosen.edit_blocker.code === 'needs_domain' && <Button size="sm" onClick={onBack}><Globe />Choose a domain</Button>}
         </div>
-          : <RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} />)}
+          // Hidden, not unmounted, while the host applies it: a change that fails keeps what was typed.
+          : <div hidden={flow.busy}><RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} /></div>)}
         {!chosen && <p className="text-[13px] text-muted">None can run here. Rerun install.sh on a server with /dev/kvm.</p>}
       </>}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
