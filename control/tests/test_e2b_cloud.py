@@ -455,6 +455,21 @@ class CredentialHelper(Installation):
             self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
         self.assertEqual(delivery.waiting(), set())
 
+    def test_going_back_to_the_pin_before_a_partial_delivery_queues_again(self):
+        from sbx_control import delivery, sandboxes, templates
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
+            sandboxes.redeliver_on_certificate_change(["a"], complete=True)   # pin one delivered everywhere
+            delivery.forget("a")
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
+            # A listing that missed a runtime: "a" gets pin two, the round is incomplete.
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            delivery.forget("a")
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
+            # Back to pin one: "a" holds two now, so it is queued again.
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=True))
+        self.assertEqual(delivery.waiting(), {"a"})
+        delivery.forget("a")
+
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
         from sbx_control import delivery, sandboxes, templates
         with patch.object(templates, "pinned_key", return_value=""):

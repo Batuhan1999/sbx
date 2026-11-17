@@ -368,6 +368,7 @@ DELIVERED_PIN = state.Setting("tls_pin_delivered")
 # While a new pin is not delivered to every sandbox yet: {"pin", "names"}
 # of those it was queued for (a listing that missed a runtime's).
 PIN_QUEUED = state.Setting("tls_pin_queued", encoded=True)
+PIN_PARTIAL = "partial"   # DELIVERED_PIN while a delivery is incomplete: equals no real pin
 
 
 def redeliver_on_certificate_change(names, complete: bool = True) -> bool:
@@ -394,6 +395,10 @@ def redeliver_on_certificate_change(names, complete: bool = True) -> bool:
         PIN_QUEUED.delete()
     else:
         PIN_QUEUED.set({"pin": pin, "names": sorted(done | set(fresh))})
+        # Some sandboxes may hold this pin now: no pin counts as delivered
+        # until a complete round, so going back to the previous one queues
+        # them again.
+        DELIVERED_PIN.set(PIN_PARTIAL)
     return bool(fresh)
 
 
