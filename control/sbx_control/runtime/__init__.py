@@ -25,6 +25,7 @@ import importlib.metadata
 import threading
 
 from . import env_file
+from .env_file import ENABLED_KEY, listed
 from .base import (FAILED, PAUSED, RUNNING, Backend, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info,
                    LimitRefused, Limits, LimitSpec, NoRoom, NotRunning, Preset, Runtime, RuntimeLayer, SettingField,
                    Snapshot, TemplateGone, TemplateSpec, Timeout, TokenPlace)
@@ -38,9 +39,8 @@ __all__ = ["FAILED", "PAUSED", "RUNNING", "Backend", "Busy", "Capabilities", "Co
 GROUP = "sbx.runtimes"
 BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud",
            "boat": "sbx_control.runtime.boat:Boat"}
-ENABLED_KEY, DEFAULT_KEY = "SBX_RUNTIMES", "SBX_RUNTIME_DEFAULT"
+DEFAULT_KEY = "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
-FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
 # The kind of everything recorded before an installation ran several
 # runtimes (sandboxes, template builds, Amp's caches): Embed was the only
 # runtime then, whatever the default is now. The migrations that tag those
@@ -84,13 +84,6 @@ def configuration() -> dict:
             found.update(env_file.read(CONFIG_KEYS))
         _config.update(key=key, value=found)
     return _config["value"]
-
-
-def listed(value: str | None) -> list[str]:
-    """SBX_RUNTIMES's kinds, in order: None (no such line) is Embed alone."""
-    if value is None:
-        return [FALLBACK]
-    return list(dict.fromkeys(k.strip() for k in value.replace(" ", ",").split(",") if k.strip()))
 
 
 NO_RUNTIME = ("no sandbox runtime is set up: add one in Settings → Sandbox runtimes (or on the server: "

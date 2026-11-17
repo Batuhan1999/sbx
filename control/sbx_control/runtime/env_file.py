@@ -5,6 +5,10 @@ change does not name stay as they are."""
 from __future__ import annotations
 
 import shlex
+import sys
+
+ENABLED_KEY = "SBX_RUNTIMES"
+FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
 
 
 def path():
@@ -70,3 +74,19 @@ def edit(values: dict, header: str = "") -> None:
         out.append(line)
     out += [f"{name}={shlex.quote(value)}" for name, value in values.items() if name not in done and value is not None]
     restore("\n".join(out) + "\n")
+
+
+def listed(value: str | None) -> list[str]:
+    """SBX_RUNTIMES's kinds, in order: None (no such line) is Embed alone."""
+    if value is None:
+        return [FALLBACK]
+    return list(dict.fromkeys(k.strip() for k in value.replace(" ", ",").split(",") if k.strip()))
+
+
+if __name__ == "__main__":
+    # install.sh's preflight, before a release is unpacked (python3 -I env_file.py runtimes FILE):
+    # the kinds the file enables, as sbx reads them.
+    if sys.argv[1:2] != ["runtimes"] or len(sys.argv) != 3:
+        raise SystemExit("usage: python3 env_file.py runtimes FILE")
+    with open(sys.argv[2]) as file:
+        print(" ".join(listed(parse(file.read()).get(ENABLED_KEY))))
