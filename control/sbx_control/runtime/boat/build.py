@@ -15,7 +15,7 @@ import time
 import uuid
 
 from ..base import CommandFailed, Failed, LimitRefused, Snapshot, TemplateGone, TemplateSpec, Timeout
-from ..dockerfile import dockerfile_steps, export_line
+from ..dockerfile import ShellWord, dockerfile_steps, export_line
 from ..listening import listening
 from .errors import POLL_SECONDS, BoatError
 from .plans import LIMITS, MACHINES, PLAN_CACHE_SECONDS, TRIAL_REFUSAL, machine
@@ -179,9 +179,10 @@ class Builds:
             if what == "user":
                 user = value
             elif what == "workdir":
-                workdir = value
-                commands.run(f"sudo mkdir -p {shlex.quote(value)} && sudo chown {shlex.quote(user)} "
-                             f"{shlex.quote(value)} 2>/dev/null || true", timeout=60)
+                # A Dockerfile's (a ShellWord) as the path its $VAR give, with the env so far.
+                workdir = commands.run(f"printf %s {value}", timeout=60).stdout if isinstance(value, ShellWord) else value
+                commands.run(f"sudo mkdir -p {shlex.quote(workdir)} && sudo chown {shlex.quote(user)} "
+                             f"{shlex.quote(workdir)} 2>/dev/null || true", timeout=60)
             elif what == "env":
                 env.update(value)
             elif what == "run":

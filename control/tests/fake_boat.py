@@ -258,7 +258,7 @@ class FakeBoat:
                      "stderr": "" if code == 0 else stdout, "timedOut": False}
 
     def _interpret(self, sandbox_id, command):
-        """mkdir/mv of an upload, base64 -w0 of a file, test -f: enough for the backend's own commands."""
+        """mkdir/mv of an upload, base64 -w0 of a file, printf of a plain word, test -f: enough for the backend's own commands."""
         files = self.files[sandbox_id]
         moved = re.search(r"mv -f (\S+) (\S+)", command)
         if moved and moved.group(1) in files:
@@ -268,6 +268,9 @@ class FakeBoat:
         if shown:
             path = shown.group(1).strip("'")
             return (base64.b64encode(files[path]).decode(), 0) if path in files else ("", 1)
+        printed = re.search(r'printf %s "([^"$`\\]*)"', command)
+        if printed:
+            return printed.group(1)
         tested = re.search(r"test -f (\S+)", command)
         if tested:
             return "ok\n" if tested.group(1) in files else ""

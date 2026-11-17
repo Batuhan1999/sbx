@@ -280,6 +280,20 @@ class Backend(unittest.TestCase):
                          "export BASE=ok\nexport CHILD=1\nexport SBX_TEMPLATE_WORKDIR=/srv/parent\n")
         self.assertIn("cd /srv/parent || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
 
+    def test_a_dockerfile_workdir_expands_its_variables(self):
+        import subprocess
+        from sbx_control.runtime import TemplateSpec
+        steps = dockerfile.dockerfile_steps("FROM x\nENV APP=/srv/app\nWORKDIR $APP/web\n")
+        exports = "".join(dockerfile.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        shown = subprocess.run(["bash", "-c", exports + f"printf %s {steps[-1][1]}"], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "/srv/app/web")
+        self.fake.respond = lambda _, command: "/srv/app/web" if 'printf %s "$APP/web"' in command else None
+        self.backend.build_template(TemplateSpec().from_template("tpl").dockerfile("ENV APP=/srv/app\nWORKDIR $APP/web\n"
+                                                                                    "RUN make"),
+                                    alias="w", cpu=2, memory_mb=4096, disk_mb=1024)
+        self.assertIn("export SBX_TEMPLATE_WORKDIR=/srv/app/web\n", self.written("/etc/sbx/template.sh"))
+        self.assertIn("cd /srv/app/web || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
+
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
         steps = dockerfile.dockerfile_steps(
