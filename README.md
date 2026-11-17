@@ -13,7 +13,8 @@ any other agent work over SSH.
 
 Each sandbox is a VM on a runtime the installation enables. Built in are
 [E2B Embed](vendor/e2b-embed/compose/README.md), Firecracker VMs on your own
-server, and E2B Cloud, E2B's hosted sandboxes, for a server without KVM.
+server, and two hosted ones for a server without KVM: E2B Cloud and
+[Boat](https://docs.boat.dev).
 
 ## Quick start with your coding agent
 
@@ -23,14 +24,14 @@ commands, and fill in the two values in angle brackets:
 ```text
 Set up sbx (https://github.com/Batuhan1999/sbx) for me.
 
-Server: <ssh user@host of an Ubuntu 24.04 machine>
-(With /dev/kvm and 24 GiB RAM, the server runs the sandboxes itself on E2B
-Embed. Without, they run at E2B Cloud: I'll give you an E2B API key, and the
-server needs a domain.)
+Server: <ssh user@host of an Ubuntu 24.04 machine, sudo without a password>
 Repository to run in sandboxes: <owner/name on GitHub>
 
-1. Clone the sbx repository, check out its latest release tag, and read
-   docs/agent-install.md there, then follow it step by step.
+1. Read docs/agent-install.md in the sbx repository's latest release and
+   follow it step by step: check the server first (install.sh --check), then
+   decide the runtime and the address from what it reports. Ask me only for
+   what the server can't tell you (an API key as a file, a domain, my email),
+   and never for a key or password in the chat.
 2. Install sbx on the server with its normal installer; don't change its code.
 3. Connect my repository: find out how it is built and started and which services
    and secrets it needs, from the repository itself. Choose services with
@@ -78,11 +79,11 @@ What the agent reads along the way, if you want the details yourself:
 - **Runtimes**: the compute under the core, reached through one interface
   (`control/sbx_control/runtime`) and pluggable. An installation runs the
   runtimes `/etc/sbx/runtime.env` enables: a fresh install enables E2B Embed
-  on this server where it has `/dev/kvm` and the resources, and E2B Cloud
-  once its API key is given (`E2B_CLOUD_API_KEY`, or later `sbx-admin
-  runtime add e2b-cloud`). Each sandbox runs on one of them, chosen for the
-  sandbox, for its repository or by the installation's default. Embed and E2B
-  Cloud are built in; other runtimes plug in as packages.
+  on this server where it has `/dev/kvm` and the resources, and a provider's
+  runtime (E2B Cloud, Boat) once its API key is given in the setup or later
+  (`sbx runtimes add KIND`). Each sandbox runs on one of them, chosen for the
+  sandbox, for its repository or by the installation's default. Embed, E2B
+  Cloud and Boat are built in; other runtimes plug in as packages.
 - **Secrets** stay out of recipes and templates, in the installation's secret
   store (a private Infisical on the host by default).
 - **Templates** are composed from the platform layer, each enabled extension's
@@ -105,22 +106,21 @@ Running them on the server itself (E2B Embed):
   host services; a sandbox takes 4 GiB unless its recipe asks for another size.
   Add RAM for more sandboxes and shared databases.
 
-Running them at E2B Cloud (any small VPS, no KVM):
+Running them at E2B Cloud or Boat (any small VPS, no KVM):
 
 - Ubuntu 24.04, about 2 GiB RAM and 10 GiB free disk: the server runs only
   sbx-control, nginx and the secret store.
-- An E2B API key (E2B's dashboard), in the installer's environment
-  ([Install](#install)), or added after the install in the setup wizard's
-  "Sandbox runtime" step.
-  Sandboxes then run at E2B, within your E2B plan's limits (Hobby: one hour
-  before a sandbox pauses, renewed while it is used; 8 vCPUs, 8 GiB, 10 GiB
-  disk each; 10 at once).
-- A domain: E2B's sandboxes call the server back at `login.D` on 443
-  (repository bundles, git credentials). Managed servers on the host's
-  private network are not available to them.
+- An E2B API key (E2B's dashboard) or a Boat API key (Boat's dashboard),
+  added in the setup's "Sandbox runtime" step. Sandboxes then run within the
+  plan's limits (E2B Hobby: one hour before a sandbox pauses, renewed while
+  it is used; 8 vCPUs, 8 GiB, 10 GiB disk each; 10 at once). Boat's trial
+  saves no snapshots, and sbx's templates are snapshots: use a paid plan.
+- A domain: the provider's sandboxes call the server back at `login.D` on 443
+  (repository bundles, git credentials). They reach managed servers and
+  private hosts only through [endpoints](docs/reference.md#endpoints).
 
-A server with KVM can run both; add E2B Cloud later in Settings → Sandbox
-runtimes, or with `sbx-admin runtime add e2b-cloud` (the key on stdin). For
+A server with KVM can run Embed and a provider; add one later in Settings →
+Sandbox runtimes, or with `sbx runtimes add KIND` (the key on stdin). For
 every server:
 
 - Inbound SSH and HTTPS (443). Validating a certificate for a bare IP also needs
@@ -141,9 +141,13 @@ the emails `allowed_emails` names (`*` for anyone the provider admits).
 
 ## Install
 
-1. Download a [release](https://github.com/Batuhan1999/sbx/releases) onto
-   the server, the latest one unless you need another, check it against its
-   checksum and unpack it:
+A coding agent follows the [installation guide](docs/agent-install.md),
+which runs these same steps from its own machine and finishes the setup
+without a browser. By hand, on the server:
+
+1. Download a [release](https://github.com/Batuhan1999/sbx/releases), the
+   latest one unless you need another, check it against its checksum and
+   unpack it:
 
    ```sh
    v=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Batuhan1999/sbx/releases/latest)
@@ -157,18 +161,18 @@ the emails `allowed_emails` names (`*` for anyone the provider admits).
    installs too once its web app is built, with Node 22:
    `npm --prefix web ci && npm --prefix web run build`
    ([pinning a release](docs/reference.md#operating-the-host)).
-2. Run `sh install.sh` from that directory as root. It installs the runtime, the
-   control service, Infisical and the base templates, then prints a setup link.
-   On a server without `/dev/kvm`, give it an E2B API key and the domain
-   instead (the key in the environment, never on the command line of a shared
-   shell history: `read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY`, then
-   `sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D --email E`).
-   Without either, it installs with no sandbox runtime: install with the
-   domain (`--domain D --email E`), then add the runtime in the setup
-   wizard, which asks for the E2B key.
-3. Open the link, accept the temporary certificate, choose IP access or a
-   domain, and create the admin login. `sbx-admin setup-link` makes a new link
-   if it expires.
+2. Check the server: `sudo sh install.sh --check`. It changes nothing. It
+   prints the OS, CPU, memory, disk, `/dev/kvm`, the public IP, the ports in
+   use, and which runtimes this server can run (Embed, or E2B Cloud and Boat
+   with an API key and a domain).
+3. Install: `sudo sh install.sh`. It installs the control service, the
+   secret store, and Embed with its base templates where the server can run
+   it. It then prints a one-time setup link. Without Embed it installs with
+   no sandbox runtime yet; the setup adds one.
+4. Open the link, accept the temporary certificate, and take the steps:
+   the address (IP access, or a domain with its DNS records), the sandbox
+   runtime (a provider's API key, when Embed can't run here) and your admin
+   login. `sudo sbx-admin setup-link` makes a new link if it is lost.
 
 Admins see a newer release in the web app (**Settings → Updates**: what
 changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host
@@ -216,7 +220,7 @@ sbx is early software.
 
 | Area | Status |
 | --- | --- |
-| Host | Ubuntu 24.04. Running sandboxes on the server (E2B Embed) needs KVM; a server without it runs them at E2B Cloud, which needs a public domain and can't reach the host's private network. |
+| Host | Ubuntu 24.04. Running sandboxes on the server (E2B Embed) needs KVM; a server without it runs them at E2B Cloud or Boat, which need a public domain and reach the host's services only through endpoints. |
 | Desktop CLI | macOS only ([details](docs/reference.md#limits)). Host administration uses `sbx-admin` as root. |
 | Previews | With a domain, named HTTPS hosts. IP-only, HTTPS on assigned ports (21000–21255 by default). |
 | Development data | Per-sandbox databases, branches or namespaces through catalog packages; you verify isolation per repository. |

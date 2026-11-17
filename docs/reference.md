@@ -550,7 +550,8 @@ server that can run neither installs with no runtime enabled
 (`SBX_RUNTIMES=''`): add one in the first-run wizard's "Sandbox runtime"
 step, in Settings → Sandbox runtimes, or with `sbx-admin runtime add
 e2b-cloud` ([no runtime yet](#no-runtime-yet)). An upgrade keeps the
-runtimes the installation enables.
+runtimes the installation enables. `sh install.sh --check` prints a host's facts and
+which runtimes it can run, by the same checks, without installing anything.
 
 ### E2B Embed (`embed`)
 
