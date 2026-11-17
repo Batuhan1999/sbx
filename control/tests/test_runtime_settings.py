@@ -380,6 +380,16 @@ class Web(TwoRuntimes, Server):
             self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
         self.assertEqual(taken, ["runtime-change"])
 
+    def test_the_cli_refuses_a_change_while_one_from_the_web_app_is_queued(self):
+        from sbx_control import admin, runtime
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "remove", "fake"]), 1, out.getvalue())
+        self.assertIn("apply-pending", out.getvalue())
+        self.assertIn("fake", runtime.enabled())
+        self.assertTrue(self.request_file.exists())
+
     def test_the_cli_removes_a_runtime_whose_key_is_missing(self):
         from sbx_control import admin, runtime
         self.file.write_text(self.RUNTIME_ENV.replace("FAKE_RUNTIME_TOKEN=test-only-fake\n", ""))
