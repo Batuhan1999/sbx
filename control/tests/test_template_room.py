@@ -63,6 +63,21 @@ class TemplateRoomTests(Installation):
                 template_scheduler._build_quietly("owner/app")
             build.assert_called_once()
 
+    def test_a_nightly_rebuild_without_room_is_tried_again_the_next_night(self):
+        from sbx_control import runtime, template_scheduler
+        self.builds.mark_moved("owner/app")
+        stop = SimpleNamespace(waits=0, is_set=lambda: False)
+        stop.wait = lambda seconds: (setattr(stop, "waits", stop.waits + 1) or stop.waits > 1)
+        night = time.localtime()[:3] + (self.builds.NIGHTLY_REBUILD_HOUR,) + time.localtime()[4:]
+        with patch.object(runtime, "enabled", return_value=["embed"]), \
+                patch.object(self.builds, "forget_missing"), patch.object(self.builds, "stale", return_value=[]), \
+                patch.object(self.builds, "keys", return_value=["owner/app"]), patch.object(self.builds, "prune"), \
+                patch.object(template_scheduler.time, "localtime", return_value=time.struct_time(night)), \
+                patch.object(self.builds, "build_now", side_effect=self.builds.NoRoom("fixture")) as build:
+            template_scheduler.schedule(stop)
+        build.assert_called_once_with("owner/app", "embed")
+        self.assertEqual(self.builds.moved(), ["owner/app"])
+
     # While it runs.
 
     def test_a_build_that_filled_the_disk_says_so_and_its_layers_are_collected(self):
