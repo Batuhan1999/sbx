@@ -33,7 +33,8 @@ resources:
   repository, with or without `template:`. The runtime sizes a VM by its
   template, so the platform builds a template at each size: the repository's
   own, or a default template of that size. Unset values default to 2 vCPU,
-  4 GiB RAM and 8 GiB free disk. Until the template of a new size is built,
+  4 GiB RAM and 8 GiB of free disk after the template build; `.sbx/setup`
+  then uses some of it. Until the template of a new size is built,
   new sandboxes start from the repository's own earlier template, or are
   refused when it has none.
 - `build_resources`, when present, replaces `resources` for `cpu`, `memory_mb`
