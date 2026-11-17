@@ -254,8 +254,11 @@ class Runtime(Protocol):
     # header to that runtime's requests only; a browser never sees it.
     upstream_token_header: str | None
 
-    def upstream_token(self, sandbox_id: str) -> str:
-        """The sandbox's token for upstream_token_header ("" when none)."""
+    def upstream_token(self, sandbox_id: str, *, fetch: bool = True) -> str:
+        """The sandbox's token for upstream_token_header. Without fetch only
+        one the backend kept ("" when none: asking the provider may wake the
+        sandbox); with fetch it asks, raising (Failed, NotRunning) rather
+        than answering without one."""
 
     def own_route(self, host: str, sandbox_id: str, port: str):
         """For a request to the runtime's own host (Embed's dashboard): True

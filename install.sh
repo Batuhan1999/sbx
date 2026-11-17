@@ -97,6 +97,11 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option $1 (--help)"; exit 1 ;;
   esac
 done
+# E2B Cloud's key stays in this shell, out of every command's environment
+# but the one that writes it into runtime.env (below).
+cloud_key=${E2B_CLOUD_API_KEY:-} cloud_given=""
+[ -z "$cloud_key" ] || cloud_given=1
+unset E2B_CLOUD_API_KEY
 # Run from cloud-init or SSM there is no HOME, and some installers need one.
 export HOME="${HOME:-/root}"
 # Ubuntu's needrestart would print a report after every apt-get.
@@ -153,7 +158,7 @@ elif [ -z "$unfit" ]; then
 fi
 # E2B Cloud: with its key in the environment, or enabled already.
 cloud=""
-{ [ -n "${E2B_CLOUD_API_KEY:-}" ] || enables e2b-cloud; } && cloud=1
+{ [ -n "$cloud_key" ] || enables e2b-cloud; } && cloud=1
 if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
   die "this host can't run E2B Embed ($unfit), and no provider runtime is configured. Sandboxes can run at a provider instead: E2B Cloud, with its API key (from E2B's dashboard) in the environment (read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY), then: sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D ... (docs/reference.md, Runtimes)"
 fi
@@ -329,14 +334,16 @@ say "Sandbox runtime credentials: /etc/sbx/runtime.env"
 runtimes=""
 if [ -n "$embed" ]; then
   # Embed's URLs as before; E2B_HOST and E2B_DOMAIN lines go (unset here).
-  runtimes=$(cd "$release" && env -u E2B_HOST -u E2B_DOMAIN E2B_API_KEY="$key" E2B_API_URL=http://127.0.0.1:3000 \
+  # Prefix assignments: the key is in that command's environment, not its arguments.
+  runtimes=$(cd "$release" && unset E2B_HOST E2B_DOMAIN && E2B_API_KEY="$key" E2B_API_URL=http://127.0.0.1:3000 \
     E2B_SANDBOX_URL=http://127.0.0.1:3002 venv/bin/python -m sbx_control.runtime env --enable embed \
     E2B_API_KEY E2B_API_URL E2B_SANDBOX_URL E2B_HOST E2B_DOMAIN) || die "could not write /etc/sbx/runtime.env (above)"
 fi
-if [ -n "${E2B_CLOUD_API_KEY:-}" ]; then
-  runtimes=$(cd "$release" && venv/bin/python -m sbx_control.runtime env --enable e2b-cloud E2B_CLOUD_API_KEY) \
-    || die "could not write /etc/sbx/runtime.env (above)"
+if [ -n "$cloud_key" ]; then
+  runtimes=$(cd "$release" && E2B_CLOUD_API_KEY="$cloud_key" venv/bin/python -m sbx_control.runtime env \
+    --enable e2b-cloud E2B_CLOUD_API_KEY) || die "could not write /etc/sbx/runtime.env (above)"
 fi
+unset cloud_key
 echo "ok: ${runtimes:-runtimes as runtime.env names them}"
 
 say "sbx-control, the host's guard, nginx, connector services"
@@ -347,7 +354,7 @@ echo "ok: sbx-control $version"
 # Managed secret storage is part of a normal installation (infisical/enable.sh).
 sh /opt/sbx-control/current/infisical/enable.sh "$store_admin"
 # A key given on an upgrade, once the store is Infisical: into it, like the rest.
-[ -z "${E2B_CLOUD_API_KEY:-}" ] || (cd /opt/sbx-control/current && venv/bin/python -c \
+[ -z "$cloud_given" ] || (cd /opt/sbx-control/current && venv/bin/python -c \
   'from sbx_control import vault; vault.sealing() and vault.seal_runtime_file()') || die "could not seal E2B_CLOUD_API_KEY into the store"
 
 if [ -z "$skip_templates" ]; then

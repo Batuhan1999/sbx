@@ -373,7 +373,7 @@ class SharedAdapter(unittest.TestCase):
         from e2b import Sandbox
         self.embed.configure(EMBED_KEYS)
         self.cloud.configure(CLOUD_KEYS)
-        vm = SimpleNamespace(sandbox_id="vm", commands=None, files=None, traffic_access_token=None)
+        vm = SimpleNamespace(sandbox_id="vm", commands=None, files=None, traffic_access_token="test-token")
         pages = Mock(has_next=False)
         pages.next_items.return_value = []
         with patch.object(Sandbox, "create", return_value=vm) as create, \
@@ -474,6 +474,58 @@ class Cloud(unittest.TestCase):
             from sbx_control import runtime
             with self.assertRaises(runtime.NotRunning):
                 self.cloud.upstream_token("vm2")
+
+    def test_sandboxes_are_created_with_private_ports_whatever_the_project_default(self):
+        from e2b import Sandbox
+        made = SimpleNamespace(sandbox_id="vm1", commands=None, files=None, traffic_access_token="test-token-1")
+        with patch.object(Sandbox, "create", return_value=made) as create:
+            self.cloud.create("tpl", timeout=600)
+            self.cloud.create("tpl", timeout=600, deny_out=["10.0.0.0/8"])
+        self.assertEqual(create.call_args_list[0].kwargs["network"], {"allow_public_traffic": False})
+        self.assertEqual(create.call_args_list[1].kwargs["network"],
+                         {"allow_public_traffic": False, "deny_out": ["10.0.0.0/8"]})
+
+    def test_a_sandbox_without_a_token_is_deleted_not_served(self):
+        from e2b import Sandbox
+        from sbx_control import runtime
+        made = Mock(sandbox_id="vm1", traffic_access_token=None)
+        with patch.object(Sandbox, "create", return_value=made), \
+                self.assertRaisesRegex(runtime.Failed, "without a traffic access token"):
+            self.cloud.create("tpl", timeout=600)
+        made.kill.assert_called_once()
+        tokenless = SimpleNamespace(sandbox_id="vm2", commands=None, files=None, traffic_access_token="")
+        with patch.object(Sandbox, "connect", return_value=tokenless) as connect, \
+                self.assertRaisesRegex(runtime.Failed, "no traffic access token"):
+            self.cloud.upstream_token("vm2")
+        self.assertEqual(connect.call_count, 1)                 # one ask, then an error: never a loop
+        self.assertEqual(self.cloud.upstream_token("vm3", fetch=False), "")   # without fetch: only what it kept
+
+    def test_a_killed_handle_forgets_its_token_and_fetches_lock_per_sandbox(self):
+        import threading
+        import time
+        from e2b import Sandbox
+        made = Mock(sandbox_id="vm1", traffic_access_token="test-token-1")
+        with patch.object(Sandbox, "create", return_value=made):
+            handle = self.cloud.create("tpl", timeout=600)
+        handle.kill()
+        self.assertEqual(self.cloud.upstream_token("vm1", fetch=False), "")
+        # A slow fetch for one sandbox does not hold up another's.
+        slow = threading.Event()
+
+        def connect(sandbox_id, **_):
+            if sandbox_id == "slow":
+                slow.wait(5)
+            return SimpleNamespace(sandbox_id=sandbox_id, commands=None, files=None, traffic_access_token=f"t-{sandbox_id}")
+        with patch.object(Sandbox, "connect", side_effect=connect):
+            waiting = threading.Thread(target=self.cloud.upstream_token, args=("slow",))
+            waiting.start()
+            time.sleep(0.1)
+            began = time.monotonic()
+            self.assertEqual(self.cloud.upstream_token("fast"), "t-fast")
+            self.assertLess(time.monotonic() - began, 2)
+            slow.set()
+            waiting.join(5)
+        self.assertEqual(self.cloud.upstream_token("slow", fetch=False), "t-slow")
 
     def test_its_check_lists_the_templates_and_says_what_failed(self):
         with patch.object(self.cloud, "templates", return_value=[("sbx-base", "ready")]):

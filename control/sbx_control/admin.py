@@ -226,31 +226,33 @@ def _apply_runtimes() -> None:
 
 def do_runtime_change(a) -> int:
     """runtime add | remove | default: edit runtime.env, check the result the
-    way sbx-control will read it (put back as it was when that fails), then
-    apply it."""
+    way sbx-control will read it (platform.connect), and only then let go of
+    the store references it replaced; any failure puts the file back and
+    drops the references it made. Then apply it."""
     from . import platform, runtimes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
         return 2
-    file = paths.runtime_env()
-    before = file.read_text() if file.exists() else None
+    change = None
     try:
         if a.action == "add":
-            said = runtimes.add(a.kind, sys.stdin.read().strip())
+            change = runtimes.add(a.kind, sys.stdin.read().strip())
         elif a.action == "remove":
-            said = runtimes.remove(a.kind)
+            change = runtimes.remove(a.kind)
         else:
-            said = runtimes.set_default(a.kind)
+            change = runtimes.set_default(a.kind)
         platform.connect()
-    except (runtimes.Refused, SystemExit) as error:
-        if before is not None and file.exists() and file.read_text() != before:
-            temporary = file.with_suffix(".new")
-            temporary.touch(mode=0o600)
-            temporary.write_text(before)
-            temporary.replace(file)
+    except (Exception, SystemExit) as error:
+        if change is not None:
+            change.undo()
+            try:
+                platform.connect()   # the backends as the file has them again
+            except (Exception, SystemExit):
+                pass                 # it was so before (add mends a missing key)
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    print(said)
+    change.confirm()
+    print(change.said)
     _apply_runtimes()
     return 0
 

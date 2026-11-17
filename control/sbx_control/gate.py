@@ -78,15 +78,24 @@ def ensure_running(sandbox_id: str):
             _resumed_for_preview.add(sandbox_id)
 
 
-def route(port: int, sandbox_id: str) -> dict:
+def route(port: int, sandbox_id: str, *, preflight: bool = False) -> dict:
     """Where nginx sends a let-through request for a sandbox's port: the
     Host its runtime routes on, the runtime's kind (nginx's map picks its
-    ingress from it) and, for a runtime that wants one, the sandbox's token."""
-    info = _owners["info"].get(sandbox_id)
-    kind = runtime.kind_of(info) if info is not None else runtime.of(sandbox_id).kind
-    found = {UPSTREAM: addressing.upstream(port, sandbox_id), RUNTIME: kind}
-    token = runtime.upstream_token(sandbox_id, kind)
+    ingress from it) and, for a runtime that wants one, the sandbox's token.
+    A preflight wakes nothing: it takes only a token the runtime kept, and
+    without one it is refused like anything not routable (the browser's
+    real request resumes the sandbox and fetches it). A sandbox the runtime
+    no longer has is not found either (404)."""
+    try:
+        info = _owners["info"].get(sandbox_id)
+        kind = runtime.kind_of(info) if info is not None else runtime.of(sandbox_id).kind
+        found = {UPSTREAM: addressing.upstream(port, sandbox_id), RUNTIME: kind}
+        token = runtime.upstream_token(sandbox_id, kind, fetch=not preflight)
+    except runtime.NotRunning:
+        raise HTTPException(404) from None
     if token:
+        if not token[1]:
+            raise HTTPException(404)
         found[TOKEN] = token[1]
     return found
 
@@ -175,7 +184,7 @@ def _gate(request: Request):
     if not preflight:
         ensure_running(sandbox_id)
     # nginx sends the request to the sandbox's runtime under the host it names (upstream).
-    headers = {"X-Sbx-User": email or '', **route(port, sandbox_id), "X-Sbx-Auth": kind}
+    headers = {"X-Sbx-User": email or '', **route(port, sandbox_id, preflight=preflight), "X-Sbx-Auth": kind}
     if ip_route:
         headers['X-Sbx-Cookies'] = ip_previews.app_cookies(request.headers.get('cookie', ''))
     return Response(status_code=200, headers=headers)

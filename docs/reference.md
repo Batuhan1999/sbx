@@ -450,7 +450,16 @@ What it needs:
   or connected: sbx keeps it, and after sbx-control restarts fetches it once
   by connecting (which resumes a paused sandbox, as a preview request would).
   nginx adds it for E2B Cloud's sandboxes only; it never reaches the browser
-  or another runtime.
+  or another runtime, and the gate's answers that carry it are not cached on
+  disk. sbx creates every E2B Cloud sandbox with private ports
+  (`allow_public_traffic` off, whatever the E2B project's default) and
+  deletes one that comes back without a token. A CORS preflight wakes
+  nothing: without a token sbx already holds, it is refused, and the
+  browser's real request resumes the sandbox.
+- nginx resolves the ingress name (`sbx-ingress.<E2B domain>`) when it loads
+  its configuration: a DNS failure then fails the reload (`nginx -t` says
+  which name), and an address E2B changes later is picked up at the next
+  reload (`sbx-admin runtime apply`, or any certificate renewal).
 
 What it does not support: managed servers and `network.internal_cidrs`.
 Its sandboxes do not reach this host's private network

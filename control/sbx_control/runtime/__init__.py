@@ -305,14 +305,15 @@ def upstream_host(port: int, sandbox_id: str) -> str:
     return of(sandbox_id).upstream_host(port, sandbox_id)
 
 
-def upstream_token(sandbox_id: str, kind: str | None = None) -> tuple[str, str] | None:
+def upstream_token(sandbox_id: str, kind: str | None = None, *, fetch: bool = True) -> tuple[str, str] | None:
     """(header, token) nginx adds to a request for the sandbox's port, for a
     runtime that answers its sandboxes' ports only with their own token
     (Runtime.upstream_token_header); None for any other. kind: the sandbox's
-    runtime, when the caller knows it."""
+    runtime, when the caller knows it. Without fetch the token is only one
+    the backend kept ("" when none)."""
     backend = get(kind) if kind else of(sandbox_id)
     header = getattr(backend, "upstream_token_header", None)
-    return (header, backend.upstream_token(sandbox_id)) if header else None
+    return (header, backend.upstream_token(sandbox_id, fetch=fetch)) if header else None
 
 
 def upstream_token_headers() -> dict:

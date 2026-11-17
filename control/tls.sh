@@ -200,6 +200,9 @@ location = /_sbx_gate {
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;
+  # An answer with a sandbox's traffic token is never written to the cache
+  # on disk; nginx still reads the token from it (auth_request_set).
+  proxy_no_cache \$upstream_http_x_sbx_upstream_token;
   # The method first: an anonymous preflight's allow never answers a GET.
   proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
   proxy_cache_valid 200 1s;

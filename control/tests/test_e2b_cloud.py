@@ -16,7 +16,17 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 def with_token(fake):
     """The fake as a runtime that answers its sandboxes' ports only with their token."""
     fake.upstream_token_header = TOKEN_HEADER
-    fake.upstream_token = lambda sandbox_id: f"test-token-{sandbox_id}"
+    fake.kept = set()       # the sandboxes whose token it holds (else: fetched, which may wake one)
+    fake.fetched = []
+
+    def upstream_token(sandbox_id, *, fetch=True):
+        if sandbox_id not in fake.kept:
+            if not fetch:
+                return ""
+            fake.fetched.append(sandbox_id)
+            fake.kept.add(sandbox_id)
+        return f"test-token-{sandbox_id}"
+    fake.upstream_token = upstream_token
     fake.ingress = "https://sbx-ingress.provider.example"
     return fake
 
@@ -48,7 +58,25 @@ class TrafficToken(TwoRuntimes, Server):
         self.assertEqual(found[gate.TOKEN], f"test-token-{self.at_provider}")
         self.assertNotIn(gate.TOKEN, gate.route(3000, self.on_embed))   # Embed wants none
 
+    def test_a_preflight_wakes_nothing_and_without_a_kept_token_is_refused(self):
+        response = self.ask(self.at_provider)
+        self.assertEqual((response.status_code, response.headers.get("x-sbx-gone")), (403, "1"))   # nginx: 404
+        self.assertEqual(self.fake.fetched, [])        # no connect: it would resume the sandbox
+        from sbx_control import gate
+        found = gate.route(3000, self.at_provider)     # the browser's real request fetches (and keeps) it
+        self.assertEqual((found[gate.TOKEN], self.fake.fetched), (f"test-token-{self.at_provider}", [self.at_provider]))
+        self.assertEqual(self.ask(self.at_provider).status_code, 200)   # then preflights pass with it
+
+    def test_a_sandbox_the_runtime_no_longer_has_is_not_found(self):
+        from fastapi import HTTPException
+        from sbx_control import gate
+        with patch.object(self.fake, "upstream_token", side_effect=self.runtime.NotRunning("gone")), \
+                self.assertRaises(HTTPException) as raised:
+            gate.route(3000, self.at_provider)
+        self.assertEqual(raised.exception.status_code, 404)
+
     def test_a_cors_preflight_gets_the_token_too(self):
+        self.fake.kept.add(self.at_provider)          # a browser's real request fetched and kept it
         response = self.ask(self.at_provider)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["x-sbx-upstream-token"], f"test-token-{self.at_provider}")
@@ -77,6 +105,13 @@ class TrafficToken(TwoRuntimes, Server):
         script = (__import__("pathlib").Path(__file__).parents[1] / "tls.sh").read_text()
         control = script[script.index('cat > "$dir/nginx/control.inc"'):script.index("install_renewal_timer() {")]
         self.assertIn("location = /gate { return 404; }", control)
+
+    def test_the_gate_cache_never_stores_a_token(self):
+        script = (__import__("pathlib").Path(__file__).parents[1] / "tls.sh").read_text()
+        gate_inc = script[script.index('cat > "$dir/nginx/gate.inc"'):]
+        gate_inc = gate_inc[:gate_inc.index("\nNGINX\n")]
+        self.assertIn("proxy_cache gate;", gate_inc)
+        self.assertIn(r"proxy_no_cache \$upstream_http_x_sbx_upstream_token;", gate_inc)
 
 
 class RuntimeAdmin(Installation):
@@ -137,9 +172,60 @@ class RuntimeAdmin(Installation):
                 patch.object(secret_store, "seal", return_value="sealed-reference") as seal:
             code, said = self.admin("add", "e2b-cloud", stdin="test-only-cloud-key")
         self.assertEqual(code, 0, said)
-        self.assertEqual(seal.call_args.kwargs["key"], "runtime/E2B_CLOUD_API_KEY")
+        self.assertTrue(seal.call_args.kwargs["key"].startswith("runtime/E2B_CLOUD_API_KEY/"))
         self.assertIn("E2B_CLOUD_API_KEY=sealed-reference", self.file.read_text())
         self.assertNotIn("test-only-cloud-key", self.file.read_text())
+
+    def sealed(self):
+        """The store as references: seal makes a new one each time, unseal reads it, discard drops it."""
+        from sbx_control import secret_store, vault
+        store, made = {}, iter(range(1, 100))
+
+        def seal(value, *, key):
+            reference = f"infisical-ref-{next(made)}"
+            store[reference] = value
+            return reference
+        for patcher in (patch.object(vault, "sealing", return_value=True),
+                        patch.object(secret_store, "seal", side_effect=seal),
+                        patch.object(secret_store, "is_reference", side_effect=lambda v: str(v).startswith("infisical-ref-")),
+                        patch.object(secret_store, "unseal", side_effect=lambda r: store[r]),
+                        patch.object(secret_store, "discard", side_effect=lambda r: store.pop(r, None))):
+            self.enterContext(patcher)
+        return store
+
+    def test_a_new_key_replaces_the_old_reference_only_once_confirmed(self):
+        from sbx_control import platform
+        store = self.sealed()
+        self.assertEqual(self.admin("add", "e2b-cloud", stdin="test-only-first")[0], 0)
+        self.assertEqual(list(store.values()), ["test-only-first"])
+        first = next(iter(store))
+        # The new configuration fails to load: the file and the old reference stay, the new one goes.
+        before = self.file.read_text()
+        real = platform.connect
+        calls = []
+
+        def connect():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("the store did not answer")
+            return real()
+        with patch.object(platform, "connect", side_effect=connect):
+            code, said = self.admin("add", "e2b-cloud", stdin="test-only-second")
+        self.assertEqual(code, 1)
+        self.assertIn("the store did not answer", said)
+        self.assertEqual(self.file.read_text(), before)
+        self.assertEqual(store, {first: "test-only-first"})
+        # Confirmed: the new reference in the file, the old one discarded only now.
+        self.assertEqual(self.admin("add", "e2b-cloud", stdin="test-only-second")[0], 0)
+        self.assertEqual(list(store.values()), ["test-only-second"])
+        self.assertNotIn(first, store)
+        self.assertIn(f"E2B_CLOUD_API_KEY={next(iter(store))}", self.file.read_text())
+        # remove: the reference stays until the configuration without it loads.
+        with patch.object(platform, "connect", side_effect=[None, SystemExit("nope"), None]):
+            self.assertEqual(self.admin("remove", "e2b-cloud")[0], 1)
+        self.assertEqual(list(store.values()), ["test-only-second"])
+        self.assertEqual(self.admin("remove", "e2b-cloud")[0], 0)
+        self.assertEqual(store, {})
 
     def test_default_and_remove(self):
         self.assertEqual(self.admin("add", "e2b-cloud", stdin="test-only-cloud-key")[0], 0)
@@ -208,6 +294,33 @@ class InstallerEnv(Installation):
         self.assertNotIn("SBX_RUNTIMES", self.file.read_text())
         self.write(["E2B_CLOUD_API_KEY"], ["e2b-cloud"], {"E2B_CLOUD_API_KEY": "c"})
         self.assertIn("SBX_RUNTIMES=embed,e2b-cloud", self.file.read_text())   # missing meant Embed
+
+    def test_no_key_in_arguments_and_the_cloud_key_only_where_written(self):
+        from pathlib import Path
+        script = (Path(__file__).parents[2] / "install.sh").read_text()
+        self.assertNotIn("env -u", script)
+        unset = script.index("unset E2B_CLOUD_API_KEY")
+        self.assertLess(unset, script.index('say "Preflight"'))
+        after = script[unset + len("unset E2B_CLOUD_API_KEY"):]
+        self.assertNotIn("${E2B_CLOUD_API_KEY", after)
+        self.assertEqual(after.count('E2B_CLOUD_API_KEY="$cloud_key" venv/bin/python -m sbx_control.runtime env'), 1)
+        self.assertIn("unset cloud_key", after)
+
+    def test_the_writer_takes_values_from_its_environment_as_install_sh_passes_them(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        control = Path(__file__).parents[1]
+        # As install.sh runs it: prefix assignments in a subshell, nothing in argv.
+        script = ('cloud_key=test-only-cloud; '
+                  '(unset E2B_HOST E2B_DOMAIN && E2B_CLOUD_API_KEY="$cloud_key" "$PY" -m sbx_control.runtime env '
+                  '--enable e2b-cloud E2B_CLOUD_API_KEY); unset cloud_key; '
+                  '[ -z "${E2B_CLOUD_API_KEY:-}" ] && [ -z "${cloud_key:-}" ]')
+        subprocess.run(["sh", "-c", script], check=True, capture_output=True,
+                       env={**os.environ, "PY": sys.executable, "PYTHONPATH": str(control)})
+        self.assertIn("E2B_CLOUD_API_KEY=test-only-cloud", self.file.read_text())
+        self.assertIn("SBX_RUNTIMES=embed,e2b-cloud", self.file.read_text())
 
 
 class CredentialHelper(Installation):

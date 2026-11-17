@@ -86,8 +86,9 @@ class Handle:
     """An E2B sandbox object, its command errors as the runtime's. The SDK
     keeps the connection it was made with for its own calls."""
 
-    def __init__(self, sandbox):
+    def __init__(self, sandbox, on_kill=None):
         self._sandbox = sandbox
+        self._on_kill = on_kill    # the backend forgets what it kept of the sandbox (its token)
         self.sandbox_id = sandbox.sandbox_id
         self.commands = _Commands(sandbox.commands)
         self.files = _Files(sandbox.files)
@@ -99,6 +100,8 @@ class Handle:
         return token if isinstance(token, str) else ""
 
     def kill(self):
+        if self._on_kill:
+            self._on_kill()
         return self._sandbox.kill()
 
 
@@ -106,6 +109,9 @@ class Compute:
     """The compute part of the contract over the E2B SDK, every call with
     this backend's own connection (connect_with, from configure)."""
     upstream_token_header: str | None = None
+    # What every create's network has beneath its deny_out (E2B Cloud: its
+    # ports answer only with the sandbox's traffic token).
+    network_defaults: dict = {}
 
     def __init__(self):
         self._connection: dict = {}
@@ -122,8 +128,11 @@ class Compute:
         """What every SDK call of this backend passes."""
         return dict(self._connection)
 
-    def upstream_token(self, sandbox_id: str) -> str:
+    def upstream_token(self, sandbox_id: str, *, fetch: bool = True) -> str:
         return ""
+
+    def _handle(self, sandbox) -> Handle:
+        return Handle(sandbox)
 
     def create(self, template, *, timeout, envs=None, metadata=None, deny_out=None, on_timeout=None,
                auto_resume=None):
@@ -131,13 +140,14 @@ class Compute:
         options = {"timeout": timeout, "metadata": metadata}
         if envs is not None:
             options["envs"] = envs
-        if deny_out is not None:
-            options["network"] = {"deny_out": list(deny_out)}
+        network = {**self.network_defaults, **({"deny_out": list(deny_out)} if deny_out is not None else {})}
+        if network:
+            options["network"] = network
         if on_timeout is not None:
             options["lifecycle"] = {"on_timeout": on_timeout,
                                     **({"auto_resume": auto_resume} if auto_resume is not None else {})}
         try:
-            return Handle(Sandbox.create(template, **options, **self._connection))
+            return self._handle(Sandbox.create(template, **options, **self._connection))
         except Exception as error:
             if "Failed to place sandbox" in str(error):
                 raise NoRoom(str(error)) from error
@@ -145,7 +155,7 @@ class Compute:
 
     def connect(self, sandbox_id, *, timeout=None):
         from e2b import Sandbox
-        return Handle(call(Sandbox.connect, sandbox_id, **({} if timeout is None else {"timeout": timeout}),
+        return self._handle(call(Sandbox.connect, sandbox_id, **({} if timeout is None else {"timeout": timeout}),
                            **self._connection))
 
     def sandboxes(self, metadata=None, states=None):

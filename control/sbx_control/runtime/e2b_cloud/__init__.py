@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 
-from ..base import Capabilities, HostSide, Limits
+from ..base import Capabilities, Failed, HostSide, Limits
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute
 
 KIND = "e2b-cloud"
@@ -56,13 +56,17 @@ class Cloud(Compute, HostSide):
     credential_keys = (API_KEY, DOMAIN_KEY, *(key for key, _ in LIMITS.values()))
     secret_key = API_KEY
     upstream_token_header = TOKEN_HEADER
+    # Explicit, not the E2B project's default: a sandbox's ports answer only
+    # with its traffic token.
+    network_defaults = {"allow_public_traffic": False}
 
     def __init__(self):
         super().__init__()
         self._domain: str | None = None
         self._limits = _limits({})
         self._tokens: dict[str, str] = {}
-        self._fetching = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}   # one token fetch per sandbox at a time
+        self._locks_lock = threading.Lock()
 
     # Its connection and where previews go
 
@@ -105,29 +109,54 @@ class Cloud(Compute, HostSide):
 
     # The traffic token
 
-    def _remember(self, handle):
+    def _handle(self, sandbox):
+        handle = super()._handle(sandbox)
+        handle._on_kill = lambda: self._forget(handle.sandbox_id)
         if handle.traffic_access_token:
             self._tokens[handle.sandbox_id] = handle.traffic_access_token
         return handle
 
+    def _forget(self, sandbox_id):
+        self._tokens.pop(sandbox_id, None)
+        with self._locks_lock:
+            self._locks.pop(sandbox_id, None)
+
     def create(self, template, **options):
-        return self._remember(super().create(template, **options))
+        """A new sandbox whose ports answer only with its traffic token
+        (allow_public_traffic off, whatever the E2B project's default); one
+        that comes back without a token is killed, never served without one."""
+        handle = super().create(template, **options)
+        if not handle.traffic_access_token:
+            try:
+                handle.kill()
+            except Exception as error:   # it times out on its own
+                print(f"E2B Cloud: could not kill {handle.sandbox_id}: {error!r}", flush=True)
+            raise Failed(f"E2B Cloud created sandbox {handle.sandbox_id} without a traffic access token, so its "
+                         "ports would be open to anyone; it was deleted. Check the E2B project's network settings "
+                         "(private sandbox URLs) and the SDK version.")
+        return handle
 
-    def connect(self, sandbox_id, *, timeout=None):
-        return self._remember(super().connect(sandbox_id, timeout=timeout))
-
-    def upstream_token(self, sandbox_id):
+    def upstream_token(self, sandbox_id, *, fetch=True):
         """The sandbox's traffic token: as create or connect returned it,
-        else (after a restart) from one connect, which resumes a paused
-        sandbox and leaves a running one's timeout as it is."""
-        if sandbox_id not in self._tokens:
-            with self._fetching:
-                if sandbox_id not in self._tokens:
-                    self.connect(sandbox_id)
-        return self._tokens.get(sandbox_id, "")
+        else (after a restart, with fetch) from one connect, which resumes a
+        paused sandbox and leaves a running one's timeout as it is; one
+        fetch per sandbox at a time. "" without fetch when none is kept;
+        Failed when connect returns none either."""
+        if sandbox_id in self._tokens or not fetch:
+            return self._tokens.get(sandbox_id, "")
+        with self._locks_lock:
+            lock = self._locks.setdefault(sandbox_id, threading.Lock())
+        with lock:
+            if sandbox_id not in self._tokens:
+                self.connect(sandbox_id)
+        token = self._tokens.get(sandbox_id, "")
+        if not token:
+            raise Failed(f"E2B Cloud returned no traffic access token for sandbox {sandbox_id}; its previews are "
+                         "not served without one")
+        return token
 
     def kill(self, sandbox_id):
-        self._tokens.pop(sandbox_id, None)
+        self._forget(sandbox_id)
         return super().kill(sandbox_id)
 
     # What the settings page and the first-run setup show
