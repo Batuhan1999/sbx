@@ -261,6 +261,97 @@ class UpgradeFailureTests(unittest.TestCase):
                     self.assertEqual(marker.exists(), rolls_back)
 
 
+# Stand-ins for what --check asks the system: ss (one listener, from
+# SBX_TEST_LISTENER "port:process"), curl (the public IP), systemd-detect-virt, nproc.
+CHECK_TOOLS = {
+    'ss': '''
+import os, sys
+port, _, process = os.environ.get('SBX_TEST_LISTENER', '').partition(':')
+if port and f':{port} ' in ' '.join(sys.argv[1:]) + ' ':
+    print(f'tcp LISTEN 0 511 0.0.0.0:{port} 0.0.0.0:* users:(("{process}",pid=1,fd=6))')
+''',
+    'curl': 'print("203.0.113.10")\n',
+    'systemd-detect-virt': 'import os; print(os.environ["SBX_TEST_VIRT"])\n',
+    'nproc': 'print(8)\n',
+}
+
+
+class InstallCheckTests(unittest.TestCase):
+    """install.sh --check: the host's facts and the runtimes it can run,
+    decided as the install decides (the same Embed checks), changing nothing."""
+
+    def check(self, *, ubuntu=True, kvm=True, vmx=True, virt='none', mem_mib=65536, disk_gib=300, listener=''):
+        text = INSTALL.read_text()
+        start = text.index('check_report() {')
+        report = text[start:text.index('\n}\n', start) + 3]
+        decide = text[text.index("# Why E2B Embed can't run"):text.index('# Embed: where the installation enables it')]
+        facts = {'os': 'Ubuntu 24.04.1 LTS' if ubuntu else 'Debian GNU/Linux 12', 'ubuntu': '1' if ubuntu else '',
+                 'kvm': '1' if kvm else '', 'tun': '1', 'vmx': '1' if vmx else '', 'mem_mib': str(mem_mib),
+                 'disk_gib': str(disk_gib), 'hugepages': '', 'installed': ''}
+        script = ('set -eu\n' + ''.join(f'{k}={shlex.quote(v)}\n' for k, v in facts.items())
+                  + "say() { printf '\\n==> %s\\n' \"$*\"; }\nconfigured() { false; }\n"
+                  + report + decide + 'check_report\n')
+        with tempfile.TemporaryDirectory(prefix='sbx-install-check-') as directory:
+            for name, body in CHECK_TOOLS.items():
+                executable(Path(directory) / name, body)
+            return subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=10,
+                                  env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                                       'SBX_TEST_VIRT': virt, 'SBX_TEST_LISTENER': listener})
+
+    def test_a_kvm_host_with_room_runs_embed_and_the_providers(self):
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('machine:    bare metal, 8 CPUs, hardware virtualization', result.stdout)
+        self.assertIn('/dev/kvm:   yes', result.stdout)
+        self.assertIn('public IP:  203.0.113.10', result.stdout)
+        self.assertIn('embed      yes', result.stdout)
+        self.assertIn('e2b-cloud  yes: needs an E2B API key and a domain', result.stdout)
+        self.assertIn('boat       yes: needs a Boat API key (a paid plan', result.stdout)
+        self.assertIn('verdict:    embed', result.stdout)
+
+    def test_without_kvm_it_says_why_and_suggests_a_provider(self):
+        result = self.check(kvm=False, vmx=False, virt='kvm', mem_mib=4096, disk_gib=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('a VM without nested virtualization', result.stdout)
+        self.assertIn('embed      no: no /dev/kvm', result.stdout)
+        self.assertIn('verdict:    a provider runtime', result.stdout)
+        result = self.check(kvm=False, vmx=True)
+        self.assertIn('load its module (modprobe kvm_intel or kvm_amd)', result.stdout)
+
+    def test_embed_takes_the_installs_thresholds(self):
+        result = self.check(mem_mib=16384)
+        self.assertIn('embed      no: the default budget needs 24 GiB RAM', result.stdout)
+        result = self.check(disk_gib=50)
+        self.assertIn('embed      no: 60 GiB of free disk at least, this has 50 GiB', result.stdout)
+
+    def test_a_host_sbx_cant_install_on_exits_1(self):
+        for options, said in (({'ubuntu': False}, 'Debian GNU/Linux 12: sbx needs Ubuntu 24.04'),
+                              ({'kvm': False, 'mem_mib': 1024}, 'e2b-cloud  no: 2 GiB of memory at least')):
+            with self.subTest(said=said):
+                result = self.check(**options)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(said, result.stdout)
+                self.assertIn("verdict:    sbx can't be installed on this host", result.stdout)
+
+    def test_ports_in_use_name_their_process(self):
+        result = self.check(listener='443:nginx')
+        self.assertIn('port 443:   in use by nginx on 0.0.0.0:443', result.stdout)
+        self.assertIn('port 80:    free', result.stdout)
+
+    def test_the_script_stops_after_the_check_without_root(self):
+        with tempfile.TemporaryDirectory(prefix='sbx-install-check-') as directory:
+            for name, body in CHECK_TOOLS.items():
+                executable(Path(directory) / name, body)
+            result = subprocess.run(['sh', str(INSTALL), '--check'], capture_output=True, text=True, timeout=30,
+                                    env={**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                                         'SBX_TEST_VIRT': 'none'})
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        self.assertIn('Host check (nothing is changed)', result.stdout)
+        self.assertIn('runtimes this host can run:', result.stdout)
+        self.assertNotIn('run as root', result.stderr)
+        self.assertNotIn('Packages and Docker', result.stdout)
+
+
 class SetupInferTests(Installation):
     """What install-report.sh and host-install.sh read: the exit status."""
 

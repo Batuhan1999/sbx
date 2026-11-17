@@ -700,11 +700,11 @@ class InstallerWithoutARuntime(Installation):
                     env.unlink(missing_ok=True)
                     if before is not None:
                         env.write_text(before)
-                    device = directory if kvm else "/nonexistent-kvm"   # a path that exists stands for /dev/kvm
-                    script = ("set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
-                              "sign_in= domain=\nconfigured() { false; }\ndie() { echo \"FAILED: $*\"; exit 1; }\n"
-                              + step.replace("/etc/sbx/runtime.env", str(env)).replace("/dev/kvm", device)
-                              .replace("/dev/net/tun", directory if kvm else "/nonexistent-tun")
+                    device = "1" if kvm else ""   # the preflight's facts: /dev/kvm and /dev/net/tun
+                    script = (f"set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
+                              f"sign_in= domain= check= kvm={device} tun={device}\nconfigured() {{ false; }}\n"
+                              "die() { echo \"FAILED: $*\"; exit 1; }\n"
+                              + step.replace("/etc/sbx/runtime.env", str(env))
                               + 'echo "none=$none embed=$embed cloud=$cloud"\n')
                     result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
                     self.assertIn(expected, result.stdout + result.stderr)

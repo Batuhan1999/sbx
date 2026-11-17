@@ -614,6 +614,13 @@ class SetupCliTests(CliTests):
         self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
         self.assertNotIn("one-time-token", out + err)
 
+    def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]
+        code, out, err = self.run_cli("setup", "address", "--domain", "203-0-113-7.sslip.io", "--dns", "none", "--insecure")
+        self.assertEqual(code, 0, err)
+        sent = next(c[3] for c in self.control.calls if c[:2] == ("PUT", "/api/connections/domain"))
+        self.assertEqual((sent["values"]["name"], sent["values"]["acme"]), ("203-0-113-7.sslip.io", "none"))
+
     def test_the_link_comes_from_the_environment_or_a_file_never_argv(self):
         with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):
             code, out, err = self.run_cli("setup", "status")

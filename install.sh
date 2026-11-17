@@ -9,6 +9,8 @@
 #   sudo sh install.sh --domain sbx.example.com --email you@example.com [options]
 #   sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain sbx.example.com ...
 #                                       # sandboxes at E2B Cloud: a small host, no KVM
+#   sudo sh install.sh --check          # this host's facts and the runtimes it can
+#                                       # run; installs and changes nothing
 #
 # Runtimes: a first install enables E2B Embed (Firecracker on this host)
 # when the host can run it: /dev/kvm, 16 GiB of memory (24 for the default
@@ -52,6 +54,11 @@
 #   --internal CIDRS  private ranges sandboxes may reach (default: none; the
 #                     networks of sbx-admin server up are added on their own)
 #   --skip-templates  don't build sbx-base and default now
+#   --check           print the host's facts (OS, CPU, memory, disk, /dev/kvm,
+#                     public IP, ports 22/53/80/443 in use, an installation
+#                     here) and which runtimes it can run, then stop; exit 1
+#                     when sbx can't be installed here. Needs no root (with
+#                     sudo it also names the processes on those ports).
 #
 # The settings options (--domain, --email, --dns, --login, --repos,
 # --public-repos, --admin, --internal) are written on a first install only
@@ -82,7 +89,7 @@
 # cloud firewall.
 set -eu
 
-domain="" email="" dns="" sign_in="" repos="" public_repos="" admin="" hugepages="" internal="" skip_templates=""
+domain="" email="" dns="" sign_in="" repos="" public_repos="" admin="" hugepages="" internal="" skip_templates="" check=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) domain=$2; shift 2 ;;
@@ -95,6 +102,7 @@ while [ $# -gt 0 ]; do
     --hugepages) hugepages=$2; shift 2 ;;
     --internal) internal=$2; shift 2 ;;
     --skip-templates) skip_templates=1; shift ;;
+    --check) check=1; shift ;;
     -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown option $1 (--help)"; exit 1 ;;
   esac
@@ -115,18 +123,77 @@ die() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 [ -n "$public_repos" ] && [ -n "$internal" ] && \
   die "--public-repos and --internal can't go together: the internal ranges are open to every sandbox, untrusted repos' too"
 
-src=$(cd "$(dirname "$0")" && pwd)
-[ -f "$src/control/host-install.sh" ] || die "run install.sh from a release archive or a checkout of the platform"
-# A release archive carries the web app's bundle; a checkout must build it.
-[ -f "$src/control/sbx_control/web_dist/index.html" ] || \
-  die "the web app is not built in $src: install from a release archive (README, Install), or build it first with Node 22: npm --prefix web ci && npm --prefix web run build"
+# --check: what this host is and which runtimes it can run, from the facts
+# and the decision below; it changes nothing. Exit 1 when sbx can't install here.
+check_report() {
+  verdict=0
+  say "Host check (nothing is changed)"
+  if [ -n "$ubuntu" ]; then echo "os:         $os"; else echo "os:         $os: sbx needs Ubuntu 24.04"; verdict=1; fi
+  virt=$(systemd-detect-virt 2>/dev/null || true)   # "none" on bare metal
+  case "${virt:-}" in
+    "") machine="unknown" ;;
+    none) machine="bare metal" ;;
+    *) machine="a VM ($virt)" ;;
+  esac
+  echo "machine:    $machine, $(nproc 2>/dev/null || echo '?') CPUs${vmx:+, hardware virtualization (vmx/svm)}"
+  echo "memory:     $mem_mib MiB"
+  echo "disk:       $disk_gib GiB free on /"
+  if [ -n "$kvm" ]; then echo "/dev/kvm:   yes"
+  elif [ -n "$vmx" ]; then echo "/dev/kvm:   no; the CPU has virtualization: load its module (modprobe kvm_intel or kvm_amd)"
+  elif [ "${virt:-none}" != none ]; then echo "/dev/kvm:   no; a VM without nested virtualization: enable it at the provider, or use bare metal"
+  else echo "/dev/kvm:   no"
+  fi
+  ip=""; ! command -v curl >/dev/null || ip=$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null || true)
+  echo "public IP:  ${ip:-unknown (no outbound HTTPS?)}"
+  for port in 22 53 80 443; do
+    line=$(ss -Hltunp "( sport = :$port )" 2>/dev/null | head -1 || true)
+    if [ -z "$line" ]; then printf '%-12sfree\n' "port $port:"; continue; fi
+    by=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
+    at=$(printf '%s\n' "$line" | awk '{print $5}')
+    printf '%-12sin use%s on %s\n' "port $port:" "${by:+ by $by}" "$at"
+  done
+  if configured; then echo "sbx:        installed (runtimes: ${installed:-none}); install.sh upgrades it"
+  else echo "sbx:        not installed"
+  fi
+  echo "runtimes this host can run:"
+  if [ -z "$unfit" ]; then printf '  %-10s yes: sandboxes on this server\n' embed; else printf '  %-10s no: %s\n' embed "$unfit"; fi
+  small=""
+  [ "$mem_mib" -ge 1800 ] || small="2 GiB of memory at least, this has $mem_mib MiB"
+  [ -n "$small" ] || [ "$disk_gib" -ge 10 ] || small="10 GiB of free disk at least, this has $disk_gib GiB"
+  for provider in "e2b-cloud:an E2B API key" "boat:a Boat API key (a paid plan: the trial saves no templates)"; do
+    if [ -n "$small" ]; then printf '  %-10s no: %s\n' "${provider%%:*}" "$small"
+    else printf '  %-10s yes: needs %s and a domain pointing here\n' "${provider%%:*}" "${provider#*:}"
+    fi
+  done
+  [ -z "$small" ] || verdict=1
+  if [ "$verdict" != 0 ]; then echo "verdict:    sbx can't be installed on this host"
+  elif [ -z "$unfit" ]; then echo "verdict:    embed (a provider runtime can be added too)"
+  else echo "verdict:    a provider runtime (e2b-cloud or boat): it needs the owner's API key and a domain"
+  fi
+  return "$verdict"
+}
 
-say "Preflight"
-[ "$(id -u)" = 0 ] || die "run as root (sudo)"
-. /etc/os-release
-[ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] || die "Ubuntu 24.04 is required, this is $PRETTY_NAME"
-mem_mib=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-disk_gib=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
+src=$(cd "$(dirname "$0")" && pwd)
+if [ -z "$check" ]; then
+  [ -f "$src/control/host-install.sh" ] || die "run install.sh from a release archive or a checkout of the platform"
+  # A release archive carries the web app's bundle; a checkout must build it.
+  [ -f "$src/control/sbx_control/web_dist/index.html" ] || \
+    die "the web app is not built in $src: install from a release archive (README, Install), or build it first with Node 22: npm --prefix web ci && npm --prefix web run build"
+  say "Preflight"
+  [ "$(id -u)" = 0 ] || die "run as root (sudo)"
+fi
+# The host's facts, as the preflight and --check read them.
+ID="" VERSION_ID="" PRETTY_NAME="$(uname -s)"
+[ ! -r /etc/os-release ] || . /etc/os-release
+os=$PRETTY_NAME ubuntu=""
+[ "$ID" != ubuntu ] || [ "$VERSION_ID" != 24.04 ] || ubuntu=1
+[ -n "$check" ] || [ -n "$ubuntu" ] || die "Ubuntu 24.04 is required, this is $PRETTY_NAME"
+mem_mib=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || true); mem_mib=${mem_mib:-0}
+disk_gib=$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc 0-9); disk_gib=${disk_gib:-0}
+kvm="" tun="" vmx=""
+[ ! -e /dev/kvm ] || kvm=1
+[ ! -e /dev/net/tun ] || tun=1
+! grep -Eqw 'vmx|svm' /proc/cpuinfo 2>/dev/null || vmx=1
 first=""; configured || first=1
 # The runtimes this installation enables now (SBX_RUNTIMES in runtime.env,
 # missing: Embed alone; present and empty: none yet); none before a first
@@ -144,8 +211,8 @@ fi
 enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
 # Why E2B Embed can't run on this host ("" when it can).
 unfit=""
-[ -e /dev/kvm ] || unfit="no /dev/kvm: use bare metal or a VM with nested virtualization enabled"
-[ -n "$unfit" ] || [ -e /dev/net/tun ] || unfit="no /dev/net/tun"
+[ -n "$kvm" ] || unfit="no /dev/kvm: use bare metal or a VM with nested virtualization enabled"
+[ -n "$unfit" ] || [ -n "$tun" ] || unfit="no /dev/net/tun"
 [ -n "$unfit" ] || [ "$mem_mib" -ge 15000 ] || unfit="16 GiB of memory at least, this has $mem_mib MiB"
 # An upgrade keeps the count Embed runs with: a new one recreates its runtime.
 [ -n "$hugepages" ] || ! configured || hugepages=$(sed -n 's/^HUGEPAGES=//p' /opt/e2b/.env 2>/dev/null | tail -1)
@@ -169,6 +236,7 @@ fi
 # E2B Cloud: with its key in the environment, or enabled already.
 cloud=""
 { [ -n "$cloud_key" ] || enables e2b-cloud; } && cloud=1
+if [ -n "$check" ]; then check_report && exit 0; exit 1; fi
 # Neither: sbx installs with no runtime enabled; an admin adds a provider's
 # in the setup wizard (it needs a domain: its sandboxes call this server back).
 none=""
