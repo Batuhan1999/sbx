@@ -283,6 +283,11 @@ def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
         return backend.connect(sandbox_id, timeout=_capped(timeout, backend))
 
 
+def handle(sandbox_id: str) -> Handle:
+    """The running sandbox's handle without resuming or preparing it (Backend.handle)."""
+    return of(sandbox_id).handle(sandbox_id)
+
+
 class Listing(list):
     """What the runtimes listed. failed: kind -> the error of each runtime
     that did not answer, whose sandboxes are missing from it."""

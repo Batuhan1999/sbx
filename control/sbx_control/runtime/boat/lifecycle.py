@@ -111,6 +111,10 @@ class Sandboxes:
         self._machine_ready(sandbox_id)
         return Handle(self, sandbox_id)
 
+    def handle(self, sandbox_id):
+        """No resume and no mount: Boat answers a call on a stopped sandbox itself."""
+        return Handle(self, sandbox_id)
+
     def _machine_ready(self, sandbox_id: str):
         """What sbx needs of a Boat machine that its image doesn't give:
         /run/sbx on a tmpfs of its own that runs programs. Boat's /run is

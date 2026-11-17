@@ -175,7 +175,7 @@ def _listens(sandbox_id: str, port: int) -> bool:
     if time.monotonic() - when < LISTEN_CACHE_SECONDS:
         return found
     try:
-        found = listening(runtime.connect(sandbox_id), port, timeout=10) is not None
+        found = listening(runtime.handle(sandbox_id), port, timeout=10) is not None
     except Exception as error:   # not answering now: not ready
         print(f"gate: could not look at port {port} in {sandbox_id}: {error!r}", flush=True)
         found = False

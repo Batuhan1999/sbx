@@ -44,6 +44,12 @@ class Backend(unittest.TestCase):
         self.assertNotIn("environment", sent)  # none of the account's environments
         self.assertEqual(self.backend.info(handle.sandbox_id).template_id, "tpl")
 
+    def test_a_handle_is_a_look_that_asks_boat_nothing(self):
+        handle = self.create()
+        before = len(self.fake.calls)
+        self.assertEqual(self.backend.handle(handle.sandbox_id).sandbox_id, handle.sandbox_id)
+        self.assertEqual(len(self.fake.calls), before)   # no resume, no TTL, no mount: the gate's probe per port
+
     def test_a_missing_template_is_gone(self):
         from sbx_control.runtime import TemplateGone
         with self.assertRaises(TemplateGone) as raised:

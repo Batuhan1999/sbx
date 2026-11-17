@@ -39,6 +39,20 @@ class Settings(unittest.TestCase):
         self.assertFalse(plan.matches({"X_TIMEOUT": "3600", "X_CPU": "8"}))
 
 
+class Handle(unittest.TestCase):
+    def test_the_default_handle_never_resumes(self):
+        from sbx_control.runtime import NotRunning
+        from sbx_control.runtime.fake import Fake
+        fake = Fake()
+        fake.built["tpl"] = "ready"
+        made = fake.create("tpl", timeout=600)
+        self.assertEqual(fake.handle(made.sandbox_id).sandbox_id, made.sandbox_id)
+        fake.pause(made.sandbox_id)
+        with patch.object(fake, "connect") as connect, self.assertRaises(NotRunning):
+            fake.handle(made.sandbox_id)
+        connect.assert_not_called()
+
+
 class Kept(unittest.TestCase):
     def test_fetched_once_failures_remembered_and_pruned(self):
         kept, calls = PerSandbox(), []

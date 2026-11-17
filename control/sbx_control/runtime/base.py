@@ -454,6 +454,16 @@ class Backend(abc.ABC):
         pauses. Raises NotRunning when the runtime has no such sandbox, and a
         handle's calls raise it when the sandbox paused or went meanwhile."""
 
+    def handle(self, sandbox_id: str) -> Handle:
+        """A running sandbox's handle with no side effect of its own (no
+        resume, no setup), for a look such as the gate's port probe; its
+        calls raise NotRunning when it is not running. By default connect()
+        once info() says it runs (NotRunning otherwise: never a resume); a
+        backend whose connect does more overrides it."""
+        if self.info(sandbox_id).state != RUNNING:
+            raise NotRunning(f"sandbox {sandbox_id} is not running")
+        return self.connect(sandbox_id)
+
     @abc.abstractmethod
     def sandboxes(self, metadata: dict | None = None, states: list | None = None) -> list[Info]: ...
 
