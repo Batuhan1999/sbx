@@ -23,7 +23,7 @@ FILE_LIMIT = 5 * 1024 * 1024
 if TYPE_CHECKING:
     from . import Boat
 
-ENV_DIR = "/tmp/.sbx-env"  # where a command's env waits for it (a new machine's /tmp is empty)
+ENV_DIR = "/tmp/.sbx-env"  # where a command's env, or a staged upload, waits (a new machine's /tmp is empty)
 
 
 def wrap(cmd: str, *, user: str | None = None, env_file: str | None = None, cwd: str | None = None) -> str:
@@ -124,13 +124,17 @@ class _Files:
         self._backend, self._id, self._commands = backend, sandbox_id, commands
 
     def write(self, path, data, *, user=None):
+        """Where Boat's file API can't write (or as another user): staged in
+        ENV_DIR, which only the default user (and root) can read, and moved;
+        the staged copy removed when the move fails."""
         raw = data.encode() if isinstance(data, str) else bytes(data)
         if _allowed_path(path) and user in (None, "user"):
             return self._put(path, raw)
-        staging = f"/tmp/.sbx-upload-{uuid.uuid4().hex}"
+        staging = f"{self._backend.env_dir(self._id)}/upload-{uuid.uuid4().hex}"
         self._put(staging, raw)
         folder = shlex.quote(path.rsplit("/", 1)[0] or "/")
-        self._commands.run(f"mkdir -p {folder} && mv -f {staging} {shlex.quote(path)}", user=user, timeout=60)
+        self._commands.run(f"mkdir -p {folder} && mv -f {staging} {shlex.quote(path)} || {{ rm -f {staging}; exit 1; }}",
+                           user=user, timeout=60)
 
     def _put(self, path, raw: bytes):
         from boat_sdk.models import FileUrlRequest, FileWriteRequest

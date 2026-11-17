@@ -150,6 +150,16 @@ class Backend(unittest.TestCase):
         self.assertEqual(handle.files.read("/home/user/big.bin", format="bytes"), big)
         self.assertTrue(any(p.endswith("/files/download-url") for _, p, _, _ in self.fake.calls))
 
+    def test_a_staged_file_waits_where_only_its_user_reads_and_goes_when_the_move_fails(self):
+        from sbx_control.runtime import CommandFailed
+        handle = self.create()
+        self.fake.respond = lambda _, command: ("mv: cannot move", 1) if "mv -f" in command else None
+        with self.assertRaises(CommandFailed):
+            handle.files.write("/run/sbx/env", "export TOKEN=x\n")
+        staged = next(p for p in self.fake.files[handle.sandbox_id] if "upload-" in p)
+        self.assertTrue(staged.startswith("/tmp/.sbx-env/"), staged)   # 0700, not /tmp itself
+        self.assertIn(f"|| {{ rm -f {staged}; exit 1; }}", self.fake.ran[-1][1])
+
     def test_a_ports_token_is_fetched_once_exposed_private_and_forgotten_on_stop(self):
         handle = self.create()
         sandbox_id = handle.sandbox_id
