@@ -55,8 +55,8 @@ runtime; it asks the registry.
      `test`) run over the enabled runtimes that have a host side.
    - `capabilities(kind=None)`, `title(kind=None)`.
 6. **The contract has two parts.** Every backend implements the compute part
-   of `Runtime`. The host part has no-op defaults in a base class
-   (`runtime.base.HostSide`) that hosted backends inherit, so they implement
+   of `runtime.base.Backend`. The host part has no-op defaults in that class
+   that hosted backends inherit, so they implement
    nothing they do not have. Embed overrides it.
 7. **Choosing the runtime of a new sandbox**, in order: the request's
    `runtime` (API field, `sbx up --runtime`), the repo's setting (admins:
@@ -155,8 +155,8 @@ servers and internal hosts through endpoints (`sbx_control/endpoints/`;
    template. Capabilities: snapshots, no private networks, no egress rules
    (untrusted public repos are refused while it is enabled).
 2. **What differs is a property, not core special-casing.** A preview token
-   per port in a cookie (`upstream_token_cookie`,
-   `upstream_token(sandbox_id, port)`; E2B Cloud ignores the port), the
+   per port in a cookie (`upstream_token_at = TokenPlace("cookie", name)`,
+   `upstream_token(sandbox_id, port, *, fetch=True)`; E2B Cloud ignores the port), the
    provider's own desktop (`desktop = "provider"`, `desktop_url`; sbx's noVNC
    only where `desktop` is `"sbx"`), and a cold boot on every resume
    (`cold_resume`: sbx re-ships `/run/sbx` and restarts the processes).

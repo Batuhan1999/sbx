@@ -67,10 +67,13 @@ def register(name: str, owner: str, branch: str, slug: str, metadata: dict | Non
         if core.find(name):
             raise lifecycle.Conflict(f"{name} still has a sandbox; prepare or delete it before creating again")
         unregister(name)
+    from . import endpoints
     try:
-        with db() as conn:
-            conn.execute("insert into sandboxes (name, owner, branch, slug, metadata, runtime) values (?, ?, ?, ?, ?, ?)",
-                         (name, owner, branch, slug, json.dumps(metadata or {}), kind or runtime.default()))
+        with endpoints.lock():   # an endpoint is added under it: its name and this slug checked against each other
+            _no_endpoint_at(slug)
+            with db() as conn:
+                conn.execute("insert into sandboxes (name, owner, branch, slug, metadata, runtime) values (?, ?, ?, ?, ?, ?)",
+                             (name, owner, branch, slug, json.dumps(metadata or {}), kind or runtime.default()))
     except sqlite3.IntegrityError as error:
         raise lifecycle.Conflict(f"{name} exists") from error
 
@@ -109,11 +112,15 @@ def check_slug(slug: str, name: str = "") -> str:
         raise core.SandboxError(f"{slug} is taken: it is the host of a port in {slug.rpartition('-')[0]}")
     if slug_taken(slug, name):
         raise core.SandboxError(f"{slug} is another sandbox's")
+    _no_endpoint_at(slug)
+    return slug
+
+
+def _no_endpoint_at(slug: str) -> None:
     from . import endpoints
-    if found := endpoints.slug_taken(slug):
+    if slug and (found := endpoints.slug_taken(slug)):
         raise core.SandboxError(f"{slug} is taken: {found}.<domain> is an endpoint (sbx endpoints), which a "
                                 f"preview host of {slug} would be; choose another name or slug")
-    return slug
 
 
 def set_branch(name: str, branch: str):

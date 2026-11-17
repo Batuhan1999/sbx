@@ -280,17 +280,21 @@ class InstallCheckTests(unittest.TestCase):
     """install.sh --check: the host's facts and the runtimes it can run,
     decided as the install decides (the same Embed checks), changing nothing."""
 
-    def check(self, *, ubuntu=True, kvm=True, vmx=True, virt='none', mem_mib=65536, disk_gib=300, listener=''):
+    def check(self, *, ubuntu=True, kvm=True, vmx=True, virt='none', mem_mib=65536, disk_gib=300, listener='',
+              installed=''):
         text = INSTALL.read_text()
         start = text.index('check_report() {')
         report = text[start:text.index('\n}\n', start) + 3]
-        decide = text[text.index("# Why E2B Embed can't run"):text.index('# Embed: where the installation enables it')]
+        decide = text[text.index("# Why E2B Embed can't run"):text.index('# E2B Cloud: with its key')]
+        enables = text[text.index('enables() {'):text.index('\n', text.index('enables() {')) + 1]
         facts = {'os': 'Ubuntu 24.04.1 LTS' if ubuntu else 'Debian GNU/Linux 12', 'ubuntu': '1' if ubuntu else '',
                  'kvm': '1' if kvm else '', 'tun': '1', 'vmx': '1' if vmx else '', 'mem_mib': str(mem_mib),
-                 'disk_gib': str(disk_gib), 'hugepages': '', 'installed': ''}
+                 'disk_gib': str(disk_gib), 'hugepages': '', 'installed': installed,
+                 'has_env': '1' if installed else '', 'check': '1'}
         script = ('set -eu\n' + ''.join(f'{k}={shlex.quote(v)}\n' for k, v in facts.items())
-                  + "say() { printf '\\n==> %s\\n' \"$*\"; }\nconfigured() { false; }\n"
-                  + report + decide + 'check_report\n')
+                  + "say() { printf '\\n==> %s\\n' \"$*\"; }\ndie() { echo \"FAILED: $*\" >&2; exit 1; }\n"
+                  + f"configured() {{ {'true' if installed else 'false'}; }}\n"
+                  + report + enables + decide + 'check_report\n')
         with tempfile.TemporaryDirectory(prefix='sbx-install-check-') as directory:
             for name, body in CHECK_TOOLS.items():
                 executable(Path(directory) / name, body)
@@ -337,6 +341,45 @@ class InstallCheckTests(unittest.TestCase):
         result = self.check(listener='443:nginx')
         self.assertIn('port 443:   in use by nginx on 0.0.0.0:443', result.stdout)
         self.assertIn('port 80:    free', result.stdout)
+
+    def test_an_installed_embed_host_that_no_longer_fits_is_reported_not_stopped_at(self):
+        result = self.check(disk_gib=12, installed='embed')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn('FAILED', result.stderr)
+        self.assertIn('sbx:        installed (runtimes: embed)', result.stdout)
+        self.assertIn('embed      no: 15 GiB of free disk at least, this has 12 GiB', result.stdout)
+        self.assertIn('e2b-cloud  yes', result.stdout)
+        self.assertIn('verdict:    the upgrade refuses: this installation enables embed', result.stdout)
+
+    def inventory(self, *, uid, reader=True):
+        """install.sh's read of the installed runtimes, as --check runs it, against a root-only runtime.env."""
+        text = INSTALL.read_text()
+        block = text[text.index('installed="" has_env=""'):text.index('enables() {')]
+        with tempfile.TemporaryDirectory(prefix='sbx-install-check-') as directory:
+            etc, src = Path(directory) / 'etc-sbx', Path(directory) / 'src'
+            etc.mkdir()
+            (etc / 'runtime.env').write_text("SBX_RUNTIMES='e2b-cloud'\n")
+            (etc / 'runtime.env').chmod(0)
+            if reader:
+                target = src / 'control/sbx_control/runtime/env_file.py'
+                target.parent.mkdir(parents=True)
+                shutil.copy(Path(__file__).parents[1] / 'sbx_control/runtime/env_file.py', target)
+            executable(Path(directory) / 'bin/id', f'print({uid})\n')
+            script = ('set -eu\ncheck=1 src=' + shlex.quote(str(src)) + '\n'
+                      + "die() { echo \"FAILED: $*\" >&2; exit 1; }\nconfigured() { true; }\n"
+                      + block.replace('/etc/sbx', str(etc)) + 'echo "installed=$installed"\n')
+            try:
+                return subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=10,
+                                      env={**os.environ, 'PATH': f"{directory}/bin{os.pathsep}{os.environ['PATH']}"})
+            finally:
+                (etc / 'runtime.env').chmod(0o600)
+
+    def test_the_check_reports_unknown_runtimes_where_it_cannot_read_runtime_env(self):
+        for options in ({'uid': 1000}, {'uid': 0, 'reader': False}):
+            with self.subTest(**options):
+                result = self.inventory(**options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('installed=unknown', result.stdout)
 
     def test_the_script_stops_after_the_check_without_root(self):
         with tempfile.TemporaryDirectory(prefix='sbx-install-check-') as directory:

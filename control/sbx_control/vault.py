@@ -180,7 +180,7 @@ def _backed_up_references() -> set | None:
     for copy in (paths.state_dir() / "upgrade-backups").glob("*/runtime.env"):
         try:
             found |= {value for value in env_file.parse(copy.read_text()).values() if value}
-        except OSError:
+        except (OSError, ValueError):
             return None
     return found
 

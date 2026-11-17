@@ -268,7 +268,8 @@ def do_template(a) -> int:
 def do_runtime_change(a) -> int:
     """runtime add | remove | default: committed as a change from the web app
     is (runtime_changes.commit), under the lock it takes, so neither undoes
-    the other. add reads the runtime's key from stdin."""
+    the other; refused while one from the web app is queued (it would run
+    after). add reads the runtime's key from stdin."""
     from . import host_requests, runtime, runtime_changes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
@@ -277,6 +278,9 @@ def do_runtime_change(a) -> int:
     values = {runtime.make(a.kind).secret_key: sys.stdin.read().strip()} if known else {}
     try:
         with host_requests.lock(runtime_changes.KEY):
+            if host_requests.requested(runtime_changes.KEY):
+                raise runtime_changes.Busy("a runtime change from the web app is queued: apply it first "
+                                           "(sbx-admin runtime apply-pending), then try again")
             runtime_changes.commit(a.action, a.kind, values)
     except (Exception, SystemExit) as error:
         print(f"refused: {error}", file=sys.stderr)

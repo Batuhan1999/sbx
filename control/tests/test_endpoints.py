@@ -383,6 +383,25 @@ class HostTests(Setup, Installation):
                 sandboxes.check_slug(slug, "new")
         self.assertEqual(sandboxes.check_slug("cache2", "new"), "cache2")
 
+    def test_a_name_checked_before_the_other_kind_was_recorded_is_checked_again_with_its_record(self):
+        from sbx_control import core, sandboxes
+        self.endpoints.add(name="demo", target="10.0.0.5:7233", by="test")   # after the sandbox's check_slug
+        with self.assertRaisesRegex(core.SandboxError, "is an endpoint"):
+            self.register("demo")
+        self.assertIsNone(sandboxes.registered_slug("demo"))
+        held = []
+
+        def check(name):   # the endpoint's name check runs holding the lock register takes
+            import fcntl
+            with (self.model.paths.state_dir() / "endpoints.lock").open("a") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    held.append(name)
+        with patch.object(self.model, "_check_name", side_effect=check):
+            self.endpoints.add(name="other", target="10.0.0.6:7233", by="test")
+        self.assertEqual(held, ["other"])
+
     def fake_nginx(self, code):
         script = self.tls / "fake-nginx"
         script.write_text(f"#!/bin/sh\necho 'nginx: [emerg] details for the journal'\nexit {code}\n")

@@ -111,6 +111,12 @@ class Gate(GateCase):
         self.assertNotIn("sbx ls", shown.text)
         self.assertEqual(self.page("memos-x.example.test", self.owner, html=False).json()["error"], "missing")
 
+    def test_an_unavailable_service_host_is_a_starting_page(self):
+        from sbx_control import addressing
+        with patch.object(addressing, "service_hosts", return_value={"svc.example.test"}):
+            shown = self.page("svc.example.test", self.owner, **{"X-Sbx-Reason": "unavailable"})
+        self.assertEqual(shown.status_code, 503, shown.text)
+
     def test_a_deleted_sandbox_says_so(self):
         from sbx_control import lifecycle
         op = lifecycle.begin("memos-a", "delete")
@@ -181,6 +187,12 @@ class Gate(GateCase):
         with patch.object(core, "attach", side_effect=RuntimeError("no machine")):
             response = self.ask("memos-a.example.test", self.owner)
         self.assertEqual(response.headers.get("x-sbx-page"), "failed")
+
+    def test_a_sandbox_running_again_drops_the_last_resume_s_error(self):
+        from types import SimpleNamespace
+        self.waking._wake_errors[self.vm] = "RuntimeError: the listing after the resume failed"
+        self.assertTrue(self.waking.wake(self.vm, lambda fresh: SimpleNamespace(state="running")))
+        self.assertIsNone(self.waking.failed(self.vm))
 
     def test_an_app_that_stopped_offers_its_owner_a_restart(self):
         from sbx_control import lifecycle
@@ -361,5 +373,10 @@ class PausedSinceListing(GateCase):
         op.advance("workspace_ready", finish=True, sandbox_id=self.vm, runtime="paused")
         with patch.object(core, "attach", side_effect=lambda *a, **k: time.sleep(1)), \
                 patch.object(self.waking, "WAKE_WAIT_SECONDS", 0.05):
-            response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+            try:
+                response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+            finally:   # its resume ends here, not in a later test with the fixtures gone
+                if thread := self.waking._waking.get(self.vm):
+                    thread.join(5)
+                self.waking.forget_preview_resume(self.vm)
         self.assertEqual(response.headers.get("x-sbx-page"), "waking")

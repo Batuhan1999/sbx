@@ -87,6 +87,13 @@ class EnvFile(unittest.TestCase):
         self.assertEqual(env_file.listed(None), ["embed"])
         self.assertEqual(env_file.listed(""), [])
 
+    def test_an_unclosed_quote_is_an_error_naming_the_setting_not_its_value(self):
+        with self.assertRaises(ValueError) as raised:
+            env_file.parse("SBX_RUNTIMES='boat\nKEY='hidden\n")
+        self.assertIn("SBX_RUNTIMES", str(raised.exception))
+        self.assertNotIn("boat", str(raised.exception))
+        self.assertEqual(env_file.parse("SBX_RUNTIMES=\n"), {"SBX_RUNTIMES": ""})
+
 
 class CommandName(unittest.TestCase):
     def test_a_failed_commands_name_leaves_its_values_out(self):

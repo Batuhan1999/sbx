@@ -20,8 +20,8 @@ the endpoints its repo may use.
 - status: what the API, the CLI and doctor say."""
 from .access import advice, missing, needs, refusal
 from .certs import issue, sandbox_of, used_by
-from .model import (Conflict, Endpoint, Refused, add, domain, env_name, exist, forget_server, grant, permitted,
-                    remove, revoke, rows, set_repos, slug_taken)
+from .model import (Conflict, Endpoint, Refused, add, domain, env_name, exist, forget_server, grant, lock,
+                    permitted, remove, revoke, rows, set_repos, slug_taken)
 from .nginx import apply_host, stream_config, write_nginx
 from .sandbox import Layer, Routes, issue_for, routes
 from .status import describe, doctor_lines, needed, one
@@ -29,6 +29,6 @@ from .status import describe, doctor_lines, needed, one
 LAYER = Layer()
 
 __all__ = ["Conflict", "Endpoint", "LAYER", "Refused", "Routes", "add", "advice", "apply_host", "describe",
-           "doctor_lines", "domain", "env_name", "exist", "forget_server", "grant", "issue", "issue_for", "missing",
+           "doctor_lines", "domain", "env_name", "exist", "forget_server", "grant", "issue", "issue_for", "lock", "missing",
            "needed", "needs", "one", "permitted", "refusal", "remove", "revoke", "routes", "rows", "sandbox_of",
            "set_repos", "slug_taken", "stream_config", "used_by", "write_nginx"]

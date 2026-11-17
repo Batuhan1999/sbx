@@ -19,6 +19,8 @@ def _builds_settled(seconds: float = 10.0) -> None:
     deadline = time.monotonic() + seconds
     while template_builds._running and time.monotonic() < deadline:
         time.sleep(0.05)
+    if template_builds._running:
+        raise AssertionError(f"template builds still running after {seconds:g} s: {sorted(template_builds._running)}")
 
 
 class Installation(unittest.TestCase):

@@ -359,6 +359,13 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.store, {})
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)   # unblocked
 
+    def test_a_request_queued_after_the_stuck_look_is_kept(self):
+        from sbx_control import host_requests
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        with patch.object(host_requests, "stuck", return_value=True):   # the old one, seen before this was queued
+            self.assertEqual(self.call("GET", "/api/runtimes/change").json()["state"], "queued")
+        self.assertTrue(self.request_file.exists())
+
     def test_the_cli_takes_the_same_lock(self):
         from sbx_control import admin, host_requests
         taken = []
@@ -372,6 +379,16 @@ class Web(TwoRuntimes, Server):
                 patch("sys.stderr", out):
             self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
         self.assertEqual(taken, ["runtime-change"])
+
+    def test_the_cli_refuses_a_change_while_one_from_the_web_app_is_queued(self):
+        from sbx_control import admin, runtime
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "remove", "fake"]), 1, out.getvalue())
+        self.assertIn("apply-pending", out.getvalue())
+        self.assertIn("fake", runtime.enabled())
+        self.assertTrue(self.request_file.exists())
 
     def test_the_cli_removes_a_runtime_whose_key_is_missing(self):
         from sbx_control import admin, runtime
@@ -478,6 +495,17 @@ class Web(TwoRuntimes, Server):
             return True
         with patch.object(host_requests, "applying", side_effect=finished):
             self.assertEqual(runtime_changes.status()["state"], "done")
+
+    def test_a_change_taken_after_status_looked_at_the_lock_is_applying(self):
+        from sbx_control import host_requests, runtime_changes
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+
+        def free(key):   # the lock free when looked at; then the root side takes the request
+            self.request_file.unlink()
+            (self.root / "state/runtime-change.json").write_text(json.dumps({"state": "applying"}))
+            return False
+        with patch.object(host_requests, "applying", side_effect=free), host_requests.lock(runtime_changes.KEY):
+            self.assertEqual(runtime_changes.status()["state"], "applying")
 
     def test_a_store_reference_is_never_taken_as_a_value(self):
         from sbx_control import secret_store

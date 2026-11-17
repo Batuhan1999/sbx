@@ -130,11 +130,15 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
     return host_key
 
 
-def write_of(info, sbx=None, kind: str | None = None) -> sandbox_layers.Write:
-    """A runtime write of the existing sandbox (sbx: its running VM)."""
+_LOOK_UP = object()
+
+
+def write_of(info, sbx=None, kind: str | None = _LOOK_UP) -> sandbox_layers.Write:
+    """A runtime write of the existing sandbox (sbx: its running VM); kind
+    looked up when not given (None: no runtime lists it, the default's rules)."""
     from . import core
     return sandbox_layers.Write(name=(info.metadata or {})["sbx"], repo=core.app_of(info).repo,
-                                kind=runtime.kind_of(info) if kind is None else kind, sbx=sbx)
+                                kind=runtime.kind_of(info) if kind is _LOOK_UP else kind, sbx=sbx)
 
 
 def runtime_values(info, write: sandbox_layers.Write | None = None) -> tuple[dict, set, contributions.RuntimeLayer]:

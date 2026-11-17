@@ -54,13 +54,16 @@ def start_detached(kind: str, keys=None, *, if_stale: bool = True) -> tuple[str,
     return where, True
 
 
-def _build_quietly(key: str, kind: str | None = None):
+def _build_quietly(key: str, kind: str | None = None) -> bool:
+    """False when the host had no room to start it (builds.NoRoom)."""
     try:
         builds.build_now(key, kind)
     except builds.NoRoom as error:  # nothing started; tried again next round
         print(f"template build {key}{builds._on(kind)}: not now: {error}", flush=True)
+        return False
     except Exception as error:
         print(f"template build {key}{builds._on(kind)}: {error!r}", flush=True)
+    return True
 
 
 def schedule(stop: threading.Event):
@@ -84,9 +87,9 @@ def schedule(stop: threading.Event):
                 night = today
                 for repo in builds.moved():
                     builds._unmark(repo)
-                    for kind in runtime.enabled():
-                        if repo in builds.keys(kind):
-                            _build_quietly(repo, kind)
+                    started = [_build_quietly(repo, kind) for kind in runtime.enabled() if repo in builds.keys(kind)]
+                    if not all(started):
+                        builds.mark_moved(repo)   # no room tonight: the next night again
             builds.prune()
         except Exception as error:  # one bad round must not stop the scheduler
             print(f"template scheduler: {error!r}", flush=True)

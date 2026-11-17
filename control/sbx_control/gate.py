@@ -471,7 +471,8 @@ def gate_page(request: Request):
         case Allow() as found:
             page = _ready_or_page(found)
             if page.state == "ready" and reason == "unavailable":   # it answers now; an upstream error is the app's own
-                page = Page("starting", page.name, step="Starting the app", port=found.target.port)
+                page = Page("starting", page.name, step="Starting the app",
+                            port=found.target.port if found.target else None)   # none: a service's, a runtime's own
         case Show(page=page):
             pass
     page = _shown(page, request)

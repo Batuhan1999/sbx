@@ -84,6 +84,8 @@ def wake(sandbox_id: str, look: Look, wait: float | None = None) -> bool:
     listed = look(idle_for > 60)  # it may have paused since the last look
     thread = _waking.get(sandbox_id)
     if _state(listed) != "paused" and not (thread and thread.is_alive()):
+        if _state(listed) == "running":
+            _wake_errors.pop(sandbox_id, None)   # one the last resume left (its last look failed) is over
         return True
     if thread is None or not thread.is_alive():
         _wake_errors.pop(sandbox_id, None)
