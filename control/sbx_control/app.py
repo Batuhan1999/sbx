@@ -26,6 +26,7 @@ MIDDLEWARES = (setup_api.setup_gate, dist_api.version_header, spa.same_origin_wr
 async def lifespan(_app):
     state.migrate()
     platform.connect()
+    secret_store.discard_released()
     lifecycle.recover_interrupted()
     stop = threading.Event()
     for name, work in (("keeper", keeper.run), ("templates", template_scheduler.schedule),

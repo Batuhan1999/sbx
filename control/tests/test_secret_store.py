@@ -445,6 +445,47 @@ class SecretStoreTests(Server):
             self.assertEqual((paths.etc() / "infisical-admin").read_text(), "fixture-private-admin")
         (paths.etc() / "infisical.sql.gz").unlink()
 
+    def shared_password(self) -> str:
+        """An installation from before passwords per person, its shared one in Infisical."""
+        self.infisical()
+        self.settings.update("access", {"admins": ["first@example.com"]}, by="test")
+        self.settings.update("sign_in", {"method": "password"}, by="test")
+        reference = self.secret_store.seal("old-shared-password", key="platform/LOGIN_PASSWORD")
+        with self.state.db() as conn:
+            conn.execute("insert into sealed (key, value, updated_by) values ('LOGIN_PASSWORD', ?, 'test')", (reference,))
+        return reference
+
+    def test_an_upgrade_keeps_the_shared_passwords_payload_while_a_rollback_may_need_it(self):
+        import shutil
+        import sqlite3
+        from contextlib import closing
+        from sbx_control import paths, users
+        reference = self.shared_password()
+        backup = paths.state_dir() / "upgrade-backups" / "20261117-221926"
+        backup.mkdir(parents=True)
+        with closing(sqlite3.connect(paths.database())) as live, closing(sqlite3.connect(backup / "sbx.db")) as copy:
+            live.backup(copy)   # what install.sh keeps before it starts the new release
+        self.state.migrate()
+        self.assertIsNotNone(users.check_password("first@example.com", "old-shared-password"))
+        self.secret_store.discard_released()
+        # rollback.sh brings back the row; the release before reads its payload when it starts.
+        self.assertEqual(self.secret_store.unseal(reference), "old-shared-password")
+        shutil.rmtree(backup)
+        self.secret_store.discard_released()
+        with self.assertRaises(self.secret_store.StoreError):
+            self.secret_store.unseal(reference)
+        self.secret_store.discard_released()   # nothing left to do
+
+    def test_a_platform_secret_whose_payload_is_gone_does_not_stop_sbx(self):
+        from sbx_control import users
+        reference = self.shared_password()
+        self.secret_store.discard(reference)
+        self.vault.platform_secrets()   # what starting sbx reads; LOGIN_PASSWORD is just missing
+        self.state.migrate()            # nothing to carry over: the row goes
+        with self.state.db() as conn:
+            self.assertIsNone(conn.execute("select 1 from sealed where key = 'LOGIN_PASSWORD'").fetchone())
+        self.assertIsNone(users.check_password("first@example.com", "old-shared-password"))
+
 
 class DeliveryTests(Server):
     """Env deliveries: retried until applied, also across a pause. The VM is

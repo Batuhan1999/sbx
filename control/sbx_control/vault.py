@@ -222,10 +222,16 @@ def platform_secrets() -> dict:
         rows = conn.execute("select key, value from sealed").fetchall()
     for row, _ in rows:
         namespace, sep, name = row.partition(":")
-        if not sep:
-            out[row] = get(Key(row))
-        elif namespace == "extra":
-            out[name] = get(Key(name, "extra"))
+        try:
+            if not sep:
+                out[row] = get(Key(row))
+            elif namespace == "extra":
+                out[name] = get(Key(name, "extra"))
+        except secret_store.StoreError as error:
+            if error.status != 404:
+                raise
+            # One value deleted in the store (by hand, or before a rollback) must not keep sbx from starting.
+            print(f"platform secret {row}: its stored value is gone; set it again", flush=True)
     s = settings.current().sign_in
     if s.oidc_issuer:
         out["OIDC_ISSUER"], out["OIDC_CLIENT_ID"] = s.oidc_issuer, s.oidc_client_id

@@ -265,14 +265,22 @@ SHARED_PASSWORD = "LOGIN_PASSWORD"   # vault row of the one password sign-in had
 def _carry_shared_password(conn):
     """Upgrading from one shared password: everyone who signed in with it (the admins and the
     emails allowed_emails names exactly) keeps it as their own, unless they have one already;
-    then the shared one is deleted. A store that can't be read leaves it for the next start."""
+    then the shared one's row is deleted. Its payload stays until no upgrade backup names it
+    (a rollback brings the row back). A store that can't be read leaves it for the next start;
+    one whose payload is gone has nothing to carry over."""
     import sys
     from . import secret_store
     row = conn.execute("select value from sealed where key = ?", (SHARED_PASSWORD,)).fetchone()
     if not row:
         return
     try:
-        password = secret_store.unseal(row[0])
+        try:
+            password = secret_store.unseal(row[0])
+        except secret_store.StoreError as error:
+            if error.status != 404:
+                raise
+            print("the shared password's stored value is gone: nothing to carry over", file=sys.stderr)
+            password = None
         s = settings.current()
         people = [*s.access.admins, *(e for e in s.sign_in.allowed_emails if "*" not in e and "?" not in e)]
         if s.sign_in.method == "password" and password:
@@ -281,7 +289,8 @@ def _carry_shared_password(conn):
                              "on conflict (email) do update set password_hash = excluded.password_hash, "
                              "generation = users.generation + 1 where users.password_hash is null",
                              (email, _hash(password), secrets.randbelow(2 ** 31)))
-        secret_store.delete_rows(conn, "sealed", "key = ?", (SHARED_PASSWORD,))
+        conn.execute("delete from sealed where key = ?", (SHARED_PASSWORD,))
+        secret_store.discard_after_rollbacks(conn, row[0])
     except Exception as error:  # noqa: BLE001 - sbx still starts; the next start retries
         print(f"keeping the shared password for now: {error}", file=sys.stderr)
     forget()
