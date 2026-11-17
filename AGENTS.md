@@ -28,7 +28,12 @@ neither is switching the app to a lighter mode than its owner uses.
 5. **Verify isolation.** For lifecycle or service changes, run the
    [acceptance checklist](docs/agent-install.md#acceptance-checklist) with
    disposable, named sandboxes.
-6. **Report honestly.** Say what you verified, with evidence, and what you did
+6. **Give agents every action.** Anything the web app can do, a coding agent
+   must be able to do through the `sbx` CLI and the HTTP API, not only in the
+   UI or with `sbx-admin` on the server. Ship the endpoint, the CLI command,
+   its docs and tests with the UI: secrets on stdin, waiting for changes that
+   finish later, a non-zero exit on failure, and `--json` output.
+7. **Report honestly.** Say what you verified, with evidence, and what you did
    not test.
 
 ## Never
