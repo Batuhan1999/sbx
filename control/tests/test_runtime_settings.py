@@ -107,6 +107,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
         self.assertIn("install.sh", embed["removable"])
+        self.assertEqual(embed["settings"], [])                          # install.sh's keys, never a form
         self.assertEqual((cloud["enabled"], cloud["can_run"], cloud["not_editable"]), (False, True, ""))
         self.assertEqual([p["name"] for p in cloud["presets"]], ["hobby", "pro"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])

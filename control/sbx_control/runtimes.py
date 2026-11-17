@@ -170,10 +170,11 @@ def _runtime(kind: str, is_default: bool) -> dict:
 
 def fields(backend) -> dict:
     """The backend's settings by key (Runtime.settings); one that declares
-    none has its secret_key as its only one."""
+    none has its secret_key as its only one; a runtime on this host has
+    none (install.sh writes its keys)."""
     found = {f.key: f for f in getattr(backend, "settings", ())}
     secret = getattr(backend, "secret_key", "")
-    if secret and secret not in found:
+    if secret and secret not in found and not getattr(backend, "host", False):
         found = {secret: runtime.SettingField(secret, secret, secret=True), **found}
     return found
 
