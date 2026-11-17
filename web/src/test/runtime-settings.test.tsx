@@ -69,8 +69,8 @@ describe('Settings → Sandbox runtimes', () => {
     // The plans as cards, Hobby chosen: their limits in words, nothing to edit.
     const hobby = within(form).getByRole('radio', { name: /Hobby/ }) as HTMLInputElement
     expect(hobby.checked).toBe(true)
-    expect(hobby.closest('label')!.textContent).toContain('1 h runs · 8 vCPU · 8 GB RAM · 10 GB disk · 10 at once')
-    expect(within(form).getByRole('radio', { name: /Pro/ }).closest('label')!.textContent).toContain('24 h runs · 8+ vCPU · 8+ GB RAM · 20 GB disk · 100 at once')
+    expect(hobby.closest('label')!.textContent).toContain('1 h · 10 at once8 vCPU · 8 GB · 10 GB disk')   // two lines
+    expect(within(form).getByRole('radio', { name: /Pro/ }).closest('label')!.textContent).toContain('24 h · 100 at once8+ vCPU · 8+ GB · 20 GB disk')
     expect(within(form).queryByRole('slider')).toBeNull()
     expect(within(form).getByRole('link', { name: /Check your plan/ }).getAttribute('href')).toBe('https://e2b.dev/pricing')
     expect(within(form).queryByText(/2026/)).toBeNull()
@@ -79,16 +79,22 @@ describe('Settings → Sandbox runtimes', () => {
     expect(within(form).getAllByRole('slider')).toHaveLength(5)
     const run = within(form).getByRole('slider', { name: 'Longest run' }) as HTMLInputElement
     expect(run.getAttribute('aria-valuetext')).toBe('1 h')
-    expect([run.min, run.max, run.step]).toEqual(['300', '86400', '300'])
-    await user.clear(within(form).getByLabelText('Longest run in min'))
-    await user.type(within(form).getByLabelText('Longest run in min'), '90{Enter}')
-    expect(run.getAttribute('aria-valuetext')).toBe('1 h 30 min')
-    await user.clear(within(form).getByLabelText('Memory in GB'))
-    await user.type(within(form).getByLabelText('Memory in GB'), '4{Enter}')
+    expect([run.min, run.max, run.step]).toEqual(['0.5', '24', '0.5'])   // in hours, as shown
+    await user.clear(within(form).getByLabelText('Longest run (exact)'))
+    await user.type(within(form).getByLabelText('Longest run (exact)'), '1.5{Enter}')
+    expect(run.getAttribute('aria-valuetext')).toBe('1.5 h')
+    await user.clear(within(form).getByLabelText('Memory (exact)'))
+    await user.type(within(form).getByLabelText('Memory (exact)'), '4{Enter}')
     expect(within(form).getByRole('slider', { name: 'Memory' }).getAttribute('aria-valuetext')).toBe('4 GB')
-    await user.clear(within(form).getByLabelText('Sandboxes at once: exact value'))
-    await user.type(within(form).getByLabelText('Sandboxes at once: exact value'), '500{Enter}')   // held to the plan's range
-    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100 at once')
+    await user.clear(within(form).getByLabelText('Sandboxes at once (exact)'))
+    await user.type(within(form).getByLabelText('Sandboxes at once (exact)'), '500{Enter}')   // held to the plan's range
+    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100')
+    within(form).getByRole('slider', { name: 'Sandboxes at once' }).focus()
+    await user.keyboard('{Shift>}{ArrowLeft}{/Shift}')                  // Shift+arrow: ten steps
+    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('90')
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}')
+    expect(within(form).getAllByRole('slider').map(s => s.getAttribute('aria-label') ?? (s as HTMLInputElement).labels?.[0]?.textContent))
+      .toEqual(['Longest run', 'Sandboxes at once', 'vCPUs', 'Memory', 'Disk'])   // run and how many first, then the size
     await user.click(within(form).getByRole('button', { name: 'Add E2B Cloud' }))
     expect(within(form).getByText('Enter the API key.')).toBeTruthy()
     await user.type(within(form).getByLabelText('API key'), 'test-only-key')
@@ -149,9 +155,9 @@ describe('Settings → Sandbox runtimes', () => {
     // Pro fixes its run, disk and sandboxes; its vCPUs and memory are "8+": sliders from 8 and 8 GB.
     expect(within(form).getAllByRole('slider').map(s => s.getAttribute('aria-label') ?? (s as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['vCPUs', 'Memory'])
     expect(within(form).getByText(/Pro allows more than 8 vCPUs and 8 GB/)).toBeTruthy()
-    expect(within(form).getByRole('slider', { name: 'vCPUs' }).getAttribute('aria-valuetext')).toBe('8 vCPU')
-    await user.clear(within(form).getByLabelText('vCPUs: exact value'))
-    await user.type(within(form).getByLabelText('vCPUs: exact value'), '16{Enter}')
+    expect(within(form).getByRole('slider', { name: 'vCPUs' }).getAttribute('aria-valuetext')).toBe('8')
+    await user.clear(within(form).getByLabelText('vCPUs (exact)'))
+    await user.type(within(form).getByLabelText('vCPUs (exact)'), '16{Enter}')
     await user.click(within(form).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
     expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { ...PRO, E2B_CLOUD_MAX_CPU: '16' } })   // no key: kept; the domain is as it was
@@ -171,7 +177,7 @@ describe('Settings → Sandbox runtimes', () => {
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     expect(within(form).getByRole('radio', { name: /Custom/ })).toHaveProperty('checked', true)
-    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100 at once')   // 200 by hand in runtime.env: the slider's top
+    expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100')   // 200 by hand in runtime.env: the slider's top
     const advanced = within(form).getByText('Advanced').closest('details')!
     expect(advanced.open).toBe(false)                                   // the domain is out of the way
     await user.click(within(form).getByText('Advanced'))
