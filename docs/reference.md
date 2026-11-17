@@ -816,7 +816,7 @@ it for the root side; it never edits `runtime.env` itself:
    change made but whose old store reference could not be discarded is
    done, saying so.
 4. `GET /api/runtimes/change` answers `{state, operation, kind, message, at,
-   restarting}`, `state` one of `idle`, `queued`, `applying`, `done`,
+   restarting, unchanged}`, `state` one of `idle`, `queued`, `applying`, `done`,
    `failed`; `restarting` is true while a done change is answered by the
    sbx-control from before its restart. The web app polls it every 2 seconds
    until the change failed, or is done and a restarted sbx-control answers,
@@ -832,11 +832,11 @@ or API answer holds its value, and the web app shows a set secret only as
 
 | Route | What |
 | --- | --- |
-| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `not_editable` (why the web app can't add or change it), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text` or `int`, `optional`, `limit`), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `removable` (why not: `""` when it can be), `limit_hit`. |
-| `POST /api/runtimes` | `{"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": "...", ...}}`: add a provider's runtime. 202 with the change's state. |
-| `PUT /api/runtimes/KIND` | `{"values": {...}}`: change an enabled provider's settings; a secret left out or empty keeps its value, another empty value goes back to its default. |
+| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `edit_blocker` (why the web app can't add or change it now: `{code, message, sandboxes}`, `code` one of `host`, `local_store`, `needs_domain`; `null` when it can), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text` or `int`, `optional`, `limit`), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `remove_blocker` (why it can't be removed now: `code` one of `host`, `last_runtime`, `unlisted`, `has_sandboxes` with the sandboxes named; `null` when it can be), `limit_hit`. |
+| `POST /api/runtimes` | `{"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": "...", ...}}`: add a provider's runtime. `plan` (optional) is a preset's name or `custom`: the server sets the limits the plan fixes and refuses values for them; the ones it leaves adjustable start at the plan's values unless given. 202 with the change's state. |
+| `PUT /api/runtimes/KIND` | `{"plan": "pro", "values": {...}}`: change an enabled provider's settings; a secret left out or empty keeps its value, another empty value goes back to its default. With `plan`, its limits as when adding, the adjustable ones keeping their values now. |
 | `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
-| `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. |
+| `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. 200, done and `unchanged`, for the default already. |
 | `GET /api/runtimes/change` | The last change, as above. |
 | `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
 

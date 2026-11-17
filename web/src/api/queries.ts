@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query'
 import { api } from './endpoints'
-import type { Sandbox, SandboxScope } from './types'
+import type { HostRequestStatus, Sandbox, SandboxScope } from './types'
 import { isBusy } from '@/lib/status'
 
 export const keys = {
@@ -81,15 +81,14 @@ export function useRuntimeTitle() {
 
 export const useAvailableRuntimes = (enabled = true) => useQuery({ queryKey: keys.runtimesAvailable, queryFn: api.runtimeSettings.available, enabled, retry: false })
 
-/** Queued, applying, or done but answered by the process from before the restart that takes it. */
-const pending = (c?: { state: string; restarting?: boolean }) => c?.state === 'queued' || c?.state === 'applying' || (c?.state === 'done' && !!c.restarting)
+/** A host request in flight: queued, applying, or done but answered by the process from before the restart that takes it. */
+export const isApplying = (c?: HostRequestStatus) => c?.state === 'queued' || c?.state === 'applying' || (c?.state === 'done' && !!c.restarting)
 /** The last runtime change; every 2 s until it is done and a restarted sbx-control answers
  * (a failed poll keeps the last answer, so polling goes on through the restart). */
 export const useRuntimeChange = (enabled = true) => useQuery({
   queryKey: keys.runtimeChange, queryFn: api.runtimeSettings.change, enabled, retry: false,
-  refetchInterval: q => (pending(q.state.data) ? 2_000 : false),
+  refetchInterval: q => (isApplying(q.state.data) ? 2_000 : false),
 })
-export const isApplying = (change?: { state: string; restarting?: boolean }) => pending(change)
 
 /** What provider sandboxes reach, for admins; every 2 s while one is applying (a failed poll keeps the last answer). */
 export const useEndpoints = (enabled = true) => useQuery({

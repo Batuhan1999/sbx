@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import auth, runtime, runtime_changes, runtimes, setup
+from . import auth, runtime, runtime_changes, runtime_settings, runtimes, setup
 from .setup_api import setup_or_admin
 
 router = APIRouter()
@@ -37,23 +37,26 @@ async def api_runtimes(who: str = Depends(signed_in_or_setup)):
 @router.get("/api/runtimes/available")
 async def api_available(who: str = Depends(setup_or_admin)):
     """Every runtime an installed package provides: [{kind, title, host, enabled, default, can_run, why_not,
-    managed_by, settings, presets, values, secrets_set, facts, sandboxes, removable, limit_hit}]. Secrets
-    are only named as set, never shown."""
-    return await run_in_threadpool(runtimes.available)
+    managed_by, edit_blocker, settings, presets, plan, values, secrets_set, facts, sandboxes, remove_blocker,
+    limit_hit}], a blocker {code, message, sandboxes} or null. Secrets are only named as set, never shown."""
+    return await run_in_threadpool(runtime_settings.available)
 
 
 @router.get("/api/runtimes/change")
 def api_change(who: str = Depends(setup_or_admin)):
-    """The last change: {state: idle|queued|applying|done|failed, operation, kind, message, at}."""
+    """The last change: {state: idle|queued|applying|done|failed, operation, kind, message, at, restarting,
+    unchanged}."""
     return runtime_changes.status()
 
 
 class Added(BaseModel):
     kind: str
+    plan: str | None = None   # a preset's name, or custom: its limits resolved here (runtime_settings.with_plan)
     values: dict[str, str | None] = Field(default_factory=dict)
 
 
 class Values(BaseModel):
+    plan: str | None = None
     values: dict[str, str | None] = Field(default_factory=dict)
 
 
@@ -62,15 +65,13 @@ class Default(BaseModel):
 
 
 def _queue(operation: str, kind: str, who: str, check) -> dict:
-    """Check and queue under the queue lock, so a second request waits and finds
-    this one queued; a secret check() sealed goes again when queueing is refused."""
+    """Check and queue; a secret check() sealed goes again when queueing is refused."""
     values = None
     try:
-        with runtime_changes.queuing():
-            if runtime_changes.busy():
-                raise runtime_changes.Busy("a runtime change is being applied already; wait for it to finish")
-            values = check()
-            return runtime_changes.request(operation, kind, values, by=who)
+        if runtime_changes.busy():
+            raise runtime_changes.Busy("a runtime change is being applied already; wait for it to finish")
+        values = check()
+        return runtime_changes.request(operation, kind, values, by=who)
     except BaseException as error:
         if values:
             runtime_changes.discard_references(values)
@@ -81,23 +82,27 @@ def _queue(operation: str, kind: str, who: str, check) -> dict:
 
 @router.post("/api/runtimes", status_code=202)
 def api_add(body: Added, who: str = Depends(setup_or_admin)):
-    """Enable a provider's runtime with its settings (the secret store must be Infisical: 409 otherwise)."""
-    return _queue("add", body.kind, who, lambda: runtimes.prepare(body.kind, body.values, adding=True))
+    """Enable a provider's runtime with a plan and its settings (the secret store must be Infisical: 409
+    otherwise)."""
+    return _queue("add", body.kind, who,
+                  lambda: runtime_settings.prepare(body.kind, body.values, adding=True, plan=body.plan))
 
 
 @router.put("/api/runtimes/default", status_code=202)
 def api_default(body: Default, who: str = Depends(setup_or_admin)):
-    """202 with the queued change; 200, done, for the runtime that is the default already (nothing to restart)."""
-    if runtimes.is_default(body.kind):
-        return JSONResponse({"state": "done", "operation": "default", "kind": body.kind, "at": "", "restarting": False,
+    """202 with the queued change; 200, done and unchanged, for the runtime that is the default already."""
+    if body.kind in runtime.enabled() and runtime.default() == body.kind:
+        return JSONResponse({"state": "done", "operation": "default", "kind": body.kind,
+                             "at": "", "restarting": False, "unchanged": True,
                              "message": f"{runtime.title(body.kind)} ({body.kind}) is the default already"})
-    return _queue("default", body.kind, who, lambda: runtimes.default_refused(body.kind))
+    return _queue("default", body.kind, who, lambda: runtime_settings.default_refused(body.kind))
 
 
 @router.put("/api/runtimes/{kind}", status_code=202)
 def api_change_settings(kind: str, body: Values, who: str = Depends(setup_or_admin)):
-    """New settings for an enabled provider's runtime; a secret left out (or empty) keeps its value."""
-    return _queue("change", kind, who, lambda: runtimes.prepare(kind, body.values, adding=False))
+    """New settings (and plan) for an enabled provider's runtime; a secret left out (or empty) keeps its value."""
+    return _queue("change", kind, who,
+                  lambda: runtime_settings.prepare(kind, body.values, adding=False, plan=body.plan))
 
 
 @router.post("/api/runtimes/{kind}/test")
@@ -112,11 +117,5 @@ async def api_test(kind: str, who: str = Depends(setup_or_admin)):
 
 @router.delete("/api/runtimes/{kind}", status_code=202)
 def api_remove(kind: str, who: str = Depends(setup_or_admin)):
-    """Refused (409) while sandboxes run on it, naming them, or when it is the last one."""
-    def check():
-        backend = runtime.get(kind) if kind in runtime.enabled() else None
-        if getattr(backend, "host", False):   # before any listing: install.sh's runtime is the server's to remove
-            raise runtimes.Conflict(f"{backend.title} is set up by install.sh on this server; remove it there: "
-                                    f"sbx-admin runtime remove {kind}")
-        runtimes.removal_refused(kind)
-    return _queue("remove", kind, who, check)
+    """Refused (409) while sandboxes run on it, naming them, when it is the last one or install.sh's."""
+    return _queue("remove", kind, who, lambda: runtime_settings.refuse(runtime_settings.remove_blocker(kind)))

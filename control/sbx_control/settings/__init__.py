@@ -385,12 +385,17 @@ def history(limit: int = 100) -> list:
 def request_effects(*units: str):
     """Ask the host for these effects now: what a secret declares it affects
     (vault.Key.applies), or a restored installation."""
+    from .. import host_requests
     for unit in units:
-        _request(unit)
+        try:
+            host_requests.queue(unit)
+        except OSError as error:  # no /run/sbx (a development machine): the effect is the operator's
+            print(f"settings: could not request {unit}: {error}", file=sys.stderr, flush=True)
 
 
 def pending_effects() -> list[str]:
-    return _pending()
+    from .. import host_requests
+    return host_requests.pending()
 
 
 def _with(s: Settings, changes: dict) -> Settings:
@@ -519,17 +524,3 @@ def _history(limit: int = 100) -> list:
     with state.db() as conn:
         return [{"section": s, "by": by, "at": at} for s, by, at in conn.execute(
             "select section, by, at from config_history order by id desc limit ?", (limit,))]
-
-
-def _request(unit: str):
-    try:
-        folder = paths.run() / "apply"
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / str(unit)).write_text(f"{time.time():.0f}\n")
-    except OSError as error:  # no /run/sbx (a development machine): the effect is the operator's
-        print(f"settings: could not request {unit}: {error}", file=sys.stderr, flush=True)
-
-
-def _pending() -> list[str]:
-    folder = paths.run() / "apply"
-    return sorted(p.name for p in folder.glob("*")) if folder.exists() else []

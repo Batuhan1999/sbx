@@ -265,38 +265,22 @@ def do_template(a) -> int:
     return 0
 
 
-def _apply_runtimes() -> None:
-    """What `runtime apply` does once runtime.env is checked: nginx's
-    upstreams are per enabled runtime (tls.sh), and sbx-control configures
-    each runtime at start (platform.connect): both again."""
-    from . import runtime, runtime_changes
-    kinds, first = runtime.enabled(), runtime.default()
-    runtime_changes.request_effects()
-    print(f"runtimes {', '.join(kinds) or 'none'}{f' (default {first})' if first else ''}: nginx is regenerated "
-          "and sbx-control restarts within seconds")
-
-
 def do_runtime_change(a) -> int:
-    """runtime add | remove | default: edit runtime.env, check the result the
-    way sbx-control will read it, and only then let go of the store
-    references it replaced; any failure puts the file back and drops the
-    references it made (runtime_changes.perform). Then apply it. Under the
-    lock a change from the web app takes, so neither undoes the other."""
-    from . import runtime_changes
+    """runtime add | remove | default: committed as a change from the web app
+    is (runtime_changes.commit), under the lock it takes, so neither undoes
+    the other. add reads the runtime's key from stdin."""
+    from . import host_requests, runtime, runtime_changes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
         return 2
-    secret = sys.stdin.read().strip() if a.action == "add" else None
+    known = a.action == "add" and a.kind in runtime.kinds()   # an unknown kind: add says so
+    values = {runtime.make(a.kind).secret_key: sys.stdin.read().strip()} if known else {}
     try:
-        with runtime_changes.locked():
-            change = runtime_changes.perform(a.action, a.kind, secret)
+        with host_requests.lock(runtime_changes.KEY):
+            runtime_changes.commit(a.action, a.kind, values)
     except (Exception, SystemExit) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    print(change.said)
-    _apply_runtimes()
-    if a.action == "add":
-        start_template_builds(a.kind)
     return 0
 
 
@@ -310,12 +294,17 @@ def do_runtime(a) -> int:
     from . import platform, runtime, runtime_changes, runtimes
     if a.action == "apply-pending":
         return runtime_changes.apply_pending()
-    if a.action != "add":   # add mends a runtime's missing key too
-        platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
-    if a.action in ("add", "remove", "default"):
+    if a.action == "add":   # add mends a runtime's missing key too: nothing is connected first
+        return do_runtime_change(a)
+    platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action in ("remove", "default"):
         return do_runtime_change(a)
     if a.action == "apply":
-        _apply_runtimes()   # enabled() and default() are checked before anything is asked of the host
+        kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
+        # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control configures each runtime at start.
+        settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
+        print(f"runtimes {', '.join(kinds) or 'none'}{f' (default {first})' if first else ''}: nginx is "
+              "regenerated and sbx-control restarts within seconds")
         return 0
     if a.action == "verify":
         if a.kind and a.kind not in runtime.enabled():

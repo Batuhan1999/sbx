@@ -68,7 +68,7 @@ export function ChangeStatus({ flow, className }: { flow: ChangeFlow; className?
         <ErrorState compact className="min-w-0 flex-1" error={`${words.failed}: ${reason}`} />
         <Button size="sm" variant="ghost" onClick={() => setDismissed(c.at)}>Dismiss</Button>
       </div>
-      : <p role="status" className="text-[12.5px] text-muted">{/already/.test(c.message) ? 'Already the default' : words.done}</p>}
+      : <p role="status" className="text-[12.5px] text-muted">{c.unchanged ? 'Already the default' : words.done}</p>}
   </div>
 }
 
@@ -129,6 +129,10 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
   const move = (key: string, v: number) => { setCustom(c => ({ ...c, [key]: v })); setTouched(t => new Set(t).add(key)) }
   const initial: Record<string, string> = Object.fromEntries([
     ...(secret ? [[secret.key, '']] : []), ...advanced.map(s => [s.key, r.values[s.key] ?? ''])])
+  const chosen = r.presets.find(p => p.name === plan)
+  const adjustable = limits.filter(s => chosen?.adjustable?.includes(s.key))
+  /** The sliders the plan shows: every limit for Custom, the ones a plan leaves adjustable. */
+  const shownLimits = plan === CUSTOM ? limits : adjustable
   const form = useAppForm({
     defaultValues: initial,
     onSubmit: async ({ value }) => {
@@ -138,15 +142,11 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
         const v = (value[s.key] ?? '').trim()
         if (mode === 'add' ? !!v : v !== (initial[s.key] ?? '')) values[s.key] = v
       }
-      // Adding: every limit the plan (or Custom) sets. Changing: a new plan's values, and the limits moved.
-      const preset = r.presets.find(p => p.name === plan)
-      const replanned = mode === 'add' || plan !== startPlan
-      for (const s of limits) {
-        const fixed = preset && !preset.adjustable?.includes(s.key)
-        if (fixed && replanned) values[s.key] = preset.values[s.key] ?? s.default
-        else if (!fixed && (touched.has(s.key) || (replanned && (mode === 'add' || !!preset)))) values[s.key] = String(clamp(s, custom[s.key]))
-      }
-      await flow.submit(() => mode === 'add' ? api.runtimeSettings.add(r.kind, values) : api.runtimeSettings.update(r.kind, values))
+      // The plan, when chosen now (the server resolves its limits), and the sliders it shows: each one
+      // moved, and every one when adding (what they show is what the runtime starts with).
+      for (const s of shownLimits) if (mode === 'add' || touched.has(s.key)) values[s.key] = String(clamp(s, custom[s.key]))
+      const body = mode === 'add' || plan !== startPlan ? { plan, values } : { values }
+      await flow.submit(() => mode === 'add' ? api.runtimeSettings.add(r.kind, body) : api.runtimeSettings.update(r.kind, body))
       onDone?.()
     },
   })
@@ -154,8 +154,6 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
   const keyNeeded = (get: (key: string) => string) => mode === 'add' || !keySet
     || advanced.some(s => s.rekey && (get(s.key) ?? '').trim() !== (initial[s.key] ?? ''))
   const source = r.presets.find(p => p.source)?.source
-  const chosen = r.presets.find(p => p.name === plan)
-  const adjustable = limits.filter(s => chosen?.adjustable?.includes(s.key))
   /** A plan with limits it does not fix starts them at its own values (Pro: 8 vCPUs, 8 GB), unless set already. */
   const choose = (name: string) => {
     const p = r.presets.find(x => x.name === name)
@@ -190,7 +188,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       {(plan === CUSTOM || adjustable.length > 0) && <div className="mt-4 space-y-3">
         {chosen?.note && <p className="text-[12.5px] text-muted">{chosen.note}</p>}
         <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-          {ordered(plan === CUSTOM ? limits : adjustable).map(s => <LimitRow key={s.key} setting={s} value={custom[s.key]} onChange={v => move(s.key, v)} />)}
+          {ordered(shownLimits).map(s => <LimitRow key={s.key} setting={s} value={custom[s.key]} onChange={v => move(s.key, v)} />)}
         </div>
       </div>}
     </fieldset>}
