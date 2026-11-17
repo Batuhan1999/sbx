@@ -187,6 +187,24 @@ class Backend(unittest.TestCase):
         hosts = [b["localhost"] for _, p, _, b in self.fake.calls if p.endswith("/host")]
         self.assertEqual(hosts, [False, True, True])             # the relay kept, not turned off
 
+    def test_an_exposure_under_way_when_the_sandbox_stops_is_not_kept(self):
+        import threading
+        sandbox_id = self.create().sandbox_id
+        self.fake.respond = lambda _, command: ("LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\n"
+                                                if "sport = :3000" in command else None)
+        expose, stops = self.backend._expose, []
+
+        def stopped_meanwhile(*args):
+            stop = threading.Thread(target=self.backend._forget, args=(sandbox_id,))
+            stop.start()
+            stop.join(0.3)   # a stop's reset, while Boat answers the exposure
+            stops.append(stop)
+            return expose(*args)
+        with patch.object(self.backend, "_expose", side_effect=stopped_meanwhile):
+            self.backend.upstream_token(sandbox_id, 3000)
+        stops[0].join()
+        self.assertEqual(self.backend.upstream_token(sandbox_id, 3000, fetch=False), "")   # asked again on the next machine
+
     def test_a_loopback_only_app_is_exposed_through_boats_relay(self):
         handle = self.create()
         self.fake.respond = lambda _, command: ("LISTEN 0 511 127.0.0.1:5173 0.0.0.0:*\n"
