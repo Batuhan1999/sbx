@@ -469,11 +469,20 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
     # The cloud metadata service, denied per sandbox where the runtime
     # applies egress rules (one without them may deny it already). Private
     # ranges are the runtime's to enforce (Runtime.apply_network), not per sandbox.
-    sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs, kind=kind,
-                         deny_out=runtime.deny_out("169.254.169.254/32", kind=kind),
-                         metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
-                                   "repo": a.repo},
-                         on_timeout="pause", auto_resume=True)
+    try:
+        sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs, kind=kind,
+                             deny_out=runtime.deny_out("169.254.169.254/32", kind=kind),
+                             metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"],
+                                       "branch": env["SBX_BRANCH"], "slug": slug, "repo": a.repo},
+                             on_timeout="pause", auto_resume=True)
+    except runtime.TemplateGone as error:
+        # Deleted behind sbx's back (another installation's prune on a shared
+        # account): built again, and the create answered as for one not built yet.
+        from . import template_builds
+        said = template_builds.gone(error.name, kind)
+        if said is None:
+            raise
+        raise template_builds.NotBuilt(said) from error
     try:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=sbx.sandbox_id, runtime="running")

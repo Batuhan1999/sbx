@@ -16,7 +16,7 @@ import threading
 from types import SimpleNamespace
 
 from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, HostSide, Info, Limits, NoRoom,
-                    NotRunning, Snapshot, TemplateSpec)
+                    NotRunning, Snapshot, TemplateGone, TemplateSpec)
 
 INTERNAL_HOST_SUFFIX = "fake.sandboxes.internal"
 CONTROL_PORT = 49999        # its own daemon in every sandbox: never a preview
@@ -147,7 +147,7 @@ class Fake(HostSide):
         if self.full:
             raise NoRoom("the fake runtime is full")
         if template not in self.built and template not in self.snapshots:
-            raise Failed(f"the fake runtime has no template or snapshot {template}")
+            raise TemplateGone(template, f"the fake runtime has no template or snapshot {template}")
         with self._lock:
             sandbox_id = f"{self.id_prefix}{next(self._ids):06d}"
             self.boxes[sandbox_id] = _Sandbox(sandbox_id, template, dict(metadata or {}), dict(envs or {}),

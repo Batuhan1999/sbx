@@ -333,6 +333,55 @@ def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     return f"the {key} template is building{on}; try again in a few minutes"
 
 
+def _forget(template: str, kind: str) -> list:
+    """The keys whose built template on kind is template, which the runtime
+    no longer has: their rows forget it, so they are stale (stale()) and
+    build again under the name planned now."""
+    with db() as conn:
+        found = [row[0] for row in conn.execute(
+            "select repo from template_builds where runtime = ? and built_template = ?", (kind, template))]
+        conn.execute("update template_builds set built_template = null, built_fingerprint = null "
+                     "where runtime = ? and built_template = ?", (kind, template))
+    if found:
+        print(f"template {template}{_on(kind)} is gone from the runtime: {', '.join(found)} build again", flush=True)
+    return found
+
+
+def gone(template: str, kind: str | None = None) -> str | None:
+    """A create found no template of this name (runtime.TemplateGone): one
+    deleted behind sbx's back, as another installation's prune did on a
+    shared provider account. Its keys build again now (as a create that finds
+    none built starts them), and what the refused create says is returned;
+    None when no build of sbx's is named so (a snapshot, say)."""
+    kind = _kind(kind)
+    keys = _forget(template, kind)
+    said = None
+    for key in keys:
+        with db() as conn:
+            row = _read(conn, key, kind)
+        said = said or _building(key, row, kind)
+    return said
+
+
+def forget_missing(kind: str) -> list:
+    """The scheduler's check on a runtime several installations may share:
+    each built template the runtime no longer lists (or that was named
+    before installations were told apart, without this one's prefix) is
+    forgotten, so the round's stale builds make it again, once. The keys."""
+    if not runtime.shared(kind):
+        return []
+    with db() as conn:
+        rows = _rows(conn, kind)
+    present = {name for name, _ in runtime.templates(kind)}
+    found = []
+    for key, row in rows.items():
+        name = row["built_template"]
+        if name and name not in present and status(key, row, kind) != "building" \
+                and (kind, key) not in _running:
+            found += _forget(name, kind)
+    return found
+
+
 def size_of(template: str) -> int | None:
     """The memory (MiB) of every VM started from a template the platform
     built, or None for one it did not record (a snapshot). A template's name
@@ -667,6 +716,10 @@ def schedule(stop: threading.Event):
     while not stop.wait(CHECK_SECONDS):
         try:
             for kind in runtime.enabled():
+                try:
+                    forget_missing(kind)   # one listing; what is gone is stale below
+                except Exception as error:
+                    print(f"template check{_on(kind)}: {error!r}", flush=True)
                 for key in stale(kind):
                     if stop.is_set():
                         return

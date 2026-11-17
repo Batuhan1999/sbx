@@ -53,6 +53,15 @@ class NotRunning(Failed):
     its own timeout, say) since it was listed. The next listing says which."""
 
 
+class TemplateGone(Failed):
+    """create found no template (or snapshot) of that name: it was deleted
+    behind sbx's back. name is the one asked for."""
+
+    def __init__(self, name: str, message: str = ""):
+        super().__init__(message or f"the runtime has no template {name}")
+        self.name = name
+
+
 class Busy(Failed):
     """The runtime would not pause the sandbox now; it keeps running."""
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime
 
-from ..base import Busy, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateSpec, Timeout
+from ..base import Busy, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateGone, TemplateSpec, Timeout
 
 DEFAULT_DOMAIN = "e2b.app"   # the SDK's own default: E2B Cloud
 ENVD_PORT = 49983            # E2B's control daemon in every sandbox; it checks its own access token
@@ -39,6 +39,15 @@ def _not_running(error) -> bool:
     such running sandbox (404), or the proxy in front of it found none."""
     from e2b.exceptions import SandboxNotFoundException, SandboxNotRunningException
     return isinstance(error, (SandboxNotFoundException, SandboxNotRunningException))
+
+
+def _template_missing(error) -> bool:
+    """The API's answer to a create from a template (or snapshot) it does not
+    have: a 404 whose message names the template, e.g. "404: template 'x' not
+    found" (handle_api_exception: a SandboxException carrying status_code)."""
+    from e2b.exceptions import SandboxException
+    return (isinstance(error, SandboxException) and getattr(error, "status_code", None) == 404
+            and "template" in str(error).lower())
 
 
 def call(function, *args, **kwargs):
@@ -151,6 +160,8 @@ class Compute:
         except Exception as error:
             if "Failed to place sandbox" in str(error):
                 raise NoRoom(str(error)) from error
+            if _template_missing(error):
+                raise TemplateGone(template, str(error)) from error
             raise
 
     def connect(self, sandbox_id, *, timeout=None):

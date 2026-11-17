@@ -12,7 +12,7 @@ FAKE = "sbx_control.runtime.fake:Fake"
 ONE, OTHER = "1111111111111111", "2222222222222222"
 
 
-class TwoInstallations(Installation):
+class SharedAccount(Installation):
     RUNTIME_ENV = "SBX_RUNTIMES=fake\nFAKE_RUNTIME_TOKEN=test-only-fake\n"
 
     @classmethod
@@ -45,6 +45,8 @@ class TwoInstallations(Installation):
         self.addCleanup(lambda: self._as.stop() if self._as else None)
         self.runtime._index.clear()
 
+
+class TwoInstallations(SharedAccount):
     def test_each_sees_finds_and_deletes_only_its_own_sandboxes(self):
         from sbx_control import core
         mine = self.runtime.create("tpl", timeout=600, metadata={"sbx": "memos-a"}).sandbox_id
@@ -112,3 +114,85 @@ class TwoInstallations(Installation):
         self.assertEqual(self.runtime.template_name("sbx-base-12345678", "fake"), "sbx-base-12345678")
         untagged = self.shared.create("tpl", timeout=600, metadata={"sbx": "x"}).sandbox_id
         self.assertEqual([i.sandbox_id for i in self.runtime.sandboxes()], [untagged])
+
+
+class TemplateGoneBehindSbxsBack(SharedAccount):
+    """A template another installation deleted (or one named before the
+    installations were told apart): sbx builds it again instead of failing
+    every create on it."""
+
+    def built(self):
+        from sbx_control import template_builds, templates
+        template_builds.build_now(templates.BASE, "fake")
+        template_builds.build_now(templates.DEFAULT, "fake")
+        return template_builds, templates, template_builds.built(templates.DEFAULT, "fake")
+
+    def start(self, template):
+        from pathlib import Path
+        from sbx_control import core, recipes
+        a = recipes.App("owner/app", Path("/unused"), {})
+        env = {"SBX_NAME": "box", "SBX_SLUG": "box", "SBX_OWNER": "me@example.test", "SBX_BRANCH": "main"}
+        with patch.object(core, "runtime_layer", return_value=({}, None)), patch.object(core, "_envs", return_value={}):
+            return core._start(a, env, {}, [], metadata={"template": template}, kind="fake")
+
+    def test_a_create_on_a_template_that_is_gone_rebuilds_it_and_says_so(self):
+        builds, templates, name = self.built()
+        del self.shared.built[name]                     # another installation's prune
+        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
+            self.start(name)
+        self.assertIn(f"the {templates.DEFAULT} template is building", str(refused.exception))
+        self.assertIn("try again in a few minutes", str(refused.exception))
+        start.assert_called_once_with(templates.DEFAULT, "fake")
+        self.assertIsNone(builds.state_row(templates.DEFAULT, "fake")["built_template"])
+        self.assertIn(templates.DEFAULT, builds.stale("fake"))
+        # Not a build of sbx's (a snapshot, say): the runtime's error as it was.
+        with self.assertRaises(self.runtime.TemplateGone):
+            self.start("snapshot-that-went")
+
+    def test_the_scheduler_rebuilds_what_the_runtime_no_longer_lists_once(self):
+        builds, templates, name = self.built()
+        self.assertEqual(builds.forget_missing("fake"), [])
+        del self.shared.built[name]
+        self.assertEqual(builds.forget_missing("fake"), [templates.DEFAULT])
+        self.assertEqual(builds.forget_missing("fake"), [])          # once: no storm
+        self.assertEqual(builds.stale("fake"), [templates.DEFAULT])
+        builds.build_now(templates.DEFAULT, "fake")
+        self.assertEqual(builds.forget_missing("fake"), [])
+
+    def test_a_template_named_before_installations_were_told_apart_is_rebuilt_with_the_prefix(self):
+        from sbx_control.state import db
+        builds, templates, name = self.built()
+        legacy = name.partition("--")[2]                # unprefixed, as built before
+        self.shared.built[legacy] = "ready"
+        with db() as conn:
+            conn.execute("update template_builds set built_template = ? where runtime = 'fake' and repo = ?",
+                         (legacy, templates.DEFAULT))
+        self.assertEqual(builds.forget_missing("fake"), [templates.DEFAULT])
+        builds.build_now(templates.DEFAULT, "fake")
+        self.assertEqual(builds.built(templates.DEFAULT, "fake"), name)   # prefixed now
+        self.assertEqual(builds.forget_missing("fake"), [])
+
+    def test_a_runtime_on_this_host_is_not_listed_for_it(self):
+        from sbx_control import template_builds
+        self.built()
+        self.shared.host = True
+        with patch.object(self.runtime, "templates") as listed:
+            self.assertEqual(template_builds.forget_missing("fake"), [])
+        listed.assert_not_called()
+
+    def test_the_e2b_adapter_names_a_missing_template(self):
+        from e2b import Sandbox
+        from e2b.exceptions import SandboxException
+        from sbx_control.runtime.e2b_cloud import Cloud
+        cloud = Cloud()
+        cloud.configure({"E2B_CLOUD_API_KEY": "test-only"})
+        missing = SandboxException("404: template 'usememos-memos-6b48cd3f' not found")
+        missing.status_code = 404
+        with patch.object(Sandbox, "create", side_effect=missing), \
+                self.assertRaises(self.runtime.TemplateGone) as raised:
+            cloud.create("usememos-memos-6b48cd3f", timeout=600)
+        self.assertEqual(raised.exception.name, "usememos-memos-6b48cd3f")
+        other = SandboxException("404: sandbox not found")
+        other.status_code = 404
+        with patch.object(Sandbox, "create", side_effect=other), self.assertRaises(SandboxException):
+            cloud.create("tpl", timeout=600)                      # not about a template: as it was

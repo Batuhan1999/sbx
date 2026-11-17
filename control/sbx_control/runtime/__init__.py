@@ -22,10 +22,10 @@ import shlex
 import threading
 
 from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info, Limits,
-                   NoRoom, NotRunning, Runtime, RuntimeLayer, Snapshot, TemplateSpec, Timeout)
+                   NoRoom, NotRunning, Runtime, RuntimeLayer, Snapshot, TemplateGone, TemplateSpec, Timeout)
 
 __all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "HostSide", "Info",
-           "Limits", "NoRoom", "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateSpec", "Timeout",
+           "Limits", "NoRoom", "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateGone", "TemplateSpec", "Timeout",
            "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
@@ -207,6 +207,12 @@ INSTALL_KEY = "sbx_install"
 def installation_id() -> str:
     from .. import state
     return state.installation_id()
+
+
+def shared(kind: str | None = None) -> bool:
+    """Whether the runtime of kind may be shared by several installations
+    (it does not run on this host)."""
+    return _shared(get(kind))
 
 
 def _shared(backend) -> bool:

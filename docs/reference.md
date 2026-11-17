@@ -472,10 +472,14 @@ snapshots with the id's first 8 characters (`<id8>--sbx-base-<hash>`),
 listing and pruning only those. Sandboxes made before the id was added are
 this installation's when its records know them by id (taken once per
 runtime, at the first listing after the upgrade); any other untagged
-sandbox on the account is left alone. Templates built before keep working
-until their next rebuild, which uses the new name; the old ones are no
-longer pruned by sbx, so delete them in E2B's dashboard once nothing uses
-them. The status line counts this installation's running sandboxes; the
+sandbox on the account is left alone. Templates built before are rebuilt
+under the new name at the scheduler's next round (each once); the old ones
+are no longer pruned by sbx, so delete them in E2B's dashboard once
+nothing uses them. A template that disappears from the provider (another
+installation's prune, a manual delete) is rebuilt too: the scheduler
+checks each round, and a create that finds it gone answers "the KEY
+template is building ...; try again in a few minutes" (503) and starts the
+build. The status line counts this installation's running sandboxes; the
 plan's limit is the E2B team's, shared with the others. Embed runs one
 installation per server: its sandbox listing and template names are as
 before.
