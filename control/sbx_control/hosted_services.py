@@ -14,6 +14,7 @@ import contextlib
 import fcntl
 import ipaddress
 import json
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -338,6 +339,19 @@ def _matches(server: Server, details: dict, values: dict) -> bool:
         for m in details.get("Mounts", []))
 
 
+def _container_size(cpus: int = 4, memory_mb: int = 4096) -> tuple[int, int]:
+    """A managed server's CPU and memory cap: 4 CPUs and 4 GiB, or what a
+    smaller host has (Docker refuses more CPUs than the host has; half its
+    memory leaves room for sbx and the rest)."""
+    host_cpus = os.cpu_count() or 1
+    try:
+        with open("/proc/meminfo") as found:
+            total_mb = next(int(line.split()[1]) // 1024 for line in found if line.startswith("MemTotal:"))
+    except (OSError, StopIteration, ValueError):
+        total_mb = memory_mb * 2
+    return min(cpus, host_cpus), max(512, min(memory_mb, total_mb // 2))
+
+
 def _create_container(server: Server, values: dict):
     if server.kind == "postgres":
         env = {"POSTGRES_USER": ADMIN, "POSTGRES_PASSWORD": values["password"], "POSTGRES_DB": "postgres"}
@@ -357,8 +371,9 @@ def _create_container(server: Server, values: dict):
         extra, command = [], []
         mount = f"type=volume,src={server.volume},dst={server.data_path}"
         run = ["run", "-d", "--restart", "unless-stopped"]
+    cpus, memory_mb = _container_size()
     docker(*run, "--name", server.container, "--label", f"{LABEL}={server.name}",
-           "--network", NETWORK, "--ip", values["address"], "--memory", "4g", "--cpus", "4",
+           "--network", NETWORK, "--ip", values["address"], "--memory", f"{memory_mb}m", "--cpus", str(cpus),
            "--mount", mount, "--env-file", "/dev/stdin", *extra, server.image, *command,
            input="".join(f"{k}={v}\n" for k, v in env.items()))
 
