@@ -489,6 +489,18 @@ class CredentialHelper(Installation):
             delivery.forget("b")
             self.assertFalse(tls_pin.redeliver(["a", "b"], seen="--pinnedpubkey sha256//two="))
 
+    def test_a_pin_that_could_not_be_read_before_the_listing_leaves_the_round_incomplete(self):
+        from sbx_control import delivery, templates, tls_pin
+        with patch.object(templates, "pinned_key", side_effect=OSError("unreadable")):
+            seen = tls_pin.observed()
+        # The key changes during the listing; "b", made with the old pin, is not in it.
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
+            self.assertTrue(tls_pin.redeliver(["a"], seen=seen))
+            delivery.forget("a")
+            self.assertTrue(tls_pin.redeliver(["a", "b"], seen=tls_pin.observed()))   # the next round has b
+        self.assertEqual(delivery.waiting(), {"b"})
+        delivery.forget("b")
+
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
         from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value=""):

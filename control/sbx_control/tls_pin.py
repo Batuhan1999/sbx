@@ -9,15 +9,16 @@ from . import delivery, state
 # complete: every sandbox has it (a listing of every runtime queued them);
 # else queued names those a listing that missed a runtime's queued it for.
 DELIVERED = state.Setting("tls_pin", encoded=True)
+UNREAD = "(unread)"   # observed's answer when the pin can't be read: never a pin, so its round stays incomplete
 
 
-def observed() -> str | None:
-    """The pin now, read before the sandboxes are listed (redeliver's seen); None when it can't be read."""
+def observed() -> str:
+    """The pin now, read before the sandboxes are listed (redeliver's seen); UNREAD when it can't be read."""
     from . import templates
     try:
         return templates.pinned_key()
     except Exception:   # redeliver says why
-        return None
+        return UNREAD
 
 
 def redeliver(names, complete: bool = True, seen: str | None = None) -> bool:
