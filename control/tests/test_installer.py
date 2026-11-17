@@ -133,6 +133,63 @@ class InfisicalEnableTests(unittest.TestCase):
             for skipped in ('backup', 'systemctl stop', 'secret_store', 'sbx_control.host install'):
                 self.assertNotIn(skipped, calls)
             self.assertEqual(env_file.read_text(), 'ENCRYPTION_KEY=test-only\n')
+            self.assertLess(calls.index('compose -f infisical/compose.yaml pull --quiet'),
+                            calls.index('compose -f infisical/compose.yaml up -d --wait'))   # the images first
+
+    # docker, failing `up` (and `pull`) the first N times it is asked, then answering; its logs carry a credential.
+    FLAKY = LOGGED + '''
+if os.path.basename(sys.argv[0]) == 'docker':
+    verb = next((a for a in sys.argv[1:] if a in ('pull', 'up', 'ps', 'logs')), '')
+    count = os.path.join(os.path.dirname(os.environ['SBX_TEST_LOG']), 'count-' + verb)
+    done = int(open(count).read()) if os.path.exists(count) else 0
+    open(count, 'w').write(str(done + 1))
+    if verb == 'ps':
+        print('infisical-backend-1  restarting')
+    elif verb == 'logs':
+        print('backend-1 | migrations running')
+        print('backend-1 | DB_CONNECTION_URI=postgres://infisical:test-only-db-password@db:5432/infisical')
+    elif done < int(os.environ.get('SBX_TEST_FAIL_' + verb.upper(), '0')):
+        sys.exit(1)
+'''
+
+    def enable(self, **fail):
+        with tempfile.TemporaryDirectory(prefix='sbx-infisical-enable-') as directory:
+            root = Path(directory)
+            release = root / 'release'
+            (release / 'infisical').mkdir(parents=True)
+            shutil.copy(ENABLE, release / 'infisical/enable.sh')
+            executable(release / 'venv/bin/python', LOGGED)
+            for tool in ('docker', 'curl', 'systemctl', 'id'):
+                executable(root / 'bin' / tool, self.FLAKY)
+            env_file = root / 'infisical.env'
+            env_file.write_text('ENCRYPTION_KEY=test-only\n')
+            log = root / 'log'
+            result = subprocess.run(['sh', str(release / 'infisical/enable.sh'), 'admin@example.com'],
+                                    capture_output=True, text=True, timeout=20,
+                                    env={**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                                         'SBX_TEST_LOG': str(log), 'INFISICAL_ENV': str(env_file),
+                                         'SBX_INFISICAL_PAUSE': '0',
+                                         **{f'SBX_TEST_FAIL_{k.upper()}': str(v) for k, v in fail.items()}})
+            return result, log.read_text()
+
+    def test_a_slow_first_start_and_a_stumbling_registry_are_tried_again(self):
+        result, calls = self.enable(pull=1, up=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.count('pull --quiet'), 2)
+        self.assertEqual(calls.count('up -d --wait'), 3)
+        self.assertIn('Infisical is not healthy yet (try 2 of 4)', result.stderr)
+
+    def test_a_start_that_never_comes_says_what_failed_without_credentials(self):
+        result, calls = self.enable(up=9)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls.count('up -d --wait'), 4)
+        self.assertIn('infisical-backend-1  restarting', result.stderr)   # compose ps
+        self.assertIn('migrations running', result.stderr)                # the logs' last lines
+        self.assertNotIn('test-only-db-password', result.stderr)
+        self.assertIn('FAILED: Infisical did not start', result.stderr)
+        result, calls = self.enable(pull=9)
+        self.assertIn('FAILED: could not pull', result.stderr)
+        self.assertNotIn('up -d', calls)
 
 
 INSTALL = Path(__file__).parents[2] / 'install.sh'
