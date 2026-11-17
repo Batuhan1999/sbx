@@ -486,6 +486,17 @@ class Web(TwoRuntimes, Server):
         with patch.object(host_requests, "applying", side_effect=finished):
             self.assertEqual(runtime_changes.status()["state"], "done")
 
+    def test_a_change_taken_after_status_looked_at_the_lock_is_applying(self):
+        from sbx_control import host_requests, runtime_changes
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+
+        def free(key):   # the lock free when looked at; then the root side takes the request
+            self.request_file.unlink()
+            (self.root / "state/runtime-change.json").write_text(json.dumps({"state": "applying"}))
+            return False
+        with patch.object(host_requests, "applying", side_effect=free), host_requests.lock(runtime_changes.KEY):
+            self.assertEqual(runtime_changes.status()["state"], "applying")
+
     def test_a_store_reference_is_never_taken_as_a_value(self):
         from sbx_control import secret_store
         self.store["infisical-ref-77"] = "the platform's own secret"

@@ -95,8 +95,16 @@ def status() -> dict:
             return _view("applying" if applying else "queued", request)
     record = host_requests.last(KEY)
     found = record.get("state") or "idle"
-    if found == "applying" and not applying:
-        return _view("failed", {**record, "message": "the change stopped before it finished; nothing to wait for"})
+    if found == "applying":
+        # Read again holding the lock: one taken since the first look is applying, not failed.
+        try:
+            with host_requests.lock(KEY, blocking=False):
+                record = host_requests.last(KEY)
+                found = record.get("state") or "idle"
+        except BlockingIOError:
+            return _view("applying", record)
+        if found == "applying":
+            return _view("failed", {**record, "message": "the change stopped before it finished; nothing to wait for"})
     finished = record.get("finished")
     restarting = (found == "done" and finished is not None and STARTED < finished
                   and time.time() - finished < RESTART_SECONDS)
