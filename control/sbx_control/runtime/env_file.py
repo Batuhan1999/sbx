@@ -24,7 +24,9 @@ def text() -> str | None:
 
 def parse(content: str) -> dict:
     """Every NAME=value line of content, by name (spaces around it allowed):
-    the value unquoted ("" when empty); the last line of a name wins."""
+    the value unquoted ("" when empty); the last line of a name wins.
+    ValueError, naming the line's name (never its value), when a value is
+    not shell-quoted: a hand edit read as absent would pick defaults."""
     found = {}
     for line in content.splitlines():
         name, sep, value = line.partition("=")
@@ -32,8 +34,8 @@ def parse(content: str) -> dict:
             continue
         try:
             found[name.strip()] = (shlex.split(value) or [""])[0]
-        except ValueError:   # not a value sbx wrote
-            continue
+        except ValueError:
+            raise ValueError(f"runtime.env: {name.strip()}'s value is not shell-quoted (an unclosed quote?)") from None
     return found
 
 
