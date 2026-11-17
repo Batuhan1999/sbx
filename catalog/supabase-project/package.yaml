@@ -1,0 +1,37 @@
+kind: connection
+name: supabase-project
+title: Supabase project
+logo: logo.svg
+description: >
+  Connects to an existing Supabase project through the Management API with an
+  access token that can manage the project's branches. Branching needs a paid
+  plan. No local server is needed.
+docs: https://supabase.com/docs/reference/api/introduction
+identity: [project]
+inputs:
+  access_token:
+    required: true
+    secret: true
+    help: A personal access token of an account that can manage the project's branches.
+  project:
+    label: Project ref
+    required: true
+    help: The project's reference ID, from its dashboard URL or Project Settings.
+check: |
+  python3 - <<'CHECK'
+  import json, os, sys
+  from urllib.parse import quote
+  from urllib.request import Request, urlopen
+  base = 'https://api.supabase.com/v1/projects/' + quote(os.environ['INPUT_PROJECT'], safe='')
+  headers = {'Authorization': 'Bearer ' + os.environ['INPUT_ACCESS_TOKEN'], 'User-Agent': 'sbx'}
+  try:
+      with urlopen(Request(base, headers=headers), timeout=10) as response:
+          found = json.load(response)
+      if found.get('ref') != os.environ['INPUT_PROJECT']:
+          raise ValueError('unexpected project response')
+      with urlopen(Request(base + '/branches', headers=headers), timeout=10) as response:
+          if not isinstance(json.load(response), list):
+              raise ValueError('unexpected branch list')
+  except Exception:
+      sys.exit('Supabase project check failed; check the project ref and that the token can manage its branches')
+  CHECK

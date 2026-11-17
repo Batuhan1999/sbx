@@ -7,7 +7,7 @@ specific to an agent product or a service provider is an extension:
 | Kind | Where | Examples |
 | --- | --- | --- |
 | Agent connector | `control/sbx_control/connectors/<name>`, or an installed Python package | Claude Code, Codex, [Amp](amp-orbs.md) |
-| Catalog package | `catalog/<name>/`, `/etc/sbx/catalog/<name>/`, or a repository's `.sbx/services/<name>/` | Postgres, ClickHouse, Neon, PlanetScale, Tinybird, Upstash, AWS |
+| Catalog package | `catalog/<name>/`, `/etc/sbx/catalog/<name>/`, or a repository's `.sbx/services/<name>/` | Postgres, ClickHouse, Neon, PlanetScale, Supabase, Tinybird, Upstash, AWS |
 | GitHub | `control/sbx_control/connections/github.py`, a platform connection | `gh`, git credentials and PR previews |
 | Sandbox runtime | `control/sbx_control/runtime/<kind>/`, or an installed Python package registered under `sbx.runtimes` | E2B Embed |
 
