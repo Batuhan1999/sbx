@@ -279,6 +279,17 @@ class Backend(unittest.TestCase):
         keys = [h for m, p, _, _, h in self.fake.requests if m == "POST" and p == "/sandboxes"][-2:]
         self.assertEqual(keys[0]["Idempotency-Key"], keys[1]["Idempotency-Key"])
 
+    def test_a_sandbox_is_handed_over_once_its_files_have_all_come_in(self):
+        original = self.fake._create
+
+        def restoring(body):
+            status, payload = original(body)
+            self.fake.sandboxes[payload["sandbox"]["id"]]["hydrated"] = False
+            return status, payload
+        self.fake._create = restoring
+        handle = self.create()
+        self.assertTrue(self.fake.sandboxes[handle.sandbox_id]["hydrated"])   # waited for it
+
     def test_a_resume_without_a_timeout_keeps_the_auto_stop(self):
         handle = self.create()
         self.backend.pause(handle.sandbox_id)

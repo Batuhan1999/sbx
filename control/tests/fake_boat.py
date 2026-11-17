@@ -71,7 +71,8 @@ class FakeBoat:
     def _sandbox(self, box):
         return {key: box[key] for key in ("id", "name", "state", "labels", "subdomain", "type", "vcpu", "memoryGB",
                                           "createdAt", "archiveAfter", "stoppedAt", "ttlSeconds", "error")} | {
-            "desktopAvailable": box["state"] in ("ready", "idle", "running"), "snapshotAvailable": True}
+            "desktopAvailable": box["state"] in ("ready", "idle", "running"), "snapshotAvailable": True,
+            "hydrated": box.get("hydrated")}
 
     def _missing(self, what="not_found"):
         return 404, {"ok": False, "type": "sandbox.error", "status": 404, "code": what, "message": what,
@@ -152,7 +153,10 @@ class FakeBoat:
                                   "limit": self.page_size}}
 
     def _settle(self, box):
-        if box["state"] == "provisioning":
+        """The next look: started; then (a sandbox from a snapshot) its files all in."""
+        if box["state"] == "ready" and box.get("hydrated") is False:
+            box["hydrated"] = True
+        elif box["state"] == "provisioning":
             box["state"] = "ready"
         elif box["state"] == "archiving":
             box["state"] = "archived"

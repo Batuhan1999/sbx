@@ -806,11 +806,21 @@ class Boat(HostSide):
         return Handle(self, sandbox_id)
 
     def _ready(self, sandbox_id: str, seconds: float = 600):
-        """Wait until Boat says the sandbox takes commands."""
+        """Wait until Boat says the sandbox takes commands and has every file
+        of its snapshot on its disk (hydrated). A sandbox from a saved
+        snapshot is ready before its files have all come in, and a setup that
+        replaces folders meanwhile (a toolchain swapped in, node_modules
+        purged) failed at random: "Cannot call rmtree on a symbolic link",
+        pnpm finding a modules folder to remove. A new sandbox restores
+        nothing (hydrated None)."""
         deadline = time.monotonic() + seconds
         while True:
             found = self._sandbox(sandbox_id)
-            if found.state in READY:
+            if found.state in READY and found.hydrated is not False:
+                return found
+            if found.state in READY and time.monotonic() > deadline:
+                print(f"Boat: sandbox {sandbox_id} still restoring its files after {int(seconds)} s; going on",
+                      flush=True)
                 return found
             if found.state == "error":
                 raise Failed(f"Boat sandbox {sandbox_id} failed to start: {found.error or 'error'}")
