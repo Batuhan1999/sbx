@@ -1065,7 +1065,18 @@ def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, o
         operation.check()
         command = f"umask 077; exec > {sbx_guest.SETUP_LOG} 2>&1; " + command
         command = f"flock -n {shlex.quote(SETUP_LOCK)} bash -c {shlex.quote(command)}"
-    return run_in(sbx, command, timeout=timeout, env=env)
+    try:
+        return run_in(sbx, command, timeout=timeout, env=env)
+    except runtime.CommandFailed as error:
+        if not (operation and script == "setup"):
+            raise
+        # Its output went to the setup log: the end of that is the error (its callers mask it).
+        try:
+            tail = sbx.commands.run(f"tail -20 {sbx_guest.SETUP_LOG} 2>/dev/null || true", timeout=30).stdout
+        except Exception:
+            tail = ""
+        raise runtime.CommandFailed(stdout=error.stdout, stderr=tail or error.stderr, exit_code=error.exit_code,
+                                    command=f".sbx/{script}") from error
 
 
 def start_processes(sbx, a: recipes.App) -> str:
