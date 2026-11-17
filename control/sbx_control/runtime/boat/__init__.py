@@ -125,6 +125,10 @@ TRIAL_REFUSAL = ("Boat's free trial saves no snapshots (\"Saved snapshots are no
 KEY_WARN_DAYS = 14
 PLAN_CACHE_SECONDS = 300
 BUILD_SECONDS = 4 * 3600   # the longest a builder runs; one older is an orphan
+# /run/sbx as its own tmpfs, executable, the default user's, a fifth of the
+# memory as /run is (core.RUN_FULL_PERCENT watches it); kept if mounted.
+RUN_MOUNT = ("sudo mkdir -p /run/sbx && { mountpoint -q /run/sbx || sudo mount -t tmpfs -o "
+             "nosuid,nodev,mode=0700,uid=$(id -u),gid=$(id -g),size=20% sbx-run /run/sbx; }")
 ENV_DIR = "/tmp/.sbx-env"  # where a command's env waits for it (a new machine's /tmp is empty)
 
 
@@ -798,6 +802,7 @@ class Boat(HostSide):
             raise
         sandbox_id = created.sandbox.id
         self._ready(sandbox_id)
+        self._machine_ready(sandbox_id)
         return Handle(self, sandbox_id)
 
     def _ready(self, sandbox_id: str, seconds: float = 600):
@@ -831,7 +836,16 @@ class Boat(HostSide):
             self.call(lambda: self.api().update(sandbox_id, UpdateSandboxRequest(ttl_seconds=timeout)),
                       sandbox_id=sandbox_id, asked={"timeout_seconds": timeout})
         self._ready(sandbox_id)
+        self._machine_ready(sandbox_id)
         return Handle(self, sandbox_id)
+
+    def _machine_ready(self, sandbox_id: str):
+        """What sbx needs of a Boat machine that its image doesn't give:
+        /run/sbx on a tmpfs of its own that runs programs. Boat's /run is
+        mounted noexec (Ubuntu's default), and the recipe's scripts
+        (.sbx/setup, start) run from /run/sbx: there they would be skipped
+        as not executable. Once per machine (a resume may get a new one)."""
+        Handle(self, sandbox_id).commands.run(RUN_MOUNT, timeout=60)
 
     def _settle(self, sandbox_id: str, seconds: float = 900):
         """Wait while Boat saves a stopping sandbox's disk."""

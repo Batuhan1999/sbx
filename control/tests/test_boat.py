@@ -84,6 +84,10 @@ class Backend(unittest.TestCase):
         self.backend.connect(handle.sandbox_id, timeout=1200)
         self.assertEqual(self.backend.info(handle.sandbox_id).state, RUNNING)
         self.assertEqual(self.fake.boots[handle.sandbox_id], 2)
+        # Boat's /run is noexec: every machine gets /run/sbx as an executable tmpfs (the recipe's scripts run there).
+        mounts = [c for s, c, _ in self.fake.ran if s == handle.sandbox_id and "mount -t tmpfs" in c]
+        self.assertEqual(len(mounts), 2)
+        self.assertNotIn("noexec", mounts[0])
         self.assertEqual(self.body("POST", f"/sandboxes/{handle.sandbox_id}/resume")["ttlSeconds"], 1200)
         self.assertTrue(self.backend.cold_resume)
 
