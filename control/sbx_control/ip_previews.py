@@ -5,7 +5,7 @@ import sys
 import time
 from urllib.parse import urlencode, urlsplit
 
-from . import platform, runtime, settings, state
+from . import platform, preview_proxy, settings, state
 
 FIRST_PORT = 21000
 LAST_PORT = 21255
@@ -135,162 +135,20 @@ def login_url(public_port, path):
     return settings.current().base_url + '/auth/login?' + urlencode({'next': target})
 
 
-def app_cookies(value):
-    # Cookies are host-scoped, including across ports. The control cookie must
-    # reach only the gate, even if a client sends duplicate cookie names.
-    return '; '.join(part.strip() for part in value.split(';')
-                     if part.partition('=')[0].strip() != platform.SESSION_COOKIE and part.strip())
-
-
-# The CA bundle in nginx's image (alpine's ca-certificates): what an https
-# ingress's certificate is verified against.
-CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
-
-
-def upstream_name(kind: str) -> str:
-    """An nginx name for the kind's upstream, one per kind: lowercase letters
-    and digits as they are, any other character as _<its hex code>."""
-    return "sbx_runtime_" + "".join(c if c in "abcdefghijklmnopqrstuvwxyz0123456789" else f"_{ord(c):02x}"
-                                    for c in kind)
-
-
-def _upstream_url(kind: str, ingress: str) -> str:
-    return f"{urlsplit(ingress).scheme or 'http'}://{upstream_name(kind)}"
-
-
-def default_ingress() -> str:
-    """The default runtime's upstream, for what reaches a runtime without the
-    gate naming one (a CORS preflight); with no runtime set up, a closed port
-    on this host (nginx answers 502: there is no sandbox to reach)."""
-    found = runtime.ingresses()
-    if not found:
-        return NO_INGRESS
-    kind, (ingress, _) = next(iter(found.items()))
-    return _upstream_url(kind, ingress)
-
-
-NO_INGRESS = "http://127.0.0.1:9"   # the discard port: nothing listens
-
-
-def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress", cookie: str = "sandbox_cookie") -> str:
-    """nginx: one upstream block per enabled runtime (its ingress) and a map
-    from the kind the gate names (X-Sbx-Runtime, in $source) to it ($target);
-    anything else goes to the default runtime's. For a runtime that wants
-    its sandboxes' token in a header, a map that sends it to that runtime
-    only; for one that wants it in a cookie, the request's cookies ($cookie,
-    the app's own) with the token appended, for that runtime only
-    ($<target>_cookie, upstream_cookie)."""
-    found = runtime.ingresses()
-    lines = ["# One upstream per enabled sandbox runtime; the gate names a sandbox's (X-Sbx-Runtime)."]
-    for kind, (ingress, _) in found.items():
-        parts = urlsplit(ingress)
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-        name = f"[{parts.hostname}]" if ":" in (parts.hostname or "") else parts.hostname
-        lines.append(f"upstream {upstream_name(kind)} {{ server {name}:{port}; }}")
-    lines.append(f"map ${source} ${target} {{")
-    lines.append(f"  default {default_ingress()};")
-    lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]
-    lines.append("}")
-    found_headers = runtime.upstream_token_headers()
-    headers = sorted(set(found_headers.values()))
-    if headers:
-        lines.append("# The sandbox's token, in the header its runtime wants, to that runtime only.")
-    for number, header in enumerate(headers, 1):
-        lines.append(f"map ${source} ${target}_token_{number} {{")
-        lines.append('  default "";')
-        lines += [f"  {kind} ${target}_token;" for kind, h in found_headers.items() if h == header]
-        lines.append("}")
-    cookies = runtime.upstream_token_cookies()
-    if cookies:
-        # The gate writes that runtime's whole Cookie header (gate.route): the
-        # app's cookies without sbx's session or any of the token's name, then the token.
-        lines.append("# The Cookie header the gate wrote, with the sandbox's token, to that runtime only.")
-        lines.append(f"map ${source} ${target}_cookie {{")
-        lines.append(f"  default ${cookie};")
-        lines += [f"  {kind} ${target}_upstream_cookie;" for kind in cookies]
-        lines.append("}")
-    return "\n".join(lines) + "\n"
-
-
-def _https(found: dict) -> bool:
-    return any(urlsplit(ingress).scheme == "https" for ingress, _ in found.values())
-
-
-def upstream_tls(host: str = "sbx_target", indent: str = "    ") -> str:
-    """The proxy location's lines for an https ingress: SNI with the host
-    the request goes to (the sandbox's: $host, the Host nginx sends), and the
-    certificate verified for it against the public CAs; "" while every
-    enabled runtime's ingress is plain http (Embed's, on this host)."""
-    if not _https(runtime.ingresses()):
-        return ""
-    return "".join(f"{indent}{line}\n" for line in (
-        "proxy_ssl_server_name on;", f"proxy_ssl_name ${host};", "proxy_ssl_verify on;",
-        "proxy_ssl_verify_depth 4;", f"proxy_ssl_trusted_certificate {CA_BUNDLE};"))
-
-
-def _wants_token() -> bool:
-    return bool(runtime.upstream_token_headers() or runtime.upstream_token_cookies())
-
-
-def upstream_token_set(target: str = "sbx_ingress", indent: str = "    ") -> str:
-    """The gated location's line that takes the sandbox's token from the gate
-    (X-Sbx-Upstream-Token); "" when no enabled runtime wants a token."""
-    if not _wants_token():
-        return ""
-    found = f"{indent}auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;\n"
-    if runtime.upstream_token_cookies():
-        found += f"{indent}auth_request_set ${target}_upstream_cookie $upstream_http_x_sbx_upstream_cookie;\n"
-    return found
-
-
-def upstream_token_send(target: str = "sbx_ingress", indent: str = "    ") -> str:
-    """The proxy location's lines that send the token in each declaring
-    runtime's header; the map (runtime_upstreams) leaves it empty, so unsent,
-    for any other runtime, and a browser's own value of that header never
-    passes. A cookie runtime's token goes with the cookies (upstream_cookie)."""
-    headers = sorted(set(runtime.upstream_token_headers().values()))
-    lines = [f"proxy_set_header {header} ${target}_token_{number};" for number, header in enumerate(headers, 1)]
-    # nginx can't drop one Set-Cookie; a token cookie the provider sets is at least kept from scripts.
-    lines += [f"proxy_cookie_flags {name} httponly secure samesite=strict;"
-              for name in sorted(set(runtime.upstream_token_cookies().values()))]
-    return "".join(f"{indent}{line}\n" for line in lines)
-
-
-def upstream_token(target: str = "sbx_ingress", indent: str = "    ") -> str:
-    """Both, for a location that takes the token and proxies itself."""
-    return upstream_token_set(target, indent) + upstream_token_send(target, indent)
-
-
-def upstream_cookie(target: str = "sbx_ingress", cookie: str = "sandbox_cookie") -> str:
-    """The variable (without $) the proxy sends as Cookie: the app's own
-    cookies, with the token appended for a runtime that wants it there."""
-    return f"{target}_cookie" if runtime.upstream_token_cookies() else cookie
-
-
-def cleared_headers() -> list:
-    """Every enabled runtime's ingress_cleared: a browser must not pick the VM."""
-    return list(dict.fromkeys(name for _, cleared in runtime.ingresses().values() for name in cleared))
-
-
 def nginx(value, certificate):
     if not value:
         return ''
     ip = ipaddress.ip_address(value)
     if certificate not in ('bootstrap', str(ip)):
         raise ValueError('Invalid IP certificate name')
-    cleared = "\n".join(f'    proxy_set_header {name} "";' for name in cleared_headers())
-    page_headers = "".join(f"    {line}\n" for line in (
-        "proxy_method GET;", "proxy_pass_request_body off;", 'proxy_set_header Content-Length "";',
-        f"proxy_set_header Host {host(str(ip))};", "proxy_set_header X-Forwarded-Proto https;",
-        f"proxy_set_header X-Original-Host {host(str(ip))};", "proxy_set_header X-Original-Preview-Port $server_port;",
-        "proxy_set_header X-Original-URI $request_uri;", "proxy_set_header X-Original-Method $request_method;",
-        "proxy_set_header X-Original-Upgrade $http_upgrade;", "proxy_set_header Accept $http_accept;",
-        "proxy_set_header Cookie $http_cookie;", "proxy_set_header Authorization $http_authorization;",
-        'proxy_set_header Upgrade "";', 'proxy_set_header Connection "";', "proxy_intercept_errors off;"))
+    cleared = "\n".join(f'    proxy_set_header {name} "";' for name in preview_proxy.cleared_headers())
+    ip_host = host(str(ip))
+    pages = preview_proxy.page_locations(host=ip_host, original_host=ip_host, preview_port="$server_port",
+                                         sandbox_headers=False, prefix="ip_", indent="  ")
     first, last = port_range()
     listeners = '\n'.join(f'  listen {"[::]:" if ip.version == 6 else ""}{p} ssl;' for p in range(first, last + 1))
     return f'''# IP previews share the control plane's renewable IP certificate.
-{runtime_upstreams("ip_runtime", "ip_ingress", "ip_cookies")}map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
+{preview_proxy.runtime_upstreams("ip_runtime", "ip_ingress")}map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
 map $http_upgrade $ip_connection {{ default upgrade; '' close; }}
 server {{
 {listeners}
@@ -318,37 +176,22 @@ server {{
   location @ip_login {{ return 302 $ip_login; }}
   # A page for what the gate refused and for what the runtime could not
   # answer (gate.py, preview_pages), and the page's poll.
-  location @ip_denied {{
-    rewrite ^ /gate/page? break;
-    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
-{page_headers}    proxy_set_header X-Sbx-Reason denied;
-  }}
-  location @ip_unavailable {{
-    rewrite ^ /gate/page? break;
-    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
-{page_headers}    proxy_set_header X-Sbx-Reason unavailable;
-  }}
-  location = /.sbx/status {{
-    rewrite ^ /gate/status? break;
-    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
-{page_headers}    proxy_set_header X-Sbx-Reason "";
-  }}
-  location / {{
+{pages}  location / {{
     set $ip_original_method $request_method;
     auth_request /_sbx_ip_gate;
     auth_request_set $ip_upstream $upstream_http_x_sbx_upstream;
-    auth_request_set $ip_cookies $upstream_http_x_sbx_cookies;
+    auth_request_set $ip_cookie $upstream_http_x_sbx_upstream_cookie;
     auth_request_set $ip_auth $upstream_http_x_sbx_auth;
     auth_request_set $ip_login $upstream_http_x_sbx_login;
     auth_request_set $ip_gone $upstream_http_x_sbx_gone;
     auth_request_set $ip_runtime $upstream_http_x_sbx_runtime;
-{upstream_token_set("ip_ingress")}    error_page 401 = @ip_login;
+{preview_proxy.upstream_token_set("ip_ingress")}    error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
     try_files /.sbx-no-such-file @ip_sandbox;
   }}
   location @ip_sandbox {{
     proxy_pass $ip_ingress;
-{upstream_tls("ip_upstream")}{upstream_token_send("ip_ingress")}    # Only what nginx itself answers (the app not reachable, a timeout): an app's own 502 is the app's.
+{preview_proxy.upstream_tls("ip_upstream")}{preview_proxy.upstream_token_send("ip_ingress")}    # Only what nginx itself answers (the app not reachable, a timeout): an app's own 502 is the app's.
     error_page 502 504 = @ip_unavailable;
     proxy_connect_timeout 15s;
     proxy_http_version 1.1;
@@ -357,7 +200,7 @@ server {{
     proxy_set_header X-Forwarded-Host {host(str(ip))}:$server_port;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-For $remote_addr;
-    proxy_set_header Cookie ${upstream_cookie("ip_ingress", "ip_cookies")};
+    proxy_set_header Cookie $ip_cookie;
     proxy_set_header Authorization $ip_authorization;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $ip_connection;
@@ -383,20 +226,5 @@ create table if not exists ip_preview_missing (
 if __name__ == '__main__':
     if sys.argv[1:2] == ['nginx'] and len(sys.argv) == 4:
         print(nginx(sys.argv[2], sys.argv[3]), end='')
-    elif sys.argv[1:] == ['upstreams']:
-        print(runtime_upstreams(), end='')
-    elif sys.argv[1:] == ['upstream-tls']:
-        print(upstream_tls(), end='')
-    elif sys.argv[1:] == ['upstream-token']:
-        print(upstream_token(), end='')
-    elif sys.argv[1:] == ['upstream-token-set']:
-        print(upstream_token_set(), end='')
-    elif sys.argv[1:] == ['upstream-token-send']:
-        print(upstream_token_send(), end='')
-    elif sys.argv[1:] == ['upstream-cookie']:
-        print(upstream_cookie(), end='')
-    elif sys.argv[1:] == ['default-ingress']:
-        print(default_ingress())
     else:
-        raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE | upstreams | '
-                         'upstream-tls | upstream-token[-set|-send] | upstream-cookie | default-ingress')
+        raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE')

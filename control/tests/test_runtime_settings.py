@@ -551,7 +551,7 @@ class NoRuntimeYet(Server):
         self.addCleanup(self.file.write_text, self.RUNTIME_ENV)
 
     def test_sbx_control_runs_and_says_what_to_do(self):
-        from sbx_control import ip_previews, jobs, runtimes
+        from sbx_control import jobs, preview_proxy, runtimes
         self.assertEqual((self.runtime.enabled(), self.runtime.default()), ([], ""))
         self.assertEqual(self.client.get("/api/runtimes", headers=self.headers).json(), {"default": "", "runtimes": []})
         with self.assertRaisesRegex(runtimes.Refused, "no sandbox runtime is set up: add one in Settings"):
@@ -560,7 +560,7 @@ class NoRuntimeYet(Server):
             self.runtime.get()
         self.assertEqual(list(self.runtime.sandboxes()), [])
         self.assertEqual(self.runtime.status().state, "not_connected")
-        self.assertIn("default http://127.0.0.1:9;", ip_previews.runtime_upstreams())
+        self.assertIn("default http://127.0.0.1:9;", preview_proxy.runtime_upstreams())
         jobs.jobs()                                                     # nothing of a runtime's
         from sbx_control import template_builds
         out = io.StringIO()

@@ -97,11 +97,11 @@ class TrafficToken(TwoRuntimes, Server):
         self.assertNotIn("x-sbx-upstream-token", response.headers)
 
     def test_nginx_sends_the_token_to_its_runtime_alone(self):
-        from sbx_control import ip_previews
-        maps = ip_previews.runtime_upstreams()
+        from sbx_control import ip_previews, preview_proxy
+        maps = preview_proxy.runtime_upstreams()
         self.assertIn('map $sbx_runtime $sbx_ingress_token_1 {\n  default "";\n  fake $sbx_ingress_token;\n}', maps)
         self.assertNotIn("embed $sbx_ingress_token", maps)   # an Embed sandbox's request never carries it
-        lines = ip_previews.upstream_token()
+        lines = preview_proxy.upstream_token()
         self.assertIn("auth_request_set $sbx_ingress_token $upstream_http_x_sbx_upstream_token;", lines)
         self.assertIn(f"proxy_set_header {TOKEN_HEADER} $sbx_ingress_token_1;", lines)
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
@@ -109,8 +109,8 @@ class TrafficToken(TwoRuntimes, Server):
         self.assertIn(f"proxy_set_header {TOKEN_HEADER} $ip_ingress_token_1;", config)
         self.assertIn("proxy_ssl_name $ip_upstream;", config)
         del self.fake.upstream_token_header
-        self.assertEqual(ip_previews.upstream_token(), "")
-        self.assertNotIn("_token", ip_previews.runtime_upstreams())
+        self.assertEqual(preview_proxy.upstream_token(), "")
+        self.assertNotIn("_token", preview_proxy.runtime_upstreams())
 
     def test_the_public_never_reaches_the_gate_itself(self):
         script = (__import__("pathlib").Path(__file__).parents[1] / "tls.sh").read_text()
