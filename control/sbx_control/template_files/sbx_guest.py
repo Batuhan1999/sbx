@@ -473,7 +473,14 @@ FORWARD_PID = "forwarder.json"          # in RUN: its pid and start time
 FORWARD_STATUS = "forwarder-status.json"  # in RUN: {"unbound": {name: port}}
 FORWARD_POLL = 2.0
 FORWARD_GONE = 15.0                     # seconds without a config before it exits
-RENEWED = "endpoint-certs"              # in RUN: <name>.pem (key and certificate) and renewed.json {name: not_after}
+RENEWED = "endpoint-certs"              # in RUN: BUNDLE files and BUNDLE_INDEX
+# Each endpoint's renewed key and certificate in one file, and their times. Names a forwarder of
+# before FORWARD_VERSION 2 never reads (it read <name>.pem, <name>-key.pem and renewed.json), so
+# one still running until sbx replaces it can't pair a new file with an old one.
+BUNDLE = "{}.bundle.pem"
+BUNDLE_INDEX = "bundles.json"           # {name: not_after}
+# What the running forwarder is, in its pid file: ensure replaces one of another version.
+FORWARD_VERSION = 2
 RENEW_BEFORE = 3600                     # seconds left on a certificate that start a renewal
 RENEW_RETRY = 60                        # seconds before a failed renewal is tried again, doubling
 RENEW_RETRY_MAX = 900
@@ -499,9 +506,10 @@ def _write_private(path, text):
 def _certificate(endpoint, folder, renewed):
     """(certificate file, key file or None when the first holds both, not_after) of the newest for the endpoint."""
     found = [(str(folder / endpoint["cert"]), str(folder / endpoint["key"]), float(endpoint.get("not_after") or 0))]
-    later = read_json(Path(renewed) / "renewed.json").get(endpoint["name"])
-    if later and (Path(renewed) / f"{endpoint['name']}.pem").exists():
-        found.append((str(Path(renewed) / f"{endpoint['name']}.pem"), None, float(later)))
+    later = read_json(Path(renewed) / BUNDLE_INDEX).get(endpoint["name"])
+    bundle = Path(renewed) / BUNDLE.format(endpoint["name"])
+    if later and bundle.exists():
+        found.append((str(bundle), None, float(later)))
     return max(found, key=lambda f: f[2])
 
 
@@ -525,11 +533,11 @@ def renew(config, folder, renewed):
         raise
     renewed = Path(renewed)
     renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
-    times = dict(read_json(renewed / "renewed.json"))
+    times = dict(read_json(renewed / BUNDLE_INDEX))
     for item in found:
-        _write_private(renewed / f"{item['name']}.pem", item["key"] + item["cert"])
+        _write_private(renewed / BUNDLE.format(item["name"]), item["key"] + item["cert"])
         times[item["name"]] = item["not_after"]
-    write_json(renewed / "renewed.json", times)
+    write_json(renewed / BUNDLE_INDEX, times)
     return times
 
 
@@ -774,19 +782,26 @@ class Forwarder:
 
 
 def forward(action, config_path, state_file=None):
-    """ensure: start the forwarder unless it runs (detached); run: be it."""
+    """ensure: start the forwarder unless one of this FORWARD_VERSION runs
+    (detached); one of another version (a release before, still running
+    after an upgrade) is stopped first. run: be it."""
     state_file = Path(state_file) if state_file else RUN / FORWARD_PID
     if action == "run":
-        write_json(state_file, record(os.getpid()))
+        write_json(state_file, {**record(os.getpid()), "version": FORWARD_VERSION})
         Forwarder(config_path).run()
         return
-    if alive(read_json(state_file)):
-        return
+    running = read_json(state_file)
+    if alive(running):
+        if running.get("version") == FORWARD_VERSION:
+            return
+        say(f"forward: replacing the forwarder of version {running.get('version', 1)} (pid {running['pid']})")
+        if not terminate(running["pid"], lambda: alive(running)):
+            raise GuestError(f"the forwarder of before (pid {running['pid']}) did not stop")
     with open("/tmp/sbx-endpoints.log", "a") as log:
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
                                    start_new_session=True)
-    write_json(state_file, record(process.pid))
+    write_json(state_file, {**record(process.pid), "version": FORWARD_VERSION})
 
 
 def main(argv=None):

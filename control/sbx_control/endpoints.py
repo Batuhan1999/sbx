@@ -74,6 +74,8 @@ LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 REVISION = state.Setting("endpoints_revision")
 FOLDER = "endpoints"                    # its contribution's folder in the sandbox (contributions.folder)
 RENEWED = "endpoint-certs"              # in the sandbox's RUN: certificates pushed or pulled since the last write
+BUNDLE = "{}.bundle.pem"                # there: an endpoint's key and certificate (sbx_guest.BUNDLE)
+BUNDLE_INDEX = "bundles.json"           # there: {name: not_after} (sbx_guest.BUNDLE_INDEX)
 STREAM_FILE = "endpoints.stream"        # in tls.sh's nginx folder, included in nginx's stream block
 CA_FILES = "endpoint-{}-ca.pem"         # each endpoint's CA certificate, beside it
 NGINX = "/usr/local/sbin/sbx-tls-nginx"  # tls.sh's: start nginx once, test and reload its configuration
@@ -859,17 +861,21 @@ def push(sbx, info):
     if not name or not found.rows:
         return False
     issued = issue_all(name, repo, found.rows)
+    # The forwarder of this release first: one an upgrade left running is replaced before
+    # anything of the new layout is written.
+    core.ensure_forwarder(sbx)
     folder = f"{core.RUN}/{RENEWED}"
     staging = f"{folder}/.push"
     sbx.commands.run(f"install -d -m 700 {folder} && rm -rf {staging} && install -d -m 700 {staging}", timeout=30)
     for endpoint, (cert, key, _) in issued.items():
-        sbx.files.write(f"{staging}/{endpoint}.pem", key + cert, user="user")
-    sbx.files.write(f"{staging}/renewed.json", json.dumps({n: v[2] for n, v in issued.items()}), user="user")
-    # Each file replaced whole, the certificates before the times that point at them.
-    names = " ".join(f"{e}.pem" for e in issued)
-    sbx.commands.run(f"cd {staging} && chmod 600 * && for f in {names} renewed.json; do mv -f \"$f\" ../; done "
-                     f"&& cd .. && rmdir {staging}", timeout=30)
-    core.ensure_forwarder(sbx)
+        sbx.files.write(f"{staging}/{BUNDLE.format(endpoint)}", key + cert, user="user")
+    sbx.files.write(f"{staging}/{BUNDLE_INDEX}", json.dumps({n: v[2] for n, v in issued.items()}), user="user")
+    # Each file replaced whole, the certificates before the times that point at them; then
+    # what an earlier release's forwarder wrote here goes.
+    names = " ".join(BUNDLE.format(e) for e in issued)
+    sbx.commands.run(f"cd {staging} && chmod 600 * && for f in {names} {BUNDLE_INDEX}; do mv -f \"$f\" ../; done "
+                     f"&& cd .. && rmdir {staging} && rm -f renewed.json *-key.pem "
+                     f"&& find . -maxdepth 1 -name '*.pem' ! -name '*.bundle.pem' -delete", timeout=30)
     return True
 
 

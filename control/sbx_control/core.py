@@ -624,11 +624,17 @@ def start_forwarder(sbx):
 FORWARDER_STATUS = f"{RUN}/forwarder-status.json"
 
 
+GUEST_DIGEST = hashlib.sha256(GUEST_SOURCE.read_bytes()).hexdigest()
+
+
 def ensure_forwarder(sbx) -> dict:
-    """With an endpoints config in the sandbox, its forwarder running (started
-    again when it died); its status ({"unbound": {name: port}}), {} without
-    a config."""
-    command = (f"[ -f {FORWARDER_CONFIG} ] || exit 0; [ -f {GUEST} ] || {{ echo no-guest; exit 0; }}; "
+    """With an endpoints config in the sandbox, its forwarder running: started
+    again when it died, replaced when it is another release's (the guest
+    helper shipped again first when the sandbox has another one: ensure
+    then stops a forwarder of another version). Its status ({"unbound":
+    {name: port}}), {} without a config."""
+    command = (f"[ -f {FORWARDER_CONFIG} ] || exit 0; "
+               f"[ \"$(sha256sum {GUEST} 2>/dev/null | cut -c1-64)\" = {GUEST_DIGEST} ] || {{ echo no-guest; exit 0; }}; "
                f"{guest('forward', 'ensure', FORWARDER_CONFIG)} >> /tmp/sbx-endpoints.log 2>&1; "
                f"cat {FORWARDER_STATUS} 2>/dev/null || true")
     output = sbx.commands.run(command, timeout=60).stdout.strip()
