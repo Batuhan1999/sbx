@@ -1,7 +1,7 @@
 """An in-memory sandbox runtime: what the test suite runs sbx on, next to
 Embed, and the reference for what every backend must do (the conformance
 tests in tests/test_runtimes.py run against it). It is hosted, not on this
-host: it inherits HostSide's no-op host part.
+host: it inherits Backend's no-op host part.
 
 Commands understand just enough to be checked: `echo WORDS`, `cat PATH`,
 `true`, `false` and `exit N`; anything else succeeds with no output unless a
@@ -15,7 +15,7 @@ import shlex
 import threading
 from types import SimpleNamespace
 
-from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, HostSide, Info, Limits, NoRoom,
+from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Backend, Info, Limits, NoRoom,
                     NotRunning, Snapshot, TemplateGone, TemplateSpec)
 
 INTERNAL_HOST_SUFFIX = "fake.sandboxes.internal"
@@ -97,7 +97,7 @@ class _Handle:
         return self._runtime.kill(self.sandbox_id)
 
 
-class Fake(HostSide):
+class Fake(Backend):
     kind = "fake"
     title = "Fake runtime"
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)

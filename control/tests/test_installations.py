@@ -96,33 +96,6 @@ class TwoInstallations(SharedAccount):
         self.assertEqual(template_builds.remove(templates.BASE, "fake")["deleted"], [mine])
         self.assertIn(theirs, self.shared.built)
 
-    def test_legacy_sandboxes_known_by_id_are_adopted_unknown_ones_ignored(self):
-        from sbx_control import core, state
-        known = self.shared.create("tpl", timeout=600, metadata={"sbx": "old"}).sandbox_id     # before the tag
-        unknown = self.shared.create("tpl", timeout=600, metadata={"sbx": "elsewhere"}).sandbox_id
-        with state.db() as conn:
-            conn.execute("insert into sandboxes (name, owner, branch, slug, runtime) values "
-                         "('old', 'me', 'main', 'old', 'fake')")
-            conn.execute("insert into sandbox_lifecycle (name, record) values ('old', ?)",
-                         (json.dumps({"sandbox_id": known, "phase": "running"}),))
-            conn.execute("delete from settings where key like 'runtime_legacy:%'")
-        tagged = self.runtime.create("tpl", timeout=600, metadata={"sbx": "new"}).sandbox_id
-        self.assertEqual(sorted(i.sandbox_id for i in core.sandboxes()), sorted([known, tagged]))
-        self.assertEqual(core.find("old").sandbox_id, known)
-        self.assertIsNone(core.find("elsewhere"))
-        self.assertEqual(self.runtime.info(known).sandbox_id, known)
-        with self.assertRaises(self.runtime.NotRunning):
-            self.runtime.info(unknown)
-        # Another installation adopts none of them.
-        self.as_installation(OTHER)
-        with patch.object(self.runtime, "_legacy", return_value=set()):
-            self.assertEqual([i.sandbox_id for i in core.sandboxes()], [])
-        # Once the legacy sandbox is gone, a full listing forgets it.
-        self.as_installation(ONE)
-        self.shared.kill(known)
-        core.sandboxes()
-        self.assertEqual(self.runtime._legacy("fake"), set())
-
     def test_a_runtime_on_this_host_keeps_its_names_and_lists_as_before(self):
         self.shared.host = True                       # one installation per host
         self.assertEqual(self.runtime.template_name("sbx-base-12345678", "fake"), "sbx-base-12345678")

@@ -28,9 +28,9 @@ class Schema(Installation):
         self.assertTrue(all(f.kind == "int" and f.default.isdigit() for f in cloud.settings if f.limit))
         self.assertEqual([p.name for p in cloud.presets], ["hobby", "pro"])
         for preset in cloud.presets:
-            self.assertEqual(set(preset.values), {f.key for f in cloud.settings if f.limit})
+            self.assertEqual(set(preset.by_key()), {f.key for f in cloud.settings if f.limit})
             self.assertIn("e2b.dev/pricing", preset.source)
-        self.assertEqual(dict(cloud.presets[0].values)["E2B_CLOUD_MAX_TIMEOUT"], "3600")
+        self.assertEqual(cloud.presets[0].by_key()["E2B_CLOUD_MAX_TIMEOUT"], "3600")
 
     def test_embed_is_install_sh_s_and_says_when_the_host_cannot_run_it(self):
         from sbx_control.runtime.embed import Embed
@@ -377,7 +377,7 @@ class Web(TwoRuntimes, Server):
             "E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_MAX_CPU": "64"}})
         self.assertEqual(too_big.status_code, 400)
         self.assertIn("vCPUs (E2B_CLOUD_MAX_CPU) is from 1 to 32", too_big.json()["detail"])
-        pro = {**PRESETS[1].values, "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
+        pro = {**PRESETS[1].by_key(), "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
             "E2B_CLOUD_API_KEY": KEY, **pro}}).status_code, 202)
         self.assertEqual(self.apply()[0], 0)

@@ -278,7 +278,7 @@ class Review(GateCase):
             self.assertEqual(self.ask("memos-a.example.test", self.owner, Accept="text/html").status_code, 200)
 
     def test_a_cookie_runtime_gets_the_apps_cookies_without_any_token_cookie_then_its_own(self):
-        self.fake.upstream_token_cookie = "_port_auth"
+        self.fake.upstream_token_at = self.runtime.TokenPlace("cookie", "_port_auth")
         self.fake.upstream_token = lambda sandbox_id, port, fetch=True: "tok"
         response = self.ask("memos-a.example.test", self.owner,
                             Cookie="a=1; _port_auth=evil; sbx_session=x; b=2; _port_auth=again")

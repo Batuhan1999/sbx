@@ -51,8 +51,12 @@ class Boundary(unittest.TestCase):
 
     def test_a_runtime_without_a_loopback_preview_says_so(self):
         from sbx_control import runtime
-        hosted = SimpleNamespace(title="Hosted", kind="embed", sandboxes=lambda *_: [])
-        with patch.dict(runtime._backends, {"embed": hosted}), self.assertRaisesRegex(ValueError, "Hosted has no loopback"):
+        from sbx_control.runtime.fake import Fake
+        hosted = Fake()
+        hosted.title = "Hosted"
+        with patch.dict(runtime._backends, {"embed": hosted}), \
+                patch.object(runtime, "installation_id", return_value="0123456789abcdef"), \
+                self.assertRaisesRegex(ValueError, "Hosted has no loopback"):
             runtime.preview("box", None, 0)
 
     def test_the_settings_effects_name_no_runtime(self):
@@ -539,9 +543,10 @@ class Cloud(unittest.TestCase):
                 with self.assertRaisesRegex(runtime.Failed, "did not hand over"):
                     self.cloud.upstream_token("vm9")
         self.assertEqual(connect.call_count, 1)
-        later = e2b_cloud.time.monotonic() + e2b_cloud.FETCH_RETRY_SECONDS + 1
+        from sbx_control.runtime import hosted
+        later = hosted.time.monotonic() + e2b_cloud.FETCH_RETRY_SECONDS + 1
         good = SimpleNamespace(sandbox_id="vm9", commands=None, files=None, traffic_access_token="test-token-9")
-        with patch.object(e2b_cloud.time, "monotonic", return_value=later), \
+        with patch.object(hosted.time, "monotonic", return_value=later), \
                 patch.object(Sandbox, "connect", return_value=good):
             self.assertEqual(self.cloud.upstream_token("vm9"), "test-token-9")   # asked again once it passed
 
@@ -583,18 +588,17 @@ class Cloud(unittest.TestCase):
             made = SimpleNamespace(sandbox_id=sandbox_id, commands=None, files=None, traffic_access_token=f"t-{sandbox_id}")
             with patch.object(Sandbox, "create", return_value=made):
                 self.cloud.create("tpl", timeout=600)
-        self.cloud._failed["went-too"] = (0, runtime.Failed("x"))
+        self.cloud._tokens._failed["went-too"] = (0, runtime.Failed("x"))
         listed = [runtime.Info("kept", {"sbx_install": "0123456789abcdef"}, "running")]
         with patch.dict(runtime._backends, {"e2b-cloud": self.cloud}), \
                 patch.object(runtime, "enabled", return_value=["e2b-cloud"]), \
                 patch.object(runtime, "installation_id", return_value="0123456789abcdef"), \
-                patch.object(runtime, "_legacy", return_value=set()), \
                 patch.object(self.cloud, "sandboxes", return_value=listed):
             runtime.sandboxes({"sbx": "kept"})            # filtered: nothing is pruned on it
             self.assertIn("went", self.cloud._tokens)
             runtime.sandboxes()
-        self.assertEqual(set(self.cloud._tokens), {"kept"})
-        self.assertEqual(self.cloud._failed, {})
+        self.assertEqual(self.cloud._tokens.keys(), ["kept"])
+        self.assertEqual(self.cloud._tokens._failed, {})
 
     def test_its_check_lists_the_templates_and_says_what_failed(self):
         with patch.object(self.cloud, "templates", return_value=[("sbx-base", "ready")]):

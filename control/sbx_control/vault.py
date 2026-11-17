@@ -10,7 +10,6 @@ import hashlib
 import json
 import re
 import secrets as secrets_module
-import shlex
 
 from . import paths, secret_store, settings, state
 from .settings import HostUnit
@@ -132,15 +131,8 @@ def _runtime_file(keys=None) -> dict:
     """runtime.env as written: plain values, or references into the store,
     of the keys the enabled runtimes read (Runtime.credential_keys)."""
     from . import runtime as sandbox_runtime
-    keys = sandbox_runtime.credential_keys() if keys is None else keys
-    file = paths.runtime_env()
-    out = {}
-    for line in file.read_text().splitlines() if file.exists() else ():
-        name, sep, value = line.partition("=")
-        if not sep or line.lstrip().startswith("#") or name not in keys:
-            continue
-        out[name] = shlex.split(value)[0] if value.strip() else ""
-    return out
+    from .runtime import env_file
+    return env_file.read(sandbox_runtime.credential_keys() if keys is None else keys)
 
 
 def runtime(keys=None) -> dict:
@@ -172,7 +164,8 @@ def seal_runtime_file() -> int:
     # Each value under a key of its own: an upgrade's backup of runtime.env
     # (rollback.sh) keeps naming the object the value before is in.
     sealed = {s: secret_store.seal(found[s], key=f"runtime/{s}/{secrets_module.token_hex(6)}") for s in secrets}
-    edit_runtime_file(sealed)
+    from .runtime import env_file
+    env_file.edit(sealed)
     for s, reference in sealed.items():
         _keep_two(s, reference)
     return 1
@@ -182,19 +175,13 @@ def _backed_up_references() -> set | None:
     """Every value the upgrade backups' copies of runtime.env hold (each
     one's rollback.sh restores it), references into the store among them;
     None when a copy could not be read (nothing may be discarded then)."""
+    from .runtime import env_file
     found = set()
     for copy in (paths.state_dir() / "upgrade-backups").glob("*/runtime.env"):
         try:
-            text = copy.read_text()
+            found |= {value for value in env_file.parse(copy.read_text()).values() if value}
         except OSError:
             return None
-        for line in text.splitlines():
-            _, sep, value = line.partition("=")
-            if sep and not line.lstrip().startswith("#") and value.strip():
-                try:
-                    found.add(shlex.split(value)[0])
-                except ValueError:   # not a value sbx wrote
-                    continue
     return found
 
 
@@ -227,26 +214,9 @@ def sealing() -> bool:
 
 
 def edit_runtime_file(values: dict) -> None:
-    """Set these keys of runtime.env (None: remove its line) in place; one
-    it does not have yet is added at the end. Every other line stays as it
-    is, and the file stays root-only."""
-    file = paths.runtime_env()
-    out, done = [], set()
-    for line in file.read_text().splitlines() if file.exists() else ():
-        name, sep, _ = line.partition("=")
-        name = name.strip()
-        if sep and not line.lstrip().startswith("#") and name in values:
-            if name not in done and values[name] is not None:
-                out.append(f"{name}={shlex.quote(values[name])}")
-            done.add(name)
-            continue
-        out.append(line)
-    out += [f"{name}={shlex.quote(value)}" for name, value in values.items() if name not in done and value is not None]
-    temporary = file.with_suffix(".new")
-    temporary.touch(mode=0o600)
-    temporary.chmod(0o600)
-    temporary.write_text("\n".join(out) + "\n")
-    temporary.replace(file)
+    """runtime.env's env_file.edit (runtimes.py, phase 3's, still calls it here)."""
+    from .runtime import env_file
+    env_file.edit(values)
 
 
 def platform_secrets() -> dict:

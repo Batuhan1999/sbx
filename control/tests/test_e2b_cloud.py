@@ -14,7 +14,8 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 
 def with_token(fake):
     """The fake as a runtime that answers its sandboxes' ports only with their token."""
-    fake.upstream_token_header = TOKEN_HEADER
+    from sbx_control.runtime import TokenPlace
+    fake.upstream_token_at = TokenPlace("header", TOKEN_HEADER)
     fake.kept = set()       # the sandboxes whose token it holds (else: fetched, which may wake one)
     fake.fetched = []
 
@@ -108,7 +109,7 @@ class TrafficToken(TwoRuntimes, Server):
         self.assertIn('map $ip_runtime $ip_ingress_token_1 {\n  default "";\n  fake $ip_ingress_token;\n}', config)
         self.assertIn(f"proxy_set_header {TOKEN_HEADER} $ip_ingress_token_1;", config)
         self.assertIn("proxy_ssl_name $ip_upstream;", config)
-        del self.fake.upstream_token_header
+        self.fake.upstream_token_at = None
         self.assertEqual(ip_previews.upstream_token(), "")
         self.assertNotIn("_token", ip_previews.runtime_upstreams())
 

@@ -13,7 +13,7 @@
 import argparse
 import os
 
-from . import ENABLED_KEY, configuration, default, enabled, guard_host, listed
+from . import ENABLED_KEY, configuration, default, enabled, env_file, guard_host, listed
 
 
 def write_env(names: list, kinds: list, environ=os.environ) -> list:
@@ -21,20 +21,14 @@ def write_env(names: list, kinds: list, environ=os.environ) -> list:
     order after those it enables already (a file without SBX_RUNTIMES
     enables Embed alone, as ever: that stays so). A new file names the
     kinds it enables, none included. The kinds now enabled."""
-    from .. import paths, vault
-    file = paths.runtime_env()
-    existed = file.exists()
+    existed = env_file.text() is not None
     now = listed(configuration()[ENABLED_KEY]) if existed else []
     wanted = list(dict.fromkeys([*now, *kinds]))
     values = {name: environ.get(name) or None for name in names}
     if wanted != now or not existed:
         values[ENABLED_KEY] = ",".join(wanted)
-    if not existed:
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.touch(mode=0o600)
-        file.write_text("# This host's sandbox runtimes and their keys. Written by install.sh and sbx-admin "
-                        "runtime; not backed up.\n")
-    vault.edit_runtime_file(values)
+    env_file.edit(values, header="# This host's sandbox runtimes and their keys. Written by install.sh and sbx-admin "
+                                 "runtime; not backed up.")
     return wanted
 
 

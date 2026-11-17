@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from ..base import Capabilities, HostSide, Limits
+from ..base import Capabilities, Limits
 from ..e2b import ENVD_PORT, Compute
 from ..e2b import template as template  # noqa: F401  (the builder steps, as Embed's tests and tools name them)
 from . import capacity, storage
@@ -21,7 +21,7 @@ MIN_MEMORY_GB, MIN_DISK_GB = 15, 60
 PAUSE_DISK_HEADROOM_MB = 1024
 
 
-class Embed(Compute, HostSide):
+class Embed(Compute):
     kind = "embed"
     title = "E2B Embed"
     host = True
