@@ -9,12 +9,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import (auth, catalog_api, connections_api, core, dist_api, env, extensions, gate, infisical_api, keeper,
                lifecycle, platform, recipes, repo_onboarding, repos_api, runtime, runtimes_api, sandboxes_api, secret_store,
-               settings_api, setup_api, setup_pr, spa, state, template_builds, updates)
+               settings_api, setup_api, setup_pr, spa, state, template_builds, updates, users_api)
 
 # In the order they match: a path two routers could answer goes to the first;
 # the extensions' come after the platform's API and before the web app's.
 ROUTERS = (auth, sandboxes_api, env, infisical_api, gate, dist_api,
-           connections_api, catalog_api, setup_api, settings_api, repos_api, runtimes_api, updates)
+           connections_api, catalog_api, setup_api, settings_api, users_api, repos_api, runtimes_api, updates)
 LAST = (spa, repo_onboarding, setup_pr)
 # Outermost last (Starlette wraps each added middleware around the ones before).
 MIDDLEWARES = (setup_api.setup_gate, dist_api.version_header, spa.same_origin_writes)

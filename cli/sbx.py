@@ -755,16 +755,17 @@ def setup_runtime(args):
 
 
 def setup_admin(args):
-    """The first admin's email; the password on stdin."""
+    """The first admin's own account: the email, their password on stdin."""
     password = _read_secret(f"password for {args.email}")
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
     api("POST", "/api/setup/admin", {"email": args.email, "password": password})
-    print(f"{args.email} is the admin; next: sbx setup finish --admin {args.email} (the password on stdin again)")
+    print(f"{args.email} has an account and is an admin; next: sbx setup finish --admin {args.email} "
+          "(their password on stdin again)")
 
 
 def setup_finish(args):
-    """Finish the setup; with --admin, as that admin (the password on stdin)."""
+    """Finish the setup; with --admin, as that admin (their own password on stdin)."""
     body = None
     if args.admin:
         password = _read_secret(f"password for {args.admin}")
@@ -1354,9 +1355,9 @@ def parser():
     s.add_argument("action", choices=["available", "add"])
     s.add_argument("kind", nargs="?")
     change_flags(s)
-    s = steps.add_parser("admin", parents=[link], help="the first admin's email; the password on stdin")
+    s = steps.add_parser("admin", parents=[link], help="the first admin's own account: the email, their password on stdin")
     s.add_argument("email")
-    s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (the password on stdin)")
+    s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (their own password on stdin)")
     s.add_argument("--admin", metavar="EMAIL")
     s.add_argument("--json", action="store_true")
     p = command("down", down, "delete the sandbox and what was provisioned for it")

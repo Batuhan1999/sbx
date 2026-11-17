@@ -7,3 +7,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+// What Radix (Select, Checkbox, Switch) needs from a browser that jsdom lacks.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} }
+Element.prototype.hasPointerCapture ??= () => false
+Element.prototype.releasePointerCapture ??= () => {}
+Element.prototype.scrollIntoView ??= () => {}

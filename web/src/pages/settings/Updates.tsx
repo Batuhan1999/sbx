@@ -8,6 +8,8 @@ import { ProgressBar, useUpgradeFollow } from '@/app/UpdateNotice'
 import { CopyCommand } from '@/components/CopyCommand'
 import { ErrorState, QueryView } from '@/components/states'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog } from '@/components/ui/dialog'
 import { Badge, Code, Facts, Panel, Spinner } from '@/components/ui/primitives'
 import { ago, dateTime, plural } from '@/lib/format'
@@ -88,10 +90,10 @@ function Progress({ upgrade, reconnecting }: { upgrade: Upgrade; reconnecting: b
         <span className="flex items-center gap-2 font-medium text-ok"><Check className="size-4" />sbx-control runs {upgrade.tag} now.</span>
         <Button size="sm" variant="primary" onClick={() => window.location.reload()}>Reload the page</Button>
       </div>}
-      {!!upgrade.log_tail?.length && <details className="group rounded-md border border-line">
-        <summary className="cursor-pointer select-none px-3 py-2 text-[12.5px] text-muted hover:text-ink">Log, last {upgrade.log_tail.length} lines</summary>
-        <pre className="max-h-72 overflow-auto border-t border-line bg-sunken px-3 py-2 text-[11.5px] leading-relaxed">{upgrade.log_tail.join('\n')}</pre>
-      </details>}
+      {!!upgrade.log_tail?.length && <Collapsible className="rounded-md border border-line">
+        <CollapsibleTrigger className="px-3 py-2 text-[12.5px]">Log, last {upgrade.log_tail.length} lines</CollapsibleTrigger>
+        <CollapsibleContent><pre className="max-h-72 overflow-auto border-t border-line bg-sunken px-3 py-2 text-[11.5px] leading-relaxed">{upgrade.log_tail.join('\n')}</pre></CollapsibleContent>
+      </Collapsible>}
     </div>
   </Panel>
 }
@@ -118,8 +120,8 @@ function WhatsNew({ available, installed }: { available: NonNullable<UpdatesView
         <div className="flex gap-2 text-warn"><TriangleAlert className="mt-0.5 size-4 shrink-0" />
           <span>{releases.length > 1 ? 'These releases have' : 'This release has'} breaking changes. Read them and do the upgrade steps before you update.</span></div>
         <div className="flex items-start gap-2.5 pl-6">
-          <input id={id} type="checkbox" className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]" checked={read} onChange={e => setRead(e.target.checked)} />
-          <label htmlFor={id}>I have read the breaking changes and done the upgrade steps</label>
+          <Checkbox id={id} className="mt-0.5" checked={read} onCheckedChange={v => setRead(v === true)} />
+          <label htmlFor={id} className="cursor-pointer">I have read the breaking changes and done the upgrade steps</label>
         </div>
       </div>}
       {releases.map(r => <ReleaseCard key={r.tag} release={r} />)}
