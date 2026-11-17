@@ -21,7 +21,7 @@ runtime; it asks the registry.
    - `SBX_RUNTIME_DEFAULT=<kind>` picks the default for new sandboxes; missing
      means the first in `SBX_RUNTIMES`.
    - Each backend reads only its own keys (`Runtime.credential_keys`). Two
-     backends never share a key name: a future E2B Cloud backend reads
+     backends never share a key name: the E2B Cloud backend reads
      `E2B_CLOUD_API_KEY`, never Embed's `E2B_API_KEY`.
 2. **A registry like the connectors' one.** Built in:
    `{"embed": "sbx_control.runtime.embed:Embed"}`. Installed packages add
@@ -30,9 +30,10 @@ runtime; it asks the registry.
    with the kinds that exist.
 3. **No process-global configuration.** A backend must not keep its
    credentials where another backend reads them (the E2B SDK reads `E2B_*`
-   from the process environment). Embed may keep doing so while it is the only
-   E2B-based backend; phase 2 (E2B Cloud) moves both to per-call options. The
-   rule is written in `runtime/base.py`.
+   from the process environment). Since phase 2 both E2B-based backends
+   (Embed, E2B Cloud) pass their own connection on every SDK call through the
+   shared adapter (`runtime/e2b/`) and never write the environment. The rule
+   is written in `runtime/base.py`.
 4. **Each sandbox records its runtime.** `Info.runtime` (the kind) is set by
    the registry when it lists; sbx's `sandboxes` table gets a `runtime` column
    written at create (existing rows: the installation's default at upgrade).

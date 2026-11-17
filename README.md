@@ -11,9 +11,9 @@ and all of it is cleaned up when the sandbox goes. `sbx up`, Claude Code
 sessions, Amp threads and PR previews all start from that recipe; Codex and
 any other agent work over SSH.
 
-Each sandbox is a VM on a runtime the installation enables. Built in is
-[E2B Embed](vendor/e2b-embed/compose/README.md): Firecracker VMs on your own
-server.
+Each sandbox is a VM on a runtime the installation enables. Built in are
+[E2B Embed](vendor/e2b-embed/compose/README.md), Firecracker VMs on your own
+server, and E2B Cloud, E2B's hosted sandboxes, for a server without KVM.
 
 ## Quick start with your coding agent
 
@@ -24,8 +24,9 @@ commands, and fill in the two values in angle brackets:
 Set up sbx (https://github.com/Batuhan1999/sbx) for me.
 
 Server: <ssh user@host of an Ubuntu 24.04 machine>
-(With /dev/kvm, the server runs the sandboxes itself on E2B Embed. Runtimes at
-a provider, which need no KVM, are coming; until then the server needs /dev/kvm.)
+(With /dev/kvm and 24 GiB RAM, the server runs the sandboxes itself on E2B
+Embed. Without, they run at E2B Cloud: I'll give you an E2B API key, and the
+server needs a domain.)
 Repository to run in sandboxes: <owner/name on GitHub>
 
 1. Clone the sbx repository, check out its latest release tag, and read
@@ -77,11 +78,11 @@ What the agent reads along the way, if you want the details yourself:
 - **Runtimes**: the compute under the core, reached through one interface
   (`control/sbx_control/runtime`) and pluggable. An installation runs the
   runtimes `/etc/sbx/runtime.env` enables: a fresh install enables E2B Embed
-  on this server, which needs `/dev/kvm` and the resources; a third-party
-  provider's runtime is enabled there once its credentials are configured.
-  Each sandbox runs on one of them, chosen for the sandbox, for its repository
-  or by the installation's default. Embed is built in; other runtimes plug in
-  as packages.
+  on this server where it has `/dev/kvm` and the resources, and E2B Cloud
+  once its API key is given (`E2B_CLOUD_API_KEY`, or later `sbx-admin
+  runtime add e2b-cloud`). Each sandbox runs on one of them, chosen for the
+  sandbox, for its repository or by the installation's default. Embed and E2B
+  Cloud are built in; other runtimes plug in as packages.
 - **Secrets** stay out of recipes and templates, in the installation's secret
   store (a private Infisical on the host by default).
 - **Templates** are composed from the platform layer, each enabled extension's
@@ -93,14 +94,33 @@ See [Extensions](docs/extensions.md) for the interfaces and the
 
 ## Host requirements
 
-These are for running sandboxes on the server itself (E2B Embed, the built-in
-runtime). Runtimes at a provider, which need no `/dev/kvm`, are coming.
+What the server needs depends on where sandboxes run
+([runtimes](docs/reference.md#runtimes)).
+
+Running them on the server itself (E2B Embed):
 
 - Ubuntu 24.04 with `/dev/kvm`: bare metal, or a cloud VM with nested
   virtualization.
 - At least 24 GiB RAM and 200 GB disk. The default budget reserves 12 GiB for
   host services; a sandbox takes 4 GiB unless its recipe asks for another size.
   Add RAM for more sandboxes and shared databases.
+
+Running them at E2B Cloud (any small VPS, no KVM):
+
+- Ubuntu 24.04, about 2 GiB RAM and 10 GiB free disk: the server runs only
+  sbx-control, nginx and the secret store.
+- An E2B API key (E2B's dashboard), in the installer's environment
+  ([Install](#install)).
+  Sandboxes then run at E2B, within your E2B plan's limits (Hobby: one hour
+  before a sandbox pauses, renewed while it is used; 8 vCPUs, 8 GiB, 10 GiB
+  disk each; 20 at once).
+- A domain: E2B's sandboxes call the server back at `login.D` on 443
+  (repository bundles, git credentials). Managed servers on the host's
+  private network are not available to them.
+
+A server with KVM can run both; add E2B Cloud later with `sbx-admin runtime
+add e2b-cloud` (the key on stdin). For every server:
+
 - Inbound SSH and HTTPS (443). Validating a certificate for a bare IP also needs
   inbound TCP 80. A domain is optional.
 - With a domain `D`: A records for `D` and `*.D` pointing at the server. The
@@ -135,6 +155,11 @@ method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
    ([pinning a release](docs/reference.md#operating-the-host)).
 2. Run `sh install.sh` from that directory as root. It installs the runtime, the
    control service, Infisical and the base templates, then prints a setup link.
+   On a server without `/dev/kvm`, give it an E2B API key and the domain
+   instead (the key in the environment, never on the command line of a shared
+   shell history: `read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY`, then
+   `sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D --email E`).
+   Without either it stops and says what to set.
 3. Open the link, accept the temporary certificate, choose IP access or a
    domain, and create the admin login. `sbx-admin setup-link` makes a new link
    if it expires.
@@ -185,7 +210,7 @@ sbx is early software.
 
 | Area | Status |
 | --- | --- |
-| Host | Ubuntu 24.04. Running sandboxes on the server (E2B Embed) needs KVM, so a cloud VM without nested virtualization does not work; provider runtimes that need no KVM are coming. |
+| Host | Ubuntu 24.04. Running sandboxes on the server (E2B Embed) needs KVM; a server without it runs them at E2B Cloud, which needs a public domain and can't reach the host's private network. |
 | Desktop CLI | macOS only ([details](docs/reference.md#limits)). Host administration uses `sbx-admin` as root. |
 | Previews | With a domain, named HTTPS hosts. IP-only, HTTPS on assigned ports (21000–21255 by default). |
 | Development data | Per-sandbox databases, branches or namespaces through catalog packages; you verify isolation per repository. |
