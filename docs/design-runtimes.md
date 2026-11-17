@@ -127,17 +127,21 @@ servers and internal hosts through endpoints (`endpoints.py`;
    use.
 4. **mTLS, short-lived.** A 24-hour client certificate per sandbox and
    endpoint: written with the runtime, renewed by the keeper while running,
-   pushed when sbx resumes the sandbox, and pulled by the forwarder with the
-   sandbox's own credential when less than an hour is left. No IP
-   allowlists, no revocation lists; a deleted sandbox or a revoked grant gets
-   no new certificate. The service's own auth stays on top.
+   pushed when sbx resumes the sandbox, and pulled by the forwarder in the
+   background with a credential of the sandbox instance's own when less than
+   an hour is left. No IP allowlists, no revocation lists: a revoke makes the
+   endpoint's CA anew (what the revoked sandboxes hold, or copied, stops
+   passing once nginx reloads), and nginx's old workers end open sessions
+   within 30 s (`worker_shutdown_timeout`). The service's own auth stays on
+   top.
 5. **Values per runtime.** On a provider runtime, endpoint targets in the
    sandbox's env and its services' outputs become the forwarder's loopback
    address, and an internal host's endpoint is `SBX_ENDPOINT_<NAME>`;
    Embed's sandboxes keep the private ones.
 6. **The gate.** `runtimes.choose` refuses a provider runtime while a
-   private target the repository uses is not reachable for it, naming `sbx
-   endpoints add ...` or `sbx endpoints grant ...`.
+   private target the repository's attachments bind is not reachable for
+   it, naming `sbx endpoints add ...` or `sbx endpoints grant ...`; an
+   internal address only in `sbx.yaml`'s env is a sandbox event instead.
 7. **API and CLI.** `GET/POST /api/endpoints`, `PUT/DELETE
    /api/endpoints/NAME` (admins), `POST /api/sandbox/endpoint-certs` (a
    sandbox); `sbx endpoints [ls | add | rm | grant | revoke]`.

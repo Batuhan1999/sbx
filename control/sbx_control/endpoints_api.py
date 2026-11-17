@@ -23,6 +23,10 @@ class Grants(BaseModel):
     repos: list[str]
 
 
+class Grant(BaseModel):
+    repo: str
+
+
 def _refused(error: endpoints.Refused) -> HTTPException:
     return HTTPException(409 if isinstance(error, endpoints.Conflict) else 400, str(error))
 
@@ -52,6 +56,29 @@ def api_grants(name: str, body: Grants, email: str = Depends(auth.admin_user)):
     """Replace an internal host's repos; 400 for a managed server's endpoint (attach the server instead)."""
     try:
         return endpoints.set_repos(name, body.repos)
+    except LookupError as error:
+        raise _missing(error) from None
+    except endpoints.Refused as error:
+        raise _refused(error) from None
+
+
+@router.post("/api/endpoints/{name}/repos")
+def api_grant(name: str, body: Grant, email: str = Depends(auth.admin_user)):
+    """Grant one repo an internal host's endpoint; the endpoint as GET shows it."""
+    try:
+        return endpoints.grant(name, body.repo)
+    except LookupError as error:
+        raise _missing(error) from None
+    except endpoints.Refused as error:
+        raise _refused(error) from None
+
+
+@router.delete("/api/endpoints/{name}/repos/{repo:path}")
+def api_revoke(name: str, repo: str, email: str = Depends(auth.admin_user)):
+    """Revoke one repo's grant (404 when it has none): the endpoint's CA is made anew, its sandboxes lose
+    the endpoint at once, and nginx stops their open sessions within its worker shutdown timeout."""
+    try:
+        return endpoints.revoke(name, repo)
     except LookupError as error:
         raise _missing(error) from None
     except endpoints.Refused as error:

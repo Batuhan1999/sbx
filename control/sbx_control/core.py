@@ -136,22 +136,39 @@ def detectable(port: int, a: recipes.App) -> bool:
 
 
 def detectable_port(port: int) -> bool:
-    """Neither the platform's, the runtime's, an extension's nor the endpoints'
-    forwarder's (endpoints.LOCAL_PORTS, wherever its config puts them)."""
     return ((port == 80 or 1024 <= port <= 65535) and port not in platform.PLATFORM_PORTS
-            and port not in runtime.ports() and port not in extensions.reserved_ports()
-            and port not in endpoints.LOCAL_PORTS)
+            and port not in runtime.ports() and port not in extensions.reserved_ports())
 
 
-def detected_ports(listening: str, a: recipes.App) -> dict:
+# What listens in a sandbox, then the endpoints' forwarder's config: its ports are no previews.
+FORWARDER_CONFIG = f"{contributions.EXT}/{endpoints.FOLDER}/config.json"
+LISTENING_AND_FORWARDER = f"{LISTENING}; echo ---sbx-forwarder---; cat {FORWARDER_CONFIG} 2>/dev/null || true"
+
+
+def forwarder_ports(text: str) -> set:
+    """The local ports a forwarder config (its JSON text) assigns."""
+    try:
+        return {int(e["local_port"]) for e in json.loads(text)["endpoints"]}
+    except (ValueError, KeyError, TypeError):
+        return set()
+
+
+def listening_and_forwarder(output: str) -> tuple[str, set]:
+    """(the `ss` lines, the forwarder's ports) of LISTENING_AND_FORWARDER's output."""
+    listening, _, config = output.partition("---sbx-forwarder---")
+    return listening, forwarder_ports(config.strip())
+
+
+def detected_ports(listening: str, a: recipes.App, exclude=()) -> dict:
     """port -> whether it listens on loopback only, from `ss -Hltn`. A runtime's
     forwarder may reset connections to loopback-only ports under load, so those
-    are reported but not exposed: the server has to listen on 0.0.0.0."""
+    are reported but not exposed: the server has to listen on 0.0.0.0.
+    exclude: the endpoints' forwarder's ports in this sandbox."""
     out = {}
     for line in listening.splitlines():
         fields = line.split()
         address, _, port = fields[3].rpartition(":") if len(fields) > 3 else ("", "", "")
-        if not port.isdigit() or not detectable(int(port), a):
+        if not port.isdigit() or not detectable(int(port), a) or int(port) in exclude:
             continue
         address = address.strip("[]").partition("%")[0].removeprefix("::ffff:")
         loopback = address.startswith("127.") or address in ("::1", "localhost")
@@ -604,8 +621,27 @@ def start_forwarder(sbx):
     """The endpoints' forwarder (sbx_guest.py forward), started unless it
     runs; it follows its config's changes and stops once the config is gone."""
     ship_guest(sbx)
-    config = f"{contributions.folder(endpoints.FOLDER)}/config.json"
-    sbx.commands.run(f"{guest('forward', 'ensure', config)} >> /tmp/sbx-endpoints.log 2>&1", timeout=60)
+    ensure_forwarder(sbx)
+
+
+FORWARDER_STATUS = f"{RUN}/forwarder-status.json"
+
+
+def ensure_forwarder(sbx) -> dict:
+    """With an endpoints config in the sandbox, its forwarder running (started
+    again when it died); its status ({"unbound": {name: port}}), {} without
+    a config."""
+    command = (f"[ -f {FORWARDER_CONFIG} ] || exit 0; [ -f {GUEST} ] || {{ echo no-guest; exit 0; }}; "
+               f"{guest('forward', 'ensure', FORWARDER_CONFIG)} >> /tmp/sbx-endpoints.log 2>&1; "
+               f"cat {FORWARDER_STATUS} 2>/dev/null || true")
+    output = sbx.commands.run(command, timeout=60).stdout.strip()
+    if output == "no-guest":
+        ship_guest(sbx)
+        output = sbx.commands.run(command, timeout=60).stdout.strip()
+    try:
+        return json.loads(output) if output else {}
+    except ValueError:
+        return {}
 
 
 def check_app(info) -> str | None:
@@ -622,14 +658,30 @@ def check_app(info) -> str | None:
             "(sbx logs NAME)")
 
 
-def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
+def taken_ports(sbx) -> set:
+    """The ports something in the sandbox listens on, the forwarder's own aside."""
+    output = sbx.commands.run(LISTENING_AND_FORWARDER, timeout=30).stdout
+    listening, own = listening_and_forwarder(output)
+    found = set()
+    for line in listening.splitlines():
+        fields = line.split()
+        port = fields[3].rpartition(":")[2] if len(fields) > 3 else ""
+        if port.isdigit():
+            found.add(int(port))
+    return found - own
+
+
+def runtime_values(info, sbx=None) -> tuple[dict, set, contributions.RuntimeLayer]:
     """(the sandbox's env as sbx-control would write it now, the names only
-    its app gets, the extensions' runtime layers)."""
+    its app gets, the extensions' runtime layers). With sbx (the running
+    VM), the endpoints' local ports are ones nothing else there listens on."""
     meta, a = info.metadata or {}, app_of(info)
     name = meta["sbx"]
     env = sbx_env(name, slug_of(info), a, meta.get("owner", ""), meta.get("branch", ""), meta.get("template", ""))
     kind = runtime.kind_of(info)
     routes = endpoints.routes(kind, a.repo)
+    if routes.rows and sbx is not None:
+        routes = routes.placed(taken_ports(sbx))
     if settings.trust(a.repo) != "trusted":
         envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False), kind), False, meta, routes)
         return envs, set(), layer
@@ -670,7 +722,7 @@ def restore_runtime(sbx, info) -> bool:
     ensure_started(sbx, kind)
     initialize_ssh_identity(sbx)
     name = (info.metadata or {})["sbx"]
-    envs, hidden, layer = runtime_values(info)
+    envs, hidden, layer = runtime_values(info, sbx)
     write_runtime(sbx, name, envs, layer, hidden=hidden)
     state.event(name, "runtime restored",
                 "every resume on this runtime is a cold boot: env, credentials and processes put back" if cold else
@@ -855,7 +907,7 @@ def _refresh_env(sbx, info, restart, operation=None):
 
 def _write_env(sbx, info, restart, operation):
     name = (info.metadata or {})["sbx"]
-    envs, hidden, layer = runtime_values(info)
+    envs, hidden, layer = runtime_values(info, sbx)
     before = written_env(sbx)
     differs = sorted(k for k in set(before) | set(envs) if before.get(k) != envs.get(k))
     must_restart = bool(app_of(info).repo and restart and (differs or delivery.restart_required(name)))

@@ -68,6 +68,8 @@ LOCAL_PORTS = range(17400, 17800)      # the forwarder's listeners in a sandbox,
 CERT_HOURS = 24
 RENEW_HOURS = 12                        # the keeper renews a running sandbox's certificates with less than this left
 PICKUP_SECONDS = 120                    # a request the root side has not taken this long has failed
+WORKER_SHUTDOWN = "30s"                 # nginx: how long a reload's old workers keep their connections
+ENDPOINT_IDLE = "1h"                    # nginx: an endpoint connection with no traffic this long is closed
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 REVISION = state.Setting("endpoints_revision")
 FOLDER = "endpoints"                    # its contribution's folder in the sandbox (contributions.folder)
@@ -159,16 +161,50 @@ def env_name(name: str) -> str:
 
 
 def _check_name(name: str):
+    """A host name label no other host of the installation has or may get: on
+    443 an endpoint's name wins over a preview's (endpoints are routed first)."""
     if not LABEL.fullmatch(name or ""):
         raise Refused(f"{name!r} is not a host name label: 1 to 63 lowercase letters, digits and hyphens, "
                       "starting and ending with a letter or digit")
     if name in settings.current().reserved_names:
         raise Conflict(f"{name} is taken by this installation's own addresses; choose another name")
+    if re.match(r"\d+-", name):
+        raise Conflict(f"{name} has the form of a sandbox's preview host (<port>-<id>); choose another name")
+    for slug in _slugs():
+        if name == slug or name.startswith(slug + "-"):
+            raise Conflict(f"{name} is a preview host of the sandbox {slug} ({slug}, {slug}-<port>, "
+                           f"{slug}-<preview>); choose another name")
+
+
+def _slugs() -> list[str]:
+    try:
+        with state.db() as conn:
+            return [r[0] for r in conn.execute("select slug from sandboxes where slug is not null and slug != ''")]
+    except sqlite3.OperationalError:
+        return []
+
+
+def slug_taken(slug: str) -> str:
+    """Which endpoint a sandbox slug's hosts would collide with ("" for none):
+    the slug itself, or <slug>-<anything>."""
+    for row in _rows():
+        if row["name"] == slug or row["name"].startswith(slug + "-"):
+            return row["name"]
+    return ""
 
 
 def _internal(host: str) -> bool:
     ip = ipaddress.ip_address(host)
     return any(ip in ipaddress.ip_network(cidr, strict=False) for cidr in settings.current().network.internal_cidrs)
+
+
+def unroutable(row: dict) -> str:
+    """Why an endpoint is not routed now ("" when it is): an internal host's
+    target that network.internal_cidrs no longer covers."""
+    if row["kind"] == "internal" and not _internal(split_target(row["target"])[0]):
+        return (f"{row['target']} is outside network.internal_cidrs now, so nothing reaches it: add its range "
+                "again (sbx-admin config set network) or remove the endpoint")
+    return ""
 
 
 def _repos(repos) -> list[str]:
@@ -247,8 +283,19 @@ def deliver(name: str, repos):
     are what the repo may use now. Running ones get it within seconds,
     paused ones when they resume; running processes keep their env until
     they restart."""
+    repos = sorted(set(repos))
+    if repos:   # listing the sandboxes asks the runtimes: not in the admin's request
+        _background(lambda: _deliver(name, repos))
+
+
+def _background(work):
+    import threading
+    threading.Thread(target=work, name="endpoint-delivery", daemon=True).start()
+
+
+def _deliver(name: str, repos: list):
     from . import sandboxes
-    for repo in sorted(set(repos)):
+    for repo in repos:
         try:
             sandboxes.deliver_env(repo, [env_name(name)], restart=False)
         except Exception as error:   # the change is recorded; the next runtime write brings it
@@ -256,23 +303,81 @@ def deliver(name: str, repos):
 
 
 def set_repos(name: str, repos) -> dict:
-    """Replace an internal host's grants: the repos whose sandboxes may use it.
-    The sandboxes of a repo granted or revoked get the change at once
-    (deliver): a revoked one's forwarder config and certificates go."""
+    """Replace an internal host's grants (the web app's full list)."""
     grants = _repos(repos)
-    row = next((r for r in _rows() if r["name"] == name), None)
-    if row is None:
-        raise LookupError(f"no endpoint {name}")
-    if row["kind"] != "internal":
-        raise Refused(f"{name} is a managed server's endpoint, for the repos attached to it: attach the server to "
-                      "the repo instead")
-    with state.db() as conn:
-        conn.execute("begin immediate")
-        conn.execute("delete from endpoint_repos where endpoint = ?", (name,))
-        conn.executemany("insert into endpoint_repos (endpoint, repo) values (?, ?)", [(name, r) for r in grants])
-        conn.execute("commit")
-    deliver(name, set(grants) ^ set(row["grants"]))
+    return _change_grants(name, lambda old: grants)
+
+
+def grant(name: str, repo: str) -> dict:
+    """One more repo whose sandboxes may use an internal host's endpoint."""
+    repo = _repos([repo])[0]
+    return _change_grants(name, lambda old: sorted({*old, repo}))
+
+
+def revoke(name: str, repo: str) -> dict:
+    """One repo less; LookupError when it was not granted."""
+    repo = _repos([repo])[0]
+
+    def without(old):
+        if repo not in old:
+            raise LookupError(f"{repo} is not granted the endpoint {name}")
+        return [r for r in old if r != repo]
+    return _change_grants(name, without)
+
+
+def _change_grants(name: str, change) -> dict:
+    """Grants changed under the lock, read and written in one transaction. A
+    revoke rotates the endpoint's CA, so what the revoked repo's sandboxes
+    hold (and any copy of it) no longer passes once nginx has the new one;
+    the sandboxes still granted get certificates from the new CA at once."""
+    with _lock():
+        # A CA in case this revokes: sealed before the transaction (the store may write to sbx.db too).
+        ca_cert, ca_key = _make_ca(name)
+        reference = secret_store.seal({"key": ca_key}, key=f"endpoints/{name}/ca/{time.time_ns()}")
+        discard = reference
+        with state.db() as conn:
+            conn.execute("begin immediate")
+            found = conn.execute("select kind from endpoints where name = ?", (name,)).fetchone()
+            if not found:
+                conn.execute("rollback")
+                secret_store.discard(reference)
+                raise LookupError(f"no endpoint {name}")
+            if found[0] != "internal":
+                conn.execute("rollback")
+                secret_store.discard(reference)
+                raise Refused(f"{name} is a managed server's endpoint, for the repos attached to it: attach the "
+                              "server to the repo instead")
+            old = [r[0] for r in conn.execute("select repo from endpoint_repos where endpoint = ? order by repo",
+                                              (name,))]
+            try:
+                new = change(old)
+            except BaseException:
+                conn.execute("rollback")
+                secret_store.discard(reference)
+                raise
+            conn.execute("delete from endpoint_repos where endpoint = ?", (name,))
+            conn.executemany("insert into endpoint_repos (endpoint, repo) values (?, ?)", [(name, r) for r in new])
+            revoked = set(old) - set(new)
+            if revoked:
+                discard = _rotate_ca(conn, name, ca_cert, reference)
+            conn.execute("commit")
+    secret_store.discard(discard)   # the old CA's key after a revoke, else the one not needed
+    if revoked:
+        settings.request_effects(settings.HostUnit.ENDPOINTS)
+        deliver(name, set(old) | set(new))   # new certificates for all, none for the revoked
+    else:
+        deliver(name, set(new) - set(old))
     return one(name)
+
+
+def _rotate_ca(conn, name: str, ca_cert: str, reference: str) -> str:
+    """The endpoint's new CA, in the transaction; the old key's reference, to discard after it."""
+    old = conn.execute("select ca_key from endpoints where name = ?", (name,)).fetchone()[0]
+    revision = int(REVISION.get("0", conn=conn)) + 1
+    conn.execute("update endpoints set ca_cert = ?, ca_key = ?, revision = ? where name = ?",
+                 (ca_cert, reference, revision, name))
+    REVISION.set(revision, conn=conn)
+    return old
 
 
 def remove(name: str) -> dict:
@@ -340,7 +445,8 @@ def permitted(repo: str, rows: list | None = None) -> list[dict]:
     repo = repo.lower()
     rows = _rows() if rows is None else rows
     servers = set(_attached(repo)) if any(r["kind"] == "managed-server" for r in rows) else set()
-    return [r for r in rows if (r["server"] in servers if r["kind"] == "managed-server" else repo in r["grants"])]
+    return [r for r in rows if not unroutable(r)
+            and (r["server"] in servers if r["kind"] == "managed-server" else repo in r["grants"])]
 
 
 # What the API says
@@ -383,6 +489,8 @@ def _state(revision: int, record: dict) -> tuple[str, str]:
 
 def _payload(row: dict, record: dict, using: dict, kinds: dict) -> dict:
     state_now, message = _state(row["revision"], record)
+    if why := unroutable(row):
+        state_now, message = "failed", why
     return {"name": row["name"], "address": address(row["name"]), "kind": row["kind"], "server": row["server"],
             "server_kind": kinds.get(row["server"], "") if row["server"] else "",
             "target": row["target"], "repos": repos_of(row), "state": state_now, "message": message,
@@ -475,7 +583,7 @@ def needs(repo: str) -> list[dict]:
         target = hosted_services.target(server)
         target = normalized(target) if target else ""
         seen.add(target)
-        out.append({"server": server, "connection": server, "target": target})
+        out.append({"server": server, "connection": server, "target": target, "source": "server"})
     if not settings.current().network.internal_cidrs:
         return out
     sources = []
@@ -486,37 +594,42 @@ def needs(repo: str) -> list[dict]:
                     continue
                 found = attachments.connection(key)
                 if found:
-                    sources += [(key, value) for value in found["inputs"].values()]
+                    sources += [(key, "connection", value) for value in found["inputs"].values()]
     except Exception:   # a connection or the store that does not answer is the create's to report
         pass
     try:
-        sources += [("sbx.yaml", value) for value in (recipes.load(repo).spec.get("env") or {}).values()]
+        sources += [("sbx.yaml", "env", value) for value in (recipes.load(repo).spec.get("env") or {}).values()]
     except Exception:
         pass
-    for key, value in sources:
+    for key, source, value in sources:
         for host, port in _addresses(value):
             target = _join(host, port)
             if target not in seen and _internal(host):
                 seen.add(target)
-                out.append({"server": "", "connection": key, "target": target})
+                out.append({"server": "", "connection": key, "target": target, "source": source})
     return out
 
 
-def missing(repo: str) -> list[tuple[str, str]]:
+def missing(repo: str, sources=("server", "connection")) -> list[tuple[str, str]]:
     """(what, the command that lets the repo's sandboxes reach it) for each
     private target they need and may not use: no endpoint yet, or an internal
-    host's endpoint not granted to the repo."""
-    rows = _rows()
+    host's endpoint not granted to the repo. The create gate refuses for the
+    managed servers and connections the repo's attachments bind (the
+    default); an address in sbx.yaml's env is advice (sources=("env",))."""
+    rows = [r for r in _rows() if not unroutable(r)]
     by_target = {r["target"]: r for r in rows}
     servers = {r["server"] for r in rows if r["server"]}
     out = []
     for need in needs(repo):
+        if need["source"] not in sources:
+            continue
         if need["server"]:
             if need["server"] not in servers:
                 out.append((f"the managed server {need['server']}", f"sbx endpoints add --server {need['server']}"))
             continue
         row = by_target.get(need["target"])
-        what = f"the internal host {need['target']} ({need['connection']})"
+        what = (f"the internal host {need['target']} ({need['connection']})" if need["source"] == "connection" else
+                f"the internal host {need['target']} named in sbx.yaml's env")
         if row is None:
             name = _label(need["connection"]) if need["connection"] != "sbx.yaml" else "NAME"
             out.append((what, f"sbx endpoints add --name {name} --target {need['target']} --repo {repo}"))
@@ -536,6 +649,18 @@ class Routes:
     (contribution). Empty for a sandbox that reaches the private network
     itself, or whose repo may use none."""
     rows: list = dataclasses.field(default_factory=list)          # the permitted endpoints
+
+    def placed(self, taken) -> "Routes":
+        """The same endpoints on local ports nothing else in the sandbox
+        listens on: each its own port, else the next free one."""
+        used, rows = set(taken), []
+        for row in self.rows:
+            port = row["local_port"]
+            while port in used and port < 65535:
+                port += 1
+            used.add(port)
+            rows.append({**row, "local_port": port})
+        return Routes(rows)
 
     @property
     def by_target(self) -> dict:
@@ -596,7 +721,7 @@ class Routes:
             endpoints.append({"name": row["name"], "address": address(row["name"]), "port": PORT,
                               "local_port": row["local_port"], "cert": f"{row['name']}.pem",
                               "key": f"{row['name']}-key.pem", "not_after": not_after})
-        config = {"endpoints": endpoints, "renew": renew_config(name)}
+        config = {"endpoints": endpoints, "renew": renew_config(name, repo)}
         trust = _self_signed()
         if trust:
             config["trust"] = "server.pem"
@@ -618,20 +743,34 @@ def routes(kind: str | None, repo: str | None) -> Routes:
     return Routes(permitted(repo))
 
 
-def renew_config(name: str) -> dict:
-    """How the forwarder pulls new certificates: sbx-control's URL and the
-    sandbox's own credential (the one its git credential helper uses)."""
-    from . import github_app, platform
-    return {"url": f"{settings.current().base_url}{CERTS_PATH}", "sandbox": name,
-            "credential": github_app.sandbox_credential(name, platform.session_key())}
+def renew_config(name: str, repo: str) -> dict:
+    """How the forwarder pulls new certificates: sbx-control's URL and a
+    credential of this sandbox's own, random, made with each runtime write
+    (so a sandbox made again under the name, or for another repo, has
+    another; only its digest is kept, with the repo)."""
+    import hashlib
+    import secrets
+    credential = secrets.token_urlsafe(32)
+    with state.db() as conn:
+        conn.execute("insert into endpoint_credentials (sandbox, digest, repo) values (?, ?, ?) on conflict (sandbox) "
+                     "do update set digest = excluded.digest, repo = excluded.repo",
+                     (name, hashlib.sha256(credential.encode()).hexdigest(), (repo or "").lower()))
+    return {"url": f"{settings.current().base_url}{CERTS_PATH}", "sandbox": name, "credential": credential}
 
 
 def sandbox_of(authorization: str) -> str | None:
-    """The sandbox a callback's `Bearer NAME:CREDENTIAL` proves, or None."""
+    """The sandbox a callback's `Bearer NAME:CREDENTIAL` proves (its latest credential), or None."""
+    import hashlib
     import hmac
-    from . import github_app, platform
     name, _, credential = authorization.removeprefix("Bearer ").partition(":")
-    if not name or not hmac.compare_digest(credential, github_app.sandbox_credential(name, platform.session_key())):
+    if not name or not credential:
+        return None
+    try:
+        with state.db() as conn:
+            row = conn.execute("select digest from endpoint_credentials where sandbox = ?", (name,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or not hmac.compare_digest(row[0], hashlib.sha256(credential.encode()).hexdigest()):
         return None
     return name
 
@@ -655,6 +794,16 @@ def _record_certificate(name: str, repo: str, names: list, not_after: float):
                          "not_after = excluded.not_after", (name, (repo or "").lower(), json.dumps(names), not_after))
     except sqlite3.OperationalError:
         pass
+
+
+def holders() -> set:
+    """The registered sandboxes that hold endpoint certificates (have a forwarder config)."""
+    try:
+        with state.db() as conn:
+            return {r[0] for r in conn.execute("select c.sandbox from endpoint_certs c join sandboxes s "
+                                               "on s.name = c.sandbox")}
+    except sqlite3.OperationalError:
+        return set()
 
 
 def due(now: float | None = None) -> list[str]:
@@ -688,6 +837,10 @@ def issue_for(name: str) -> list[dict]:
     if not info:
         raise LookupError(f"no sandbox {name}")
     repo = core.app_of(info).repo
+    with state.db() as conn:
+        bound = conn.execute("select repo from endpoint_credentials where sandbox = ?", (name,)).fetchone()
+    if not bound or bound[0] != (repo or "").lower():
+        raise LookupError(f"{name} is another sandbox now")
     found = routes(runtime.kind_of(info), repo)
     if not found.rows:
         raise PermissionError(f"{name}'s repo may use no endpoint now")
@@ -707,12 +860,16 @@ def push(sbx, info):
         return False
     issued = issue_all(name, repo, found.rows)
     folder = f"{core.RUN}/{RENEWED}"
-    sbx.commands.run(f"install -d -m 700 {folder}", timeout=30)
+    staging = f"{folder}/.push"
+    sbx.commands.run(f"install -d -m 700 {folder} && rm -rf {staging} && install -d -m 700 {staging}", timeout=30)
     for endpoint, (cert, key, _) in issued.items():
-        sbx.files.write(f"{folder}/{endpoint}.pem", cert, user="user")
-        sbx.files.write(f"{folder}/{endpoint}-key.pem", key, user="user")
-    sbx.files.write(f"{folder}/renewed.json", json.dumps({n: v[2] for n, v in issued.items()}), user="user")
-    sbx.commands.run(f"chmod 600 {folder}/*", timeout=30)
+        sbx.files.write(f"{staging}/{endpoint}.pem", key + cert, user="user")
+    sbx.files.write(f"{staging}/renewed.json", json.dumps({n: v[2] for n, v in issued.items()}), user="user")
+    # Each file replaced whole, the certificates before the times that point at them.
+    names = " ".join(f"{e}.pem" for e in issued)
+    sbx.commands.run(f"cd {staging} && chmod 600 * && for f in {names} renewed.json; do mv -f \"$f\" ../; done "
+                     f"&& cd .. && rmdir {staging}", timeout=30)
+    core.ensure_forwarder(sbx)
     return True
 
 
@@ -793,7 +950,7 @@ def stream_config(rows: list | None = None, name: str | None = None) -> str:
     chosen by server_name, verifying clients against that endpoint's own CA."""
     rows = _rows() if rows is None else rows
     name = domain() if name is None else name
-    rows = rows if name else []
+    rows = [r for r in rows if not unroutable(r)] if name else []
     routes_ = "".join(f"  {r['name']}.{name} {ENDPOINTS_BACKEND};\n" for r in rows)
     out = [f"""# sbx's front on 443 (endpoints.py): the TLS server name picks the backend, nothing is
 # decrypted here. Endpoints go to their TLS servers below; everything else to the HTTPS
@@ -829,7 +986,7 @@ server {{
   ssl_handshake_timeout 10s;
   proxy_pass {row['target']};
   proxy_connect_timeout 10s;
-  proxy_timeout 1d;
+  proxy_timeout {ENDPOINT_IDLE};
 }}""")
     return "\n".join(out) + "\n"
 
@@ -839,6 +996,9 @@ MAIN_CONF = f"""# nginx's main configuration (tls.sh, endpoints.py): the image's
 # server on {HTTPS_BACKEND}), and the stream block (conf.d/*.stream).
 user nginx;
 worker_processes auto;
+# A reload's old workers end their connections after this: a revoked or removed
+# endpoint's sessions with them (endpoints.py), and long previews (they reconnect).
+worker_shutdown_timeout {WORKER_SHUTDOWN};
 error_log /var/log/nginx/error.log notice;
 pid /run/nginx.pid;
 events {{
@@ -864,7 +1024,7 @@ stream {{
 
 def write_nginx(folder):
     """The stream configuration and each endpoint's CA certificate in nginx's folder."""
-    rows = _rows() if domain() else []
+    rows = [r for r in _rows() if not unroutable(r)] if domain() else []
     keep = {CA_FILES.format(r["name"]) for r in rows}
     for old in folder.glob(CA_FILES.format("*")):
         if old.name not in keep:
@@ -929,6 +1089,7 @@ create table if not exists endpoints (
 create table if not exists endpoint_repos (endpoint text not null, repo text not null, primary key (endpoint, repo));
 create table if not exists endpoint_certs (
     sandbox text primary key, repo text not null default '', endpoints text not null, not_after real not null);
+create table if not exists endpoint_credentials (sandbox text primary key, digest text not null, repo text not null);
 """, sealed=(("endpoints", "ca_key"),))
 
 

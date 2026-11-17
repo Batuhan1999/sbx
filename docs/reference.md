@@ -232,11 +232,18 @@ sbx endpoints rm temporal                       # refused while sandboxes on a p
 
 `add` and `rm` wait until the server has applied the change and exit
 non-zero when it is refused or fails (`--no-wait` returns at once, `--json`
-prints the API's answer). On the server, `sbx-admin endpoint
-ls|add|rm|grant|revoke` does the same, and `sbx-admin doctor` lists them. An
-endpoint needs a domain; its name is a host name label (a managed server's
-name, with `_` as `-`, unless `--name` gives one), its target an IP address
-and port (an internal host's within `network.internal_cidrs`).
+prints the API's answer); `grant` and `revoke` change one repository at a
+time, and revoking one that has no grant fails. On the server, `sbx-admin
+endpoint ls|add|rm|grant|revoke` does the same, and `sbx-admin doctor` lists
+them. An endpoint needs a domain; its name is a host name label (a managed
+server's name, with `_` as `-`, unless `--name` gives one), its target an IP
+address and port (an internal host's within `network.internal_cidrs`). On
+443 an endpoint's name is routed before any preview, so it may be no host
+the installation has or may give a sandbox: not a reserved name, no
+sandbox's slug, `<slug>-<anything>` or `<port>-<id>`; a sandbox or branch
+whose slug would collide with an endpoint is refused the same way. An
+internal host's endpoint whose target `network.internal_cidrs` no longer
+covers is `failed`, saying so, and is not routed until its range is back.
 
 **Who may use one** is per repository and explicit, whatever the
 repository's trust: a managed server's endpoint is for the repositories
@@ -254,6 +261,19 @@ sandbox gets them when it resumes; `sbx sandbox restart` writes them too).
 Processes already running keep the env they started with until they
 restart; the forwarder follows its configuration by itself, and a revoked
 endpoint's listener and certificates go.
+
+**What a revoke or a removal cuts, and when.** Revoking a repository's
+grant makes the endpoint's CA anew: once nginx has reloaded with the new
+CA (the API's state goes `applying`, then `on`, within seconds), no
+certificate from before passes, so neither the revoked sandboxes nor any
+copy of their keys can connect again; the sandboxes still granted get
+certificates from the new CA at once. Removing an endpoint drops its
+server. In both cases sessions already open end when nginx's old workers
+stop, at most 30 seconds after the reload (`worker_shutdown_timeout`; it
+also ends long previews, such as a websocket, which reconnect). An
+endpoint session with no traffic for an hour is closed anyway. Detaching a
+managed server from a repository stops new certificates for its sandboxes;
+the ones they hold run out within 24 hours.
 
 How it works:
 
@@ -284,22 +304,34 @@ How it works:
   endpoint is valid 24 hours. It is issued whenever the sandbox's runtime is
   written (create, a cold boot, an env delivery; the keeper renews a running
   one with less than 12 hours left), pushed when sbx resumes the sandbox
-  (the gate, the API, the keeper), and pulled by the forwarder itself before
-  a new connection when less than an hour is left (`POST
-  /api/sandbox/endpoint-certs` with the sandbox's own credential, the one its
-  git credential helper uses), so a sandbox woken after a long pause by
-  anyone renews on its first connection. Open connections keep the
-  certificate they began with. Nothing is revoked: a certificate runs out,
-  and a deleted sandbox or a revoked grant gets no new one. No key appears in
-  a log, an event or an admin's API answer.
+  (the gate, the API, the keeper), and pulled by the forwarder itself (`POST
+  /api/sandbox/endpoint-certs`): with less than an hour left it asks in the
+  background, one request at a time, waiting a minute after a failure and
+  doubling that up to 15 minutes, and keeps using the certificate it has
+  until that runs out; only a connection whose certificate has run out (a
+  sandbox woken after a long pause by anyone) waits for the renewal. The
+  forwarder's credential is the sandbox's own: random, made anew with each
+  runtime write and bound to its repository, so a sandbox made again under
+  the same name gets another, and an old one is refused. Renewed keys and
+  certificates are written as one file each, replaced whole. Open
+  connections keep the certificate they began with. No key appears in a log,
+  an event or an admin's API answer.
 - **The sandbox.** The guest helper's forwarder (`sbx_guest.py forward`)
-  listens on `127.0.0.1:<local port>` (17400 and up, one per endpoint) for
+  listens on `127.0.0.1:<local port>` (17400 and up, one per endpoint; when
+  something else in the sandbox listens there already, the next free port,
+  and the values below follow it) for
   each endpoint the sandbox may use and wraps each connection into TLS to
   `<name>.<domain>:443` with that endpoint's certificate, verifying the
   server as `<name>.<domain>` (against the public CAs, or the installation's
   own certificate with `--dns none`). Apps connect to 127.0.0.1 in plain
   text, so Postgres's `sslmode=disable` URLs keep working; the service's own
-  login (`postgres-clone`'s per-sandbox role) stays on top.
+  login (`postgres-clone`'s per-sandbox role) stays on top. One thread
+  carries each connection; when either side ends, what is pending goes out
+  and both close (as nginx's stream proxy does: no half-closed
+  connections). sbx starts the forwarder again when it died: with each
+  runtime write, on resume and in the keeper's round. A port it can't
+  listen on is a sandbox event, said once. Its ports are never offered as
+  previews.
 - **The values.** On such a runtime, every `host:port` in a sandbox's env
   and its services' outputs that is the target of an endpoint it may use (a
   URL, an address, or `host` and `port` outputs) becomes the forwarder's
@@ -309,12 +341,14 @@ How it works:
   Values must name an IP address with its port. Embed's sandboxes keep the
   private addresses.
 - **The gate.** A repo's sandboxes are refused on such a runtime while a
-  private target they use is not theirs to reach: a managed server its
-  attachments bind to without an endpoint, or an address within
-  `network.internal_cidrs` in a bound connection's values or in `sbx.yaml`'s
-  `env` without an endpoint or a grant. The refusal names the command
-  (`sbx endpoints add --server dev-pg`, `sbx endpoints grant temporal
-  owner/app`). Hosted packages (Neon, PlanetScale, Upstash, ...) need none.
+  private target its attachments bind is not theirs to reach: a managed
+  server without an endpoint, or an address within `network.internal_cidrs`
+  in a bound connection's values without an endpoint or a grant. The
+  refusal names the command (`sbx endpoints add --server dev-pg`, `sbx
+  endpoints grant temporal owner/app`) and that a domain is needed when
+  there is none. Such an address only in `sbx.yaml`'s `env` doesn't refuse
+  the create: the sandbox gets an event naming the command. Hosted packages
+  (Neon, PlanetScale, Upstash, ...) need none.
 
 ### Development baselines
 
@@ -1041,8 +1075,9 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
 | `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default`, `POST /api/runtimes/KIND/test` | admin, and the first-run setup link | `sbx runtimes available | add | set | remove | default | test`: add, change, remove a runtime, choose the default, run its checks; changes are checked, then applied by the host ([from the web app](#from-the-web-app)). |
 | `GET /api/endpoints` | admin | `sbx endpoints`: `{"endpoints": [{"name", "address", "kind": "managed-server" or "internal", "server", "server_kind", "target", "repos", "state": "on" or "applying" or "failed", "message", "used_by"}], "candidates": [{"server", "kind", "address", "target"}], "domain", "needed", "applying", "failure"}`. `repos`: who may use it (an internal host's grants; the repositories attached to a managed server); `used_by`: the repositories whose sandboxes hold its certificate, for which `DELETE` is refused; candidates are the managed servers without an endpoint; `needed` says an enabled runtime's sandboxes don't reach this host's private network; `applying` that a change is not applied yet, `failure` why the last one failed ([endpoints](#endpoints)). |
-| `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add | grant | revoke | rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories (400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
-| `POST /api/sandbox/endpoint-certs` | a sandbox (`Bearer NAME:CREDENTIAL`, its own credential) | The forwarder's renewal: new certificates and keys for the endpoints the sandbox's repository may use now; 401 for a wrong credential, 404 for a sandbox that is gone, 403 when it may use none. Not cached. |
+| `POST /api/endpoints/NAME/repos`, `DELETE /api/endpoints/NAME/repos/OWNER/REPO` | admin | `sbx endpoints grant | revoke`: body `{"repo": "OWNER/REPO"}`; one repository's grant of an internal host's endpoint, under the endpoints' lock; answers the endpoint. A revoke makes the endpoint's CA anew ([what it cuts](#endpoints)); 404 for a repository without a grant, 400 for a managed server's endpoint. |
+| `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add | rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories, as one change (the web app's list; 400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
+| `POST /api/sandbox/endpoint-certs` | a sandbox (`Bearer NAME:CREDENTIAL`, the credential its forwarder's configuration holds) | The forwarder's renewal: new certificates and keys for the endpoints the sandbox's repository may use now; 401 for a wrong credential, 404 for a sandbox that is gone, 403 when it may use none. Not cached. |
 | `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
 | `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |

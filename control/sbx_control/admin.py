@@ -468,10 +468,7 @@ def main(argv: list) -> int:
             elif a.action in ("grant", "revoke"):
                 if not a.name or not a.repo:
                     p.error(f"endpoint {a.action} NAME REPO")
-                now = endpoints.one(a.name)["repos"]
-                repo = a.repo.lower()
-                result = endpoints.set_repos(a.name, [*now, repo] if a.action == "grant" else
-                                             [r for r in now if r != repo])
+                result = (endpoints.grant if a.action == "grant" else endpoints.revoke)(a.name, a.repo)
             else:
                 if not a.name:
                     p.error("endpoint rm NAME")

@@ -47,7 +47,16 @@ class Setup:
             {"name": n, "kind": k} for n, (k, _) in sorted(self.servers.items())]))
         self.enterContext(patch.object(hosted_services, "attached_to", side_effect=lambda repo: self.bound.get(repo, [])))
         self.enterContext(patch.object(attachments, "repos", side_effect=lambda: sorted(self.bound)))
+        endpoints._applied_file().unlink(missing_ok=True)   # the class's earlier tests' applies
+        # Deliveries to running sandboxes: recorded here, run where a test asks for them (delivered()).
+        self.deliveries = []
+        self.enterContext(patch.object(endpoints, "_background", side_effect=self.deliveries.append))
         self.effects()
+
+    def delivered(self):
+        """Run the deliveries recorded so far."""
+        while self.deliveries:
+            self.deliveries.pop(0)()
 
     def register(self, name, repo="owner/app"):
         from sbx_control import sandboxes
@@ -184,17 +193,18 @@ class ApiTests(Setup, Server):
         self.assertEqual(self.client.put("/api/endpoints/x", headers=headers, json={"repos": []}).status_code, 403)
 
     def test_a_sandbox_renews_with_its_own_credential_and_only_while_it_may(self):
-        from sbx_control import github_app, platform, sandboxes
+        from sbx_control import sandboxes
         self.sandbox_found()
         self.client.post("/api/endpoints", json={"server": "dev_pg"})
         self.client.post("/api/endpoints", json={"name": "temporal", "target": "10.0.0.5:7233", "repos": ["owner/app"]})
         self.client.post("/api/endpoints", json={"name": "other", "target": "10.0.0.6:80", "repos": ["other/repo"]})
         self.register("box")
         self.client.cookies.clear()
+        mine = self.endpoints.renew_config("box", "owner/app")["credential"]   # what its runtime write gives it
 
         def renew(name="box", credential=None):
-            credential = credential or github_app.sandbox_credential(name, platform.session_key())
-            return self.client.post("/api/sandbox/endpoint-certs", headers={"Authorization": f"Bearer {name}:{credential}"})
+            return self.client.post("/api/sandbox/endpoint-certs",
+                                    headers={"Authorization": f"Bearer {name}:{credential or mine}"})
         self.assertEqual(renew(credential="0" * 64).status_code, 401)
         response = renew()
         self.assertEqual(response.status_code, 200, response.text)
@@ -208,6 +218,42 @@ class ApiTests(Setup, Server):
         self.bound["owner/app"] = ["dev_pg"]
         sandboxes.unregister("box")   # deleted
         self.assertEqual(renew().status_code, 404)
+
+    def test_a_name_made_again_for_another_repo_doesn_t_take_the_old_credential(self):
+        repos = self.sandbox_found()
+        self.client.post("/api/endpoints", json={"name": "theirs", "target": "10.0.0.6:80", "repos": ["other/repo"]})
+        self.register("box")
+        old = self.endpoints.renew_config("box", "owner/app")["credential"]   # box of owner/app, deleted since
+        repos["box"] = "other/repo"
+        new = self.endpoints.renew_config("box", "other/repo")["credential"]  # box made again, of other/repo
+        self.client.cookies.clear()
+        headers = {"Authorization": f"Bearer box:{old}"}
+        self.assertEqual(self.client.post("/api/sandbox/endpoint-certs", headers=headers).status_code, 401)
+        headers = {"Authorization": f"Bearer box:{new}"}
+        self.assertEqual([e["name"] for e in self.client.post("/api/sandbox/endpoint-certs", headers=headers).json()
+                          ["endpoints"]], ["theirs"])
+        from sbx_control import state
+        with state.db() as conn:   # the old instance's record, as if a write raced the new create: refused, not B's
+            conn.execute("update endpoint_credentials set repo = 'owner/app' where sandbox = 'box'")
+        self.assertEqual(self.client.post("/api/sandbox/endpoint-certs", headers=headers).status_code, 404)
+        with state.db() as conn:
+            stored = conn.execute("select digest from endpoint_credentials").fetchone()[0]
+        self.assertNotIn(new, stored)   # only its digest is kept
+
+    def test_one_repo_is_granted_and_revoked_at_a_time(self):
+        self.client.post("/api/endpoints", json={"name": "temporal", "target": "10.0.0.5:7233"})
+        response = self.client.post("/api/endpoints/temporal/repos", json={"repo": "Owner/App"})
+        self.assertEqual((response.status_code, response.json()["repos"]), (200, ["owner/app"]))
+        self.client.post("/api/endpoints/temporal/repos", json={"repo": "other/app"})
+        response = self.client.delete("/api/endpoints/temporal/repos/owner/app")
+        self.assertEqual((response.status_code, response.json()["repos"]), (200, ["other/app"]))
+        response = self.client.delete("/api/endpoints/temporal/repos/owner/app")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("owner/app is not granted the endpoint temporal", response.json()["detail"])
+        self.client.post("/api/endpoints", json={"server": "dev_pg"})
+        response = self.client.post("/api/endpoints/dev-pg/repos", json={"repo": "owner/app"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("attach the server to the repo instead", response.json()["detail"])
 
 
 class HostTests(Setup, Installation):
@@ -249,6 +295,9 @@ class HostTests(Setup, Installation):
         self.assertNotIn("PRIVATE KEY", "".join(cas.values()))
         # The HTTPS server learns the client's address from the PROXY protocol, from the front only.
         self.assertIn("set_real_ip_from 127.0.0.1;\n  real_ip_header proxy_protocol;", self.endpoints.MAIN_CONF)
+        # A reload's old workers end their sessions soon: a revoked or removed endpoint's go with them.
+        self.assertIn("worker_shutdown_timeout 30s;", self.endpoints.MAIN_CONF)
+        self.assertIn("proxy_timeout 1h;", servers[1])
         self.assertIn("stream {\n  include /etc/nginx/conf.d/*.stream;", self.endpoints.MAIN_CONF)
         # No port opens for endpoints: the firewall's ports are the settings' alone.
         self.assertIn("public_ports='22 443 53'", self.settings.shell_lines(self.settings.current(), {}))
@@ -259,6 +308,32 @@ class HostTests(Setup, Installation):
         self.assertEqual(self.endpoints.stream_config(), front)   # without a domain: the front alone
         self.endpoints.write_nginx(self.tls / "nginx")
         self.assertEqual(list((self.tls / "nginx").glob("endpoint-*-ca.pem")), [])
+
+    def test_an_internal_host_outside_narrowed_ranges_is_not_routed_until_fixed(self):
+        self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app"], by="test")
+        self.settings.update("network", {"internal_cidrs": ["10.9.0.0/24"]}, by="test")
+        found = self.endpoints.one("temporal")
+        self.assertEqual(found["state"], "failed")
+        self.assertIn("10.0.0.5:7233 is outside network.internal_cidrs now", found["message"])
+        self.assertNotIn("temporal", self.endpoints.stream_config())
+        with provider(self.runtime):
+            self.assertEqual(self.endpoints.routes("fake", "owner/app").rows, [])
+        self.settings.update("network", {"internal_cidrs": ["10.0.0.0/24"]}, by="test")
+        self.assertIn(f"temporal.{DOMAIN} 127.0.0.1:8441;", self.endpoints.stream_config())
+        self.assertNotEqual(self.endpoints.one("temporal")["state"], "failed")
+
+    def test_endpoint_names_and_sandbox_slugs_never_share_a_host(self):
+        from sbx_control import core, sandboxes
+        self.register("app")
+        for name in ("app", "app-5432", "app-api", "3000-abc"):
+            with self.subTest(name=name), self.assertRaises(self.endpoints.Conflict):
+                self.endpoints.add(name=name, target="10.0.0.5:7233", by="test")
+        self.endpoints.add(name="cache", target="10.0.0.5:6379", by="test")
+        self.endpoints.add(name="web-cache", target="10.0.0.6:6379", by="test")
+        for slug in ("cache", "web"):
+            with self.subTest(slug=slug), self.assertRaisesRegex(core.SandboxError, "is an endpoint"):
+                sandboxes.check_slug(slug, "new")
+        self.assertEqual(sandboxes.check_slug("cache2", "new"), "cache2")
 
     def nginx(self, code):
         script = self.tls / "fake-nginx"
@@ -342,16 +417,21 @@ class CertificateTests(Setup, Installation):
         self.sandbox_found()
         self.register("box")
         written, commands = {}, []
-        sbx = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: commands.append(c)),
-                              files=SimpleNamespace(write=lambda path, text, **kw: written.update({path: text})))
+        sbx = SimpleNamespace(
+            commands=SimpleNamespace(run=lambda c, **kw: commands.append(c) or SimpleNamespace(stdout="")),
+            files=SimpleNamespace(write=lambda path, text, **kw: written.update({path: text})))
         with patch.object(core.runtime, "connect", return_value=sbx), \
                 patch.object(core.lifecycle, "assert_binding"), patch.object(core.lifecycle, "observe"), \
                 patch.object(core, "runtime_state", return_value="paused"):
             core.connect("box", "for a test", info=self.info("box", state="paused"))
-        folder = f"{core.RUN}/{self.endpoints.RENEWED}"
-        self.assertEqual(sorted(written), sorted([f"{folder}/{n}{s}" for n in ("dev-pg", "temporal")
-                                                  for s in (".pem", "-key.pem")] + [f"{folder}/renewed.json"]))
-        self.assertGreater(json.loads(written[f"{folder}/renewed.json"])["dev-pg"], time.time() + 23 * 3600)
+        staging = f"{core.RUN}/{self.endpoints.RENEWED}/.push"
+        # Key and certificate in one file each, staged, then moved into place whole.
+        self.assertEqual(sorted(written), [f"{staging}/dev-pg.pem", f"{staging}/renewed.json", f"{staging}/temporal.pem"])
+        self.assertIn("PRIVATE KEY", written[f"{staging}/dev-pg.pem"])
+        self.assertIn("BEGIN CERTIFICATE", written[f"{staging}/dev-pg.pem"])
+        self.assertTrue(any("mv -f" in c and "renewed.json" in c for c in commands))
+        self.assertTrue(any("forward ensure" in c for c in commands))   # and its forwarder runs
+        self.assertGreater(json.loads(written[f"{staging}/renewed.json"])["dev-pg"], time.time() + 23 * 3600)
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
 
 
@@ -450,19 +530,39 @@ class RouteTests(Setup, Installation):
 
     def test_running_sandboxes_get_a_grant_a_revoke_an_add_and_a_removal_without_a_restart(self):
         from sbx_control import sandboxes
+        self.deliveries.clear()
         with patch.object(sandboxes, "deliver_env", return_value={"running": 1, "paused": 0}) as deliver:
+            before = next(r for r in self.endpoints._rows() if r["name"] == "temporal")
+            self.effects()
             self.endpoints.set_repos("temporal", ["owner/app", "new/repo"])          # public/repo revoked, new/repo granted
-            self.assertEqual(sorted(c.args[0] for c in deliver.call_args_list), ["new/repo", "public/repo"])
+            # A revoke makes the endpoint's CA anew: nginx gets it, and every sandbox still granted new certificates.
+            self.delivered()
+            self.assertEqual(sorted(c.args[0] for c in deliver.call_args_list), ["new/repo", "owner/app", "public/repo"])
+            after = next(r for r in self.endpoints._rows() if r["name"] == "temporal")
+            self.assertNotEqual(after["ca_cert"], before["ca_cert"])
+            self.assertGreater(after["revision"], before["revision"])
+            self.assertEqual(self.effects(), ["endpoints"])
             for call in deliver.call_args_list:
                 self.assertEqual((call.args[1], call.kwargs), (["SBX_ENDPOINT_TEMPORAL"], {"restart": False}))
             deliver.reset_mock()
+            self.endpoints.grant("temporal", "third/repo")                          # a grant alone: no new CA
+            self.delivered()
+            self.assertEqual([c.args[0] for c in deliver.call_args_list], ["third/repo"])
+            self.assertEqual(next(r for r in self.endpoints._rows() if r["name"] == "temporal")["ca_cert"],
+                             after["ca_cert"])
+            self.endpoints.revoke("temporal", "third/repo")
+            self.delivered()
+            deliver.reset_mock()
             self.endpoints.add(name="cache", target="10.0.0.20:6379", repos=["owner/app"], by="test")
+            self.delivered()
             self.assertEqual([c.args[:2] for c in deliver.call_args_list], [("owner/app", ["SBX_ENDPOINT_CACHE"])])
             deliver.reset_mock()
             self.endpoints.remove("cache")
+            self.delivered()
             self.assertEqual([c.args[:2] for c in deliver.call_args_list], [("owner/app", ["SBX_ENDPOINT_CACHE"])])
             deliver.reset_mock()
             self.endpoints.set_repos("temporal", ["owner/app", "new/repo"])          # nothing changed: nothing to bring
+            self.delivered()
             deliver.assert_not_called()
         with provider(self.runtime):   # what the revoked repo's sandbox is written with now
             routes = self.endpoints.routes("fake", "public/repo")
@@ -480,14 +580,55 @@ class RouteTests(Setup, Installation):
         refresh.assert_called_once_with("vm", info, False)   # no restart of its own: the restart follows
         bring_up.assert_called_once()
 
-    def test_the_forwarder_s_ports_are_never_previews(self):
-        from sbx_control import core, recipes
+    def test_the_forwarder_s_ports_are_never_previews_and_other_ports_stay_detectable(self):
+        from sbx_control import core, recipes, routing
         listening = ("LISTEN 0 64 127.0.0.1:17400 0.0.0.0:*\nLISTEN 0 64 127.0.0.1:17401 0.0.0.0:*\n"
-                     "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\n")
+                     "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\nLISTEN 0 511 0.0.0.0:17402 0.0.0.0:*\n")
+        config = json.dumps({"endpoints": [{"name": "a", "local_port": 17400}, {"name": "b", "local_port": 17401}]})
         app = recipes.App("owner/app", Path("/nonexistent"), {})
-        self.assertEqual(core.detected_ports(listening, app), {3000: False})
-        self.assertFalse(any(core.detectable_port(p) for p in self.endpoints.LOCAL_PORTS))
-        self.assertIsNone(core.suffix_port("-17400"))   # no preview host for it either
+
+        def run_in(output):
+            vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout=output)))
+            with patch.object(routing.runtime, "connect", return_value=vm), \
+                    patch.object(routing.addressing, "mode", return_value="domain"):
+                return routing.detect_ports("sbx-id", app)
+        # A sandbox whose forwarder has 17400 and 17401: those are not its app's.
+        self.assertEqual(run_in(f"{listening}---sbx-forwarder---\n{config}\n"), {3000: False, 17402: False})
+        # Without endpoints (Embed, an installation with none) nothing is held back.
+        self.assertEqual(run_in(f"{listening}---sbx-forwarder---\n"),
+                         {3000: False, 17400: True, 17401: True, 17402: False})
+        self.assertTrue(core.detectable_port(17400))
+
+    def test_endpoints_take_local_ports_nothing_else_in_the_sandbox_listens_on(self):
+        from sbx_control import core
+        with provider(self.runtime):
+            routes = self.endpoints.routes("fake", "owner/app")
+        placed = routes.placed({17400, 17402})
+        self.assertEqual([(r["name"], r["local_port"]) for r in placed.rows], [("dev-pg", 17401), ("temporal", 17403)])
+        self.assertEqual(placed.env({"A": f"x://{PG}/d"})["A"], "x://127.0.0.1:17401/d")
+        # What listens, the forwarder's own ports aside.
+        output = ("LISTEN 0 64 127.0.0.1:17400 0.0.0.0:*\nLISTEN 0 64 0.0.0.0:17401 0.0.0.0:*\n---sbx-forwarder---\n"
+                  + json.dumps({"endpoints": [{"local_port": 17400}]}))
+        vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout=output)))
+        self.assertEqual(core.taken_ports(vm), {17401})
+
+    def test_an_address_in_the_recipe_s_env_is_advice_not_a_refusal(self):
+        from sbx_control import recipes, sandboxes, state
+        self.enterContext(patch.object(recipes, "load", return_value=SimpleNamespace(
+            spec={"env": {"CACHE": "redis://10.0.0.30:6379"}}, size={}, repo="owner/app")))
+        self.bound["owner/app"] = []
+        self.assertEqual(self.endpoints.missing("owner/app"), [])
+        self.assertEqual(self.endpoints.missing("owner/app", sources=("env",)), [
+            ("the internal host 10.0.0.30:6379 named in sbx.yaml's env",
+             "sbx endpoints add --name NAME --target 10.0.0.30:6379 --repo owner/app")])
+        self.register("box")
+        with provider(self.runtime):
+            sandboxes.advise_endpoints("box", "owner/app", "fake")
+        with state.db() as conn:
+            said = [r[0] for r in conn.execute("select detail from events where sandbox = 'box' and "
+                                               "kind = 'endpoint suggested'")]
+        self.assertEqual(len(said), 1)
+        self.assertIn("sbx endpoints add --name NAME --target 10.0.0.30:6379 --repo owner/app", said[0])
 
     def test_embed_keeps_its_values(self):
         routes = self.endpoints.routes("embed", "owner/app")
@@ -628,7 +769,6 @@ class ForwarderTests(Setup, Installation):
         try:
             with socket.create_connection(("127.0.0.1", self.local[name]), timeout=10) as client:
                 client.sendall(payload)
-                client.shutdown(socket.SHUT_WR)
                 return client.recv(1024)
         except OSError:
             return b""
@@ -678,7 +818,7 @@ class ForwarderTests(Setup, Installation):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        renew = {**self.endpoints.renew_config("box"), "url": f"http://127.0.0.1:{server.server_address[1]}/certs"}
+        renew = {**self.endpoints.renew_config("box", "owner/app"), "url": f"http://127.0.0.1:{server.server_address[1]}/certs"}
         expired = self.endpoints.issue("box", self.rows["dev-pg"], hours=-0.05)   # ran out while it slept
         self.forwarder(self.config({"dev-pg": expired}, renew=renew))
         self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
@@ -690,3 +830,204 @@ class ForwarderTests(Setup, Installation):
         self.bound["owner/app"] = []   # no longer attached: renewal refused, the expired one fails
         self.assertEqual(self.ask("dev-pg"), b"")
         self.assertEqual(len(asked), 2)
+
+    def callback(self, answer):
+        """sbx-control's renewal route as a local HTTP server: answer() -> (status, body); the calls it got."""
+        asked = []
+
+        class Callback(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                asked.append(time.monotonic())
+                status, body = answer()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Callback)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/certs", asked
+
+    def test_a_certificate_still_valid_is_used_while_its_renewal_runs_in_the_background(self):
+        release = threading.Event()
+        fresh = self.endpoints.issue("box", self.rows["dev-pg"])
+
+        def slow():
+            release.wait(10)
+            return 200, json.dumps({"endpoints": [{"name": "dev-pg", "cert": fresh[0], "key": fresh[1],
+                                                   "not_after": fresh[2]}]}).encode()
+        url, asked = self.callback(slow)
+        soon = self.endpoints.issue("box", self.rows["dev-pg"], hours=0.5)   # within the hour before it runs out
+        self.forwarder(self.config({"dev-pg": soon}, renew={"url": url, "sandbox": "box", "credential": "c"}))
+        began = time.monotonic()
+        self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
+        self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
+        self.assertLess(time.monotonic() - began, 5)   # neither waited for the renewal
+        release.set()
+        self.assertTrue(self.forwarders[-1].renewer.wait(10))
+        self.assertEqual(len(asked), 1)   # one renewal for both
+        stored = (self.renewed / "dev-pg.pem").read_text()
+        self.assertIn("PRIVATE KEY", stored)   # key and certificate in one file, written whole
+        self.assertIn("BEGIN CERTIFICATE", stored)
+        self.assertEqual(oct((self.renewed / "dev-pg.pem").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
+        self.assertEqual(len(asked), 1)   # the renewed one lasts a day
+
+    def test_a_failed_renewal_backs_off(self):
+        url, asked = self.callback(lambda: (403, b"{}"))
+        soon = self.endpoints.issue("box", self.rows["dev-pg"], hours=0.5)
+        self.forwarder(self.config({"dev-pg": soon}, renew={"url": url, "sandbox": "box", "credential": "c"}))
+        self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
+        self.assertTrue(self.forwarders[-1].renewer.wait(10))
+        for _ in range(3):
+            self.assertEqual(self.ask("dev-pg"), b"echo:select 1")   # the one it has, while it lasts
+        self.assertEqual(len(asked), 1)   # not again before RENEW_RETRY
+        self.assertGreaterEqual(self.forwarders[-1].renewer.next_try - time.monotonic(), self.guest.RENEW_RETRY - 5)
+
+    def recorded_endpoint(self, behave):
+        """An endpoint's TLS server (dev-pg's CA) behind a TCP relay that records what crosses the wire; behave(conn,
+        heard) is the server's side of one connection. (the relay's port, the bytes each way, what the server heard)."""
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(self.folder / "srv.pem", self.folder / "srv-key.pem")
+        context.load_verify_locations(cadata=self.rows["dev-pg"]["ca_cert"])
+        context.verify_mode = ssl.CERT_REQUIRED
+        server = socket.create_server(("127.0.0.1", 0))
+        relay = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(server.close)
+        self.addCleanup(relay.close)
+        wire, heard = {"up": bytearray(), "down": bytearray()}, bytearray()
+
+        def serve():
+            raw, _ = server.accept()
+            try:
+                behave(context.wrap_socket(raw, server_side=True), heard)
+            except (OSError, ssl.SSLError):
+                raw.close()
+
+        def copy(source, sink, into):
+            try:
+                while data := source.recv(65536):
+                    into += data
+                    sink.sendall(data)
+            except OSError:
+                pass
+            for sock in (sink, source):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        def relay_one():
+            inside, _ = relay.accept()
+            outside = socket.create_connection(server.getsockname())
+            threading.Thread(target=copy, args=(inside, outside, wire["up"]), daemon=True).start()
+            copy(outside, inside, wire["down"])
+        threading.Thread(target=serve, daemon=True).start()
+        threading.Thread(target=relay_one, daemon=True).start()
+        return relay.getsockname()[1], wire, heard
+
+    def test_a_half_closing_client_sends_nothing_in_plain_text(self):
+        def read_all(conn, heard):
+            while data := conn.recv(1024):
+                heard.extend(data)
+            conn.close()
+        port, wire, heard = self.recorded_endpoint(read_all)
+        self.servers["dev-pg"] = port
+        self.forwarder(self.config({"dev-pg": self.endpoints.issue("box", self.rows["dev-pg"])}))
+        with socket.create_connection(("127.0.0.1", self.local["dev-pg"]), timeout=10) as client:
+            client.sendall(b"SECRET-QUERY-1")
+            client.shutdown(socket.SHUT_WR)   # half way: the forwarder ends the session (nginx does too)
+            self.assertEqual(client.recv(1024), b"")
+        deadline = time.monotonic() + 5
+        while heard != b"SECRET-QUERY-1" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(bytes(heard), b"SECRET-QUERY-1")   # what was sent still arrived, through TLS
+        self.assertNotIn(b"SECRET-QUERY", bytes(wire["up"]))
+        self.assertTrue(wire["up"])
+
+    def test_after_the_server_closes_first_nothing_goes_out_in_plain_text(self):
+        def say_and_close(conn, heard):
+            conn.sendall(b"SERVER-SECRET")
+            conn.close()
+        port, wire, heard = self.recorded_endpoint(say_and_close)
+        self.servers["dev-pg"] = port
+        self.forwarder(self.config({"dev-pg": self.endpoints.issue("box", self.rows["dev-pg"])}))
+        with socket.create_connection(("127.0.0.1", self.local["dev-pg"]), timeout=10) as client:
+            got = bytearray()
+            while data := client.recv(1024):
+                got += data
+            self.assertEqual(bytes(got), b"SERVER-SECRET")
+            try:
+                client.sendall(b"LATE-SECRET")   # after the end: must not reach the wire, least of all in plain text
+                time.sleep(0.3)
+            except OSError:
+                pass
+        self.assertNotIn(b"SERVER-SECRET", bytes(wire["down"]))
+        self.assertNotIn(b"LATE-SECRET", bytes(wire["up"]))
+
+    def test_a_port_it_can_t_listen_on_is_reported_and_said_once(self):
+        taken = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(taken.close)
+        self.local["dev-pg"] = taken.getsockname()[1]
+        status = self.folder / "status.json"
+        forwarder = self.guest.Forwarder(self.config({"dev-pg": self.endpoints.issue("box", self.rows["dev-pg"])}),
+                                         renewed=self.renewed, status=status)
+        self.forwarders.append(forwarder)
+        with patch.object(self.guest, "say") as said:
+            forwarder.reconcile()
+            forwarder.reconcile()
+        self.assertEqual(said.call_count, 1)
+        self.assertEqual(json.loads(status.read_text()), {"unbound": {"dev-pg": self.local["dev-pg"]}})
+
+
+class ForwarderLivenessTests(Setup, Installation):
+    """A forwarder that died is started again: by ensure, which sbx runs on writes, resumes and each keeper round."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure()
+        sys.path.insert(0, str(GUEST))
+        self.addCleanup(sys.path.remove, str(GUEST))
+        import sbx_guest
+        self.guest = sbx_guest
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-forward-")))
+
+    def test_ensure_starts_one_only_when_none_runs(self):
+        state = self.folder / "forwarder.json"
+        state.write_text(json.dumps({"pid": 999999, "birth": "1"}))   # a forwarder that died
+        with patch.object(self.guest.subprocess, "Popen", return_value=SimpleNamespace(pid=4242)) as popen, \
+                patch.object(self.guest, "record", side_effect=lambda pid, proc=None: {"pid": pid, "birth": "7"}):
+            self.guest.forward("ensure", self.folder / "config.json", state_file=state)
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(json.loads(state.read_text())["pid"], 4242)
+            with patch.object(self.guest, "alive", return_value=True):
+                self.guest.forward("ensure", self.folder / "config.json", state_file=state)
+            self.assertEqual(popen.call_count, 1)
+
+    def test_the_keeper_keeps_it_running_and_says_a_taken_port_once(self):
+        from sbx_control import keeper, state
+        self.endpoints.add(server="dev_pg", by="test")
+        self.register("box")
+        self.endpoints._record_certificate("box", "owner/app", ["dev-pg"], time.time() + 3600)
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(stdout=json.dumps({"unbound": {"dev-pg": 17400}}))
+        vm = SimpleNamespace(commands=SimpleNamespace(run=run))
+        info = SimpleNamespace(sandbox_id="id-box", metadata={"sbx": "box"})
+        with patch.object(keeper.runtime, "connect", return_value=vm):
+            keeper.keep_forwarder(info)
+            keeper.keep_forwarder(info)
+            keeper.keep_forwarder(SimpleNamespace(sandbox_id="id-x", metadata={"sbx": "no-endpoints"}))
+        self.assertEqual(len(commands), 2)   # the sandbox without endpoints is not looked into
+        self.assertTrue(all("forward ensure" in c for c in commands))
+        with state.db() as conn:
+            said = [r[0] for r in conn.execute("select detail from events where sandbox = 'box' and "
+                                               "kind = 'endpoint port taken'")]
+        self.assertEqual(len(said), 1)
+        self.assertIn("dev-pg can't listen on 127.0.0.1:17400", said[0])

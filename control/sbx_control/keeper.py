@@ -125,6 +125,12 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     notice_stopped_app(info)
     if settings.current().sandboxes.detected_previews != "off":
         routing.detect_ports(info.sandbox_id, core.app_of(info))
+    try:
+        keep_forwarder(info)
+    except runtime.NotRunning:
+        raise
+    except Exception as error:   # the next round tries again
+        print(f"keeper: endpoints forwarder of {(info.metadata or {}).get('sbx')}: {error!r}", flush=True)
     if (info.metadata or {}).get("sbx") in held:
         keep_awake(info)
         return True
@@ -137,6 +143,24 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     if use.accessed_within(core.TIMEOUT_SECONDS) or use.probe.ssh or use.probe.agents or use.probe.busy:
         keep_awake(info)
     return True
+
+
+_unbound_said: dict = {}   # sandbox -> the {name: port} its forwarder last couldn't listen on, said once
+
+
+def keep_forwarder(info):
+    """A running sandbox with endpoints: its forwarder running (started again
+    when it died), and a port it can't listen on said once as an event."""
+    name = (info.metadata or {}).get("sbx")
+    if not name or name not in endpoints.holders():
+        return
+    status = core.ensure_forwarder(runtime.connect(info.sandbox_id))
+    unbound = status.get("unbound") or {}
+    if unbound and unbound != _unbound_said.get(name):
+        state.event(name, "endpoint port taken", ", ".join(
+            f"{endpoint} can't listen on 127.0.0.1:{port}: something else there does; stop it, or the next "
+            "env delivery or restart places the endpoint on a free port" for endpoint, port in sorted(unbound.items())))
+    _unbound_said[name] = unbound
 
 
 def renew_certificates():

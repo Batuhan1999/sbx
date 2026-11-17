@@ -458,32 +458,57 @@ def usage():
 # that endpoint, the server verified as <address> (against the public CAs, or
 # the installation's self-signed certificate when the config names one).
 # Each new connection takes the newest certificate it has: the config's, or
-# one sbx pushed or the forwarder pulled since (RENEWED); with less than
-# RENEW_BEFORE left it first asks sbx-control for new ones, with the
-# sandbox's own credential. Open connections keep the certificate they began
-# with. It reads the config again every few seconds (endpoints come and go)
-# and exits once the config has been gone for a while.
+# one sbx pushed or the forwarder pulled since (RENEWED). With less than
+# RENEW_BEFORE left it asks sbx-control for new ones in the background, one
+# request at a time, backing off after a failure; a connection waits for that
+# only when its certificate has run out. Open connections keep the
+# certificate they began with. One thread pumps each connection, never
+# shutting the TLS side down half way: when either side ends, what is
+# pending goes out and both close. It reads the config again every few
+# seconds (endpoints come and go) and exits once the config has been gone
+# for a while; a port it can't listen on is in FORWARD_STATUS, which sbx
+# reads.
 
 FORWARD_PID = "forwarder.json"          # in RUN: its pid and start time
+FORWARD_STATUS = "forwarder-status.json"  # in RUN: {"unbound": {name: port}}
 FORWARD_POLL = 2.0
 FORWARD_GONE = 15.0                     # seconds without a config before it exits
-RENEWED = "endpoint-certs"              # in RUN: <name>.pem, <name>-key.pem and renewed.json {name: not_after}
-RENEW_BEFORE = 3600                     # seconds left on a certificate that make a connection renew it first
+RENEWED = "endpoint-certs"              # in RUN: <name>.pem (key and certificate) and renewed.json {name: not_after}
+RENEW_BEFORE = 3600                     # seconds left on a certificate that start a renewal
+RENEW_RETRY = 60                        # seconds before a failed renewal is tried again, doubling
+RENEW_RETRY_MAX = 900
+RENEW_WAIT = 20                         # how long a connection with a run-out certificate waits for one
+BIND_LOG_SECONDS = 300                  # a port that can't be listened on is said again this often
+PUMP_CHUNK = 65536
+PUMP_BUFFER = 1 << 20                   # bytes held for a side that doesn't take them yet
+
+
+def _write_private(path, text):
+    """A file only its owner reads, replaced whole (a reader sees the old or the new)."""
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(text)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _certificate(endpoint, folder, renewed):
-    """(cert path, key path, not_after) of the newest certificate for the endpoint."""
+    """(certificate file, key file or None when the first holds both, not_after) of the newest for the endpoint."""
     found = [(str(folder / endpoint["cert"]), str(folder / endpoint["key"]), float(endpoint.get("not_after") or 0))]
     later = read_json(Path(renewed) / "renewed.json").get(endpoint["name"])
-    if later:
-        found.append((str(Path(renewed) / f"{endpoint['name']}.pem"),
-                      str(Path(renewed) / f"{endpoint['name']}-key.pem"), float(later)))
+    if later and (Path(renewed) / f"{endpoint['name']}.pem").exists():
+        found.append((str(Path(renewed) / f"{endpoint['name']}.pem"), None, float(later)))
     return max(found, key=lambda f: f[2])
 
 
 def renew(config, folder, renewed):
     """New certificates for every endpoint the sandbox may use, from
-    sbx-control (its callback, with the sandbox's credential), into renewed."""
+    sbx-control (its callback, with the sandbox's credential), into renewed:
+    each key and certificate in one file, replaced whole."""
     import ssl
     import urllib.error
     import urllib.request
@@ -500,35 +525,66 @@ def renew(config, folder, renewed):
         raise
     renewed = Path(renewed)
     renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
-    times = {}
+    times = dict(read_json(renewed / "renewed.json"))
     for item in found:
-        for suffix, value in ((".pem", item["cert"]), ("-key.pem", item["key"])):
-            path = renewed / f"{item['name']}{suffix}"
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "w") as stream:
-                stream.write(value)
+        _write_private(renewed / f"{item['name']}.pem", item["key"] + item["cert"])
         times[item["name"]] = item["not_after"]
     write_json(renewed / "renewed.json", times)
     return times
 
 
-def forward_context(config_path, endpoint, renewed, lock=None, now=None):
+class Renewer:
+    """One renewal at a time, in the background; after a failure, none
+    before the backoff passed."""
+
+    def __init__(self, config_path, renewed):
+        import threading
+        self.config_path, self.renewed = Path(config_path), Path(renewed)
+        self.lock, self.done = threading.Lock(), threading.Event()
+        self.done.set()
+        self.next_try, self.backoff = 0.0, RENEW_RETRY
+
+    def start(self) -> bool:
+        import threading
+        with self.lock:
+            if not self.done.is_set() or time.monotonic() < self.next_try:
+                return False
+            self.done.clear()
+        threading.Thread(target=self._run, daemon=True).start()
+        return True
+
+    def _run(self):
+        try:
+            config = json.loads(self.config_path.read_text())
+            if not config.get("renew"):
+                return
+            renew(config, self.config_path.parent, self.renewed)
+            self.next_try, self.backoff = 0.0, RENEW_RETRY
+        except (OSError, ValueError, KeyError) as error:
+            say(f"forward: renewing certificates: {type(error).__name__}: {error}; again in {self.backoff} s")
+            self.next_try = time.monotonic() + self.backoff
+            self.backoff = min(self.backoff * 2, RENEW_RETRY_MAX)
+        finally:
+            self.done.set()
+
+    def wait(self, timeout):
+        return self.done.wait(timeout)
+
+
+def forward_context(config_path, endpoint, renewed, renewer=None, now=None):
     """The TLS client context for a new connection to the endpoint, with its
-    newest certificate, renewed first when it runs out within RENEW_BEFORE
-    (a renewal that fails leaves the one there is, while it lasts)."""
-    import contextlib
+    newest certificate. With less than RENEW_BEFORE left a renewal starts in
+    the background; only a certificate that has run out waits for it."""
     import ssl
     config = json.loads(Path(config_path).read_text())
     folder = Path(config_path).parent
-    now = time.time() if now is None else now
-    with lock or contextlib.nullcontext():
-        cert, key, not_after = _certificate(endpoint, folder, renewed)
-        if not_after - now < RENEW_BEFORE and config.get("renew"):
-            try:
-                renew(config, folder, renewed)
-                cert, key, not_after = _certificate(endpoint, folder, renewed)
-            except (OSError, ValueError, KeyError) as error:
-                say(f"forward {endpoint.get('name')}: renewing its certificate: {type(error).__name__}: {error}")
+    renewer = renewer or Renewer(config_path, renewed)
+    cert, key, not_after = _certificate(endpoint, folder, renewed)
+    if not_after - (time.time() if now is None else now) < RENEW_BEFORE and config.get("renew"):
+        renewer.start()
+        if not_after <= (time.time() if now is None else now):
+            renewer.wait(RENEW_WAIT)
+            cert, key, not_after = _certificate(endpoint, folder, renewed)
     trust = config.get("trust")
     context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -541,56 +597,110 @@ def forward_dial(address, port, timeout=10):
     return socket.create_connection((address, port), timeout=timeout)
 
 
-def _pipe(source, sink):
-    import socket
+def pump(client, server):
+    """Both directions of one connection in this thread, non-blocking: the
+    app's plain socket and the TLS socket to the endpoint. When either side
+    ends or fails, what is pending for the other still goes out, then both
+    close. The TLS socket is never shut down half way (that would leave it
+    a plain socket); it is only closed."""
+    import selectors
+    import ssl
+    client.setblocking(False)
+    server.setblocking(False)
+    up, down = bytearray(), bytearray()      # app -> endpoint, endpoint -> app
+    ended = False
+    selector = selectors.DefaultSelector()
     try:
         while True:
-            data = source.recv(65536)
-            if not data:
-                break
-            sink.sendall(data)
-    except OSError:
-        pass
+            if ended and not up and not down:
+                return
+            # TLS may hold decrypted bytes the selector can't see.
+            server_ready = not ended and len(down) < PUMP_BUFFER and server.pending() > 0
+            events = {client: (selectors.EVENT_READ if not ended and len(up) < PUMP_BUFFER else 0)
+                      | (selectors.EVENT_WRITE if down else 0),
+                      server: (selectors.EVENT_READ if not ended and len(down) < PUMP_BUFFER else 0)
+                      | (selectors.EVENT_WRITE if up else 0)}
+            for sock, mask in events.items():
+                if mask:
+                    try:
+                        selector.modify(sock, mask)
+                    except KeyError:
+                        selector.register(sock, mask)
+                else:
+                    try:
+                        selector.unregister(sock)
+                    except KeyError:
+                        pass
+            if not selector.get_map() and not server_ready:
+                return
+            ready = {key.fileobj: mask for key, mask in selector.select(timeout=0 if server_ready else None)}
+            if server_ready:
+                ready[server] = ready.get(server, 0) | selectors.EVENT_READ
+            if ready.get(client, 0) & selectors.EVENT_READ:
+                try:
+                    data = client.recv(PUMP_CHUNK)
+                    if data:
+                        up += data
+                    else:
+                        ended = True
+                except BlockingIOError:
+                    pass
+            if ready.get(server, 0) & selectors.EVENT_READ:
+                try:
+                    data = server.recv(PUMP_CHUNK)
+                    if data:
+                        down += data
+                    else:
+                        ended = True
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+                    pass
+                except (ssl.SSLZeroReturnError, ssl.SSLEOFError):
+                    ended = True
+            if up and ready.get(server, 0) & selectors.EVENT_WRITE:
+                try:
+                    del up[:server.send(up)]
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+                    pass
+            if down and ready.get(client, 0) & selectors.EVENT_WRITE:
+                try:
+                    del down[:client.send(down)]
+                except BlockingIOError:
+                    pass
+    except (OSError, ValueError):
+        return   # a side failed: nothing more can go through
     finally:
-        for sock, how in ((sink, socket.SHUT_WR), (source, socket.SHUT_RD)):
+        selector.close()
+        for sock in (client, server):
             try:
-                sock.shutdown(how)
+                sock.close()
             except OSError:
                 pass
 
 
-def forward_one(client, endpoint, config_path, renewed, lock=None):
-    """One app connection, through TLS to the endpoint, until both sides close."""
-    import threading
+def forward_one(client, endpoint, config_path, renewed, renewer=None):
+    """One app connection, through TLS to the endpoint, until either side ends."""
     try:
-        context = forward_context(config_path, endpoint, renewed, lock)
-        raw = forward_dial(endpoint["address"], endpoint["port"])
-        server = context.wrap_socket(raw, server_hostname=endpoint["address"])
-        server.settimeout(None)
+        context = forward_context(config_path, endpoint, renewed, renewer)
+        server = context.wrap_socket(forward_dial(endpoint["address"], endpoint["port"]),
+                                     server_hostname=endpoint["address"])
     except (OSError, ValueError) as error:
         say(f"forward {endpoint.get('name')}: {type(error).__name__}: {error}")
         client.close()
         return
-    back = threading.Thread(target=_pipe, args=(server, client), daemon=True)
-    back.start()
-    _pipe(client, server)
-    back.join()
-    for sock in (client, server):
-        try:
-            sock.close()
-        except OSError:
-            pass
+    pump(client, server)
 
 
 class Forwarder:
     """The listeners, kept to what the config says (reconcile)."""
 
-    def __init__(self, config_path, host="127.0.0.1", renewed=None):
-        import threading
+    def __init__(self, config_path, host="127.0.0.1", renewed=None, status=None):
         self.config_path, self.host = str(config_path), host
         self.renewed = Path(renewed) if renewed else RUN / RENEWED
-        self.lock = threading.Lock()   # one renewal at a time
+        self.status = Path(status) if status else RUN / FORWARD_STATUS
+        self.renewer = Renewer(self.config_path, self.renewed)
         self.listeners = {}   # local_port -> (socket, endpoint)
+        self.unbound = {}     # endpoint name -> port it can't listen on
+        self.said = {}        # (name, port) -> when that was last said
 
     def reconcile(self):
         """Listen for each endpoint in the config, stop for those gone;
@@ -603,6 +713,7 @@ class Forwarder:
             return False
         for port in [p for p in self.listeners if p not in wanted]:
             self.listeners.pop(port)[0].close()
+        unbound = {}
         for port, endpoint in wanted.items():
             if port in self.listeners:
                 self.listeners[port] = (self.listeners[port][0], endpoint)
@@ -612,12 +723,22 @@ class Forwarder:
             try:
                 listener.bind((self.host, port))
             except OSError as error:
-                say(f"forward {endpoint.get('name')}: can't listen on {self.host}:{port}: {error}")
                 listener.close()
+                unbound[endpoint.get("name", str(port))] = port
+                key = (endpoint.get("name"), port)
+                if time.monotonic() - self.said.get(key, -BIND_LOG_SECONDS) >= BIND_LOG_SECONDS:
+                    say(f"forward {endpoint.get('name')}: can't listen on {self.host}:{port}: {error}")
+                    self.said[key] = time.monotonic()
                 continue
             listener.listen(64)
             self.listeners[port] = (listener, endpoint)
             threading.Thread(target=self._accept, args=(port, listener), daemon=True).start()
+        if unbound != self.unbound:
+            self.unbound = unbound
+            try:
+                write_json(self.status, {"unbound": unbound})
+            except OSError:
+                pass
         return True
 
     def _accept(self, port, listener):
@@ -631,7 +752,7 @@ class Forwarder:
             if not found or found[0] is not listener:
                 client.close()
                 return
-            threading.Thread(target=forward_one, args=(client, found[1], self.config_path, self.renewed, self.lock),
+            threading.Thread(target=forward_one, args=(client, found[1], self.config_path, self.renewed, self.renewer),
                              daemon=True).start()
 
     def close(self):
@@ -652,18 +773,19 @@ class Forwarder:
             time.sleep(poll)
 
 
-def forward(action, config_path):
+def forward(action, config_path, state_file=None):
     """ensure: start the forwarder unless it runs (detached); run: be it."""
-    state_file = RUN / FORWARD_PID
+    state_file = Path(state_file) if state_file else RUN / FORWARD_PID
     if action == "run":
         write_json(state_file, record(os.getpid()))
         Forwarder(config_path).run()
         return
     if alive(read_json(state_file)):
         return
-    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=open("/tmp/sbx-endpoints.log", "a"), start_new_session=True)
+    with open("/tmp/sbx-endpoints.log", "a") as log:
+        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+                                   start_new_session=True)
     write_json(state_file, record(process.pid))
 
 
