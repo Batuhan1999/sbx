@@ -158,27 +158,48 @@ def runtime_sealed() -> bool:
 
 def seal_runtime_file() -> int:
     """Each enabled runtime's secret (Runtime.secret_key) as a reference into
-    the store (store enable): those lines are rewritten in place, every other
-    line of runtime.env (comments, the runtimes' selection, other keys)
-    stays as it is."""
+    the store, once that is Infisical (store enable; sbx-admin runtime add
+    and install.sh when it is already): the lines that still hold a plain
+    value are rewritten in place; every other line of runtime.env (comments,
+    the runtimes' selection, other keys, secrets sealed already) stays as it
+    is. 1 when it sealed any."""
     from . import runtime as sandbox_runtime
-    file = paths.runtime_env()
-    found = runtime()
-    secrets = {b.secret_key for b in sandbox_runtime.backends() if found.get(b.secret_key)}
-    if not secrets or runtime_sealed():
+    raw, found = _runtime_file(), runtime()
+    secrets = {b.secret_key for b in sandbox_runtime.backends()
+               if found.get(b.secret_key) and not secret_store.is_reference(raw.get(b.secret_key, ""))}
+    if not secrets:
         return 0
-    sealed = {s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets}
-    out = []
-    for line in file.read_text().splitlines():
+    edit_runtime_file({s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets})
+    return 1
+
+
+def sealing() -> bool:
+    """Whether runtime.env's secrets go into the store: once it is Infisical
+    (the local store's values are no references runtime() could follow)."""
+    return settings.current().store.mode == "infisical"
+
+
+def edit_runtime_file(values: dict) -> None:
+    """Set these keys of runtime.env (None: remove its line) in place; one
+    it does not have yet is added at the end. Every other line stays as it
+    is, and the file stays root-only."""
+    file = paths.runtime_env()
+    out, done = [], set()
+    for line in file.read_text().splitlines() if file.exists() else ():
         name, sep, _ = line.partition("=")
-        if sep and not line.lstrip().startswith("#") and name in sealed:
-            line = f"{name}={shlex.quote(sealed[name])}"
+        name = name.strip()
+        if sep and not line.lstrip().startswith("#") and name in values:
+            if name not in done and values[name] is not None:
+                out.append(f"{name}={shlex.quote(values[name])}")
+            done.add(name)
+            continue
         out.append(line)
+    out += [f"{name}={shlex.quote(value)}" for name, value in values.items() if name not in done and value is not None]
     temporary = file.with_suffix(".new")
     temporary.touch(mode=0o600)
+    temporary.chmod(0o600)
     temporary.write_text("\n".join(out) + "\n")
     temporary.replace(file)
-    return 1
 
 
 def platform_secrets() -> dict:

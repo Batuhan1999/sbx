@@ -152,6 +152,89 @@ def _runtime(kind: str, is_default: bool) -> dict:
             "capabilities": dataclasses.asdict(backend.capabilities), "limits": limits, "status": status}
 
 
+# sbx-admin runtime add | remove | default: runtime.env's selection and keys
+
+
+def add(kind: str, secret: str) -> str:
+    """Enable a runtime that runs elsewhere (a provider) with its secret
+    (Runtime.secret_key), or give an enabled one a new secret: checked first
+    (its configure, then its own checks against the provider), then written
+    into runtime.env, sealed into the store once that is Infisical. A
+    runtime on this host is install.sh's (it sets up the host side). Returns
+    what it did, as a sentence."""
+    from . import secret_store, vault
+    if kind not in runtime.kinds():
+        raise Refused(f"there is no runtime {kind}; the runtimes here are {', '.join(runtime.kinds())}")
+    backend = runtime.make(kind)
+    if getattr(backend, "host", False):
+        raise Refused(f"{backend.title} ({kind}) runs on this host: install.sh enables it where the host can run it")
+    if not secret:
+        raise Refused(f"the {backend.secret_key} for {backend.title} comes on stdin")
+    enabled = runtime.enabled()
+    try:
+        backend.configure({**vault.runtime(backend.credential_keys), backend.secret_key: secret})
+    except SystemExit as error:
+        raise Refused(str(error)) from None
+    failed = [c for c in backend.test() if not c.ok]
+    if failed:
+        raise Refused(f"{backend.title} did not take the key: "
+                      + "; ".join(f"{c.name}: {c.detail}" for c in failed) + "; nothing was changed")
+    old = vault._runtime_file((backend.secret_key,)).get(backend.secret_key, "")
+    values = {backend.secret_key: secret_store.seal(secret, key=f"runtime/{backend.secret_key}")
+              if vault.sealing() else secret}
+    if kind not in enabled:
+        values[runtime.ENABLED_KEY] = ",".join([*enabled, kind])
+    vault.edit_runtime_file(values)
+    if secret_store.is_reference(old) and old != values[backend.secret_key]:
+        secret_store.discard(old)
+    return (f"{backend.title} ({kind}) {'has a new key' if kind in enabled else 'is enabled'}; the runtimes: "
+            f"{', '.join(runtime.enabled())} (default {runtime.default()})")
+
+
+def remove(kind: str) -> str:
+    """Disable a runtime: refused while it has sandboxes (running or paused)
+    or when it is the only one. A provider's keys leave runtime.env (and the
+    store); a runtime on this host keeps install.sh's. A default naming it
+    goes, so the first that stays is the default."""
+    from . import secret_store, vault
+    enabled = runtime.enabled()
+    if kind not in enabled:
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(enabled)})")
+    if len(enabled) == 1:
+        raise Refused(f"{kind} is the only runtime enabled here; add another first (sbx-admin runtime add KIND)")
+    backend = runtime.get(kind)
+    try:
+        listed = backend.sandboxes()
+    except Exception as error:
+        raise Refused(f"{backend.title} did not say which sandboxes it holds ({type(error).__name__}: {error}); "
+                      "nothing was changed") from None
+    if listed:
+        names = ", ".join(sorted((i.metadata or {}).get("sbx") or i.sandbox_id for i in listed))
+        raise Refused(f"{len(listed)} sandbox{'es' if len(listed) > 1 else ''} run on {backend.title} ({names}): "
+                      "delete them first (sbx down NAME, or the web app)")
+    values: dict = {runtime.ENABLED_KEY: ",".join(k for k in enabled if k != kind)}
+    if runtime.configuration()[runtime.DEFAULT_KEY] == kind:
+        values[runtime.DEFAULT_KEY] = None
+    old = {}
+    if not getattr(backend, "host", False):
+        old = vault._runtime_file(backend.credential_keys)
+        values.update(dict.fromkeys(backend.credential_keys))
+    vault.edit_runtime_file(values)
+    for value in old.values():
+        if secret_store.is_reference(value):
+            secret_store.discard(value)
+    return f"{backend.title} ({kind}) is disabled; the runtimes: {', '.join(runtime.enabled())} (default {runtime.default()})"
+
+
+def set_default(kind: str) -> str:
+    """The runtime new sandboxes run on unless the request or the repo names another."""
+    from . import vault
+    if kind not in runtime.enabled():
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(runtime.enabled())})")
+    vault.edit_runtime_file({runtime.DEFAULT_KEY: kind})
+    return f"new sandboxes run on {runtime.title(kind)} ({kind}) unless the request or the repo names another"
+
+
 # sbx-admin runtime verify
 
 VERIFY_PORT = 8765
@@ -159,9 +242,10 @@ VERIFY_FILE = "/tmp/sbx-verify"
 VERIFY_TIMEOUT = 600
 
 
-def _fetch(url: str, host: str) -> str:
-    """GET url with this Host, as nginx sends a preview's request to a runtime's ingress."""
-    request = urllib.request.Request(url, headers={"Host": host})
+def _fetch(url: str, host: str, headers: dict | None = None) -> str:
+    """GET url with this Host (and these headers: a sandbox's token), as nginx
+    sends a preview's request to a runtime's ingress."""
+    request = urllib.request.Request(url, headers={"Host": host, **(headers or {})})
     with urllib.request.urlopen(request, timeout=10) as response:
         return response.read().decode(errors="replace")
 
@@ -248,10 +332,14 @@ def verify(kind: str | None = None, say=print) -> bool:
             if route.get("X-Sbx-Runtime") != kind:
                 raise AssertionError(f"the gate routes it to {route.get('X-Sbx-Runtime')!r}")
             ingress = runtime.get(kind).ingress
+            # An https ingress is asked by the sandbox's own host (SNI), as nginx does.
+            base = f"https://{route['X-Sbx-Upstream']}" if ingress.startswith("https://") else ingress
+            traffic = route.get(gate.TOKEN)
+            extra = {"headers": {runtime.get(kind).upstream_token_header: traffic}} if traffic else {}
             last = None
             for _ in range(20):
                 try:
-                    body = _fetch(f"{ingress}/{VERIFY_FILE.rsplit('/', 1)[1]}", route["X-Sbx-Upstream"])
+                    body = _fetch(f"{base}/{VERIFY_FILE.rsplit('/', 1)[1]}", route["X-Sbx-Upstream"], **extra)
                     if body.strip() == token:
                         return f"{route['X-Sbx-Upstream']} through {ingress}"
                     last = f"answered {body[:80]!r}"

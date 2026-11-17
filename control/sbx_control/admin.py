@@ -22,6 +22,9 @@
   sbx-admin runtime list             the enabled sandbox runtimes: kind, default, capabilities, limits, state
   sbx-admin runtime verify [KIND]    take a throwaway sandbox through its life on one (default: the default)
   sbx-admin runtime apply            after editing /etc/sbx/runtime.env: check it, regenerate nginx, restart sbx-control
+  sbx-admin runtime add KIND         enable a provider's runtime (e2b-cloud) with its API key, read from stdin
+  sbx-admin runtime remove KIND      disable one (refused while it has sandboxes)
+  sbx-admin runtime default KIND     the runtime new sandboxes run on unless asked otherwise
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
   sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
@@ -210,16 +213,56 @@ def do_template(a) -> int:
     return 0
 
 
+def _apply_runtimes() -> None:
+    """What `runtime apply` does once runtime.env is checked: nginx's
+    upstreams are per enabled runtime (tls.sh), and sbx-control configures
+    each runtime at start (platform.connect): both again."""
+    from . import runtime
+    kinds, first = runtime.enabled(), runtime.default()
+    settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
+    print(f"runtimes {', '.join(kinds)} (default {first}): nginx is regenerated and "
+          "sbx-control restarts within seconds")
+
+
+def do_runtime_change(a) -> int:
+    """runtime add | remove | default: edit runtime.env, check the result the
+    way sbx-control will read it (put back as it was when that fails), then
+    apply it."""
+    from . import platform, runtimes
+    if not a.kind:
+        print(f"runtime {a.action} KIND", file=sys.stderr)
+        return 2
+    file = paths.runtime_env()
+    before = file.read_text() if file.exists() else None
+    try:
+        if a.action == "add":
+            said = runtimes.add(a.kind, sys.stdin.read().strip())
+        elif a.action == "remove":
+            said = runtimes.remove(a.kind)
+        else:
+            said = runtimes.set_default(a.kind)
+        platform.connect()
+    except (runtimes.Refused, SystemExit) as error:
+        if before is not None and file.exists() and file.read_text() != before:
+            temporary = file.with_suffix(".new")
+            temporary.touch(mode=0o600)
+            temporary.write_text(before)
+            temporary.replace(file)
+        print(f"refused: {error}", file=sys.stderr)
+        return 1
+    print(said)
+    _apply_runtimes()
+    return 0
+
+
 def do_runtime(a) -> int:
     from . import platform, runtime, runtimes
-    platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action != "add":   # add mends a runtime's missing key too
+        platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action in ("add", "remove", "default"):
+        return do_runtime_change(a)
     if a.action == "apply":
-        kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
-        # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control
-        # configures each runtime at start (platform.connect): both again.
-        settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
-        print(f"runtimes {', '.join(kinds)} (default {first}): nginx is regenerated and "
-              "sbx-control restarts within seconds")
+        _apply_runtimes()   # enabled() and default() are checked before anything is asked of the host
         return 0
     if a.action == "verify":
         if a.kind and a.kind not in runtime.enabled():
@@ -307,8 +350,9 @@ def main(argv: list) -> int:
     template.add_argument("action", choices=["rm", "prune"])
     template.add_argument("key", nargs="?")
     runtime_cmd = sub.add_parser("runtime", help="the enabled sandbox runtimes")
-    runtime_cmd.add_argument("action", choices=["list", "verify", "apply"])
-    runtime_cmd.add_argument("kind", nargs="?", help="verify: the runtime to verify (default: the default)")
+    runtime_cmd.add_argument("action", choices=["list", "verify", "apply", "add", "remove", "default"])
+    runtime_cmd.add_argument("kind", nargs="?", help="verify: the runtime to verify (default: the default); "
+                             "add, remove, default: the runtime")
     runtime_cmd.add_argument("--json", action="store_true", help="list: as GET /api/runtimes answers")
     preview = sub.add_parser("preview", help="loopback-only app preview; forward its listener over SSH")
     preview.add_argument("name")

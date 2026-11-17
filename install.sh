@@ -1,11 +1,25 @@
 #!/bin/sh
-# Set up the sandbox platform on this machine, or upgrade it: E2B Embed,
+# Set up the sandbox platform on this machine, or upgrade it: the sandbox
+# runtimes (E2B Embed where this host can run it, E2B Cloud with an API key),
 # sbx-control, nginx with a wildcard certificate, the host firewall, the
 # agent connectors' services and the base templates. Every step is safe to run
 # again; running it again upgrades to the platform this script comes from.
 #
 #   sudo sh install.sh                  # browser-guided setup, no domain required
 #   sudo sh install.sh --domain sbx.example.com --email you@example.com [options]
+#   sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain sbx.example.com ...
+#                                       # sandboxes at E2B Cloud: a small host, no KVM
+#
+# Runtimes: a first install enables E2B Embed (Firecracker on this host)
+# when the host can run it: /dev/kvm, 16 GiB of memory (24 for the default
+# budget) and 60 GiB of free disk. With E2B_CLOUD_API_KEY in the environment
+# it also enables E2B Cloud (the key goes to /etc/sbx/runtime.env), the
+# default where Embed is off; such a host needs about 2 GiB of memory and
+# 10 GiB of disk, and a domain (E2B's sandboxes call this server back at
+# login.D). A host that can run neither stops with what to set. An upgrade
+# keeps the runtimes the installation enables (SBX_RUNTIMES); a key given
+# again replaces E2B Cloud's or enables it. Later: sbx-admin runtime add,
+# remove, default.
 #
 # Options:
 #   --domain D        previews at <name>.D, sbx-control at login.D (optional)
@@ -56,8 +70,8 @@
 # bundle); `sh .../rollback.sh` there goes back to the release before. They
 # start again with the new release; running sandboxes keep running.
 #
-# Needs Ubuntu 24.04 with /dev/kvm: bare metal, or a VM with nested
-# virtualization enabled. With --domain D: A records for D and *.D pointing
+# Needs Ubuntu 24.04; for E2B Embed also /dev/kvm: bare metal, or a VM with
+# nested virtualization enabled. With --domain D: A records for D and *.D pointing
 # here, and for --dns delegated also the record `_acme-challenge.D NS D.` and
 # inbound UDP and TCP port 53 (this host answers the certificate's DNS
 # challenge). Without a domain: inbound TCP port 80 for the IP certificate.
@@ -104,25 +118,60 @@ say "Preflight"
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
 . /etc/os-release
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] || die "Ubuntu 24.04 is required, this is $PRETTY_NAME"
-[ -e /dev/kvm ] || die "no /dev/kvm: use bare metal or a VM with nested virtualization enabled"
-[ -e /dev/net/tun ] || die "no /dev/net/tun"
 mem_mib=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-[ "$mem_mib" -ge 15000 ] || die "16 GiB of memory at least, this has $mem_mib MiB"
+disk_gib=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
+first=""; configured || first=1
+# The runtimes this installation enables now (SBX_RUNTIMES in runtime.env,
+# missing: Embed alone); none before a first install writes the file.
+installed=""
+if [ -f /etc/sbx/runtime.env ]; then
+  installed=$(sed -n 's/^SBX_RUNTIMES=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ')
+  [ -n "$installed" ] || installed=embed
+fi
+enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
+# Why E2B Embed can't run on this host ("" when it can).
+unfit=""
+[ -e /dev/kvm ] || unfit="no /dev/kvm: use bare metal or a VM with nested virtualization enabled"
+[ -n "$unfit" ] || [ -e /dev/net/tun ] || unfit="no /dev/net/tun"
+[ -n "$unfit" ] || [ "$mem_mib" -ge 15000 ] || unfit="16 GiB of memory at least, this has $mem_mib MiB"
 # An upgrade keeps the count Embed runs with: a new one recreates its runtime.
 [ -n "$hugepages" ] || ! configured || hugepages=$(sed -n 's/^HUGEPAGES=//p' /opt/e2b/.env 2>/dev/null | tail -1)
-if [ -z "$hugepages" ] && [ "$mem_mib" -lt 23000 ]; then
-  die "the default budget needs 24 GiB RAM (12 GiB host reserve, the rest for sandboxes at 4 GiB each unless a recipe asks for more); use a larger host or choose --hugepages explicitly after budgeting host services"
+if [ -z "$unfit" ] && [ -z "$hugepages" ] && [ "$mem_mib" -lt 23000 ]; then
+  unfit="the default budget needs 24 GiB RAM (12 GiB host reserve, the rest for sandboxes at 4 GiB each unless a recipe asks for more); use a larger host or choose --hugepages explicitly after budgeting host services"
 fi
-# The memory sandboxes get: everything but 12 GiB for the host, sbx-control
-# and Embed's own services, in 2 MiB pages.
-[ -n "$hugepages" ] || hugepages=$(( (mem_mib - 12288) / 2 ))
-[ "$hugepages" -ge 2048 ] || hugepages=2048
-disk_gib=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
 # A first install needs room for Embed's images and the base templates; an
 # upgrade only for what changes.
 need_gib=60; ! configured || need_gib=15
-[ "$disk_gib" -ge "$need_gib" ] || die "$need_gib GiB of free disk at least, this has $disk_gib GiB"
-first=""; configured || first=1
+[ -n "$unfit" ] || [ "$disk_gib" -ge "$need_gib" ] || unfit="$need_gib GiB of free disk at least, this has $disk_gib GiB"
+# Embed: where the installation enables it already (it must still fit), or
+# on a first install where the host can run it.
+embed=""
+if [ -n "$installed" ]; then
+  if enables embed; then embed=1; [ -z "$unfit" ] || die "$unfit"; fi
+elif [ -z "$unfit" ]; then
+  embed=1
+fi
+# E2B Cloud: with its key in the environment, or enabled already.
+cloud=""
+{ [ -n "${E2B_CLOUD_API_KEY:-}" ] || enables e2b-cloud; } && cloud=1
+if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
+  die "this host can't run E2B Embed ($unfit), and no provider runtime is configured. Sandboxes can run at a provider instead: E2B Cloud, with its API key (from E2B's dashboard) in the environment (read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY), then: sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D ... (docs/reference.md, Runtimes)"
+fi
+if [ -z "$embed" ]; then
+  # The sandboxes run at a provider: this host runs sbx-control, nginx and the secret store.
+  [ -z "$unfit" ] || [ -n "$installed" ] || echo "E2B Embed: off on this host ($unfit)"
+  [ "$mem_mib" -ge 1800 ] || die "2 GiB of memory at least, this has $mem_mib MiB"
+  [ "$disk_gib" -ge 10 ] || die "10 GiB of free disk at least, this has $disk_gib GiB"
+else
+  # The memory sandboxes get: everything but 12 GiB for the host, sbx-control
+  # and Embed's own services, in 2 MiB pages.
+  [ -n "$hugepages" ] || hugepages=$(( (mem_mib - 12288) / 2 ))
+  [ "$hugepages" -ge 2048 ] || hugepages=2048
+fi
+# A provider's sandboxes call this server back at login.D (bundles, git
+# credentials, catalog actions): a first install with one needs the domain.
+[ -z "$cloud" ] || [ -z "$first" ] || [ -n "$domain" ] || \
+  die "E2B Cloud's sandboxes call this server back at login.D: give --domain D (A records for D and *.D pointing here)"
 # A first install defaults the admin to --email and, with a domain, signs in
 # with a generated password, which admits the admins only: it needs one.
 if [ -n "$first" ]; then
@@ -130,7 +179,7 @@ if [ -n "$first" ]; then
   [ -n "$sign_in" ] || [ -z "$domain" ] || sign_in=password
   [ "$sign_in" != password ] || [ -n "$admin" ] || die "password sign-in admits the admins only: give --admin EMAIL (or --email)"
 fi
-echo "ok: $PRETTY_NAME, $mem_mib MiB, $disk_gib GiB free, /dev/kvm"
+echo "ok: $PRETTY_NAME, $mem_mib MiB, $disk_gib GiB free; runtimes:${embed:+ embed (/dev/kvm)}${cloud:+ e2b-cloud}${installed:+ (enabled: $installed)}"
 
 say "Packages and Docker"
 export DEBIAN_FRONTEND=noninteractive
@@ -156,7 +205,7 @@ release_admin() { (cd "$release" && venv/bin/python -m sbx_control.admin "$@"); 
 release_host() { (cd "$release" && venv/bin/python -m sbx_control.host "$@"); }
 release_embed() { (cd "$release" && venv/bin/python -m sbx_control.runtime.embed "$@"); }
 echo "ok: $release"
-if configured; then
+if configured && [ -n "$embed" ]; then
   # Before an upgrade stops or changes anything: what it lays into Embed's
   # project must not recreate the runtime under sandboxes.
   said=$(release_embed upgrade-check --source "$src" --hugepages "$hugepages" 2>&1) || die "$said Nothing was changed."
@@ -224,6 +273,15 @@ echo "settings in sbx.db (sbx-admin config get)"
 # Commands the catalog's packages run on this host (their host_tools).
 release_host tools >> /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "could not install the catalog's host tools"; }
 
+# The settings an upgrade keeps: a provider runtime needs the domain (above).
+eval "$(cd "$release" && venv/bin/python -m sbx_control.settings shell | grep -E '^(domain|dns)=' | sed 's/^/setting_/')"
+[ -z "$cloud" ] || [ -n "${setting_domain:-}" ] || \
+  die "E2B Cloud's sandboxes call this server back at login.D: connect a domain first (sbx-admin connect domain ...), then run this again"
+if [ -n "$cloud" ] && [ "${setting_dns:-}" = none ]; then
+  echo "note: --dns none gives a self-signed certificate. sbx's own calls from E2B Cloud sandboxes (template bundles, git credentials) pin its key; anything else in a sandbox that calls this server refuses it. Use a DNS provider for a trusted certificate."
+fi
+
+if [ -n "$embed" ]; then
 say "E2B Embed"
 if [ -z "$first" ]; then
   # Again, now that sbx-control is stopped and creates no sandboxes; a
@@ -258,27 +316,28 @@ key=$(cd /opt/e2b && docker compose exec -T ready cat /run/e2b/sdk.env | sed -n 
 ! systemctl is-active -q sbx-host-guard || systemctl restart sbx-host-guard || die "could not set up the host's firewall (sbx-host-guard)"
 echo "ok: $hugepages hugepages, API on 127.0.0.1:3000"
 
-say "Sandbox runtime credentials: /etc/sbx/runtime.env"
-# This host's sandbox runtimes: Embed's credentials, made here by Embed, in
-# runtime.env (never backed up). Header routing in client-proxy takes an IP
-# host, not localhost. A fresh install enables Embed alone (SBX_RUNTIMES);
-# on an existing one, what is not Embed's (the runtimes enabled, the default,
-# other runtimes' keys) stays as the operator set it.
-umask 077
-if [ -f /etc/sbx/runtime.env ]; then
-  kept=$(grep -vE '^(#|E2B_API_KEY=|E2B_API_URL=|E2B_SANDBOX_URL=|E2B_HOST=|E2B_DOMAIN=)' /etc/sbx/runtime.env || true)
-else
-  kept="SBX_RUNTIMES=embed"
 fi
-{
-  echo "# This host's sandbox runtimes (E2B Embed here). Written by install.sh; not backed up."
-  echo "E2B_API_KEY=$key"
-  echo "E2B_API_URL=http://127.0.0.1:3000"
-  echo "E2B_SANDBOX_URL=http://127.0.0.1:3002"
-  [ -z "$kept" ] || printf '%s\n' "$kept"
-} > /etc/sbx/runtime.env.new
-mv /etc/sbx/runtime.env.new /etc/sbx/runtime.env
-umask 022
+
+say "Sandbox runtime credentials: /etc/sbx/runtime.env"
+# This host's sandbox runtimes and their keys, in runtime.env (never backed
+# up): Embed's, made here by Embed (header routing in client-proxy takes an
+# IP host, not localhost), and E2B Cloud's from E2B_CLOUD_API_KEY. A fresh
+# install enables those (SBX_RUNTIMES, Embed first: the default); on an
+# existing one, everything else (the runtimes enabled, the default, other
+# runtimes' keys) stays as the operator set it. Values pass in the
+# environment, never on a command line.
+runtimes=""
+if [ -n "$embed" ]; then
+  # Embed's URLs as before; E2B_HOST and E2B_DOMAIN lines go (unset here).
+  runtimes=$(cd "$release" && env -u E2B_HOST -u E2B_DOMAIN E2B_API_KEY="$key" E2B_API_URL=http://127.0.0.1:3000 \
+    E2B_SANDBOX_URL=http://127.0.0.1:3002 venv/bin/python -m sbx_control.runtime env --enable embed \
+    E2B_API_KEY E2B_API_URL E2B_SANDBOX_URL E2B_HOST E2B_DOMAIN) || die "could not write /etc/sbx/runtime.env (above)"
+fi
+if [ -n "${E2B_CLOUD_API_KEY:-}" ]; then
+  runtimes=$(cd "$release" && venv/bin/python -m sbx_control.runtime env --enable e2b-cloud E2B_CLOUD_API_KEY) \
+    || die "could not write /etc/sbx/runtime.env (above)"
+fi
+echo "ok: ${runtimes:-runtimes as runtime.env names them}"
 
 say "sbx-control, the host's guard, nginx, connector services"
 SBX_UPGRADE_BACKUP=done sh "$release/host-install.sh" >> /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "see /tmp/sbx-install.log"; }
@@ -287,6 +346,9 @@ echo "ok: sbx-control $version"
 
 # Managed secret storage is part of a normal installation (infisical/enable.sh).
 sh /opt/sbx-control/current/infisical/enable.sh "$store_admin"
+# A key given on an upgrade, once the store is Infisical: into it, like the rest.
+[ -z "${E2B_CLOUD_API_KEY:-}" ] || (cd /opt/sbx-control/current && venv/bin/python -c \
+  'from sbx_control import vault; vault.sealing() and vault.seal_runtime_file()') || die "could not seal E2B_CLOUD_API_KEY into the store"
 
 if [ -z "$skip_templates" ]; then
   cd /opt/sbx-control/current
