@@ -570,6 +570,33 @@ class Review(TwoRuntimes, Installation):
         # The one runtime.env names (sealed-4) and the one the last upgrade's backup names (sealed-3) stay.
         self.assertEqual(discarded, ["sealed-1", "sealed-2"])
 
+    def test_resealing_keeps_what_an_upgrade_backup_still_names(self):
+        from sbx_control import paths, vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        backup = paths.state_dir() / "upgrade-backups/20261117-000000"
+        backup.mkdir(parents=True)
+        self.addCleanup(__import__("shutil").rmtree, backup.parent)
+        made, discarded = iter(range(1, 10)), []
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append):
+                for value in ("one", "two", "three", "four"):
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+                    if value == "one":   # an upgrade backed runtime.env up now: it names sealed-1
+                        (backup / "runtime.env").write_text(file.read_text())
+                self.assertEqual(discarded, ["sealed-2"])     # sealed-1 stays while the backup names it
+                __import__("shutil").rmtree(backup)           # the backup is gone
+                file.write_text("SBX_RUNTIMES=embed,fake\nE2B_API_KEY=five\nE2B_API_URL=u\nFAKE_RUNTIME_TOKEN=sealed-0\n")
+                vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        self.assertEqual(discarded, ["sealed-2", "sealed-1", "sealed-3"])
+
     def test_amp_caches_from_before_are_the_default_runtime_s_once(self):
         from sbx_control import state
         from sbx_control.connectors.amp import Amp

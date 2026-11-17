@@ -155,6 +155,9 @@ class Cloud(Compute, HostSide):
             lock = self._locks.setdefault(sandbox_id, threading.Lock())
         with lock:
             if sandbox_id not in self._tokens:
+                failed = self._failed.get(sandbox_id)   # again: a caller waiting here met the same outage
+                if failed and time.monotonic() - failed[0] < FETCH_RETRY_SECONDS:
+                    raise failed[1]
                 try:
                     self.connect(sandbox_id)
                     if not self._tokens.get(sandbox_id):

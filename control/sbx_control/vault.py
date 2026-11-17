@@ -179,18 +179,42 @@ def seal_runtime_file() -> int:
     return 1
 
 
+def _backed_up_references() -> set:
+    """Every value the upgrade backups' copies of runtime.env hold (each
+    one's rollback.sh restores it), references into the store among them."""
+    found = set()
+    for copy in (paths.state_dir() / "upgrade-backups").glob("*/runtime.env"):
+        try:
+            text = copy.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            _, sep, value = line.partition("=")
+            if sep and not line.lstrip().startswith("#") and value.strip():
+                try:
+                    found.add(shlex.split(value)[0])
+                except ValueError:   # not a value sbx wrote
+                    continue
+    return found
+
+
 def _keep_two(name: str, reference: str) -> None:
     """The objects this sealing made for a runtime secret: kept are the one
-    runtime.env names now and the one before it (what the last upgrade's
-    backup of runtime.env names, for rollback.sh); older ones are discarded."""
+    runtime.env names now, the one before it, and any an upgrade backup's
+    runtime.env still names (rollback.sh restores that file); the others
+    are discarded, and one a backup names is discarded once no backup does."""
     history = state.Setting(f"runtime_sealed:{name}", encoded=True)
     found = [*history.get([]), reference]
+    named = _backed_up_references()
+    kept = [old for old in found[:-2] if old in named]
     for old in found[:-2]:
+        if old in named:
+            continue
         try:
             secret_store.discard(old)
         except Exception as error:   # gone already, or the store did not answer: tried no more
             print(f"runtime secret {name}: an old sealed value was not discarded: {error}", flush=True)
-    history.set(found[-2:])
+    history.set([*kept, *found[-2:]])
 
 
 def sealing() -> bool:

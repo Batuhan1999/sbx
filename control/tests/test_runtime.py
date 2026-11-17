@@ -544,6 +544,37 @@ class Cloud(unittest.TestCase):
                 patch.object(Sandbox, "connect", return_value=good):
             self.assertEqual(self.cloud.upstream_token("vm9"), "test-token-9")   # asked again once it passed
 
+    def test_concurrent_requests_in_an_outage_ask_e2b_once(self):
+        import threading
+        from e2b import Sandbox
+        from e2b.exceptions import SandboxException
+        from sbx_control import runtime
+        entered, release = threading.Event(), threading.Event()
+
+        def connect(*_, **__):
+            entered.set()
+            release.wait(5)     # the others queue on the sandbox's lock meanwhile
+            raise SandboxException("502: bad gateway")
+        errors = []
+
+        def ask():
+            try:
+                self.cloud.upstream_token("vm9")
+            except runtime.Failed as error:
+                errors.append(error)
+        with patch.object(Sandbox, "connect", side_effect=connect) as called:
+            first = threading.Thread(target=ask)
+            first.start()
+            entered.wait(5)
+            rest = [threading.Thread(target=ask) for _ in range(5)]
+            for thread in rest:
+                thread.start()
+            release.set()
+            for thread in (first, *rest):
+                thread.join(5)
+        self.assertEqual(called.call_count, 1)
+        self.assertEqual(len(errors), 6)
+
     def test_what_it_keeps_of_sandboxes_that_went_is_pruned_on_a_full_listing(self):
         from e2b import Sandbox
         from sbx_control import runtime

@@ -156,11 +156,10 @@ def look_once():
             # The runtime paused or deleted it since the listing (its own
             # timeout): nothing failed, the next round sees it as it is.
             gate.forget_preview_resume(info.sandbox_id)
-    if complete:   # every sandbox listed: none misses a new certificate's pin
-        try:
-            sandboxes.redeliver_on_certificate_change((i.metadata or {}).get("sbx") for i in infos)
-        except Exception as error:   # the round's other work goes on; tried again next round
-            print(f"keeper: certificate pin delivery: {error!r}", flush=True)
+    try:   # a new certificate's pin; delivered for good once every runtime listed (complete)
+        sandboxes.redeliver_on_certificate_change(((i.metadata or {}).get("sbx") for i in infos), complete)
+    except Exception as error:   # the round's other work goes on; tried again next round
+        print(f"keeper: certificate pin delivery: {error!r}", flush=True)
     sandboxes.deliver_waiting(running)
     sandboxes.prepare_waiting({(i.metadata or {}).get("sbx") for i in infos})
 

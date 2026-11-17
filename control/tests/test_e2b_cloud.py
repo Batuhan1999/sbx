@@ -439,6 +439,22 @@ class CredentialHelper(Installation):
         self.assertEqual(layer.files["tls-pin"].content, "--insecure --pinnedpubkey sha256//now=")
         self.assertIn(f"cat {github.PIN}", layer.files["credential"].content)
 
+    def test_a_listing_that_missed_a_runtime_delivers_to_what_it_has(self):
+        from sbx_control import delivery, sandboxes, templates
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
+            # One runtime did not answer: the listed sandboxes get the pin now, once.
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertEqual(delivery.waiting(), {"a"})
+            delivery.forget("a")
+            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertEqual(delivery.waiting(), set())
+            # Every runtime answers: the ones missed before, and the pin counts as delivered.
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+            self.assertEqual(delivery.waiting(), {"b"})
+            delivery.forget("b")
+            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+        self.assertEqual(delivery.waiting(), set())
+
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
         from sbx_control import delivery, sandboxes, templates
         with patch.object(templates, "pinned_key", return_value=""):
