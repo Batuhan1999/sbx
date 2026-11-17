@@ -607,9 +607,43 @@ or API answer holds its value, and the web app shows a set secret only as
 | `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
 | `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. |
 | `GET /api/runtimes/change` | The last change, as above. |
+| `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
 
 All of them are for admins, and for the first-run setup link's token while
-the setup is open.
+the setup is open. `settings` also carry an int's `min`, `max`, `step` and
+`unit` (`seconds`, `MiB`, or `""` for a count), `presets` their
+`adjustable` keys and `note`, and an enabled runtime its `plan` (`{name,
+title}`, `custom` when no plan matches; also in `GET /api/runtimes`).
+
+The same from a laptop, for an admin or a coding agent, with the `sbx` CLI
+(over this API, as the signed-in admin; the API token's email must be an
+admin):
+
+```sh
+sbx runtimes                          # the enabled ones, each with its plan
+sbx runtimes available [--json]       # what can run here and why not, the plans, each setting now
+sbx runtimes add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
+sbx runtimes add e2b-cloud --plan pro --set E2B_CLOUD_MAX_CPU=16 --secret E2B_CLOUD_API_KEY < key-file
+sbx runtimes set e2b-cloud --plan custom --set E2B_CLOUD_MAX_SANDBOXES=50
+sbx runtimes set e2b-cloud --secret E2B_CLOUD_API_KEY < new-key-file
+sbx runtimes default e2b-cloud
+sbx runtimes remove e2b-cloud
+sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail and fix; exit 1 when one fails
+```
+
+- `--plan` takes a plan's values from `sbx runtimes available` (`hobby`,
+  `pro`) or `custom`; a plan fixes its limits but those it leaves adjustable
+  (Pro's `E2B_CLOUD_MAX_CPU` and `E2B_CLOUD_MAX_MEMORY_MB`), so `--set` on a
+  fixed one is refused before anything is sent. `--set KEY=VALUE` is in the
+  setting's unit (seconds, MiB) and repeatable; without `--plan` it changes
+  only what it names.
+- A secret is never on the command line: `--secret KEY` reads its value from
+  stdin, one line per `--secret` in order (hidden at a terminal); `--set` on
+  a secret is refused.
+- Each change waits until it failed, or is done and the restarted sbx-control
+  answers (it rides out the restart's 502s), prints the outcome and exits
+  non-zero when it failed; `--no-wait` returns once it is queued. A refusal
+  prints the API's `detail` and exits non-zero.
 
 ### No runtime yet
 
@@ -735,7 +769,7 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/repos/OWNER/NAME` | anyone | What the installation knows about a repository, with `runtime`: its setting, or `null` for the default. |
 | `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
-| `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default` | admin, and the first-run setup link | Add, change, remove a runtime and choose the default; checked, then applied by the host ([from the web app](#from-the-web-app)). |
+| `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default`, `POST /api/runtimes/KIND/test` | admin, and the first-run setup link | `sbx runtimes available | add | set | remove | default | test`: add, change, remove a runtime, choose the default, run its checks; changes are checked, then applied by the host ([from the web app](#from-the-web-app)). |
 | `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
 | `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |

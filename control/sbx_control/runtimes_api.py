@@ -95,6 +95,16 @@ def api_change_settings(kind: str, body: Values, who: str = Depends(setup_or_adm
     return _queue("change", kind, who, lambda: runtimes.prepare(kind, body.values, adding=False))
 
 
+@router.post("/api/runtimes/{kind}/test")
+async def api_test(kind: str, who: str = Depends(setup_or_admin)):
+    """An enabled runtime's checks: {kind, ok, checks: [{name, ok, detail, fix, runtime}]}; 400 when not enabled."""
+    try:
+        checks = await run_in_threadpool(runtimes.test, kind)
+    except runtimes.Refused as error:
+        raise _refused(error) from None
+    return {"kind": kind, "ok": all(c["ok"] for c in checks), "checks": checks}
+
+
 @router.delete("/api/runtimes/{kind}", status_code=202)
 def api_remove(kind: str, who: str = Depends(setup_or_admin)):
     """Refused (409) while sandboxes run on it, naming them, or when it is the last one."""

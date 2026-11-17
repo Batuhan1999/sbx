@@ -389,6 +389,29 @@ class Web(TwoRuntimes, Server):
         listed = {r["kind"]: r for r in runtimes.describe()["runtimes"]}
         self.assertEqual(listed["e2b-cloud"]["plan"], {"name": "custom", "title": "Custom limits"})
 
+    def test_an_enabled_runtime_s_checks_over_the_api(self):
+        from sbx_control import reachability, template_builds
+        from sbx_control.connections.base import Check
+        response = self.call("POST", "/api/runtimes/fake/test")
+        self.assertEqual(response.status_code, 200, response.text)
+        found = response.json()
+        self.assertTrue(found["ok"])
+        self.assertEqual([c["name"] for c in found["checks"]], ["Fake API", "Limits", "Base template"])
+        self.assertIn("not built yet", found["checks"][2]["detail"])
+        # Built: the sandboxes' reach is checked too; a failing check makes the answer not ok.
+        with patch.object(template_builds, "status", return_value="built"), \
+                patch.object(reachability, "check", return_value=Check("Reaches this server", False, "timed out",
+                                                                       "open 443", runtime="fake")) as reach:
+            found = self.call("POST", "/api/runtimes/fake/test").json()
+        reach.assert_called_once_with("fake")
+        self.assertFalse(found["ok"])
+        self.assertEqual(found["checks"][-1], {"name": "Reaches this server", "ok": False, "detail": "timed out",
+                                               "fix": "open 443", "runtime": "fake"})
+        refused = self.call("POST", "/api/runtimes/e2b-cloud/test")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("not enabled", refused.json()["detail"])
+        self.assertEqual(self.client.post("/api/runtimes/fake/test").status_code, 401)   # admins (and the setup link)
+
     def test_a_change_that_stopped_part_way_is_failed_not_waited_for(self):
         from sbx_control import runtime_changes
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)

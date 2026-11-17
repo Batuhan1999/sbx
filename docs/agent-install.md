@@ -37,7 +37,9 @@ failed step before presenting it as done.
    into the secret store) or on the server (`sbx-admin runtime add
    e2b-cloud`, the key on stdin); the domain must be connected first. Any
    server can add E2B Cloud later the same ways, or in Settings → Sandbox
-   runtimes. Download the latest release's archive
+   runtimes. An agent with an admin's API token does it from the laptop
+   (see below), the owner handing over the key as a file or a pipe, never in
+   the chat or a command line. Download the latest release's archive
    (or the release the owner names), check its `.sha256` and run
    `sh install.sh` from the unpacked directory as root, as the
    [README](../README.md#install) shows; keep its progress visible. A git
@@ -62,6 +64,29 @@ failed step before presenting it as done.
    desktop CLI runs on macOS only; on Linux or in CI, use the
    [HTTP API](reference.md#http-api) with a token the owner makes on the host
    (`sbx-admin token create EMAIL --label LABEL`, shown once).
+
+   **A sandbox runtime from the laptop.** The first-run wizard adds the
+   first runtime on a server without `/dev/kvm` (the setup can't finish
+   without one, and `sbx login` needs a finished setup); the owner types the
+   key there. From then on an agent signed in as an admin adds, changes,
+   tests and removes runtimes itself, for example E2B Cloud on a server that
+   runs Embed, or another plan:
+
+   ```sh
+   sbx runtimes available                        # e2b-cloud can be added; its plans and settings
+   sbx runtimes add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < "$KEY_FILE"
+   sbx runtimes test e2b-cloud                   # each check ok / NO; exit 1 when one fails
+   ```
+
+   The owner gives the key as a file only they and the agent read, or pipes
+   it in (`pbpaste | sbx runtimes add ...`); it never goes on a command line
+   or into the chat. Choose the plan the owner's E2B team is on (`--plan
+   pro`; on Pro, `--set E2B_CLOUD_MAX_CPU=N` when E2B raised it). `add`
+   waits until the server has applied it and restarted, and prints the
+   outcome. On an installation whose secret store is still the local one it
+   is refused (409); then the owner runs `sbx-admin runtime add e2b-cloud`
+   on the server with the key on stdin. The base template then builds on it
+   (about ten minutes); `sbx runtimes test` says when it is built.
 5. **Set up the repository.** In the checkout, `sbx repo connect --agent`
    starts Claude Code (or `--agent codex`) with the server's setup brief.
    Without that agent installed, it prints the brief for another agent to

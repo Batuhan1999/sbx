@@ -460,14 +460,162 @@ def open_tool(name, tool):
 
 
 def runtimes_cmd(args):
+    """sbx runtimes [available | add | set | remove | default KIND]: list, or change (admins)."""
+    if args.action == "available":
+        return runtimes_available(args)
+    if args.action == "test":
+        return runtime_test(args)
+    if args.action:
+        return runtime_change(args)
     found = api("GET", "/api/runtimes")
     if args.json:
         print(json.dumps(found))
         return
+    if not found["runtimes"]:
+        print("no sandbox runtime is set up: sbx runtimes available, then sbx runtimes add KIND")
     for r in found["runtimes"]:
         where = "this server" if r.get("host") else "hosted"
+        plan = f" ({r['plan']['title']}{' plan' if r['plan']['name'] != 'custom' else ''})" if r.get("plan") else ""
         print(f"{r['kind']:<12} {'default' if r.get('default') else '':<8} {where:<12} "
-              f"{r['status']['state']:<14} {r['title']}: {r['status']['summary']}")
+              f"{r['status']['state']:<14} {r['title']}{plan}: {r['status']['summary']}")
+
+
+def runtimes_available(args):
+    """Every runtime the server's packages provide: whether it can run here, its plans, its settings now."""
+    found = api("GET", "/api/runtimes/available")
+    if args.json:
+        print(json.dumps(found))
+        return
+    for r in found:
+        state = "enabled" + (", default" if r.get("default") else "") if r.get("enabled") else (
+            "can be added" if r.get("can_run") and not r.get("host") else
+            f"can't run here: {r['why_not']}" if not r.get("can_run") else "set up by install.sh")
+        print(f"{r['kind']:<12} {r['title']}: {state}")
+        if r.get("not_editable") and not r.get("host"):
+            print(f"  {r['not_editable']}")
+        if r.get("plan"):
+            print(f"  plan now: {r['plan']['name']}")
+        for p in r.get("presets") or []:
+            fixed = ", ".join(f"{k}={v}" for k, v in p["values"].items() if k not in (p.get("adjustable") or []))
+            free = ", ".join(f"{k} (from {p['values'][k]})" for k in p.get("adjustable") or [])
+            print(f"  --plan {p['name']:<8} {fixed}{'; adjustable: ' + free if free else ''}")
+        if r.get("presets"):
+            print("  --plan custom   every limit with --set")
+        for s in r.get("settings") or []:
+            if s.get("secret"):
+                now = "set" if s["key"] in (r.get("secrets_set") or []) else "not set"
+                print(f"  --secret {s['key']} ({s['label']}: {now}; the value on stdin)")
+                continue
+            span = f"; {s['min']}..{s['max']}" if s.get("min") is not None and s.get("max") is not None else ""
+            unit = f" {s['unit']}" if s.get("unit") else ""
+            now = (r.get("values") or {}).get(s["key"]) or f"default {s['default'] or 'none'}"
+            print(f"  --set {s['key']}=… ({s['label']}{unit}{span}; now {now})")
+        if r.get("enabled") and r.get("removable"):
+            print(f"  can't remove: {r['removable']}")
+
+
+def runtime_test(args):
+    """sbx runtimes test KIND: the runtime's checks, as Settings and sbx-admin doctor run them; non-zero when any fails."""
+    if not args.kind:
+        sys.exit("sbx runtimes test KIND (sbx runtimes lists the enabled ones)")
+    found = api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test")
+    if args.json:
+        print(json.dumps(found))
+    else:
+        for c in found["checks"]:
+            print(f"{'ok ' if c['ok'] else 'NO '} {c['name']}: {c['detail']}"
+                  + (f" — {c['fix']}" if not c["ok"] and c.get("fix") else ""))
+    if not found["ok"]:
+        sys.exit(1)
+
+
+def _runtime_values(args, runtime):
+    """The values a change sends: --plan's (a plan fixes its limits but those it
+    leaves adjustable), then --set over them where the plan allows, then each
+    --secret read from stdin (one line each, in order; hidden at a terminal)."""
+    settings = {s["key"]: s for s in runtime.get("settings") or []}
+    values = {}
+    preset = None
+    if args.plan and args.plan != "custom":
+        preset = next((p for p in runtime.get("presets") or [] if p["name"] == args.plan), None)
+        if preset is None:
+            names = [p["name"] for p in runtime.get("presets") or []] + ["custom"]
+            sys.exit(f"{runtime['title']} has no plan {args.plan}; its plans: {', '.join(names)}")
+        values.update(preset["values"])
+    for pair in args.set or []:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            sys.exit(f"--set {pair}: expected KEY=VALUE")
+        setting = settings.get(key)
+        if setting is None:
+            sys.exit(f"{runtime['title']} has no setting {key}; sbx runtimes available lists them")
+        if setting.get("secret"):
+            sys.exit(f"{key} is a secret: --secret {key} reads it from stdin, never the command line")
+        if preset and key in preset["values"] and key not in (preset.get("adjustable") or []):
+            sys.exit(f"the {preset['title']} plan fixes {key}; choose --plan custom to set it")
+        values[key] = value
+    for key in args.secret or []:
+        setting = settings.get(key)
+        if setting is None or not setting.get("secret"):
+            sys.exit(f"{key} is no secret of {runtime['title']}; sbx runtimes available lists them")
+        value = (getpass.getpass(f"{setting['label']} for {runtime['title']} (hidden): ") if sys.stdin.isatty()
+                 else sys.stdin.readline().rstrip("\n"))
+        if not value.strip():
+            sys.exit(f"no value for {key} on stdin")
+        values[key] = value.strip()
+    return values
+
+
+def runtime_change(args):
+    """sbx runtimes add | set | remove | default KIND: queued by sbx-control, applied
+    by the host, which restarts sbx-control; waits for it unless --no-wait."""
+    if not args.kind:
+        sys.exit(f"sbx runtimes {args.action} KIND (sbx runtimes available lists them)")
+    kind = urllib.parse.quote(args.kind, safe="")
+    if args.action in ("add", "set"):
+        runtime = next((r for r in api("GET", "/api/runtimes/available") if r["kind"] == args.kind), None)
+        if runtime is None:
+            sys.exit(f"there is no runtime {args.kind}: sbx runtimes available lists them")
+        values = _runtime_values(args, runtime)
+        if args.action == "add":
+            queued = api("POST", "/api/runtimes", {"kind": args.kind, "values": values})
+        else:
+            queued = api("PUT", f"/api/runtimes/{kind}", {"values": values})
+    elif args.action == "remove":
+        queued = api("DELETE", f"/api/runtimes/{kind}")
+    else:
+        queued = api("PUT", "/api/runtimes/default", {"kind": args.kind})
+    if args.no_wait:
+        print(f"queued: {args.action} {args.kind} (sbx runtimes to see it once applied)")
+        return
+    wait_runtime_change(queued, args.timeout)
+
+
+def wait_runtime_change(change, timeout, interval=2.0):
+    """Until the change failed, or is done and a restarted sbx-control answers (as
+    the web app follows it); a request that fails meanwhile (the restart: 502,
+    refused connections) is retried. Exits non-zero when it failed."""
+    deadline, said = time.monotonic() + timeout, None
+    while True:
+        state = change.get("state")
+        if state == "failed":
+            sys.exit(f"the runtime change failed: {change.get('message') or 'see the server log'}")
+        if state == "done" and not change.get("restarting"):
+            print(change.get("message") or "done")
+            return
+        now = {"queued": "queued; waiting for the host to apply it", "applying": "applying",
+               "done": "applied; waiting for sbx-control to restart"}.get(state, state)
+        if now != said:
+            note(now)
+            said = now
+        if time.monotonic() > deadline:
+            sys.exit(f"the runtime change is still {state} after {timeout} s: sbx runtimes shows it once applied")
+        time.sleep(interval)
+        try:
+            change = request("GET", "/api/runtimes/change", timeout=30)
+        except (Refused, OSError) as error:   # sbx-control restarting: ask again
+            if "not signed in" in str(error) or "session expired" in str(error):
+                sys.exit(str(error))
 
 
 def ls(args):
@@ -1002,8 +1150,20 @@ def parser():
     p.add_argument("--timeout", type=int, default=1800, help="seconds to wait for it (default 1800)")
     p.add_argument("--runtime", metavar="KIND", help="the sandbox runtime it runs on (sbx runtimes lists them; "
                    "default: the repo's, else the server's)")
-    p = command("runtimes", runtimes_cmd, "the sandbox runtimes the server runs sandboxes on")
-    p.add_argument("--json", action="store_true")
+    p = command("runtimes", runtimes_cmd, "the sandbox runtimes the server runs sandboxes on; admins add, change "
+                "and remove them (applied by the server, which restarts)")
+    p.add_argument("action", nargs="?", choices=["available", "test", "add", "set", "remove", "default"],
+                   help="none: list the enabled ones; available: what can run here, its plans and settings; "
+                        "test: an enabled one's checks")
+    p.add_argument("kind", nargs="?", help="test, add, set, remove, default: the runtime (e2b-cloud, ...)")
+    p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="add, set: a setting, in its unit (seconds, MiB); repeatable; a plan fixes its own limits")
+    p.add_argument("--secret", action="append", metavar="KEY",
+                   help="add, set: a secret setting, its value read from stdin (one line each), never argv")
+    p.add_argument("--no-wait", action="store_true", help="return once the change is queued")
+    p.add_argument("--timeout", type=int, default=600, help="seconds to wait for the change (default 600)")
+    p.add_argument("--json", action="store_true", help="list, available, test: as the API answers")
     p = command("down", down, "delete the sandbox and what was provisioned for it")
     p.add_argument("name")
     p = command("ls", ls, "your sandboxes")

@@ -186,6 +186,41 @@ def plan_of(backend, raw: dict | None = None) -> dict | None:
     return {"name": "custom", "title": "Custom limits"}
 
 
+def test(kind: str) -> list:
+    """POST /api/runtimes/{kind}/test, sbx runtimes test: an enabled runtime's
+    own checks (its provider answers with the stored key), its limits, its
+    base template (built, building or failed) and, when its checks pass and
+    the base is built, whether its sandboxes reach this server. Each
+    {name, ok, detail, fix, runtime}; Refused for a runtime not enabled."""
+    from . import reachability, template_builds, templates
+    from .connections.base import Check
+    if kind not in runtime.enabled():
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(runtime.enabled()) or 'none'})")
+    try:
+        found = list(runtime.test(kind))
+    except Exception as error:   # the backend's checks themselves failed: that is the answer
+        found = [Check(f"{runtime.title(kind)} API", False, f"{type(error).__name__}: {error}", runtime=kind)]
+    try:
+        limits = runtime.limits(kind).known()
+        found.append(Check("Limits", True, ", ".join(f"{k}={v}" for k, v in limits.items()) or "none stated",
+                           runtime=kind))
+    except Exception as error:
+        found.append(Check("Limits", False, f"{type(error).__name__}: {error}", runtime=kind))
+    row = template_builds.state_row(templates.BASE, kind)
+    build = template_builds.status(templates.BASE, row, kind)
+    if build == "built":
+        found.append(Check("Base template", True, "built", runtime=kind))
+    elif build == "failed":
+        found.append(Check("Base template", False, f"its last build failed: {(row or {}).get('error') or '?'}",
+                           f"build it again: sbx-admin jobs run template@{kind}:{templates.BASE}", runtime=kind))
+    else:
+        found.append(Check("Base template", True, "building" if build == "building" else "not built yet; the "
+                           "scheduler builds it within minutes", runtime=kind))
+    if build == "built" and all(c.ok for c in found):
+        found.append(reachability.check(kind))
+    return [{"name": c.name, "ok": c.ok, "detail": c.detail, "fix": c.fix, "runtime": c.runtime or kind} for c in found]
+
+
 def fields(backend) -> dict:
     """The backend's settings by key (Runtime.settings); one that declares
     none has its secret_key as its only one; a runtime on this host has
