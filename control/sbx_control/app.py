@@ -44,12 +44,23 @@ async def unexpected(request: Request, error: Exception):
     traceback.print_exception(error)
     if core.runtime_failure(error):
         try:
-            title = runtime.title()
+            title = runtime.title(_runtime_of(request))
         except Exception:
             title = "none set up"
         return PlainTextResponse(f"the sandbox runtime ({title}) failed: {type(error).__name__}: {error}",
                                  status_code=503)
     return PlainTextResponse(f"sbx-control failed: {type(error).__name__}: {error}", status_code=500)
+
+
+def _runtime_of(request: Request) -> str | None:
+    """The runtime of the sandbox a request names (/api/sandboxes/NAME...),
+    as sbx recorded it; None (the default) for anything else."""
+    parts = request.url.path.strip("/").split("/")
+    if parts[:2] != ["api", "sandboxes"] or len(parts) < 3:
+        return None
+    from . import sandboxes
+    kind = (sandboxes.rows().get(parts[2]) or {}).get("runtime")
+    return kind if kind in runtime.enabled() else None
 
 
 def no_runtime(_request, error):

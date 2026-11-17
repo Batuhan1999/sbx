@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from ..base import (FAILED, PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, HostSide, Info, LimitRefused, Limits,
+from ..base import (FAILED, command_name, PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, HostSide, Info, LimitRefused, Limits,
                     NoRoom, NotRunning, Preset, SettingField, Snapshot, TemplateGone, TemplateSpec, Timeout, HOSTNAME)
 
 KIND = "boat"
@@ -362,15 +362,15 @@ class _Commands:
                                          sandbox_id=self._id).actual_instance
             if background:
                 return _Background(started.process_id)
-            return self._wait(started.process_id, timeout, on_output)
+            return self._wait(started.process_id, timeout, on_output, cmd)
         result = self._backend.call(lambda: api.command(self._id, CommandRequest(
             command=command, timeout_seconds=max(1, min(SYNC_SECONDS, int(-(-timeout // 1)))))),
             sandbox_id=self._id).actual_instance
         if result.timed_out:
-            raise Timeout(f"the command ran out of its {timeout} s in Boat sandbox {self._id}")
-        return self._done(result.stdout or "", result.stderr or "", result.exit_code)
+            raise Timeout(f"`{command_name(cmd)}` ran out of its {timeout} s in Boat sandbox {self._id}")
+        return self._done(result.stdout or "", result.stderr or "", result.exit_code, cmd)
 
-    def _wait(self, process_id, timeout, on_output):
+    def _wait(self, process_id, timeout, on_output, cmd=""):
         api = self._backend.api()
         deadline = time.monotonic() + timeout if timeout else None
         offsets = {"out": 0, "err": 0}
@@ -385,7 +385,7 @@ class _Commands:
             offsets["out"] = found.stdout_next_offset or offsets["out"] + len((found.stdout or "").encode())
             offsets["err"] = found.stderr_next_offset or offsets["err"] + len((found.stderr or "").encode())
             if not found.running:
-                return self._done("".join(out), "".join(err), found.exit_code)
+                return self._done("".join(out), "".join(err), found.exit_code, cmd)
             if deadline is not None and time.monotonic() > deadline:
                 try:
                     api.stop_command(self._id, process_id)
@@ -396,10 +396,10 @@ class _Commands:
                 time.sleep(POLL_SECONDS)
 
     @staticmethod
-    def _done(stdout, stderr, exit_code):
+    def _done(stdout, stderr, exit_code, cmd=""):
         from types import SimpleNamespace
         if exit_code not in (0, None):
-            raise CommandFailed(stdout=stdout, stderr=stderr, exit_code=exit_code)
+            raise CommandFailed(stdout=stdout, stderr=stderr, exit_code=exit_code, command=cmd)
         return SimpleNamespace(stdout=stdout, stderr=stderr, exit_code=exit_code or 0)
 
 

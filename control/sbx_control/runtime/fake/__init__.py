@@ -48,7 +48,7 @@ class _Commands:
             answer = _interpret(box, cmd)
         stdout, exit_code = (answer, 0) if isinstance(answer, str) else answer
         if exit_code:
-            raise CommandFailed(stdout=stdout, stderr=stdout, exit_code=exit_code)
+            raise CommandFailed(stdout=stdout, stderr=stdout, exit_code=exit_code, command=cmd)
         result = SimpleNamespace(stdout=stdout, stderr="", exit_code=0)
         if background:
             result.disconnect = lambda: None

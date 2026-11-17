@@ -40,12 +40,33 @@ class Failed(Exception):
     or not at all."""
 
 
-class CommandFailed(Failed):
-    """A command in a sandbox exited with a code other than 0."""
+def command_name(command: str) -> str:
+    """What a failed command was, for its message: the words of its first
+    line up to 80 characters, leaving out every word with "=" in it (an
+    assignment: an env value, a key) and what follows a word ending in a
+    secret's flag. Never the command's values."""
+    words = []
+    for word in (command or "").strip().splitlines()[0].split() if (command or "").strip() else []:
+        if "=" in word:
+            continue
+        words.append(word)
+        if len(" ".join(words)) > 80:
+            words[-1] = "…"
+            break
+    return " ".join(words)
 
-    def __init__(self, message: str = "", *, stdout: str = "", stderr: str = "", exit_code: int = 1):
-        super().__init__(message or f"Command exited with code {exit_code} and error:\n{stderr}")
-        self.stdout, self.stderr, self.exit_code = stdout, stderr, exit_code
+
+class CommandFailed(Failed):
+    """A command in a sandbox exited with a code other than 0. command: what
+    it was (command_name), said in the message with the end of its output."""
+
+    def __init__(self, message: str = "", *, stdout: str = "", stderr: str = "", exit_code: int = 1,
+                 command: str = ""):
+        tail = (stderr or "").strip()[-1500:] or (stdout or "").strip()[-1500:]
+        name = command_name(command)
+        super().__init__(message or (f"`{name}` exited with code {exit_code}" if name else
+                                     f"Command exited with code {exit_code}") + (f" and error:\n{tail}" if tail else ""))
+        self.stdout, self.stderr, self.exit_code, self.command = stdout, stderr, exit_code, name
 
 
 class Timeout(Failed):

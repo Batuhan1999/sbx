@@ -70,8 +70,8 @@ class _Commands:
         try:
             return call(self._commands.run, cmd, **kwargs)
         except CommandExitException as error:
-            raise CommandFailed(str(error), stdout=error.stdout, stderr=error.stderr,
-                                exit_code=error.exit_code) from error
+            raise CommandFailed(stdout=error.stdout, stderr=error.stderr, exit_code=error.exit_code,
+                                command=cmd) from error
         except TimeoutException as error:
             raise Timeout(str(error)) from error
 

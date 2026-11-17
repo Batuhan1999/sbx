@@ -345,6 +345,25 @@ def listener_pid():
     return pid
 
 
+def restart_listener():
+    """Start sshd again: systemd's ssh.service, or the standalone one."""
+    if Path("/proc/1/comm").read_text().strip() == "systemd":
+        subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        os.kill(int(Path("/run/sshd.pid").read_text().strip()), signal.SIGTERM)
+        subprocess.run(["/usr/sbin/sshd"], check=True, timeout=30)
+    if not wait_until(lambda: listener_alive(), 15):
+        raise GuestError("workspace SSH listener did not start again")
+
+
+def listener_alive():
+    try:
+        return str((PROC / str(listener_pid()) / "exe").resolve()) == "/usr/sbin/sshd"
+    except (OSError, ValueError, subprocess.SubprocessError, GuestError):
+        return False
+
+
 def identity(workspace, ssh_port):
     if os.geteuid() != 0 or not re.fullmatch(r"[a-f0-9]{32}", workspace):
         raise GuestError("fresh workspace SSH identity requires an owned logical identity")
@@ -363,6 +382,12 @@ def identity(workspace, ssh_port):
         if sessions.stdout.strip():
             raise GuestError("fresh workspace has an unexpected SSH session")
         pid = listener_pid()
+        if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)":
+            # sshd started before its binary was replaced (an upgrade, a disk
+            # restored under a running VM): no session yet, so start it again
+            # from the binary there now.
+            restart_listener()
+            pid = listener_pid()
         handle = os.pidfd_open(pid)
         try:
             if str((PROC / str(pid) / "exe").resolve()) != "/usr/sbin/sshd":

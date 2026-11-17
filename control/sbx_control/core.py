@@ -565,7 +565,9 @@ def initialize_ssh_identity(sbx):
     identity = hashlib.sha256(sbx.sandbox_id.encode()).hexdigest()[:32]
     ship_guest(sbx)
     command = guest("identity", identity, "--ssh-port", str(platform.SSH_PORT), sudo=True)
-    sbx.commands.run(f"umask 077; {command} > {RUN}/ssh-identity.log 2>&1", timeout=120)
+    # Its log stays in the sandbox; on failure its end is the command's error.
+    sbx.commands.run(f"umask 077; {command} > {RUN}/ssh-identity.log 2>&1 || "
+                     f"{{ tail -5 {RUN}/ssh-identity.log >&2; exit 1; }}", timeout=120)
 
 
 def _envs(env: dict, app_env: dict, kind: str | None = None) -> dict:

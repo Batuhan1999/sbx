@@ -302,7 +302,8 @@ def restart(name: str, info, prepare: bool = False):
 def pause(name: str, info):
     core.pause(name, info)
     state.event(name, "paused", "explicit operator request")
-    return {"name": name, "state": "paused"}
+    # Its status as the API shows it: a failed sandbox stays failed, its VM paused.
+    return {"name": name, "state": (lifecycle.get(name) or {}).get("status", "paused"), "vm": "paused"}
 
 
 def resume(name: str, info, start_app: bool = True):
