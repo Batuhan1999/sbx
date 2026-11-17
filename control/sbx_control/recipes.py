@@ -211,10 +211,11 @@ def validate(repo: str, source: Path) -> dict:
     parsed.previews()
     parsed.resume_mode
     parsed.swap_mb
+    size = parsed.size   # a size sbx can't read is wrong whether or not a runtime is enabled
     # Each runtime's own limits refuse a create there (runtimes.choose); a
     # recipe is wrong only when no enabled runtime can run it.
-    if runtime.enabled() and all(runtime.beyond_limits(parsed.size, kind) for kind in runtime.enabled()):
-        raise RecipeError(runtime.beyond_limits(parsed.size))
+    if runtime.enabled() and all(runtime.beyond_limits(size, kind) for kind in runtime.enabled()):
+        raise RecipeError(runtime.beyond_limits(size))
     return spec
 
 

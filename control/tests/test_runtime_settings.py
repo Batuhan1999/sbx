@@ -590,6 +590,17 @@ class NoRuntimeYet(Server):
         self.file = self.root / "etc/runtime.env"
         self.addCleanup(self.file.write_text, self.RUNTIME_ENV)
 
+    def test_a_recipe_s_size_is_checked_without_a_runtime(self):
+        from sbx_control import recipes
+        with tempfile.TemporaryDirectory() as folder:
+            for bad in ("false", "0", "-2", "1.5", "lots"):
+                with self.subTest(cpu=bad):
+                    Path(folder, "sbx.yaml").write_text(f"resources:\n  cpu: {bad}\n")
+                    with self.assertRaisesRegex(recipes.RecipeError, "resources.cpu must be a positive integer"):
+                        recipes.validate("owner/app", Path(folder))
+            Path(folder, "sbx.yaml").write_text("resources:\n  cpu: 64\n")
+            recipes.validate("owner/app", Path(folder))   # no runtime's limits to hold it to yet
+
     def test_sbx_control_runs_and_says_what_to_do(self):
         from sbx_control import jobs, preview_proxy, runtimes
         self.assertEqual((self.runtime.enabled(), self.runtime.default()), ([], ""))
