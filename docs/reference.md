@@ -405,8 +405,11 @@ are installed as packages ([runtime backends](extensions.md#runtime-backends)).
 A fresh install enables Embed where the server can run it (`/dev/kvm`,
 16 GiB of memory, 24 for the default budget, and 60 GiB of free disk), and
 E2B Cloud when `E2B_CLOUD_API_KEY` is in `install.sh`'s environment. A
-server that can run neither stops the installer with what to set. An
-upgrade keeps the runtimes the installation enables.
+server that can run neither installs with no runtime enabled
+(`SBX_RUNTIMES=''`): add one in the first-run wizard's "Sandbox runtime"
+step, in Settings → Sandbox runtimes, or with `sbx-admin runtime add
+e2b-cloud` ([no runtime yet](#no-runtime-yet)). An upgrade keeps the
+runtimes the installation enables.
 
 ### E2B Embed (`embed`)
 
@@ -433,8 +436,21 @@ sbx-control, nginx and the secret store.
 | `E2B_CLOUD_MAX_CPU`, `E2B_CLOUD_MAX_MEMORY_MB`, `E2B_CLOUD_MAX_DISK_MB` | Per sandbox; default 8 vCPUs, 8192 MiB, 10240 MiB (Hobby). A recipe beyond them is refused, naming the key. |
 | `E2B_CLOUD_MAX_SANDBOXES` | Running at once; default 20. |
 
-Raise the limits to what your E2B plan allows, then `sbx-admin runtime
-apply`.
+Raise the limits to what your E2B plan allows: in Settings → Sandbox
+runtimes (Change settings, then a plan or Custom), or in the file and then
+`sbx-admin runtime apply`. The web app offers E2B's plans as presets, from
+[E2B's pricing](https://e2b.dev/pricing) as read on 2026-11-17: Hobby (1 h,
+8 vCPUs, 8192 MiB, 10240 MiB of disk, 10 at once) and Pro (24 h, 8 vCPUs,
+8192 MiB, 20480 MiB, 100 at once). The defaults above stay as they were
+(20 at once), so an installation that never chose a plan behaves as before.
+
+When E2B refuses a request for a limit of its own (a timeout past the
+plan's, too many sandboxes at once, a sandbox or build larger than the plan
+allows), sbx says so, naming the setting to change ("E2B refused a 2 h
+timeout: your plan allows 1 h; change Longest run (seconds)
+(E2B_CLOUD_MAX_TIMEOUT) in Settings → Sandbox runtimes → E2B Cloud ..."), and
+shows it on the runtime's row (`limit_hit` in `GET /api/runtimes`) until its
+settings change. It never raises a limit by itself.
 
 What it needs:
 
@@ -499,7 +515,7 @@ The runtimes are set in `/etc/sbx/runtime.env` (root only, not in backups):
 
 | Key | Meaning |
 | --- | --- |
-| `SBX_RUNTIMES` | The enabled runtimes, by kind, in order: `SBX_RUNTIMES=embed`. Missing or empty means `embed`. |
+| `SBX_RUNTIMES` | The enabled runtimes, by kind, in order: `SBX_RUNTIMES=embed`. Missing means `embed` (as before several runtimes); present and empty (`SBX_RUNTIMES=''`) means none yet. |
 | `SBX_RUNTIME_DEFAULT` | The runtime of new sandboxes when nothing else chooses one. Missing means the first in `SBX_RUNTIMES`; it must be one of them. |
 
 Each runtime reads only its own keys from the same file; two runtimes never
@@ -528,6 +544,73 @@ upgrade (`install.sh`) does both as well. Or let `sbx-admin` edit it:
 - `sbx-admin runtime default KIND` sets `SBX_RUNTIME_DEFAULT`.
 
 Each then does what `runtime apply` does.
+
+### From the web app
+
+Admins add, change and remove runtimes and choose the default in Settings →
+Sandbox runtimes, and the first-run wizard adds the first one. A runtime on
+this server (Embed) is `install.sh`'s: the web app shows its host facts and
+says so, with no edit or remove. sbx-control checks each change, then queues
+it for the root side; it never edits `runtime.env` itself:
+
+1. The request is checked with no root: the kind exists and is a provider's,
+   the values fit the runtime's settings (an int is a whole number, at
+   least 1), the provider takes them (the backend's `configure` and its own
+   checks, as `runtime add` does), a provider's runtime has a domain to call
+   back, no sandbox is left on a runtime being removed (409, naming them),
+   the last runtime stays. Refusals are 400 or 409 with `detail`; nothing is
+   queued.
+2. A secret goes into the managed store (Infisical) under a new reference.
+   **Adding or changing a runtime from the web app needs the Infisical
+   store**: on an installation whose store is still the local one, those
+   requests answer 409 ("set up the secret store first, or use `sbx-admin
+   runtime add KIND` on the server") and the web app shows that instead of
+   the form. Removing a runtime and choosing the default carry no secret and
+   work either way.
+3. The change is written to `/run/sbx/apply/runtime-change` (root only): the
+   operation, the kind and the values, a secret only as its reference. Its
+   path unit runs `sbx-apply runtime-change`, which is `sbx-admin runtime
+   apply-pending`: the same change as `sbx-admin runtime add | remove |
+   default`, checked the way sbx-control reads it, put back on any failure
+   (and the queued reference discarded), then nginx regenerated and
+   sbx-control restarted. Its outcome is kept in
+   `/var/lib/sbx/runtime-change.json`.
+4. `GET /api/runtimes/change` answers `{state, operation, kind, message, at}`,
+   `state` one of `idle`, `queued`, `applying`, `done`, `failed`. The web app
+   polls it every 2 seconds while the change is queued or applying, through
+   sbx-control's restart, and shows the outcome. One change at a time: another
+   request while one is queued or applying is a 409.
+
+A secret travels from the browser over HTTPS to sbx-control, which checks it
+with the provider in memory and seals it into Infisical; from there on only
+the reference moves (the request file, `runtime.env`). No log, request file
+or API answer holds its value, and the web app shows a set secret only as
+"set" (`secrets_set`), replaced only when a new one is typed.
+
+| Route | What |
+| --- | --- |
+| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `not_editable` (why the web app can't add or change it), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text` or `int`, `optional`, `limit`), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `removable` (why not: `""` when it can be), `limit_hit`. |
+| `POST /api/runtimes` | `{"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": "...", ...}}`: add a provider's runtime. 202 with the change's state. |
+| `PUT /api/runtimes/KIND` | `{"values": {...}}`: change an enabled provider's settings; a secret left out or empty keeps its value, another empty value goes back to its default. |
+| `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
+| `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. |
+| `GET /api/runtimes/change` | The last change, as above. |
+
+All of them are for admins, and for the first-run setup link's token while
+the setup is open.
+
+### No runtime yet
+
+An installation may enable no runtime (`SBX_RUNTIMES=''`, from `install.sh`
+on a server without `/dev/kvm` and without a provider's key). sbx-control
+runs: `GET /api/runtimes` answers `{"default": "", "runtimes": []}`, creating
+a sandbox is refused with "no sandbox runtime is set up: add one in Settings →
+Sandbox runtimes", the template scheduler, the keeper and the gate have
+nothing to do, and `sbx-admin doctor` reports it. The first-run wizard's
+"Sandbox runtime" step lists the runtimes this server can run (Embed as
+"Can't run here: needs /dev/kvm ..." when it can't) and finishing the setup
+needs one; `sbx-admin setup-infer` does not count such an installation as
+set up. `sbx-admin runtime remove` still refuses to remove the last runtime.
 
 A new sandbox's runtime is, in order: the one the request names
 (`sbx up NAME --runtime KIND`, or `runtime` in `POST /api/sandboxes`), the
@@ -640,6 +723,7 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/repos/OWNER/NAME` | anyone | What the installation knows about a repository, with `runtime`: its setting, or `null` for the default. |
 | `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
+| `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default` | admin, and the first-run setup link | Add, change, remove a runtime and choose the default; checked, then applied by the host ([from the web app](#from-the-web-app)). |
 | `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
 | `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |

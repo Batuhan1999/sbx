@@ -182,10 +182,13 @@ def available() -> list:
     """GET /api/runtimes/available: every runtime an installed package
     provides, enabled or not: whether this host can run it (can_run, why_not),
     its settings form (settings, presets), its non-secret values now and
-    which secrets are set (never a secret's value), and for an enabled one
+    which secrets are set (never a secret's value), why the web app can't
+    add or change it (not_editable: "" when it can; install.sh's on this
+    host, or the secret store still the local one), and for an enabled one
     the sandboxes on it and why it can't be removed ("" when it can)."""
     from . import setup, vault
     facts = setup.host_facts()
+    sealing = vault.sealing()
     kinds_now, first = runtime.enabled(), runtime.default()
     out = []
     for kind in runtime.kinds():
@@ -201,6 +204,8 @@ def available() -> list:
         why_not = backend.can_run(facts) if callable(getattr(backend, "can_run", None)) else ""
         entry = {"kind": kind, "title": backend.title, "host": host, "enabled": on, "default": kind == first,
                  "can_run": not why_not, "why_not": why_not, "managed_by": "install.sh" if host else "",
+                 "not_editable": (f"{backend.title} is set up by install.sh on this server" if host
+                                  else "" if sealing else LOCAL_STORE.replace("KIND", kind)),
                  "settings": [f.view() for f in found.values()],
                  "presets": [p.view() for p in getattr(backend, "presets", ())],
                  "values": {k: raw.get(k, "") for k, f in found.items() if not f.secret},

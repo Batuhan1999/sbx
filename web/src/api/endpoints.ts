@@ -1,7 +1,8 @@
 // Every route the web app calls, typed. Pages use these through queries.ts.
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
-  AttachBody, Attachment, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
+  AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
+  RuntimeChange,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
   SetupState, TemplateState, Updates, Audience,
@@ -16,6 +17,16 @@ const s = (name: string) => `/api/sandboxes/${enc(name)}`
 export const api = {
   me: () => get<Me>('/api/me'),
   runtimes: () => get<Runtimes>('/api/runtimes'),
+  /** Admins (and the setup token): checked by the server, then applied by the host, which restarts sbx-control. */
+  runtimeSettings: {
+    available: () => get<AvailableRuntime[]>('/api/runtimes/available'),
+    change: () => get<RuntimeChange>('/api/runtimes/change'),
+    add: (kind: string, values: Record<string, string>) => post<RuntimeChange>('/api/runtimes', { kind, values }),
+    /** A secret left out keeps its value. */
+    update: (kind: string, values: Record<string, string>) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, { values }),
+    remove: (kind: string) => del<RuntimeChange>(`/api/runtimes/${enc(kind)}`),
+    setDefault: (kind: string) => put<RuntimeChange>('/api/runtimes/default', { kind }),
+  },
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
 
   sandboxes: {

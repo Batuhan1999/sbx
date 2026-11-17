@@ -107,7 +107,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
         self.assertIn("install.sh", embed["removable"])
-        self.assertEqual((cloud["enabled"], cloud["can_run"]), (False, True))
+        self.assertEqual((cloud["enabled"], cloud["can_run"], cloud["not_editable"]), (False, True, ""))
         self.assertEqual([p["name"] for p in cloud["presets"]], ["hobby", "pro"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
@@ -196,6 +196,8 @@ class Web(TwoRuntimes, Server):
         response = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}})
         self.assertEqual(response.status_code, 409)
         self.assertIn("sbx-admin runtime add e2b-cloud", response.json()["detail"])
+        listed = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
+        self.assertIn("sbx-admin runtime add e2b-cloud", listed["e2b-cloud"]["not_editable"])   # the UI says it
         self.assertEqual(self.call("PUT", "/api/runtimes/fake", {"values": {"FAKE_RUNTIME_TOKEN": "x"}}).status_code,
                          409)
         self.assertEqual(self.store, {})

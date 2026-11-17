@@ -31,9 +31,13 @@ failed step before presenting it as done.
    --email E`. Expect sandboxes within the E2B plan's limits (Hobby: an hour
    before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 GiB disk, 20 at once:
    size the recipe within them) and no managed servers on the host's private
-   network. Without KVM and without a key the installer stops and says so.
-   A server with KVM can add E2B Cloud later (`sbx-admin runtime add
-   e2b-cloud`, the key on stdin). Download the latest release's archive
+   network. Without KVM and without a key the installer goes on with no
+   runtime enabled: the owner then adds E2B Cloud in the setup wizard's
+   "Sandbox runtime" step (the key typed into the browser, which seals it
+   into the secret store) or on the server (`sbx-admin runtime add
+   e2b-cloud`, the key on stdin); the domain must be connected first. Any
+   server can add E2B Cloud later the same ways, or in Settings → Sandbox
+   runtimes. Download the latest release's archive
    (or the release the owner names), check its `.sha256` and run
    `sh install.sh` from the unpacked directory as root, as the
    [README](../README.md#install) shows; keep its progress visible. A git

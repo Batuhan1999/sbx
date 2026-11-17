@@ -28,6 +28,8 @@ export const keys = {
   settings: ['settings'] as const,
   updates: ['updates'] as const,
   runtimes: ['runtimes'] as const,
+  runtimesAvailable: ['runtimes', 'available'] as const,
+  runtimeChange: ['runtimes', 'change'] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)
@@ -72,6 +74,17 @@ export function useRuntimeTitle() {
   const choice = useRuntimeChoice()
   return choice ? (kind?: string) => choice.runtimes.find(r => r.kind === kind)?.title ?? kind ?? '' : null
 }
+
+export const useAvailableRuntimes = (enabled = true) => useQuery({ queryKey: keys.runtimesAvailable, queryFn: api.runtimeSettings.available, enabled, retry: false })
+
+const pending = (state?: string) => state === 'queued' || state === 'applying'
+/** The last runtime change; every 2 s while it is queued or applying, through sbx-control's
+ * restart (a failed poll keeps the last answer, so polling goes on until the server answers). */
+export const useRuntimeChange = (enabled = true) => useQuery({
+  queryKey: keys.runtimeChange, queryFn: api.runtimeSettings.change, enabled, retry: false,
+  refetchInterval: q => (pending(q.state.data?.state) ? 2_000 : false),
+})
+export const isApplying = (change?: { state: string }) => pending(change?.state)
 
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
 export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })

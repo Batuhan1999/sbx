@@ -153,8 +153,42 @@ export type SandboxRuntime = {
   capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean }
   limits: RuntimeLimits
   status: { state: ConnectionState | string; summary: string }
+  /** The last limit its provider refused, until its settings change. */
+  limit_hit?: LimitHit | null
 }
+/** default is "" and runtimes empty until a runtime is set up. */
 export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
+
+export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
+/** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int'; optional: boolean; limit: string }
+export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string }
+/** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
+export type AvailableRuntime = {
+  kind: string
+  title: string
+  host: boolean
+  enabled: boolean
+  default: boolean
+  can_run: boolean
+  why_not: string
+  /** "install.sh" for a runtime on this host. */
+  managed_by: string
+  /** Why the web app can't add or change it ("" when it can). */
+  not_editable: string
+  settings: RuntimeSetting[]
+  presets: RuntimePreset[]
+  values: Record<string, string>
+  secrets_set: string[]
+  facts: { kvm?: boolean; memory_gb?: number; disk_free_gb?: number }
+  /** Its sandboxes' names when enabled; null when it did not say. */
+  sandboxes: string[] | null
+  /** Why it can't be removed ("" when it can). */
+  removable: string
+  limit_hit: LimitHit | null
+}
+export type RuntimeChangeState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
+export type RuntimeChange = { state: RuntimeChangeState; operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; message: string; at: string }
 
 export type Trust = 'trusted' | 'public' | null
 /** Who has to act: the coding agent, a person, an admin, or nobody (the server is working on it). */
@@ -367,7 +401,7 @@ export type CheckResult = { ok: boolean; checks: Check[] }
 
 export type SetupState = {
   complete: boolean
-  steps: { step: 'address' | 'sign_in'; done: boolean; optional: boolean; summary: string }[]
+  steps: { step: 'address' | 'sign_in' | 'runtime'; done: boolean; optional: boolean; summary: string }[]
   signed_in: boolean
   email: string | null
   can_complete: boolean
