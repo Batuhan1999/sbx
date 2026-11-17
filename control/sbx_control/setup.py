@@ -140,6 +140,17 @@ def readiness() -> dict:
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 
+# What finishing says while a step is not done, in the steps' order.
+NEEDED = {"address": "Choose the server address and configure admin access first.",
+          "sign_in": "Choose the server address and configure admin access first.",
+          "runtime": "Add a sandbox runtime first: sandboxes need one to run on."}
+
+
+def missing(found: dict) -> str:
+    """Why state() can't finish yet by its steps ("" when every one is done)."""
+    return next((NEEDED[step["step"]] for step in found["steps"] if not step["done"]), "")
+
+
 def state(email: str | None, address: str = "") -> dict:
     from . import connections
     from .connections import domain as domain_connection, sign_in as sign_in_connection

@@ -322,12 +322,13 @@ HOBBY = {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8", "E2B_CLOUD_M
 PRO = {**HOBBY, "E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_DISK_MB": "20480", "E2B_CLOUD_MAX_SANDBOXES": "100"}
 AVAILABLE = [
     {"kind": "embed", "title": "E2B Embed", "host": True, "enabled": False, "default": False, "can_run": False,
-     "why_not": "needs /dev/kvm", "managed_by": "install.sh", "not_editable": "set up by install.sh", "settings": [],
-     "presets": [], "values": {}, "secrets_set": [], "facts": {"kvm": False}, "sandboxes": [], "removable": "",
+     "why_not": "needs /dev/kvm", "managed_by": "install.sh", "settings": [],
+     "edit_blocker": {"code": "host", "message": "set up by install.sh", "sandboxes": []},
+     "presets": [], "values": {}, "secrets_set": [], "facts": {"kvm": False}, "sandboxes": [], "remove_blocker": None,
      "limit_hit": None, "plan": None},
     {"kind": "e2b-cloud", "title": "E2B Cloud", "host": False, "enabled": False, "default": False, "can_run": True,
-     "why_not": "", "managed_by": "", "not_editable": "", "values": {}, "secrets_set": [], "facts": {},
-     "sandboxes": [], "removable": "", "limit_hit": None, "plan": None,
+     "why_not": "", "managed_by": "", "edit_blocker": None, "values": {}, "secrets_set": [], "facts": {},
+     "sandboxes": [], "remove_blocker": None, "limit_hit": None, "plan": None,
      "settings": [{"key": "E2B_CLOUD_API_KEY", "label": "API key", "secret": True, "default": "", "unit": ""},
                   {"key": "E2B_CLOUD_DOMAIN", "label": "Domain", "secret": False, "default": "e2b.app", "unit": ""},
                   *({"key": key, "label": key, "secret": False, "default": value, "unit": "", "min": 1, "max": 99999}
@@ -378,18 +379,16 @@ class RuntimeCliTests(CliTests):
         self.assertEqual(out, "E2B Cloud (e2b-cloud) is enabled\n")
         self.assertIn("waiting for sbx-control to restart", err)
         posted = next(c for c in self.control.calls if c[0] == "POST")[3]
-        self.assertEqual(posted, {"kind": "e2b-cloud", "values": {**PRO, "E2B_CLOUD_MAX_CPU": "16",
-                                                                  "E2B_CLOUD_API_KEY": CLOUD_KEY}})
+        self.assertEqual(posted, {"kind": "e2b-cloud", "plan": "pro", "values": {"E2B_CLOUD_MAX_CPU": "16",
+                                                                                 "E2B_CLOUD_API_KEY": CLOUD_KEY}})
         self.assertNotIn(CLOUD_KEY, out + err)
         self.assertGreaterEqual(sum(c[1] == "/api/runtimes/change" for c in self.control.calls), 4)
 
-    def test_a_plan_s_fixed_limits_and_secrets_stay_off_the_command_line(self):
+    def test_secrets_stay_off_the_command_line_and_the_plan_is_the_server_s_to_check(self):
         for argv, said in (
-                (("--plan", "hobby", "--set", "E2B_CLOUD_MAX_CPU=16"), "the Hobby plan fixes E2B_CLOUD_MAX_CPU"),
-                (("--plan", "pro", "--set", "E2B_CLOUD_MAX_SANDBOXES=500"), "the Pro plan fixes E2B_CLOUD_MAX_SANDBOXES"),
                 (("--set", f"E2B_CLOUD_API_KEY={CLOUD_KEY}"), "is a secret: --secret E2B_CLOUD_API_KEY reads it from stdin"),
-                (("--set", "NOPE=1"), "has no setting NOPE"),
-                (("--plan", "enterprise"), "has no plan enterprise"),
+                (("--set", "NOPE"), "expected KEY=VALUE"),
+                (("--secret", "E2B_CLOUD_DOMAIN"), "E2B_CLOUD_DOMAIN is no secret of E2B Cloud"),
                 (("--secret", "E2B_CLOUD_API_KEY"), "no value for E2B_CLOUD_API_KEY on stdin")):
             with self.subTest(argv=argv):
                 code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", *argv)
@@ -401,7 +400,7 @@ class RuntimeCliTests(CliTests):
         code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "custom", "--set",
                                       "E2B_CLOUD_MAX_SANDBOXES=50")
         self.assertEqual(code, "sbx-control: set up the secret store first")
-        self.assertEqual(self.control.calls[-1][3], {"values": {"E2B_CLOUD_MAX_SANDBOXES": "50"}})
+        self.assertEqual(self.control.calls[-1][3], {"plan": "custom", "values": {"E2B_CLOUD_MAX_SANDBOXES": "50"}})
 
     def test_a_failed_change_exits_non_zero_with_why(self):
         self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
@@ -441,21 +440,19 @@ class RuntimeCliTests(CliTests):
             "status": {"state": "connected", "summary": "0 running"}}]}
         self.assertIn("E2B Cloud (Pro plan): 0 running", self.run_cli("runtimes")[1])
 
-    def test_add_without_a_plan_is_on_hobby_and_set_pro_keeps_the_vcpus_set(self):
+    def test_add_without_a_plan_is_on_hobby_and_set_without_one_sends_only_what_it_names(self):
         self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
         self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "change"))
         self.polls(change("done", message="ok"))
         code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
                                       stdin=CLOUD_KEY + "\n")
         self.assertEqual(code, 0, err)
-        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3]["values"],
-                         {**HOBBY, "E2B_CLOUD_API_KEY": CLOUD_KEY})
-        enabled = {**AVAILABLE[1], "enabled": True, "values": {**HOBBY, "E2B_CLOUD_MAX_CPU": "16"}}
-        self.routes[("GET", "/api/runtimes/available")] = lambda q, body: [AVAILABLE[0], enabled]
-        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "pro")
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3],
+                         {"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})
+        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--set", "E2B_CLOUD_MAX_CPU=16")
         self.assertEqual(code, 0, err)
-        self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3]["values"],
-                         {**PRO, "E2B_CLOUD_MAX_CPU": "16"})   # Pro leaves vCPUs adjustable: the 16 set stays
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3],
+                         {"values": {"E2B_CLOUD_MAX_CPU": "16"}})       # set without --plan: the plan stays
 
     def test_waiting_retries_only_a_restart_and_json_prints_the_outcome(self):
         self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
@@ -545,9 +542,9 @@ class EndpointCliTests(CliTests):
         self.routes[("POST", "/api/endpoints/dev-pg/repos")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
         code, _, _ = self.run_cli("endpoints", "grant", "dev-pg", "owner/app")
         self.assertEqual(code, "sbx-control: attach the server to the repo instead")
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
         code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg", "--repo", "owner/app")
-        self.assertIn("attach the server to the repo instead", code)
-        self.assertFalse(any(c[0] == "POST" and c[1] == "/api/endpoints" for c in self.control.calls))
+        self.assertEqual(code, "sbx-control: attach the server to the repo instead")   # the server's to refuse
 
     def test_refusals_and_failures_exit_non_zero(self):
         code, _, _ = self.run_cli("endpoints", "add", "--server", "a", "--target", "10.0.0.5:1")

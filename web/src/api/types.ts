@@ -198,10 +198,8 @@ export type AvailableRuntime = {
   why_not: string
   /** "install.sh" for a runtime on this host. */
   managed_by: string
-  /** Why the web app can't add or change it ("" when it can). */
-  not_editable: string
-  /** A provider's runtime needs the installation's domain first (its sandboxes call it back). */
-  needs_domain?: boolean
+  /** Why the web app can't add or change it now; null when it can. */
+  edit_blocker: Blocker | null
   settings: RuntimeSetting[]
   presets: RuntimePreset[]
   values: Record<string, string>
@@ -209,15 +207,26 @@ export type AvailableRuntime = {
   facts: { kvm?: boolean; memory_gb?: number; disk_free_gb?: number }
   /** Its sandboxes' names when enabled; null when it did not say. */
   sandboxes: string[] | null
-  /** Why it can't be removed ("" when it can). */
-  removable: string
+  /** Why it can't be removed now; null when it can. */
+  remove_blocker: Blocker | null
   limit_hit: LimitHit | null
   /** An enabled one's plan now, as GET /api/runtimes says it. */
   plan?: RuntimePlan | null
 }
-export type RuntimeChangeState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
-/** restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
-export type RuntimeChange = { state: RuntimeChangeState; operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; message: string; at: string; restarting?: boolean }
+/** Why a runtime can't be edited or removed now: code to branch on, message for people, the sandboxes in the way. */
+export type Blocker = {
+  code: 'host' | 'local_store' | 'needs_domain' | 'last_runtime' | 'unlisted' | 'has_sandboxes'
+  message: string
+  sandboxes: string[]
+}
+export type HostRequestState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
+/** A request the host applies as root (the server's host_requests): queued, applying, then done or failed.
+ * restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
+export type HostRequestStatus = { state: HostRequestState; message: string; at: string; restarting?: boolean }
+/** unchanged: done at once, nothing to apply (the default already). */
+export type RuntimeChange = HostRequestStatus & { operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; unchanged?: boolean }
+/** What a runtime's form sends: a plan (its limits resolved by the server), or none, and the values set. */
+export type RuntimeValues = { plan?: string; values: Record<string, string> }
 
 export type Trust = 'trusted' | 'public' | null
 /** Who has to act: the coding agent, a person, an admin, or nobody (the server is working on it). */

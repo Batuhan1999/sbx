@@ -2,7 +2,7 @@
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
   AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
-  RuntimeChange,
+  RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
   SetupState, TemplateState, Updates, Audience, Users, PasswordLink,
@@ -21,9 +21,9 @@ export const api = {
   runtimeSettings: {
     available: () => get<AvailableRuntime[]>('/api/runtimes/available'),
     change: () => get<RuntimeChange>('/api/runtimes/change'),
-    add: (kind: string, values: Record<string, string>) => post<RuntimeChange>('/api/runtimes', { kind, values }),
-    /** A secret left out keeps its value. */
-    update: (kind: string, values: Record<string, string>) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, { values }),
+    add: (kind: string, body: RuntimeValues) => post<RuntimeChange>('/api/runtimes', { kind, ...body }),
+    /** A secret left out keeps its value; a plan sets its limits again. */
+    update: (kind: string, body: RuntimeValues) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, body),
     remove: (kind: string) => del<RuntimeChange>(`/api/runtimes/${enc(kind)}`),
     setDefault: (kind: string) => put<RuntimeChange>('/api/runtimes/default', { kind }),
   },

@@ -21,9 +21,7 @@ running sandboxes left running), logging to LOG.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
-import json
 import pathlib
 import re
 import shutil
@@ -38,7 +36,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from . import paths, settings, setup
+from . import host_requests, paths, settings, setup
 from .auth import admin_user
 
 API = "https://api.github.com"
@@ -196,46 +194,24 @@ def available() -> dict | None:
             "releases": [r.view() for r in found]}
 
 
-def _requested() -> pathlib.Path:
-    """The host effect's request (settings.request_effects); this one holds the tag."""
-    return paths.run() / "apply" / settings.HostUnit.UPGRADE
-
-
-def _lock_file() -> pathlib.Path:
-    return paths.state_dir() / "upgrade.lock"
-
-
-def _record_file() -> pathlib.Path:
-    return paths.state_dir() / "upgrade.json"
+KEY = settings.HostUnit.UPGRADE   # the host effect (host_requests): its request holds the tag
 
 
 def running() -> bool:
     """An upgrade waits for the host, or install() holds its lock."""
-    if _requested().exists():
-        return True
-    try:
-        with open(_lock_file(), "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    except OSError:
-        return False
-    return False
+    return host_requests.requested(KEY) or host_requests.applying(KEY)
 
 
 def last() -> dict | None:
     """The last upgrade as install() records it: tag, from, state (running,
     done, failed), log, error, rollback. A requested one is running; one
     recorded as running whose process is gone failed."""
-    try:
-        record = json.loads(_record_file().read_text())
-    except (OSError, ValueError):
-        record = None
+    record = host_requests.last(KEY) or None
     if running():
         if record and record.get("state") == "running":
             return record
         try:
-            tag = _requested().read_text().strip()
+            tag = host_requests.request_file(KEY).read_text().strip()
         except OSError:
             tag = ""
         return {"tag": tag, "from": setup.version(), "state": "running", "log": str(LOG)}
@@ -310,29 +286,17 @@ def request(tag: str) -> Release:
         raise Refused(f"no release of {s.repository} is newer than {installed}")
     if tag != found[0].tag:
         raise Refused(f"{tag} is not the newest release of {s.repository}: {found[0].tag} is")
-    _requested().parent.mkdir(parents=True, exist_ok=True)
-    # Whole, or not at all: the path unit starts as soon as the name exists.
-    written = _requested().with_name(f".{_requested().name}.new")
-    written.write_text(f"{tag}\n")
-    written.replace(_requested())
+    host_requests.queue(KEY, f"{tag}\n")
     return found[0]
 
 
-def install_requested() -> int:
-    """sbx-apply upgrade, as root: the requested release, under the lock that
-    running() looks at, taken before the request goes so the upgrade never
-    looks finished in between."""
-    lock_path = _lock_file()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            tag = _requested().read_text().strip()
-        except FileNotFoundError:
-            print("no upgrade was requested (sbx-admin upgrade TAG)", file=sys.stderr)
-            return 2
-        _requested().unlink(missing_ok=True)
-        return install(tag)
+def install_requested(payload: str | None) -> int:
+    """sbx-apply upgrade, as root (host_requests.run, under the lock running()
+    looks at): the requested release."""
+    if payload is None:
+        print("no upgrade was requested (sbx-admin upgrade TAG)", file=sys.stderr)
+        return 2
+    return install(payload.strip())
 
 
 def install(tag: str) -> int:
@@ -423,9 +387,7 @@ def _unpack(tag: str, log, downloading=lambda received, total: None) -> pathlib.
 
 
 def _record(record: dict):
-    temporary = _record_file().with_suffix(".new")
-    temporary.write_text(json.dumps(record, indent=2) + "\n")
-    temporary.replace(_record_file())
+    host_requests.record(KEY, record)
 
 
 def _prune():

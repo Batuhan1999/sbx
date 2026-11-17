@@ -117,7 +117,7 @@ describe('with several runtimes', () => {
 })
 
 const SETUP = {
-  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' }],
+  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' }, { step: 'runtime', done: true, optional: false, summary: 'E2B Embed' }],
   signed_in: false, email: null, can_complete: false, host: { address: '203.0.113.7' },
   access: { mode: 'ip', domain: '', url: 'https://203.0.113.7', certificate: '', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',

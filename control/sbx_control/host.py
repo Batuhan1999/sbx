@@ -285,34 +285,35 @@ def remove_stale_effects(found: list[Unit]):
         (directory / name).unlink()
 
 
-def apply(key: str) -> int:
-    """sbx-apply KEY, as root. The request goes first, so one made while
-    this runs triggers it again; an upgrade's names its release (updates.py),
-    a runtime change's holds the change (runtime_changes.py)."""
-    from . import paths, runtime
-    if key == "upgrade":
-        from . import updates
-        return updates.install_requested()
-    if key == "runtime-change":   # sbx-admin runtime apply-pending: the request holds the change
-        from . import runtime_changes
-        return runtime_changes.apply_pending()
-    (paths.run() / "apply" / key).unlink(missing_ok=True)
-    if key == "tls":
-        acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
-        write([acme])
-        _activate(acme)
-        return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
-    if key == "endpoints":
-        from . import endpoints
-        return endpoints.apply_host()
-    if key == "host-guard":
-        _systemctl("restart", "sbx-host-guard", check=True)
-    elif key == "control":
-        _systemctl("restart", "sbx-control", check=True)
-    elif runtime.apply_host(key):
-        pass   # a runtime's own
-    else:
-        from . import extensions
+def _tls(_payload) -> int:
+    acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
+    write([acme])
+    _activate(acme)
+    return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
+
+
+def _restart(service: str):
+    def restart(_payload) -> int:
+        _systemctl("restart", service, check=True)
+        return 0
+    return restart
+
+
+def _effects() -> dict:
+    """The platform's effects by key: each takes the request's payload (an
+    upgrade's tag, a runtime change's JSON) and answers an exit code."""
+    from . import endpoints, runtime_changes, updates
+    return {"upgrade": updates.install_requested, "runtime-change": runtime_changes.apply_request,
+            "tls": _tls, "endpoints": lambda _payload: endpoints.apply_host(),
+            "host-guard": _restart("sbx-host-guard"), "control": _restart("sbx-control")}
+
+
+def _other(key: str):
+    """An effect of an enabled runtime's or an extension's host service, or none (2: unknown)."""
+    def other(_payload) -> int:
+        from . import extensions, runtime
+        if runtime.apply_host(key):
+            return 0
         names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
         if not names:
             print(f"unknown effect {key}", file=sys.stderr)
@@ -321,7 +322,15 @@ def apply(key: str) -> int:
         write(found)
         for unit in found:
             _activate(unit)
-    return 0
+        return 0
+    return other
+
+
+def apply(key: str) -> int:
+    """sbx-apply KEY, as root: the effect's handler, under its lock, its request taken first
+    (host_requests.run), so one made while this runs triggers it again."""
+    from . import host_requests
+    return host_requests.run(key, _effects().get(key) or _other(key))
 
 
 

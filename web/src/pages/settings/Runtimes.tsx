@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { api } from '@/api/endpoints'
 import { Link } from 'react-router'
 import { useAvailableRuntimes, useEndpoints, useMe, useRuntimes } from '@/api/queries'
-import type { AvailableRuntime, Endpoints, RuntimeChange, SandboxRuntime } from '@/api/types'
+import type { AvailableRuntime, Blocker, Endpoints, RuntimeChange, SandboxRuntime } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -44,17 +44,18 @@ function AddRuntime({ choices, flow, onClose }: { choices: AvailableRuntime[]; f
   return <div className="space-y-3 border-b border-line px-4 py-4">
     <h3 className="font-semibold">Add runtime</h3>
     {choices.length > 1 && <RuntimeChoices choices={choices} value={kind} onChange={setKind} />}
-    {chosen && (chosen.not_editable
-      ? <><ErrorState compact error={blockedText(chosen)} /><div className="flex justify-end"><Button variant="ghost" onClick={onClose}>Close</Button></div></>
+    {chosen && (chosen.edit_blocker
+      ? <><ErrorState compact error={blockedText(chosen.edit_blocker, chosen.kind)} /><div className="flex justify-end"><Button variant="ghost" onClick={onClose}>Close</Button></div></>
       : <RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} onDone={onClose} onCancel={onClose} />)}
   </div>
 }
 
 /** Why the web app can't add or change a runtime, in a sentence with what to do. */
-export function blockedText(a: AvailableRuntime): string {
-  if (a.host) return 'Managed by install.sh on this server.'
-  if (a.needs_domain) return 'Needs a domain first.'
-  return `Add it on the server instead: sbx-admin runtime add ${a.kind}`
+export function blockedText(b: Blocker, kind: string): string {
+  if (b.code === 'host') return 'Managed by install.sh on this server.'
+  if (b.code === 'needs_domain') return 'Needs a domain first.'
+  if (b.code === 'local_store') return `Add it on the server instead: sbx-admin runtime add ${kind}`
+  return b.message
 }
 
 /** "needs /dev/kvm: bare metal, ..." → "Needs /dev/kvm". */
@@ -82,15 +83,14 @@ function RuntimeActions({ r, a, flow }: { r: SandboxRuntime; a: AvailableRuntime
     setError(null)
     try { await flow.submit(call) } catch (e) { setError(e) }
   }
-  const editable = !a.host && !a.not_editable && a.settings.length > 0
-  const blocked = !a.host && a.not_editable ? blockedText(a) : ''
+  const editable = !a.edit_blocker && a.settings.length > 0
   return <div className="mt-2 space-y-2">
-    {(a.host || blocked) && <p className="text-[12.5px] text-muted">{a.host ? blockedText(a) : blocked}</p>}
+    {a.edit_blocker && <p className="text-[12.5px] text-muted">{blockedText(a.edit_blocker, a.kind)}</p>}
     <div className="flex flex-wrap gap-2">
       {editable && !editing && <Button size="sm" disabled={flow.busy} onClick={() => setEditing(true)}>Edit</Button>}
       {!r.default && <Button size="sm" disabled={flow.busy} onClick={() => run(() => api.runtimeSettings.setDefault(r.kind))}>Make default</Button>}
-      {!a.host && (a.removable
-        ? <span title={removeBlocked(a.removable)}><Button size="sm" variant="ghost" disabled>Remove</Button></span>
+      {!a.host && (a.remove_blocker
+        ? <span title={removeBlocked(a.remove_blocker)}><Button size="sm" variant="ghost" disabled>Remove</Button></span>
         : <ConfirmDialog title={`Remove ${r.title}?`} description="New sandboxes can't run on it." confirm="Remove"
           trigger={<Button size="sm" variant="ghost" disabled={flow.busy}>Remove</Button>} onConfirm={() => flow.submit(() => api.runtimeSettings.remove(r.kind))} />)}
     </div>
@@ -105,9 +105,10 @@ export function RuntimeList({ runtimes, className, children }: { runtimes: Sandb
 }
 
 /** Why Remove is off, short: the last runtime, or the sandboxes still on it. */
-function removeBlocked(reason: string): string {
-  if (/only runtime/.test(reason)) return 'Add another runtime first'
-  return reason.replace(/^\d+ sandbox(es)? run on [^(]+\(([^)]*)\): delete them first.*$/, 'Delete its sandboxes first ($2)')
+function removeBlocked(b: Blocker): string {
+  if (b.code === 'last_runtime') return 'Add another runtime first'
+  if (b.code === 'has_sandboxes') return `Delete its sandboxes first (${b.sandboxes.join(', ')})`
+  return b.message
 }
 
 /** A runtime's line: with a plan, "Hobby · 0 of 10 running"; on this server, "On this server · <its status>";
