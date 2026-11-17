@@ -11,7 +11,7 @@ export function SelectTrigger({ className, children, size = 'md', ...props }: Co
   return <S.Trigger className={cn(
     'flex w-full items-center justify-between gap-2 rounded-md border border-line bg-panel text-left text-ink shadow-[0_1px_0_rgb(0_0_0/0.03)] outline-none',
     'transition-[border-color,box-shadow] duration-150 ease-out hover:border-line-strong',
-    'focus-visible:border-line-strong focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-accent/15',
+    'focus-visible:border-accent/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-accent/25',
     'disabled:cursor-not-allowed disabled:opacity-50 data-[placeholder]:text-faint [&>span]:truncate',
     size === 'sm' ? 'h-8 px-2.5 text-[13px]' : 'h-9 px-3 text-[13.5px]', className)} {...props}>
     {children}

@@ -17,7 +17,8 @@ def ready() -> bool:
     values or the password are there, or no sign-in is wanted."""
     s = settings.current().sign_in
     if s.method == "oidc":
-        return bool(s.oidc_issuer and s.oidc_client_id and vault.facts(vault.OIDC_CLIENT_SECRET).set)
+        return bool(s.oidc_issuer and s.oidc_client_id and vault.facts(vault.OIDC_CLIENT_SECRET).set
+                    and _someone_admitted(s.allowed_emails))
     if s.method == "password":
         return users.admin_has_password()
     return True
@@ -74,6 +75,9 @@ class SignIn(Connection):
             has_secret = bool(v.get("oidc_client_secret")) or vault.facts(vault.OIDC_CLIENT_SECRET).set
             checks.append(Check("client id and secret", bool(v.get("oidc_client_id") or s.oidc_client_id) and has_secret,
                                 "set" if has_secret else "missing", f"register {settings.current().base_url}/auth/callback at the provider"))
+            someone = _someone_admitted(_emails(v.get("allowed_emails"), s.allowed_emails))
+            checks.append(Check("who may sign in", someone, "an admin, a person or an email pattern" if someone else "nobody",
+                                "name an admin, add a person, or give allowed_emails such as *@example.com"))
             return checks
         if method == "password":
             has = users.admin_has_password()
@@ -119,6 +123,11 @@ def use_password(*, by: str) -> dict:
             users.set_password(email, generated[email], by=by)
     settings.update("sign_in", {**settings.current().sign_in.model_dump(), "method": "password"}, by=by)
     return generated
+
+
+def _someone_admitted(patterns) -> bool:
+    """Whether OIDC would let anyone in: an admin, a person added, or an email pattern."""
+    return bool(settings.current().admins or patterns or users.ls())
 
 
 def _emails(given, before) -> tuple:

@@ -29,7 +29,7 @@ export default function SetPasswordPage() {
   if (!token) return <AuthFrame title="Set your password"><ErrorState error="This page needs the link an admin gave you." compact /></AuthFrame>
   if (link.isPending) return <AuthFrame title="Set your password"><Loading /></AuthFrame>
   if (link.error) return <AuthFrame title="Set your password">
-    <div className="space-y-4"><ErrorState error={link.error} compact /><AnchorButton href="/auth/login" className="w-full">Go to sign-in</AnchorButton></div>
+    <div className="space-y-4"><ErrorState error={link.error} compact retry={() => link.refetch()} /><AnchorButton href="/auth/login" className="w-full">Go to sign-in</AnchorButton></div>
   </AuthFrame>
   return <AuthFrame title="Set your password" description={`For ${link.data.email} on this server.`}>
     <AppForm form={form} className="space-y-4">

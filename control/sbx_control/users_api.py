@@ -95,11 +95,14 @@ def api_me_password(body: NewPassword, request: Request):
     email = auth.session_email(request)
     if not email or email == auth.ANONYMOUS or settings.current().sign_in.method != "password":
         raise HTTPException(400, "Only someone signed in with a password changes it here.")
-    if users.check_password(email, body.current.get_secret_value()) is None:
+    checked = users.check_password(email, body.current.get_secret_value())
+    if checked is None:
         raise HTTPException(400, "The current password is incorrect.")
     try:
-        generation = users.set_password(email, body.password.get_secret_value(), by=email)
+        generation = users.change_password(email, checked, body.password.get_secret_value())
     except users.Refused as error:
         raise HTTPException(400, str(error))
+    if generation is None:
+        raise HTTPException(409, "Your account changed while this ran (removed, or a new password). Sign in again.")
     auth.start_session(request, email, generation, request.session.get("name", ""))
     return {"email": email}

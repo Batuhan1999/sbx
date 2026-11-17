@@ -74,7 +74,7 @@ def session_email(request: Request):
     return email
 
 
-def start_session(request: Request, email: str, generation: int, name: str = ""):
+def start_session(request: Request, email: str, generation: int | None, name: str = ""):
     request.session.clear()
     request.session.update(email=email, name=name or email, gen=generation)
 
@@ -273,7 +273,8 @@ async def auth_password(request: Request):
         await asyncio.sleep(1)  # slows guessing
         return JSONResponse({"detail": "The email or password is incorrect."}, status_code=401)
     target = request.session.get("next", "/")
-    start_session(request, email, users.signed_in(email, by="password"))
+    users.signed_in(email)
+    start_session(request, email, generation)   # the generation the password was checked at
     setup.first_admin(email)
     if "application/json" in request.headers.get("accept", ""):
         return JSONResponse({"next": target})
@@ -302,7 +303,8 @@ def auth_set_password(body: SetPassword, request: Request):
     except users.Refused as error:
         raise HTTPException(400, str(error))
     if settings.current().sign_in.method == "password":
-        start_session(request, email, users.signed_in(email, by="password"))
+        users.signed_in(email)
+        start_session(request, email, generation)
     return {"email": email, "next": "/app/repos"}
 
 
@@ -323,7 +325,8 @@ async def auth_callback(request: Request):
     if not may_sign_in(email):
         raise HTTPException(403, f"{email} may not sign in here")
     target = request.session.get("next", "/")
-    start_session(request, email, users.signed_in(email, by="oidc"), claims.get("name", email))
+    users.signed_in(email)
+    start_session(request, email, users.generation(email), claims.get("name", email))
     setup.first_admin(email)
     return RedirectResponse(target)
 

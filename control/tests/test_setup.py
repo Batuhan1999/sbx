@@ -256,6 +256,8 @@ class SetupTests(Server):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(admin.main(["user", "add", "dev@example.com"]), 0)
             self.assertEqual(admin.main(["user", "admin", "dev@example.com", "on"]), 0)
+            self.assertEqual(admin.main(["user", "rm", "operator@example.com"]), 1)   # dev@ has no password yet
+            users.set_password("dev@example.com", "test-only-password-123", by="test")
             self.assertEqual(admin.main(["user", "rm", "operator@example.com"]), 0)
             self.assertEqual(admin.main(["user", "rm", "dev@example.com"]), 1)   # the last admin
             self.assertEqual(admin.main(["user", "link", "nobody@example.com"]), 1)
@@ -322,6 +324,55 @@ class SetupTests(Server):
         self.assertEqual(self.client.get("/api/me").json()["email"], "guest@gmail.com")
         users.remove("guest@gmail.com", by="test")
         self.assertEqual(self.client.get("/api/me").status_code, 401)
+
+    def test_a_password_change_loses_to_a_removal_in_between(self):
+        from sbx_control import users
+        self.settings.update("access", {"admins": ["operator@example.com"]}, by="test")
+        users.set_password("dev@example.com", "test-only-password-123", by="test")
+        checked = users.check_password("dev@example.com", "test-only-password-123")
+        users.remove("dev@example.com", by="test")
+        self.assertIsNone(users.change_password("dev@example.com", checked, "test-only-password-456"))
+        self.assertIsNone(users.get("dev@example.com"))   # not made again
+
+    def test_coming_back_does_not_revive_an_old_session(self):
+        from sbx_control import users
+        first = users.set_password("dev@example.com", "test-only-password-123", by="test")
+        users.remove("dev@example.com", by="test")
+        again = users.set_password("dev@example.com", "test-only-password-123", by="test")
+        self.assertNotEqual(first, again)
+
+    def test_the_last_admin_with_a_password_stays_one(self):
+        from sbx_control import users
+        self.settings.update("access", {"admins": ["operator@example.com", "named@example.com"]}, by="test")
+        self.settings.update("sign_in", {"method": "password"}, by="test")
+        users.set_password("operator@example.com", "test-only-password-123", by="test")
+        with self.assertRaisesRegex(users.Refused, "password"):
+            users.set_admin("operator@example.com", False, by="test")   # named@ has no password
+        with self.assertRaisesRegex(users.Refused, "password"):
+            users.remove("operator@example.com", by="test")
+        users.set_admin("named@example.com", False, by="test")
+
+    def test_resetting_sign_in_revokes_every_api_token(self):
+        from sbx_control import auth
+        token = auth.mint_token("operator@example.com", "cli")
+        self.assertEqual(auth.token_email(token), "operator@example.com")
+        self.setup.reset(sign_in=True)
+        self.assertIsNone(auth.token_email(token))
+
+    def test_oidc_needs_someone_who_may_sign_in(self):
+        from sbx_control import auth, users
+        from sbx_control.connections import sign_in as sign_in_connection
+        oidc = {"method": "oidc", "oidc_issuer": "https://id.example.com", "oidc_client_id": "fixture-client"}
+        self.vault.put(self.vault.OIDC_CLIENT_SECRET, "fixture-secret", by="test")
+        self.settings.update("sign_in", oidc, by="test")
+        self.assertFalse(sign_in_connection.ready())          # no admin, person or pattern
+        self.settings.update("sign_in", {**oidc, "allowed_emails": ["*@example.com"]}, by="test")
+        self.assertTrue(sign_in_connection.ready())
+        # Someone a pattern let in is not made a person: dropping the pattern ends their access.
+        users.signed_in("dev@example.com")
+        self.assertIsNone(users.get("dev@example.com"))
+        self.settings.update("sign_in", oidc, by="test")
+        self.assertFalse(auth.may_sign_in("dev@example.com"))
 
     def test_oidc_takes_only_a_verified_email(self):
         from unittest.mock import AsyncMock, MagicMock

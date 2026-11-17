@@ -149,7 +149,7 @@ function RowMenu({ user, self, passwords, actions }: { user: User; self: boolean
         <Button variant="ghost" size="icon" aria-label={`Actions for ${user.email}`} className="data-[state=open]:bg-hover data-[state=open]:text-ink"><MoreHorizontal /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {passwords && !self && <DropdownMenuItem onSelect={() => newLink.mutate(undefined, { onSuccess: actions.onLink, onError: actions.onError })}>
+        {passwords && !self && <DropdownMenuItem disabled={newLink.isPending} onSelect={() => newLink.mutate(undefined, { onSuccess: actions.onLink, onError: actions.onError })}>
           <KeyRound />{user.password ? 'Reset password' : 'New invite link'}
         </DropdownMenuItem>}
         {self && <DropdownMenuItem onSelect={() => location.assign('/app/cli')}><KeyRound />Change your password</DropdownMenuItem>}

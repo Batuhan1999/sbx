@@ -108,7 +108,7 @@ code, pre, kbd, .mono { font-family: var(--font-mono); font-size: 0.9em; }
 }
 :where(textarea) { @apply py-2; }
 :where(input, select, textarea):hover { border-color: var(--line-strong); }
-:where(input, select, textarea):focus-visible { border-color: var(--line-strong); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+:where(input, select, textarea):focus-visible { border-color: color-mix(in srgb, var(--accent) 60%, var(--line-strong)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 :where(input, textarea)::placeholder { color: var(--faint); }
 [aria-invalid="true"] { border-color: var(--bad) !important; }
 button { cursor: pointer; }

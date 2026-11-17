@@ -82,10 +82,11 @@ def ls() -> list[dict]:
 
 
 def ensure(email: str, *, by: str) -> dict:
-    """email's row, made when there is none."""
+    """email's row, made when there is none. It starts at a random generation, so a
+    session from before a removal can't match the row made when they come back."""
     with db() as conn:
-        conn.execute("insert into users (email, created_by) values (?, ?) on conflict do nothing",
-                     (email.lower(), by))
+        conn.execute("insert into users (email, created_by, generation) values (?, ?, ?) on conflict do nothing",
+                     (email.lower(), by, secrets.randbelow(2 ** 31)))
     return get(email)
 
 
@@ -107,6 +108,8 @@ def set_admin(email: str, admin: bool, *, by: str):
         admins.append(email)
     elif not admins:
         raise Refused("Keep at least one admin.")
+    elif s.sign_in.method == "password" and not admins_with_password(admins):
+        raise Refused("Keep an admin who has a password while sign-in uses passwords.")
     settings.update("access", {**s.access.model_dump(), "admins": admins}, by=by)
 
 
@@ -146,12 +149,25 @@ def check_password(email: str, password: str) -> int | None:
     return row[1] if _matches(password, row[0] if row else None) else None
 
 
-def signed_in(email: str, *, by: str) -> int:
-    """Notes the sign-in (an OIDC person becomes a row); their generation."""
-    ensure(email, by=by)
+def change_password(email: str, generation: int, password: str) -> int | None:
+    """email's own new password, only while their row is still at generation (the one their
+    current password was checked at): a removal or another change in between wins. Never
+    makes a person. The new generation, or None when it lost."""
+    _check_password(password)
     with db() as conn:
-        return conn.execute("update users set last_sign_in_at = current_timestamp where email = ? "
-                            "returning generation", (email.lower(),)).fetchone()[0]
+        row = conn.execute("update users set password_hash = ?, generation = generation + 1 "
+                           "where email = ? and generation = ? returning generation",
+                           (_hash(password), email.lower(), generation)).fetchone()
+    forget()
+    return row[0] if row else None
+
+
+def signed_in(email: str):
+    """Notes the sign-in time on email's row, when they have one. Never makes a person:
+    someone OIDC admits only through allowed_emails or the admins stays without a row,
+    so editing those lists still decides whether they get in."""
+    with db() as conn:
+        conn.execute("update users set last_sign_in_at = current_timestamp where email = ?", (email.lower(),))
 
 
 def any_password() -> bool:
@@ -165,7 +181,12 @@ def password_count() -> int:
 
 def admin_has_password() -> bool:
     """Whether an admin can sign in with a password: switching to passwords must not lock them out."""
-    admins = sorted(settings.current().admins)
+    return admins_with_password(settings.current().admins)
+
+
+def admins_with_password(admins) -> bool:
+    """Whether one of these admins has a password."""
+    admins = sorted(a.lower() for a in admins)
     if not admins:
         return False
     with db() as conn:
@@ -174,11 +195,14 @@ def admin_has_password() -> bool:
 
 
 def clear(*, by: str):
-    """Everyone gone (sbx-admin setup-reset --sign-in)."""
+    """Everyone gone (sbx-admin setup-reset --sign-in), their API tokens too."""
     with db() as conn:
         conn.execute("delete from users")
         conn.execute("delete from user_links")
+        conn.execute("delete from tokens")
     forget()
+    from . import auth
+    auth.forget_tokens()
 
 
 _generations: dict = {}  # email -> (generation or None, fetched_at)

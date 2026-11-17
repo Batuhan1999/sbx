@@ -31,13 +31,14 @@ export function TableCell({ className, ...props }: ComponentProps<'td'>) {
 
 /** A header that sorts its TanStack Table column, with the direction shown and announced. */
 export function SortHeader({ column, children, className }: {
-  column: { getCanSort: () => boolean; getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void }
+  column: { getIsSorted: () => false | 'asc' | 'desc'; getNextSortingOrder: () => false | 'asc' | 'desc'; toggleSorting: () => void }
   children: ReactNode; className?: string
 }) {
   const sorted = column.getIsSorted()
+  const next = column.getNextSortingOrder()   // the column's own cycle: newest first for times, then back to unsorted
   const Icon = sorted === 'asc' ? ArrowUp : sorted === 'desc' ? ArrowDown : ChevronsUpDown
-  return <button type="button" onClick={() => column.toggleSorting(sorted === 'asc')}
-    aria-label={`${typeof children === 'string' ? children : 'Column'}: sort ${sorted === 'asc' ? 'descending' : 'ascending'}`}
+  return <button type="button" onClick={() => column.toggleSorting()}
+    aria-label={`${typeof children === 'string' ? children : 'Column'}: ${next === 'asc' ? 'sort ascending' : next === 'desc' ? 'sort descending' : 'clear sorting'}`}
     className={cn('-ml-2 inline-flex h-7 items-center gap-1 rounded-md px-2 font-medium outline-none transition-colors duration-150 hover:bg-hover hover:text-ink focus-visible:ring-[3px] focus-visible:ring-accent/25', sorted && 'text-ink', className)}>
     {children}<Icon aria-hidden className={cn('size-3.5', !sorted && 'opacity-50')} />
   </button>
