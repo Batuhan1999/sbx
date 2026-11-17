@@ -1,7 +1,7 @@
 // Every route the web app calls, typed. Pages use these through queries.ts.
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
-  AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
+  AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
   RuntimeChange,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
@@ -26,6 +26,12 @@ export const api = {
     update: (kind: string, values: Record<string, string>) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, { values }),
     remove: (kind: string) => del<RuntimeChange>(`/api/runtimes/${enc(kind)}`),
     setDefault: (kind: string) => put<RuntimeChange>('/api/runtimes/default', { kind }),
+  },
+  /** Admins: shared servers and internal hosts reachable from provider sandboxes; added and removed by the host (202). */
+  endpoints: {
+    list: () => get<Endpoints>('/api/endpoints'),
+    add: (body: AddEndpoint) => post<Endpoint>('/api/endpoints', body),
+    remove: (name: string) => del<unknown>(`/api/endpoints/${enc(name)}`),
   },
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
 

@@ -435,3 +435,23 @@ export type Settings = {
   sign_in: { method: 'oidc' | 'password' | 'none'; allowed_emails: string[]; [key: string]: unknown }
   [section: string]: unknown
 }
+
+/** A managed shared server or internal host made reachable from provider sandboxes at address (GET /api/endpoints, admins).
+ * server: the managed server's name ("" for an internal host). target: host:port, never shown. */
+export type Endpoint = {
+  name: string
+  address: string
+  kind: 'managed-server' | 'internal'
+  server: string
+  /** The managed server's kind ("postgres"), when the server sends it. */
+  server_kind?: string
+  target: string
+  state: 'on' | 'applying' | 'failed'
+  message: string
+  used_by: string[]
+}
+/** A managed server not reachable yet. kind: the server's ("postgres", "clickhouse", "temporal"). */
+export type EndpointCandidate = { server: string; kind: string; target: string }
+/** domain: "" until one is connected. needed: an enabled runtime can't reach this host's private network. */
+export type Endpoints = { endpoints: Endpoint[]; candidates: EndpointCandidate[]; domain: string; needed: boolean }
+export type AddEndpoint = { server: string } | { name: string; target: string }
