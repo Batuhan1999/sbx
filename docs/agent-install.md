@@ -41,9 +41,10 @@ failed step before presenting it as done.
 2. **Control plane.** Open the printed setup link. Guide the owner through IP
    access or a domain and the admin login; let them type credentials themselves.
    With a domain, check the DNS records and ports the host requirements list
-   (the `_acme-challenge` NS record and port 53 for `--dns delegated`). The
-   admin login is a shared password that admits the admins only, and whoever
-   holds it can sign in as any of them; for a team, suggest OIDC with
+   (the `_acme-challenge` NS record and port 53 for `--dns delegated`). Each
+   person has their own password; the owner adds teammates under Settings →
+   People (or `sbx-admin user add EMAIL`), which gives a one-time link to set
+   it. To sign in through an identity provider, suggest OIDC with
    `allowed_emails`.
    Confirm the control service, runtimes and secret store are ready
    (`sbx-admin doctor`, `sbx-admin runtime verify`, `sbx-admin store status`).

@@ -4,7 +4,7 @@ import type {
   AttachBody, Attachment, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
-  SetupState, TemplateState, Updates, Audience,
+  SetupState, TemplateState, Updates, Audience, Users, PasswordLink,
 } from './types'
 
 const get = <T,>(url: string) => request<T>('GET', url)
@@ -17,6 +17,19 @@ export const api = {
   me: () => get<Me>('/api/me'),
   runtimes: () => get<Runtimes>('/api/runtimes'),
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
+  /** A set-password link's person, while it is good. */
+  passwordLink: (token: string) => post<{ email: string; login: Me['login'] }>('/auth/set-password/check', { token }),
+  setPassword: (token: string, password: string) => post<{ email: string; next: string }>('/auth/set-password', { token, password }),
+  changePassword: (current: string, password: string) => post<{ email: string }>('/api/me/password', { current, password }),
+
+  /** Admins only. */
+  users: {
+    list: () => get<Users>('/api/users'),
+    add: (email: string, admin: boolean) => post<Users & PasswordLink>('/api/users', { email, admin }),
+    setAdmin: (email: string, admin: boolean) => put<Users>(`/api/users/${enc(email)}`, { admin }),
+    link: (email: string) => post<PasswordLink>(`/api/users/${enc(email)}/link`),
+    remove: (email: string) => del<Users>(`/api/users/${enc(email)}`),
+  },
 
   sandboxes: {
     list: (scope: SandboxScope, repo = '') => get<SandboxList>(`/api/sandbox-list?scope=${enc(scope)}&repo=${enc(repo)}`),

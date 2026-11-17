@@ -129,11 +129,13 @@ add e2b-cloud` (the key on stdin). For every server:
   answers the certificate's DNS challenge itself. Open the same ports in any
   cloud firewall.
 
-Sign-in is one shared password for the admins by default: whoever holds it can
-sign in as any admin (or any email `sign_in.allowed_emails` lists). For a
-team, connect your OIDC provider instead (`sbx-admin connect sign_in
-method=oidc ... allowed_emails='*@example.com'`); OIDC admits only the emails
-`allowed_emails` names (`*` for anyone the provider admits).
+Everyone signs in with their own email and password by default. Admins add
+people under **Settings → People** (or `sbx-admin user add EMAIL`) and hand
+them a one-time link to set their password; removing someone signs them out
+everywhere and revokes their API tokens. To use your identity provider instead,
+connect OIDC (`sbx-admin connect sign_in method=oidc ...
+allowed_emails='*@example.com'`): it admits the admins, the people added, and
+the emails `allowed_emails` names (`*` for anyone the provider admits).
 
 ## Install
 
