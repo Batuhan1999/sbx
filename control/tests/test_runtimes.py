@@ -252,9 +252,10 @@ class Templates(TwoRuntimes, Installation):
         self.assertEqual(self.builds.stale("fake"), [self.templates.DEFAULT])
         self.assertEqual(self.builds.stale("embed"), [self.templates.BASE, self.templates.DEFAULT])
         self.builds.build_now(self.templates.DEFAULT, "fake")
-        self.assertEqual(self.builds.template_for(None, "fake"), self.builds.plan(self.templates.DEFAULT).name)
+        named = self.runtime.template_name(self.builds.plan(self.templates.DEFAULT).name, "fake")   # a hosted runtime: prefixed
+        self.assertEqual(self.builds.template_for(None, "fake"), named)
         self.assertEqual(self.builds.remove(self.templates.DEFAULT, "fake")["deleted"],
-                         [self.builds.plan(self.templates.DEFAULT).name])
+                         [named])
         self.assertEqual(self.builds.state(self.templates.BASE, "fake")["status"], "built")   # the other key stays
 
     def test_a_repo_s_template_only_on_the_runtimes_its_sandboxes_use(self):

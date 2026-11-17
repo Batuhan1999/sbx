@@ -416,7 +416,7 @@ def _build(key: str, kind: str | None = None):
                         raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
                     raise
             _transition(key, "built", kind, finished_at=_utc(), fingerprint=p.fingerprint,
-                        built_fingerprint=p.fingerprint, built_template=p.name, built_memory_mb=p.size["memory_mb"])
+                        built_fingerprint=p.fingerprint, built_template=runtime.template_name(p.name, _kind(kind)), built_memory_mb=p.size["memory_mb"])
         except BaseException as error:
             _transition(key, "failed", kind, finished_at=_utc(), error=str(error)[-2000:],
                         fingerprint=p and p.fingerprint)

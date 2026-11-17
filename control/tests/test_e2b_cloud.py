@@ -4,7 +4,6 @@ install.sh's runtime.env writer, and the git credential helper's
 certificate pin. The SDK itself is mocked (test_runtime.py covers the
 backend); a stand-in runtime with a token header plays a provider here."""
 import io
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from support import RUNTIME, Installation, Server
@@ -233,7 +232,7 @@ class RuntimeAdmin(Installation):
         self.assertEqual(code, 0, said)
         self.assertEqual(self.runtime.default(), "e2b-cloud")
         self.assertEqual(self.admin("default", "nowhere")[0], 1)
-        self.listed = [SimpleNamespace(sandbox_id="vm1", metadata={"sbx": "busy"})]
+        self.listed = [self.runtime.Info("vm1", {"sbx": "busy"}, "running")]
         code, said = self.admin("remove", "e2b-cloud")
         self.assertEqual(code, 1)
         self.assertIn("busy", said)                                     # refused while it has sandboxes

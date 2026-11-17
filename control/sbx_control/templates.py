@@ -138,8 +138,9 @@ def slug(key: str) -> str:
 
 def named_for(name: str, keys) -> bool:
     """Whether name is one the platform gives a template of one of keys:
-    <slug(key)>-<8 hex digits> (Plan.name)."""
-    head, _, digest = name.rpartition("-")
+    <slug(key)>-<8 hex digits> (Plan.name), after the installation's prefix
+    on a hosted runtime (runtime.template_name)."""
+    head, _, digest = runtime.plain_name(name).rpartition("-")
     return bool(re.fullmatch(r"[0-9a-f]{8}", digest)) and head in {slug(key) for key in keys}
 
 
@@ -318,7 +319,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
         if p.base is None:
             t = base_template()
         else:
-            t = runtime.TemplateSpec().from_template(p.base.name)
+            t = runtime.TemplateSpec().from_template(runtime.template_name(p.base.name, kind))
             if p.recipe:
                 token, bundle = serve_bundle(git_dir)
                 served.append((token, bundle))
@@ -335,7 +336,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
         t = t.set_start_cmd(platform.START, platform.NOVNC_PORT)
         hidden = [token for token, _ in served]
         try:
-            return runtime.build_template(t, alias=p.name, cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],
+            return runtime.build_template(t, alias=runtime.template_name(p.name, kind), cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],
                                           disk_mb=p.size["disk_mb"], on_log=build_logger(p.key, hidden, kind), kind=kind)
         except Exception as error:
             # The runtime's error repeats the command that failed.

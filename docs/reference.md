@@ -461,6 +461,25 @@ What it needs:
   which name), and an address E2B changes later is picked up at the next
   reload (`sbx-admin runtime apply`, or any certificate renewal).
 
+Several installations may share one E2B key (one E2B team). Each keeps to
+its own: every installation has a random id, made once and kept in `sbx.db`
+(so backups and upgrades keep it; it is not a secret), and every sandbox sbx
+creates carries it in its metadata (`sbx_install`). On a runtime that does
+not run on this server, sbx lists sandboxes by that id (the provider
+filters), so it never sees, finds, counts, adopts or deletes another
+installation's, even one of the same name; and it names its templates and
+snapshots with the id's first 8 characters (`<id8>--sbx-base-<hash>`),
+listing and pruning only those. Sandboxes made before the id was added are
+this installation's when its records know them by id (taken once per
+runtime, at the first listing after the upgrade); any other untagged
+sandbox on the account is left alone. Templates built before keep working
+until their next rebuild, which uses the new name; the old ones are no
+longer pruned by sbx, so delete them in E2B's dashboard once nothing uses
+them. The status line counts this installation's running sandboxes; the
+plan's limit is the E2B team's, shared with the others. Embed runs one
+installation per server: its sandbox listing and template names are as
+before.
+
 What it does not support: managed servers and `network.internal_cidrs`.
 Its sandboxes do not reach this host's private network
 (`private_networks` is false), so a repository with managed servers

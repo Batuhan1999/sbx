@@ -230,7 +230,8 @@ class Limits(unittest.TestCase):
                                                                "sandboxes": "MAX_SANDBOXES"})
         for patcher in (patch.dict(runtime._backends, {"embed": self.backend}),
                         patch.object(self.backend, "limits", side_effect=lambda: self.limits),
-                        patch.object(self.backend, "capacity", return_value={"known": False})):
+                        patch.object(self.backend, "capacity", return_value={"known": False}),
+                        patch.object(runtime, "installation_id", return_value="0123456789abcdef")):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -291,7 +292,7 @@ class Limits(unittest.TestCase):
             self.assertIsNone(Embed().limits().memory_mb)
 
     def test_running_sandboxes_at_the_limit_refuse_another(self):
-        running = [Mock()] * 20
+        running = [self.runtime.Info("vm", {}, "running")] * 20
         with patch.object(self.backend, "sandboxes", return_value=running) as listed:
             why = self.runtime.too_many()
         self.assertEqual(listed.call_args.args, (None, [self.runtime.RUNNING]))
@@ -318,7 +319,7 @@ class Limits(unittest.TestCase):
 
     def test_core_refuses_a_create_beyond_the_limit_before_the_runtime(self):
         from sbx_control import core
-        with patch.object(self.backend, "sandboxes", return_value=[Mock()] * 20), \
+        with patch.object(self.backend, "sandboxes", return_value=[self.runtime.Info("vm", {}, "running")] * 20), \
                 self.assertRaisesRegex(core.NoCapacity, "runs at most 20 at once"):
             core.check_capacity(4096)
 

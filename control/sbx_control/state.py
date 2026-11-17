@@ -181,6 +181,16 @@ def session_key() -> str:
     return SESSION_KEY.setdefault(secrets.token_hex(32))
 
 
+INSTALLATION_ID = Setting("installation_id")
+
+
+def installation_id() -> str:
+    """This installation's id: random, made once, kept in sbx.db (so backups
+    and upgrades keep it). Not a secret: it tells this installation's
+    sandboxes and templates from another's on a provider account they share."""
+    return INSTALLATION_ID.setdefault(secrets.token_hex(8))
+
+
 def event(sandbox: str, kind: str, detail: str = "", *, internal: bool = False):
     """Record what happened to a sandbox. internal: the server's own
     housekeeping (a retried cleanup, self-repair); nobody acts on it, and

@@ -254,7 +254,7 @@ def remove(kind: str) -> Change:
         raise Refused(f"{kind} is the only runtime enabled here; add another first (sbx-admin runtime add KIND)")
     backend = runtime.get(kind)
     try:
-        listed = backend.sandboxes()
+        listed = runtime.complete(runtime.sandboxes(kind=kind))
     except Exception as error:
         raise Refused(f"{backend.title} did not say which sandboxes it holds ({type(error).__name__}: {error}); "
                       "nothing was changed") from None
@@ -412,7 +412,7 @@ def verify(kind: str | None = None, say=print) -> bool:
             nonlocal made
             runtime.kill(made)
             gone, made = made, None
-            if any(i.sandbox_id == gone for i in runtime.get(kind).sandboxes(None, [runtime.RUNNING])):
+            if any(i.sandbox_id == gone for i in runtime.sandboxes(None, [runtime.RUNNING], kind=kind)):
                 raise AssertionError("the runtime still lists it running")
             return gone
         before = passed

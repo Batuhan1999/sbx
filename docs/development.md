@@ -172,7 +172,13 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   sandbox route through `of()`; calls that make something (`create`,
   `build_template`, `templates`, `limits`, `capacity`, ...) take `kind`, where
   `None` is the default; `sandboxes()` lists every enabled runtime and tags
-  each `Info`; the host's calls (`host_units`, `guard_host`, `apply_network`,
+  each `Info` (only this installation's sandboxes: `create` adds the
+  installation id, `state.installation_id()`, to the metadata as
+  `sbx_install`; a runtime with `host = False` may be shared by several
+  installations, so it is listed with that id as a metadata query, untagged
+  sandboxes counting only when sbx's records know their id, and its
+  templates and snapshots are named with the id's prefix, `template_name`;
+  core code lists through the registry, never a backend's `sandboxes()`); the host's calls (`host_units`, `guard_host`, `apply_network`,
   `readiness`, `test`, ...) run over the enabled runtimes. `configure` hands
   each backend only its own `credential_keys`.
   `test_runtime.py` fails if any module outside `runtime/e2b/`,

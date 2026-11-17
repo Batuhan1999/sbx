@@ -177,14 +177,17 @@ class Cloud(Compute, HostSide):
                           {}, (), ("test",))
         facts: dict = {"domain": self.domain}
         try:
-            running = len(self.sandboxes(None, ["running"]))
+            from ... import runtime   # this installation's sandboxes, not the whole E2B team's
+            running = len(runtime.sandboxes(None, [runtime.RUNNING], kind=self.kind))
         except Exception as error:
             return Status("runtime", "Sandbox runtime", "attention", f"E2B Cloud did not answer: {error}", facts,
                           (), ("test",))
         facts["running"] = running
         most = self._limits.sandboxes
         full = most is not None and running >= most
-        summary = f"E2B Cloud · {running}{f' of {most}' if most else ''} running" + (" · full" if full else "")
+        # The plan's limit is the E2B team's, which other installations on the same key share.
+        summary = (f"E2B Cloud · {running} running here" + (f" (the plan runs {most} at once per E2B team)"
+                                                             if most else "") + (" · full" if full else ""))
         return Status("runtime", "Sandbox runtime", "attention" if full else "connected", summary, facts,
                       (Field("domain", "Domain", value=self.domain),), ("test",))
 
