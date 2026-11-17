@@ -426,12 +426,16 @@ class CertificateTests(Setup, Installation):
             core.connect("box", "for a test", info=self.info("box", state="paused"))
         staging = f"{core.RUN}/{self.endpoints.RENEWED}/.push"
         # Key and certificate in one file each, staged, then moved into place whole.
-        self.assertEqual(sorted(written), [f"{staging}/dev-pg.pem", f"{staging}/renewed.json", f"{staging}/temporal.pem"])
-        self.assertIn("PRIVATE KEY", written[f"{staging}/dev-pg.pem"])
-        self.assertIn("BEGIN CERTIFICATE", written[f"{staging}/dev-pg.pem"])
-        self.assertTrue(any("mv -f" in c and "renewed.json" in c for c in commands))
+        self.assertEqual(sorted(written), [f"{staging}/bundles.json", f"{staging}/dev-pg.bundle.pem",
+                                           f"{staging}/temporal.bundle.pem"])
+        self.assertIn("PRIVATE KEY", written[f"{staging}/dev-pg.bundle.pem"])
+        self.assertIn("BEGIN CERTIFICATE", written[f"{staging}/dev-pg.bundle.pem"])
+        moved = next(i for i, c in enumerate(commands) if "mv -f" in c and "bundles.json" in c)
+        # The forwarder of this release runs before anything of the new layout is written; the old layout goes.
+        self.assertLess(next(i for i, c in enumerate(commands) if "forward ensure" in c), moved)
+        self.assertIn("rm -f renewed.json *-key.pem", commands[moved])
         self.assertTrue(any("forward ensure" in c for c in commands))   # and its forwarder runs
-        self.assertGreater(json.loads(written[f"{staging}/renewed.json"])["dev-pg"], time.time() + 23 * 3600)
+        self.assertGreater(json.loads(written[f"{staging}/bundles.json"])["dev-pg"], time.time() + 23 * 3600)
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
 
 
@@ -823,10 +827,10 @@ class ForwarderTests(Setup, Installation):
         self.forwarder(self.config({"dev-pg": expired}, renew=renew))
         self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
         self.assertEqual(len(asked), 1)
-        self.assertGreater(json.loads((self.renewed / "renewed.json").read_text())["dev-pg"], time.time() + 23 * 3600)
+        self.assertGreater(json.loads((self.renewed / "bundles.json").read_text())["dev-pg"], time.time() + 23 * 3600)
         self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
         self.assertEqual(len(asked), 1)   # the renewed one is used, not renewed again
-        (self.renewed / "renewed.json").unlink()
+        (self.renewed / "bundles.json").unlink()
         self.bound["owner/app"] = []   # no longer attached: renewal refused, the expired one fails
         self.assertEqual(self.ask("dev-pg"), b"")
         self.assertEqual(len(asked), 2)
@@ -870,10 +874,10 @@ class ForwarderTests(Setup, Installation):
         release.set()
         self.assertTrue(self.forwarders[-1].renewer.wait(10))
         self.assertEqual(len(asked), 1)   # one renewal for both
-        stored = (self.renewed / "dev-pg.pem").read_text()
+        stored = (self.renewed / "dev-pg.bundle.pem").read_text()
         self.assertIn("PRIVATE KEY", stored)   # key and certificate in one file, written whole
         self.assertIn("BEGIN CERTIFICATE", stored)
-        self.assertEqual(oct((self.renewed / "dev-pg.pem").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct((self.renewed / "dev-pg.bundle.pem").stat().st_mode & 0o777), "0o600")
         self.assertEqual(self.ask("dev-pg"), b"echo:select 1")
         self.assertEqual(len(asked), 1)   # the renewed one lasts a day
 
@@ -1007,6 +1011,56 @@ class ForwarderLivenessTests(Setup, Installation):
             with patch.object(self.guest, "alive", return_value=True):
                 self.guest.forward("ensure", self.folder / "config.json", state_file=state)
             self.assertEqual(popen.call_count, 1)
+
+    def test_an_upgrade_replaces_the_forwarder_a_running_sandbox_kept(self):
+        state = self.folder / "forwarder.json"
+        state.write_text(json.dumps({"pid": 1503, "birth": "9"}))   # the release before's: no version
+        events = []
+        with patch.object(self.guest, "alive", return_value=True), \
+                patch.object(self.guest, "terminate", side_effect=lambda pid, owned: events.append(("stop", pid)) or True), \
+                patch.object(self.guest.subprocess, "Popen",
+                             side_effect=lambda *a, **kw: events.append(("start",)) or SimpleNamespace(pid=4242)), \
+                patch.object(self.guest, "record", side_effect=lambda pid, proc=None: {"pid": pid, "birth": "7"}), \
+                patch.object(self.guest, "say"):
+            self.guest.forward("ensure", self.folder / "config.json", state_file=state)
+            self.assertEqual(events, [("stop", 1503), ("start",)])   # stopped before the new one starts
+            self.assertEqual(json.loads(state.read_text()), {"pid": 4242, "birth": "7",
+                                                             "version": self.guest.FORWARD_VERSION})
+            self.guest.forward("ensure", self.folder / "config.json", state_file=state)
+            self.assertEqual(len(events), 2)   # this release's runs: left alone
+
+    def test_a_forwarder_of_before_never_reads_the_new_files(self):
+        """While one of the release before still runs, nothing it reads is replaced: the new layout has other names."""
+        renewed = self.folder / "renewed"
+        renewed.mkdir()
+        for name in ("dev-pg.pem", "dev-pg-key.pem", "renewed.json"):   # what it wrote and reads
+            (renewed / name).write_text("old")
+        cert = self.folder / "c.pem"
+        cert.write_text("config")
+        endpoint = {"name": "dev-pg", "cert": "c.pem", "key": "k.pem", "not_after": 1}
+        self.assertEqual(self.guest._certificate(endpoint, self.folder, renewed)[0], str(cert))   # ignores the old files
+        (renewed / "dev-pg.bundle.pem").write_text("new")
+        (renewed / "bundles.json").write_text(json.dumps({"dev-pg": 2}))
+        self.assertEqual(self.guest._certificate(endpoint, self.folder, renewed), (str(renewed / "dev-pg.bundle.pem"),
+                                                                                  None, 2.0))
+        self.assertEqual({p.name: p.read_text() for p in renewed.iterdir() if p.name in
+                          ("dev-pg.pem", "dev-pg-key.pem", "renewed.json")},
+                         {"dev-pg.pem": "old", "dev-pg-key.pem": "old", "renewed.json": "old"})
+
+    def test_sbx_ships_this_release_s_guest_before_ensuring(self):
+        from sbx_control import core
+        runs, written = [], []
+
+        def run(command, **kwargs):
+            runs.append(command)
+            first = sum("forward" in c for c in runs) == 1
+            return SimpleNamespace(stdout="no-guest" if first and "forward" in command else "")
+        vm = SimpleNamespace(commands=SimpleNamespace(run=run),
+                             files=SimpleNamespace(write=lambda path, text, **kw: written.append(path)))
+        core.ensure_forwarder(vm)
+        self.assertIn(core.GUEST_DIGEST, runs[0])   # the sandbox's guest is compared with this release's
+        self.assertEqual(written, [core.GUEST])     # another one: shipped, then ensure ran again
+        self.assertEqual(sum("forward ensure" in c for c in runs), 2)
 
     def test_the_keeper_keeps_it_running_and_says_a_taken_port_once(self):
         from sbx_control import keeper, state

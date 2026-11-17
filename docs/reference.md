@@ -328,8 +328,10 @@ How it works:
   login (`postgres-clone`'s per-sandbox role) stays on top. One thread
   carries each connection; when either side ends, what is pending goes out
   and both close (as nginx's stream proxy does: no half-closed
-  connections). sbx starts the forwarder again when it died: with each
-  runtime write, on resume and in the keeper's round. A port it can't
+  connections). sbx starts the forwarder again when it died, and replaces
+  one an earlier release started (after an upgrade, with the sandbox's
+  guest helper of this release): with each runtime write, on resume and in
+  the keeper's round. A port it can't
   listen on is a sandbox event, said once. Its ports are never offered as
   previews.
 - **The values.** On such a runtime, every `host:port` in a sandbox's env
