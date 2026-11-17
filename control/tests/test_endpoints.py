@@ -1105,6 +1105,23 @@ class ForwarderLivenessTests(Setup, Installation):
                 self.guest.forward("ensure", self.folder / "config.json", state_file=state)
             self.assertEqual(popen.call_count, 1)
 
+    def test_two_ensures_at_once_start_one(self):
+        state = self.folder / "forwarder.json"
+
+        def spawn(*args, **kwargs):
+            time.sleep(0.3)   # the other ensure looks meanwhile
+            return SimpleNamespace(pid=4242)
+        with patch.object(self.guest.subprocess, "Popen", side_effect=spawn) as popen, \
+                patch.object(self.guest, "record", side_effect=lambda pid, proc=None: {"pid": pid, "birth": "7"}), \
+                patch.object(self.guest, "alive", side_effect=bool):
+            both = [threading.Thread(target=self.guest.forward, args=("ensure", self.folder / "config.json", state))
+                    for _ in range(2)]
+            for thread in both:
+                thread.start()
+            for thread in both:
+                thread.join()
+        self.assertEqual(popen.call_count, 1)
+
     def test_the_keeper_keeps_it_running_and_says_a_taken_port_once(self):
         from sbx_control import keeper, state
         self.endpoints.add(server="dev_pg", by="test")

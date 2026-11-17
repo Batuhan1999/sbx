@@ -822,13 +822,15 @@ def forward(action, config_path, state_file=None):
         write_json(state_file, record(os.getpid()))
         Forwarder(config_path).run()
         return
-    if alive(read_json(state_file)):
-        return
-    with open("/tmp/sbx-endpoints.log", "a") as log:
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-                                   start_new_session=True)
-    write_json(state_file, record(process.pid))
+    with open(f"{state_file}.lock", "a") as lock:   # two ensures at once start one
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if alive(read_json(state_file)):
+            return
+        with open("/tmp/sbx-endpoints.log", "a") as log:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run",
+                                        str(config_path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=log, start_new_session=True)
+        write_json(state_file, record(process.pid))
 
 
 def main(argv=None):
