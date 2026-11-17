@@ -18,6 +18,7 @@ class Backend(unittest.TestCase):
         from sbx_control.runtime import boat
         self.boat_module = boat
         self.enterContext(patch.object(boat.time, "sleep"))
+        self.enterContext(patch.object(boat, "_installation", return_value="inst-a"))
         self.backend, self.fake = configured()
         self.fake.saved["tpl"] = {"name": "tpl", "status": "ready", "sourceSandboxId": "x", "type": "default",
                                   "createdAt": "2026-11-17T12:00:00Z", "files": {"/home/user/app/README": b"hi"}}
@@ -105,10 +106,17 @@ class Backend(unittest.TestCase):
         from sbx_control.runtime import CommandFailed
         handle = self.create()
         self.fake.respond = lambda _, command: ("oops", 3) if "fail" in command else "out\n"
-        self.assertEqual(handle.commands.run("echo x", envs={"A": "b c"}, user="root").stdout, "out\n")
+        secret = "orb_test-only-secret-value"
+        self.assertEqual(handle.commands.run("echo x", envs={"A": "b c", "ORB_TOKEN": secret}, user="root",
+                                             cwd="/srv").stdout, "out\n")
         sent = self.fake.ran[-1][1]
-        self.assertTrue(sent.startswith("sudo -H -u root bash -c "), sent)
-        self.assertIn("export A='b c'", shlex.split(sent)[-1])
+        self.assertNotIn(secret, sent)   # the env never in the command text Boat keeps
+        self.assertIn("exec sudo -H -u root bash", sent)
+        written = [v.decode() for p, v in self.fake.files[handle.sandbox_id].items() if p.startswith("/tmp/.sbx-env/")]
+        self.assertEqual(written, [f"export A='b c'\nexport ORB_TOKEN={secret}\n"])
+        inner = shlex.split(sent)[-1]
+        self.assertIn("rm -f /tmp/.sbx-env-", inner)            # read once, removed
+        self.assertIn("cd /srv || exit 1; echo x", inner)        # a failed cd stops it
         with self.assertRaises(CommandFailed) as raised:
             handle.commands.run("fail now")
         self.assertEqual(raised.exception.exit_code, 3)
@@ -143,6 +151,28 @@ class Backend(unittest.TestCase):
         self.assertNotEqual(self.backend.upstream_token(sandbox_id, 5173), token)   # one per port
         self.backend.pause(sandbox_id)
         self.assertEqual(self.backend.upstream_token(sandbox_id, 3000, fetch=False), "")
+
+    def test_a_port_is_looked_at_again_until_its_app_listens_and_the_relay_survives_a_resume(self):
+        sandbox_id = self.create().sandbox_id
+        listening = {"5173": ""}
+        self.fake.respond = lambda _, command: (listening["5173"] if "sport = :5173" in command else None)
+        clock = [100.0]
+        self.enterContext(patch.object(self.boat_module.time, "monotonic", side_effect=lambda: clock[0]))
+        self.backend.upstream_token(sandbox_id, 5173)            # nothing listens yet: exposed as reachable
+        listening["5173"] = "LISTEN 0 511 127.0.0.1:5173 0.0.0.0:*\n"
+        self.backend.upstream_token(sandbox_id, 5173)            # within a few seconds: not asked again
+        clock[0] += 5
+        self.backend.upstream_token(sandbox_id, 5173)            # looked at again: loopback only, relayed
+        clock[0] += 60
+        self.backend.upstream_token(sandbox_id, 5173)            # it answered: settled, nothing asked
+        hosts = [b["localhost"] for _, p, _, b in self.fake.calls if p.endswith("/host")]
+        self.assertEqual(hosts, [False, True])
+        self.backend.pause(sandbox_id)
+        self.backend.connect(sandbox_id)
+        listening["5173"] = ""                                   # after the resume, before the app is up again
+        self.backend.upstream_token(sandbox_id, 5173)
+        hosts = [b["localhost"] for _, p, _, b in self.fake.calls if p.endswith("/host")]
+        self.assertEqual(hosts, [False, True, True])             # the relay kept, not turned off
 
     def test_a_loopback_only_app_is_exposed_through_boats_relay(self):
         handle = self.create()
@@ -190,10 +220,15 @@ class Backend(unittest.TestCase):
                                                      disk_mb=10240, on_log=logs.append), "abcd1234--repo-1")
         builder = self.body("POST", "/sandboxes")
         self.assertEqual((builder["from"], builder["type"], builder["noEnv"]), ("tpl", "small", True))
+        self.assertEqual((builder["labels"], builder["ttlSeconds"]),
+                         ({"sbx_install": "inst-a", "sbx_build": "abcd1234--repo-1"}, 4 * 3600))
         commands = [c for _, c, _ in self.fake.ran]
         apt = next(c for c in commands if "apt-get install" in c)
-        self.assertTrue(apt.startswith("sudo -H -u root"), apt)
-        self.assertTrue(any("echo $V" in c and "export V=1" in c for c in commands))
+        self.assertIn("exec sudo -H -u root", apt)
+        self.assertTrue(any("echo $V" in c for c in commands))
+        envs = [v.decode() for p, v in self.fake.files[next(iter(self.fake.files))].items()
+                if p.startswith("/tmp/.sbx-env/")]
+        self.assertTrue(any("export V=1\n" in e for e in envs))
         unit = next(c for c in commands if "sbx-start.service" in c)
         self.assertIn("base64 -d | sudo tee", unit)
         self.assertTrue(any("systemctl enable --now sbx-start" in c for c in commands))
@@ -206,6 +241,45 @@ class Backend(unittest.TestCase):
         self.assertIn(("abcd1234--repo-1", "ready"), self.backend.templates())
         self.assertTrue(self.backend.delete_template("abcd1234--repo-1"))
         self.assertFalse(self.backend.delete_template("abcd1234--repo-1"))
+
+    def test_a_dockerfile_reads_as_docker_does(self):
+        import subprocess
+        steps = self.boat_module.dockerfile_steps(
+            "FROM x\nARG V=1\nRUN apt-get update \\\n  # a comment inside the continuation\n  && echo done\n"
+            "ENV X=${V}-$V PATH=/opt/node/bin:$PATH A=\"x y\" C=$(id) D=`id` E=a;b\nENV MSG hello $V\n")
+        self.assertEqual(steps[1], ("run", "apt-get update  && echo done"))
+        exports = "".join(self.boat_module.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        shown = subprocess.run(["bash", "-c", "PATH=/usr/bin:/bin\n" + exports + 'printf "%s|" "$X" "$PATH" "$A" "$C" '
+                                '"$D" "$E" "$MSG"'], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(shown, "1-1|/opt/node/bin:/usr/bin:/bin|x y|$(id)|`id`|a;b|hello 1|")   # no command ran
+
+    def test_builds_and_snapshots_are_refused_on_the_trial_before_a_builder_starts(self):
+        from sbx_control.runtime import LimitRefused, TemplateSpec
+        self.fake.plan = "trial"
+        with self.assertRaisesRegex(LimitRefused, "first payment"):
+            self.backend.build_template(TemplateSpec().from_image("ubuntu:24.04"), alias="a", cpu=2,
+                                        memory_mb=4096, disk_mb=1024)
+        self.assertEqual(self.fake.sandboxes, {})                # no builder for nothing
+        handle = self.create()
+        with self.assertRaisesRegex(LimitRefused, "first payment"):
+            self.backend.snapshot(handle.sandbox_id, "cache")
+
+    def test_builders_left_behind_are_reclaimed_and_retries_reuse_one_key(self):
+        from sbx_control.runtime import TemplateSpec
+        old = self.backend.create("tpl", timeout=600, metadata={"sbx_install": "inst-a", "sbx_build": "x"})
+        self.fake.sandboxes[old.sandbox_id]["createdAt"] = "2026-01-01T00:00:00Z"
+        self.fake.fail("POST", "/sandboxes", 409, "idempotency_in_progress")
+        self.backend.build_template(TemplateSpec().from_image("ubuntu:24.04"), alias="b", cpu=2, memory_mb=4096,
+                                    disk_mb=1024)
+        self.assertNotIn(old.sandbox_id, self.fake.sandboxes)
+        keys = [h for m, p, _, _, h in self.fake.requests if m == "POST" and p == "/sandboxes"][-2:]
+        self.assertEqual(keys[0]["Idempotency-Key"], keys[1]["Idempotency-Key"])
+
+    def test_a_resume_without_a_timeout_keeps_the_auto_stop(self):
+        handle = self.create()
+        self.backend.pause(handle.sandbox_id)
+        self.backend.connect(handle.sandbox_id)
+        self.assertNotIn("ttlSeconds", self.body("POST", f"/sandboxes/{handle.sandbox_id}/resume"))   # null: off for good
 
     def test_an_image_other_than_boats_ubuntu_and_a_copy_are_refused(self):
         from sbx_control.runtime import Failed, TemplateSpec
@@ -266,6 +340,7 @@ class Settings(unittest.TestCase):
         trial, twenty = boat.PRESETS[0].values, boat.PRESETS[1].values
         self.assertEqual((trial["BOAT_MAX_CPU"], trial["BOAT_MAX_SANDBOXES"], trial["BOAT_MAX_TIMEOUT"]),
                          ("4", "2", str(2 * 3600)))   # the trial: the default size, 2 at once, 2 hours
+        self.assertIn("templates need the first payment", boat.PRESETS[0].note)
         self.assertEqual((twenty["BOAT_MAX_CPU"], twenty["BOAT_MAX_SANDBOXES"], twenty["BOAT_MAX_TIMEOUT"]),
                          ("8", "100", str(30 * 86400)))
         self.assertEqual(boat.PRESETS[2].values["BOAT_MAX_CPU"], "16")   # xlarge from $100
@@ -297,10 +372,11 @@ class Settings(unittest.TestCase):
         with patch("sbx_control.runtime.sandboxes", return_value=[]):
             found = backend.status()
         self.assertEqual(found.state, "attention")
-        self.assertIn("trial", found.summary)
+        self.assertIn("Trial: templates need the first payment", found.summary)
         self.assertIn("expires in", found.summary)
         checks = {c.name: c for c in backend.test()}
-        self.assertTrue(checks["Boat plan"].ok)   # Boat decides: it refuses what the trial can't do
+        self.assertFalse(checks["Boat plan"].ok)   # confirmed live: no saved snapshots on the trial
+        self.assertIn("first payment", checks["Boat plan"].fix)
         self.assertFalse(checks["Boat API key"].ok)
 
 

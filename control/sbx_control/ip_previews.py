@@ -202,22 +202,12 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress", 
         lines.append("}")
     cookies = runtime.upstream_token_cookies()
     if cookies:
-        lines.append("# The sandbox's token as the cookie its runtime wants, after the app's own")
-        lines.append("# cookies (a browser's own cookie of that name dropped), to that runtime only.")
-    for number, name in enumerate(sorted(set(cookies.values())), 1):
-        kept, sep = f"{target}_cookie_kept_{number}", f"{target}_cookie_sep_{number}"
-        lines.append(f"map ${cookie} ${kept} {{")
-        lines.append(f'  "~^(?<before>.*?);\\s*{name}=[^;]*(?<after>.*)$" "$before$after";')
-        lines.append(f'  "~^{name}=[^;]*;?\\s*(?<after>.*)$" "$after";')
-        lines.append(f"  default ${cookie};")
-        lines.append("}")
-        lines.append(f'map ${kept} ${sep} {{ "" ""; default "${kept}; "; }}')
-    if cookies:
+        # The gate writes that runtime's whole Cookie header (gate.route): the
+        # app's cookies without sbx's session or any of the token's name, then the token.
+        lines.append("# The Cookie header the gate wrote, with the sandbox's token, to that runtime only.")
         lines.append(f"map ${source} ${target}_cookie {{")
         lines.append(f"  default ${cookie};")
-        numbers = {name: n for n, name in enumerate(sorted(set(cookies.values())), 1)}
-        lines += [f'  {kind} "${{{target}_cookie_sep_{numbers[name]}}}{name}=${{{target}_token}}";'
-                  for kind, name in cookies.items()]
+        lines += [f"  {kind} ${target}_upstream_cookie;" for kind in cookies]
         lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -247,7 +237,10 @@ def upstream_token_set(target: str = "sbx_ingress", indent: str = "    ") -> str
     (X-Sbx-Upstream-Token); "" when no enabled runtime wants a token."""
     if not _wants_token():
         return ""
-    return f"{indent}auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;\n"
+    found = f"{indent}auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;\n"
+    if runtime.upstream_token_cookies():
+        found += f"{indent}auth_request_set ${target}_upstream_cookie $upstream_http_x_sbx_upstream_cookie;\n"
+    return found
 
 
 def upstream_token_send(target: str = "sbx_ingress", indent: str = "    ") -> str:
@@ -256,8 +249,11 @@ def upstream_token_send(target: str = "sbx_ingress", indent: str = "    ") -> st
     for any other runtime, and a browser's own value of that header never
     passes. A cookie runtime's token goes with the cookies (upstream_cookie)."""
     headers = sorted(set(runtime.upstream_token_headers().values()))
-    return "".join(f"{indent}proxy_set_header {header} ${target}_token_{number};\n"
-                   for number, header in enumerate(headers, 1))
+    lines = [f"proxy_set_header {header} ${target}_token_{number};" for number, header in enumerate(headers, 1)]
+    # nginx can't drop one Set-Cookie; a token cookie the provider sets is at least kept from scripts.
+    lines += [f"proxy_cookie_flags {name} httponly secure samesite=strict;"
+              for name in sorted(set(runtime.upstream_token_cookies().values()))]
+    return "".join(f"{indent}{line}\n" for line in lines)
 
 
 def upstream_token(target: str = "sbx_ingress", indent: str = "    ") -> str:
@@ -314,6 +310,8 @@ server {{
     proxy_set_header X-Original-Preview-Port $server_port;
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $ip_original_method;
+    proxy_set_header X-Original-Upgrade $http_upgrade;
+    proxy_set_header Accept $http_accept;
     proxy_set_header Cookie $http_cookie;
     proxy_set_header Authorization $http_authorization;
   }}
@@ -350,7 +348,7 @@ server {{
   }}
   location @ip_sandbox {{
     proxy_pass $ip_ingress;
-{upstream_tls("ip_upstream")}{upstream_token_send("ip_ingress")}    proxy_intercept_errors on;
+{upstream_tls("ip_upstream")}{upstream_token_send("ip_ingress")}    # Only what nginx itself answers (the app not reachable, a timeout): an app's own 502 is the app's.
     error_page 502 504 = @ip_unavailable;
     proxy_connect_timeout 15s;
     proxy_http_version 1.1;

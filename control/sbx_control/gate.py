@@ -33,9 +33,10 @@ from .preview_pages import Page
 
 router = APIRouter()
 GONE = "X-Sbx-Gone"
-UPSTREAM, RUNTIME, TOKEN = "X-Sbx-Upstream", "X-Sbx-Runtime", "X-Sbx-Upstream-Token"
+UPSTREAM, RUNTIME, TOKEN, COOKIE = "X-Sbx-Upstream", "X-Sbx-Runtime", "X-Sbx-Upstream-Token", "X-Sbx-Upstream-Cookie"
 PAGE, WAIT = "X-Sbx-Page", "X-Sbx-Wait"
 WAKE_WAIT_SECONDS = 2.5      # how long a request waits for a resume before the starting page answers
+STATUS_FRESH_SECONDS = 5     # the poll looks inside a sandbox only if a listing this recent says it runs
 LISTEN_CACHE_SECONDS = 2
 
 _owners: dict = {"fetched_at": 0.0, "by_id": {}, "state": {}, "app": {}, "info": {}}
@@ -124,14 +125,17 @@ def ensure_running(sandbox_id: str):
             raise runtime.Failed(_wake_errors[sandbox_id])
 
 
-def route(port: int, sandbox_id: str, *, preflight: bool = False) -> dict:
+def route(port: int, sandbox_id: str, *, preflight: bool = False, cookies: str | None = None) -> dict:
     """Where nginx sends a let-through request for a sandbox's port: the
     Host its runtime routes on, the runtime's kind (nginx's map picks its
     ingress from it) and, for a runtime that wants one, the token for the
     sandbox's port. A preflight wakes nothing: it takes only a token the
     runtime kept, and without one it is refused like anything not routable
     (the browser's real request resumes the sandbox and fetches it). A
-    sandbox the runtime no longer has is not found either (404)."""
+    sandbox the runtime no longer has is not found either (404). For a
+    runtime that wants the token in a cookie, X-Sbx-Upstream-Cookie is the
+    whole Cookie header nginx sends it: the browser's cookies (cookies)
+    without sbx's session and without any of that name, then the token."""
     try:
         info = _owners["info"].get(sandbox_id)
         kind = runtime.kind_of(info) if info is not None else runtime.of(sandbox_id).kind
@@ -150,6 +154,11 @@ def route(port: int, sandbox_id: str, *, preflight: bool = False) -> dict:
         if not token[1]:
             raise HTTPException(404)
         found[TOKEN] = token[1]
+        cookie = runtime.upstream_token_cookies().get(kind)
+        if cookie:
+            kept = [part.strip() for part in ip_previews.app_cookies(cookies or "").split(";")
+                    if part.strip() and part.partition("=")[0].strip() != cookie]
+            found[COOKIE] = "; ".join([*kept, f"{cookie}={token[1]}"])
     return found
 
 
@@ -214,8 +223,11 @@ def _record_page(name: str, record: dict | None, owner_email: str | None, email:
 
 def _unlisted(host_label: str, port: int | None, email: str) -> Page:
     """A host no listed sandbox answers to: one being made, one that failed
-    or was deleted, one whose port is not a preview, or no such name."""
+    or was deleted, one whose port is not a preview, or no such name. Only
+    whoever may view the sandbox (its owner, admins, the team for a shared
+    one) learns which; anyone else gets what an unknown name gets."""
     from . import sandboxes
+    unknown = Page("missing", host_label)
     rows = sandboxes.rows()
     by_slug = {row.get("slug") or name: name for name, row in rows.items()}
     cuts = [len(host_label)] + [i for i in range(len(host_label) - 1, 0, -1) if host_label[i] == "-"]
@@ -224,10 +236,13 @@ def _unlisted(host_label: str, port: int | None, email: str) -> Page:
         name = by_slug.get(slug) or (slug if slug in rows else None)
         if name is None:
             record = lifecycle.get(slug) if cut == len(host_label) else None
-            if record and record["phase"] == "deleted":
-                return Page("deleted", slug)
+            if record and record["phase"] == "deleted":   # its registration went with it: admins only
+                return Page("deleted", slug) if auth.is_admin(email) else unknown
             continue
-        page = _record_page(name, lifecycle.get(name), rows[name].get("owner"), email)
+        row = rows[name]
+        if not auth.may_view(row.get("owner"), core.shared(row.get("metadata") or {}), email):
+            return unknown
+        page = _record_page(name, lifecycle.get(name), row.get("owner"), email)
         if page is not None:
             return page
         found = core.find(name)
@@ -235,7 +250,7 @@ def _unlisted(host_label: str, port: int | None, email: str) -> Page:
             return Page("failed", name, detail="Its VM is gone. Delete it, then create it again.")
         number = core.suffix_port(suffix) if suffix else None
         return Page("no_listener", name, port=number)
-    return Page("missing", host_label)
+    return unknown
 
 
 def _listens(sandbox_id: str, port: int) -> bool:
@@ -264,7 +279,10 @@ class Outcome:
         self.kind, self.headers, self.page, self.target = kind, headers or {}, page, target
 
 
-def _decide(request: Request, *, wake_it: bool = True) -> Outcome:
+def _decide(request: Request, *, status: bool = False) -> Outcome:
+    """status: for the page's poll, which needs a sign-in whatever its
+    method, never wakes a sandbox and connects only to one listed running
+    moments ago."""
     original_host = request.headers.get("x-original-host", "").lower()
     public_port = request.headers.get('x-original-preview-port')
     ip_route = None
@@ -274,7 +292,7 @@ def _decide(request: Request, *, wake_it: bool = True) -> Outcome:
         ip_route = ip_previews.route(int(public_port))
     # A CORS preflight carries no credentials: let it through to a declared
     # preview without a login, waking nothing; the request that follows is gated.
-    preflight = request.headers.get('x-original-method') == 'OPTIONS'
+    preflight = not status and request.headers.get('x-original-method') == 'OPTIONS'
     own_kind, own = runtime.own_route(original_host, request.headers.get("x-original-sandbox-id", ""),
                                       request.headers.get("x-original-sandbox-port") or "") or ("", None)
     if own is True:
@@ -338,22 +356,41 @@ def _decide(request: Request, *, wake_it: bool = True) -> Outcome:
         if state == runtime.FAILED:
             return Outcome("page", page=Page("failed", name, detail="Its runtime reports an error. Restart or "
                                              "delete it in sbx.", action=_open_in_sbx(name) if owner == email else ()))
-        if wake_it and not wake(sandbox_id):
+        if status:
+            sandbox_owner(sandbox_id, fresh=time.time() - _owners["fetched_at"] > STATUS_FRESH_SECONDS)
+            state = _owners["state"].get(sandbox_id)
+        if not status and not wake(sandbox_id):
             if sandbox_id in _wake_errors:
                 return Outcome("page", page=Page("failed", name, detail="It could not wake up. Restart it in sbx.",
                                                  action=_open_in_sbx(name) if owner == email else ()))
             return Outcome("page", page=Page("waking", name, step="Waking up"))
-        if not wake_it and state == "paused":
-            return Outcome("page", page=Page("waking", name, step="Waking up"))
+        if status and sandbox_id in _wake_errors:
+            return Outcome("page", page=Page("failed", name, detail="It could not wake up. Restart it in sbx.",
+                                             action=_open_in_sbx(name) if owner == email else ()))
+        if status and state != "running":
+            waking = _waking.get(sandbox_id)
+            # Nothing resuming it (it paused again since): the page reloads, and that navigation wakes it.
+            return Outcome("page", page=Page("waking", name, step="Waking up",
+                                             reload=not (waking and waking.is_alive())))
         record = lifecycle.get(name, sandbox_id=sandbox_id) if name else None
         page = _record_page(name, record, owner, email)   # the resume may have started a restart
         if page is not None:
             return Outcome("page", page=page)
         if port == _desktop_port(a) and runtime.desktop(runtime.kind_of(info)) == "provider":
             return Outcome("desktop", target=sandbox_id)
+        # A browser's navigation waits on the page until the app's port
+        # listens (the runtime's own "nothing there" is not shown); other
+        # requests go through and get whatever answers.
+        if not status and preview_pages.wants_html(request.headers.get("x-original-method", "GET"),
+                                                   request.headers.get("accept", ""),
+                                                   request.headers.get("x-original-upgrade", "")) \
+                and not _listens(sandbox_id, port):
+            return Outcome("page", page=_not_listening(sandbox_id, port, name))
     # nginx sends the request to the sandbox's runtime under the host it names (upstream).
     try:
-        headers = {"X-Sbx-User": email or '', **route(port, sandbox_id, preflight=preflight), "X-Sbx-Auth": kind}
+        headers = {"X-Sbx-User": email or '', **route(port, sandbox_id, preflight=preflight,
+                                                      cookies=request.headers.get("cookie", "")),
+                   "X-Sbx-Auth": kind}
     except HTTPException:
         if preflight:
             return Outcome("refuse")
@@ -361,6 +398,14 @@ def _decide(request: Request, *, wake_it: bool = True) -> Outcome:
     if ip_route:
         headers['X-Sbx-Cookies'] = ip_previews.app_cookies(request.headers.get('cookie', ''))
     return Outcome("allow", headers, target=(sandbox_id, port, name, owner, email))
+
+
+def _not_listening(sandbox_id: str, port: int, name: str) -> Page:
+    """The app's main port: it is starting; any other: nothing listens there."""
+    app_port = addressing.ports(_owners["app"][sandbox_id]).get("") if sandbox_id in _owners["app"] else None
+    if port == app_port:
+        return Page("starting", name, step="Starting the app", port=port)
+    return Page("no_listener", name, port=port)
 
 
 def _desktop_port(a) -> int | None:
@@ -402,11 +447,12 @@ def _ready_or_page(found: Outcome, request: Request) -> Page:
     sandbox_id, port, name, owner, email = found.target
     if _listens(sandbox_id, port):
         return Page("ready", name)
-    info = _owners["info"].get(sandbox_id)
-    app_port = addressing.ports(_owners["app"][sandbox_id]).get("") if info else None
-    if port == app_port:
-        return Page("starting", name, step="Starting the app", port=port)
-    return Page("no_listener", name, port=port)
+    return _not_listening(sandbox_id, port, name)
+
+
+def _login() -> str:
+    """The sign-in page a poll that lost its session goes to."""
+    return f"{settings.current().base_url}/auth/login"
 
 
 def _shown(page: Page, request: Request) -> Page:
@@ -443,11 +489,11 @@ def gate_page(request: Request):
     if page.state == "ready":
         if preview_pages.wants_html(method, request.headers.get("accept", "")):
             return HTMLResponse(preview_pages.render(Page("starting", page.name, step="Opening the app"),
-                                                     reason=reason), status_code=503,
+                                                     reason=reason, login=_login()), status_code=503,
                                 headers=preview_pages.headers(Page("starting")))
         return JSONResponse({"state": "ready"}, status_code=503, headers=preview_pages.headers(Page("starting")))
     if preview_pages.wants_html(method, request.headers.get("accept", ""), request.headers.get("x-original-upgrade", "")):
-        return HTMLResponse(preview_pages.render(page, reason=reason), status_code=page.status,
+        return HTMLResponse(preview_pages.render(page, reason=reason, login=_login()), status_code=page.status,
                             headers=preview_pages.headers(page))
     return Response(preview_pages.plain(page), status_code=page.status, media_type="application/json",
                     headers=preview_pages.headers(page))
@@ -456,13 +502,15 @@ def gate_page(request: Request):
 @router.get("/gate/status")
 def gate_status(request: Request):
     """The page's poll (the preview host's /.sbx/status): where the
-    sandbox and its app are now, "ready" once the app's port answers."""
-    found = _decide(request)
+    sandbox and its app are now, "ready" once the app's port answers. A
+    sign-in for every method (no preflight here), nothing woken; whoever
+    may not open the preview gets what an unknown name gets."""
+    found = _decide(request, status=True)
     if found.kind == "login":
         return JSONResponse({"state": "login"}, status_code=401, headers={"Cache-Control": "no-store"})
     if found.kind == "desktop":
         page = Page("ready")
-    elif found.kind == "refuse":
+    elif found.kind == "refuse" or (found.page and found.page.state == "forbidden"):
         page = Page("missing")
     else:
         page = _ready_or_page(found, request)

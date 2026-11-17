@@ -28,6 +28,7 @@ What sbx asks for, as Boat has it:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import datetime
 import json
 import re
@@ -49,7 +50,8 @@ DEFAULT_API_URL = "https://boat.dev/api/v1"
 HOSTED_DOMAIN = "on.boat.dev"   # where Boat serves a sandbox's exposed ports: <subdomain>-<port>.on.boat.dev
 INGRESS_NAME = "sbx-ingress"    # any name under that wildcard; nginx asks by each sandbox's own name (SNI)
 COOKIE = "_port_auth"           # the cookie a private port's token goes in (docs.boat.dev/hosting)
-INSTALL_LABEL, TEMPLATE_LABEL = "sbx_install", "sbx_template"
+INSTALL_LABEL, TEMPLATE_LABEL, BUILD_LABEL = "sbx_install", "sbx_template", "sbx_build"
+RELOOK_SECONDS = 3     # how often a port nothing answered on yet is looked at again
 # Boat's own ports in every sandbox (docs.boat.dev/hosting): never a preview.
 RESERVED_PORTS = frozenset({22, 6080, 8090, 8911, *range(47984, 48011)})
 # States as Boat's API names them (docs.boat.dev/api/v1, Sandbox lifecycle).
@@ -95,25 +97,35 @@ SETTINGS = (
 # 2026-11-17). Every paid plan: auto-stop up to 30 days. $20: 100 sandboxes
 # at once, sizes up to large (8 vCPUs, 16 GB, 111 GB). $100: 300 at once and
 # xlarge (16 vCPUs, 32 GB, 251 GB). $500: 1,000. $2000: 2,000. The trial:
-# 2 at once, auto-stop at most 2 hours, the default size (4 vCPUs, 8 GB); the
-# docs say it can't save snapshots ("trial_saved_snapshots_not_allowed"), the
-# dashboard lists 10 included: sbx lets Boat decide and shows its refusal.
+# 2 at once, auto-stop at most 2 hours, the default size (4 vCPUs, 8 GB), and
+# no saved snapshots: Boat answered a save on a trial account (2026-11-17)
+# "Saved snapshots are not available during the free trial. End the trial
+# (first payment) to unlock them." sbx's templates are saved snapshots, so a
+# trial account is accepted (sandboxes from templates built once it pays)
+# and a template build on it is refused before it starts a builder.
 _PLAN_SOURCE = "https://docs.boat.dev/pricing.md"
 
 
-def _plan(name, title, sandboxes, largest, timeout=None):
+TRIAL_NOTE = "Trial: templates need the first payment (Boat saves no snapshots during the trial)."
+
+
+def _plan(name, title, sandboxes, largest, timeout=None, note=""):
     _, cpu, memory, disk = next(m for m in MACHINES if m[0] == largest)
     return Preset(name, title, {"BOAT_MAX_TIMEOUT": str(timeout or MONTH), "BOAT_MAX_CPU": str(cpu),
                                 "BOAT_MAX_MEMORY_MB": str(memory), "BOAT_MAX_DISK_MB": str(disk),
-                                "BOAT_MAX_SANDBOXES": str(sandboxes)}, _PLAN_SOURCE)
+                                "BOAT_MAX_SANDBOXES": str(sandboxes)}, _PLAN_SOURCE, note=note)
 
 
-PRESETS = (_plan("trial", "Trial", 2, "default", timeout=2 * 3600), _plan("20", "$20", 100, "large"),
+PRESETS = (_plan("trial", "Trial", 2, "default", timeout=2 * 3600, note=TRIAL_NOTE), _plan("20", "$20", 100, "large"),
            _plan("100", "$100", 300, "xlarge"),
            _plan("500", "$500", 1000, "xlarge"), _plan("2000", "$2000", 2000, "xlarge"))
-TRIAL_NOTE = ("On the trial Boat may refuse to save snapshots, which sbx's templates are; if it does, "
-              "start a paid plan ($20 or more).")
+TRIAL_REFUSAL = ("Boat's free trial saves no snapshots (\"Saved snapshots are not available during the free "
+                 "trial\"), and sbx's templates are saved snapshots: make the first payment in Boat's dashboard "
+                 "(Billing), then build again.")
 KEY_WARN_DAYS = 14
+PLAN_CACHE_SECONDS = 300
+BUILD_SECONDS = 4 * 3600   # the longest a builder runs; one older is an orphan
+ENV_DIR = "/tmp/.sbx-env"  # where a command's env waits for it (a new machine's /tmp is empty)
 
 
 def _limits(secrets: dict) -> Limits:
@@ -151,6 +163,29 @@ def saved_name(name: str) -> str:
     import hashlib
     digest = hashlib.sha256(name.encode()).hexdigest()[:8]
     return (re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:54].strip("-") or "s") + "-" + digest
+
+
+def _given(**fields) -> dict:
+    """The fields that have a value: a request model sends a field set to
+    None as null (Boat's ttlSeconds null: auto-stop off)."""
+    return {k: v for k, v in fields.items() if v is not None}
+
+
+def _installation() -> str:
+    from .. import installation_id
+    return installation_id()
+
+
+@dataclasses.dataclass(frozen=True)
+class Exposed:
+    """A port as Boat exposes it: its host and token, whether Boat relays it
+    from loopback, whether something answered on it (settled) and when it
+    was last looked at."""
+    host: str
+    token: str
+    relay: bool
+    settled: bool
+    checked: float
 
 
 # Errors
@@ -229,16 +264,76 @@ def _failed(error) -> Failed:
 # Commands as Boat runs them
 
 
-def wrap(cmd: str, *, user: str | None = None, envs: dict | None = None, cwd: str | None = None) -> str:
+class ShellWord(str):
+    """A value written as the shell word that makes it: a Dockerfile's ENV or
+    ARG, whose $VAR and ${VAR} expand from the env before it (earlier ENV and
+    ARG, the base image's) as Docker expands them. Never a command
+    substitution: shell_word escapes those."""
+
+
+UNQUOTED_LITERAL = set(";&|<>()*?[]~!{}")   # shell syntax outside quotes, plain text in a Dockerfile's value
+
+
+def shell_word(raw: str, *, quoted: bool = False) -> ShellWord:
+    """raw as a ShellWord: as written (its quotes kept, $VAR expanding), or,
+    quoted, the whole of it in double quotes (ENV's old KEY value form).
+    Backticks and $( are escaped outside single quotes, and outside any
+    quotes the characters that are shell syntax but plain text to Docker
+    (UNQUOTED_LITERAL; ${...} stays an expansion)."""
+    out, single, double, param = [], False, quoted, 0
+    text = raw.replace("\\", "\\\\").replace('"', '\\"') if quoted else raw
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and not single and i + 1 < len(text):
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if not single and text.startswith("${", i):
+            out.append("${")
+            param, i = param + 1, i + 2
+            continue
+        if c == "}" and param:
+            out.append(c)
+            param, i = param - 1, i + 1
+            continue
+        if c == "'" and not double:
+            single = not single
+        elif c == '"' and not single:
+            double = not double
+        elif not single and (c == "`" or text.startswith("$(", i)):
+            out.append("\\")
+        elif not single and not double and c in UNQUOTED_LITERAL:   # Docker takes them as they are
+            out.append("\\")
+        out.append(c)
+        i += 1
+    word = "".join(out)
+    return ShellWord(f'"{word}"' if quoted else (word or "''"))
+
+
+def export_line(key: str, value) -> str:
+    """export KEY=VALUE for a shell: a ShellWord as written, anything else quoted."""
+    return f"export {key}={value if isinstance(value, ShellWord) else shlex.quote(str(value))}\n"
+
+
+def wrap(cmd: str, *, user: str | None = None, env_file: str | None = None, cwd: str | None = None) -> str:
     """cmd as one shell command for Boat's API, which runs as `user` in its
     home and takes no env or user: the template's env and workdir first
-    (TEMPLATE_FILE), then envs, then cwd; another user through sudo."""
-    exports = "".join(f"export {k}={shlex.quote(str(v))}; " for k, v in (envs or {}).items())
-    where = f"cd {shlex.quote(cwd)} && " if cwd else 'cd "${SBX_TEMPLATE_WORKDIR:-$HOME}" 2>/dev/null; '
-    script = f"[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}; {where}{exports}{cmd}"
-    if user and user != "user":
-        return f"sudo -H -u {shlex.quote(user)} bash -c {shlex.quote(script)}"
-    return f"bash -c {shlex.quote(script)}"
+    (TEMPLATE_FILE), then the command's env from env_file (written through
+    the files API, read once and removed: values never appear in the command
+    Boat keeps), then cwd, whose failure stops it; another user through sudo
+    (the env file handed over as theirs, 0600)."""
+    where = f"cd {shlex.quote(cwd)} || exit 1; " if cwd else 'cd "${SBX_TEMPLATE_WORKDIR:-$HOME}" 2>/dev/null; '
+    other = bool(user and user != "user")
+    # Another user can't read ENV_DIR (the default user's, 0700): its copy goes in /tmp, 0600, its own.
+    mine = f"/tmp/.sbx-env-{env_file.rsplit('/', 1)[1]}.{user}" if env_file and other else env_file
+    load = f"{{ . {mine} && rm -f {mine}; }} || exit 1; " if env_file else ""
+    script = f"[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}; {load}{where}{cmd}"
+    if not other:
+        return f"bash -c {shlex.quote(script)}"
+    hand = (f"sudo install -o {shlex.quote(user)} -m 600 {env_file} {mine} && rm -f {env_file} || exit 1; "
+            if env_file else "")
+    return f"bash -c {shlex.quote(hand + 'exec sudo -H -u ' + shlex.quote(user) + ' bash -c "$1"')} sbx {shlex.quote(script)}"
 
 
 class _Background:
@@ -259,7 +354,8 @@ class _Commands:
         """Synchronous up to SYNC_SECONDS; a longer (or unbounded) one runs
         detached and is polled; background returns once it started."""
         from boat_sdk.models import CommandRequest
-        command = wrap(cmd, user=user, envs=envs, cwd=cwd)
+        env_file = self._backend.env_file(self._id, envs) if envs else None
+        command = wrap(cmd, user=user, env_file=env_file, cwd=cwd)
         api = self._backend.api()
         if background or not timeout or timeout > SYNC_SECONDS:
             started = self._backend.call(lambda: api.command(self._id, CommandRequest(command=command, detached=True)),
@@ -378,7 +474,7 @@ def dockerfile_steps(text: str) -> list:
     lines, current = [], ""
     for raw in text.splitlines():
         stripped = raw.strip()
-        if not current and (not stripped or stripped.startswith("#")):
+        if not stripped or stripped.startswith("#"):   # also inside a continuation, as Docker drops them
             continue
         if stripped.endswith("\\"):
             current += stripped[:-1] + " "
@@ -403,7 +499,7 @@ def dockerfile_steps(text: str) -> list:
         elif word == "ARG":
             name, sep, value = rest.partition("=")
             if sep:
-                steps.append(("env", {name.strip(): _unquote(value.strip())}))
+                steps.append(("env", {name.strip(): shell_word(value.strip())}))
         elif word == "WORKDIR":
             steps.append(("workdir", rest))
         elif word == "USER":
@@ -414,22 +510,39 @@ def dockerfile_steps(text: str) -> list:
     return steps
 
 
-def _unquote(value: str) -> str:
-    try:
-        return shlex.split(value)[0] if value else ""
-    except (ValueError, IndexError):
-        return value
+def _words(text: str) -> list:
+    """text split at blanks outside quotes, each word as written (quotes and
+    backslashes kept)."""
+    words, current, quote, escaped = [], "", "", False
+    for c in text:
+        if escaped:
+            current, escaped = current + c, False
+        elif c == "\\" and quote != "'":
+            current, escaped = current + c, True
+        elif quote:
+            current += c
+            quote = "" if c == quote else quote
+        elif c in "'\"":
+            current, quote = current + c, c
+        elif c.isspace():
+            if current:
+                words.append(current)
+            current = ""
+        else:
+            current += c
+    return words + ([current] if current else [])
 
 
 def _pairs(text: str) -> dict:
-    """ENV's KEY=VALUE pairs (or the old KEY VALUE form)."""
+    """ENV's KEY=VALUE pairs (or the old KEY VALUE form), each value the
+    ShellWord that expands it as Docker would."""
     if "=" not in text.split(" ", 1)[0]:
         key, _, value = text.partition(" ")
-        return {key: value.strip()}
+        return {key: shell_word(value.strip(), quoted=True)}
     found = {}
-    for token in shlex.split(text):
+    for token in _words(text):
         key, _, value = token.partition("=")
-        found[key] = value
+        found[key] = shell_word(value)
     return found
 
 
@@ -458,7 +571,10 @@ class Boat(HostSide):
         self._local = threading.local()
         self.transport = None   # a stand-in for the SDK's HTTP client (tests)
         self.http_open = None   # a stand-in for the signed-URL transfers (tests)
-        self._exposed: dict = {}    # (sandbox id, port) -> (host, token)
+        self._exposed: dict = {}    # (sandbox id, port) -> Exposed
+        self._relay: dict = {}      # (sandbox id, port) -> relayed from loopback, as last seen (kept across stops)
+        self._env_dirs: set = set()  # sandboxes whose machine has ENV_DIR
+        self._plan: tuple = (0.0, "")   # (when, Boat's plan key) as last asked
         self._subdomains: dict = {}  # sandbox id -> its subdomain
         self._lock = threading.Lock()
         self._port_locks: dict = {}
@@ -545,7 +661,7 @@ class Boat(HostSide):
         """<subdomain>-<port>.on.boat.dev, as exposing the port returned it."""
         kept = self._exposed.get((sandbox_id, int(port)))
         if kept:
-            return kept[0]
+            return kept.host
         subdomain = self._subdomains.get(sandbox_id)
         if not subdomain:
             subdomain = self._sandbox(sandbox_id).subdomain or ""
@@ -556,23 +672,35 @@ class Boat(HostSide):
     def upstream_token(self, sandbox_id, port, *, fetch=True):
         """The port's token, exposing the port on its first request: private
         (never public), relayed from loopback when the app listens only
-        there. Kept per sandbox and port until the sandbox stops or goes."""
-        kept = self._exposed.get((sandbox_id, int(port)))
-        if kept or not fetch:
-            return kept[1] if kept else ""
+        there. Until something answers on the port, each request (at most
+        every few seconds) looks at how it listens again and exposes it again
+        when that changed; once it answers, the exposure is kept until the
+        sandbox stops or goes. With nothing listening yet (a resume), the
+        relay is as it was last seen: exposing again without it would turn
+        Boat's relay off."""
+        key = (sandbox_id, int(port))
+        kept = self._exposed.get(key)
+        if not fetch or (kept and (kept.settled or time.monotonic() - kept.checked < RELOOK_SECONDS)):
+            return kept.token if kept else ""
         with self._lock:
-            lock = self._port_locks.setdefault((sandbox_id, int(port)), threading.Lock())
+            lock = self._port_locks.setdefault(key, threading.Lock())
         with lock:
-            kept = self._exposed.get((sandbox_id, int(port)))
-            if kept:
-                return kept[1]
-            host, token = self._expose(sandbox_id, int(port))
-            self._exposed[(sandbox_id, int(port))] = (host, token)
+            kept = self._exposed.get(key)
+            if kept and (kept.settled or time.monotonic() - kept.checked < RELOOK_SECONDS):
+                return kept.token
+            seen = self._listening_on(sandbox_id, int(port))   # True: loopback only, False: reachable, None: nothing
+            relay = seen if seen is not None else self._relay.get(key, kept.relay if kept else False)
+            if seen is not None:
+                self._relay[key] = seen
+            if kept and kept.relay == relay:
+                self._exposed[key] = Exposed(kept.host, kept.token, relay, seen is not None, time.monotonic())
+                return kept.token
+            host, token = self._expose(sandbox_id, int(port), relay)
+            self._exposed[key] = Exposed(host, token, relay, seen is not None, time.monotonic())
             return token
 
-    def _expose(self, sandbox_id: str, port: int) -> tuple[str, str]:
+    def _expose(self, sandbox_id: str, port: int, loopback: bool) -> tuple[str, str]:
         from boat_sdk.models import HostPortRequest
-        loopback = self._loopback_only(sandbox_id, port)
         found = self.call(lambda: self.api().host_port(sandbox_id, HostPortRequest(port=port, public=False,
                                                                                    localhost=loopback)),
                           sandbox_id=sandbox_id)
@@ -583,14 +711,18 @@ class Boat(HostSide):
                          "served without one")
         return parts.hostname, token
 
-    def _loopback_only(self, sandbox_id: str, port: int) -> bool:
-        """Whether what listens on the port listens only on loopback (Boat then relays to it)."""
+    def _listening_on(self, sandbox_id: str, port: int) -> bool | None:
+        """How the port listens now: True when only on loopback (Boat then
+        relays to it), False when on an address Boat reaches, None when
+        nothing listens (or the sandbox did not answer)."""
         try:
             listening = Handle(self, sandbox_id).commands.run(f"ss -Hltn 'sport = :{port}'", timeout=15).stdout
-        except (CommandFailed, Timeout):
-            return False
+        except (CommandFailed, Timeout, NotRunning):
+            return None
         addresses = [line.split()[3].rsplit(":", 1)[0] for line in listening.splitlines() if len(line.split()) > 3]
-        return bool(addresses) and all(a in ("127.0.0.1", "[::1]", "::1") or a.startswith("127.") for a in addresses)
+        if not addresses:
+            return None
+        return all(a in ("127.0.0.1", "[::1]", "::1") or a.startswith("127.") for a in addresses)
 
     def desktop_url(self, sandbox_id):
         """A fresh URL of Boat's desktop for the sandbox (it carries a token
@@ -602,17 +734,24 @@ class Boat(HostSide):
             time.sleep(POLL_SECONDS)
         raise Failed(f"Boat did not open the desktop of sandbox {sandbox_id}")
 
-    def _forget(self, sandbox_id: str):
+    def _forget(self, sandbox_id: str, *, gone: bool = False):
+        """What it kept of a sandbox whose machine went (a stop): its ports'
+        exposures and its env folder; the relay as last seen stays, unless
+        the sandbox itself is gone."""
         for key in [k for k in self._exposed if k[0] == sandbox_id]:
             self._exposed.pop(key, None)
+        self._env_dirs.discard(sandbox_id)
+        if gone:
+            for key in [k for k in self._relay if k[0] == sandbox_id]:
+                self._relay.pop(key, None)
         with self._lock:
             for key in [k for k in self._port_locks if k[0] == sandbox_id and not self._port_locks[k].locked()]:
                 del self._port_locks[key]
 
     def listed(self, sandbox_ids: set) -> None:
         """After a full listing: forget what it kept of sandboxes no longer there."""
-        for sandbox_id in {k[0] for k in self._exposed} - set(sandbox_ids):
-            self._forget(sandbox_id)
+        for sandbox_id in ({k[0] for k in self._exposed} | {k[0] for k in self._relay}) - set(sandbox_ids):
+            self._forget(sandbox_id, gone=True)
         for sandbox_id in set(self._subdomains) - set(sandbox_ids):
             self._subdomains.pop(sandbox_id, None)
 
@@ -646,12 +785,12 @@ class Boat(HostSide):
         labels[TEMPLATE_LABEL] = template
         if len(labels) > 20 or any(len(v.encode()) > 256 for v in labels.values()):
             raise Failed("Boat keeps at most 20 labels of 256 bytes each; this sandbox's metadata is larger")
-        request = CreateSandboxRequest(var_from=saved_name(template), ttl_seconds=timeout, labels=labels,
-                                       env=dict(envs or {}) or None, no_env=True, environment=None, type=None,
-                                       name=labels.get("sbx"), **self._org_args())
+        request = CreateSandboxRequest(var_from=saved_name(template), labels=labels, env=dict(envs or {}) or None,
+                                       no_env=True, environment=None, type=None, name=labels.get("sbx"),
+                                       **_given(ttl_seconds=timeout), **self._org_args())
+        once = str(uuid.uuid4())   # one key for every retry: a lost answer never makes a second sandbox
         try:
-            created = self.call(lambda: self.api().create(idempotency_key=str(uuid.uuid4()),
-                                                          create_sandbox_request=request),
+            created = self.call(lambda: self.api().create(idempotency_key=once, create_sandbox_request=request),
                                 asked={"timeout_seconds": timeout})
         except Failed as error:
             if _gone_snapshot(error):
@@ -685,7 +824,8 @@ class Boat(HostSide):
             found = self._settle(sandbox_id)
         if found.state in ("archived", "error"):
             self._forget(sandbox_id)
-            self.call(lambda: self.api().resume(sandbox_id, ResumeRequest(ttl_seconds=timeout)),
+            # No ttlSeconds without a timeout: null would turn its auto-stop off for good.
+            self.call(lambda: self.api().resume(sandbox_id, ResumeRequest(**_given(ttl_seconds=timeout))),
                       sandbox_id=sandbox_id, asked={"timeout_seconds": timeout})
         elif timeout is not None:
             self.call(lambda: self.api().update(sandbox_id, UpdateSandboxRequest(ttl_seconds=timeout)),
@@ -726,7 +866,7 @@ class Boat(HostSide):
 
     def kill(self, sandbox_id):
         """Delete it and its snapshots (Boat finishes on its own: async)."""
-        self._forget(sandbox_id)
+        self._forget(sandbox_id, gone=True)
         try:
             self.call(lambda: self.api().delete_sandbox(x_ascii_confirm_delete=sandbox_id, sandbox_id=sandbox_id),
                       sandbox_id=sandbox_id)
@@ -778,7 +918,21 @@ class Boat(HostSide):
             time.sleep(POLL_SECONDS)
 
     def snapshot(self, sandbox_id, name):
+        self._refuse_on_trial()
         return Snapshot(self._save(sandbox_id, name))
+
+    def plan(self, fresh: bool = False) -> str:
+        """Boat's plan key for the account ("trial" before the first payment), a few minutes old at most."""
+        when, found = self._plan
+        if fresh or not found or time.monotonic() - when > PLAN_CACHE_SECONDS:
+            found = self.call(lambda: self.api().limits(**self._org_args())).sandbox_plan_key or ""
+            self._plan = (time.monotonic(), found)
+        return found
+
+    def _refuse_on_trial(self):
+        """A save is refused on the trial: say so before a builder is started for nothing."""
+        if self.plan() == "trial":
+            raise LimitRefused(TRIAL_REFUSAL, field="plan")
 
     def delete_snapshot(self, snapshot_id):
         self.delete_template(snapshot_id)
@@ -797,9 +951,13 @@ class Boat(HostSide):
         return True
 
     def build_template(self, spec: TemplateSpec, *, alias, cpu, memory_mb, disk_mb, on_log=None):
-        """Replay spec in a builder sandbox, save it as alias, delete the builder."""
+        """Replay spec in a builder sandbox, save it as alias, delete the
+        builder. Refused on the trial before a builder starts; builders this
+        installation left behind (older than BUILD_SECONDS) are deleted first."""
         from boat_sdk.models import CreateSandboxRequest
         log = on_log or (lambda line: print(line, flush=True))
+        self._refuse_on_trial()
+        self._reclaim_builders(log)
         steps = []
         for what, value in spec.steps:
             steps += dockerfile_steps(value) if what == "dockerfile" else [(what, value)]
@@ -812,14 +970,14 @@ class Boat(HostSide):
         if kind not in [m[0] for m in MACHINES if m[1] <= (self._limits.cpu or 16)]:
             raise LimitRefused(f"a {cpu} vCPU template needs Boat's {kind} machines, beyond {LIMITS['cpu'][0]}",
                                field="cpu", asked=cpu, allowed=self._limits.cpu)
-        request = CreateSandboxRequest(var_from=saved_name(parent) if parent else None, type=kind,
-                                       ttl_seconds=min(4 * 3600, self._limits.timeout_seconds or 4 * 3600), no_env=True, environment=None,
-                                       name=f"build {alias}"[:120],
-                                       labels={"sbx_build": alias}, **self._org_args())
+        request = CreateSandboxRequest(type=kind, ttl_seconds=min(BUILD_SECONDS, self._limits.timeout_seconds or BUILD_SECONDS),
+                                       no_env=True, environment=None, name=f"build {alias}"[:120],
+                                       labels={INSTALL_LABEL: _installation(), BUILD_LABEL: alias},
+                                       **_given(var_from=saved_name(parent) if parent else None), **self._org_args())
         log(f"Boat: starting a {kind} builder" + (f" from {parent}" if parent else " from Boat's Ubuntu 24.04"))
+        once = str(uuid.uuid4())   # one key for every retry
         try:
-            created = self.call(lambda: self.api().create(idempotency_key=str(uuid.uuid4()),
-                                                          create_sandbox_request=request),
+            created = self.call(lambda: self.api().create(idempotency_key=once, create_sandbox_request=request),
                                 asked={"cpu": cpu, "memory_mb": memory_mb, "disk_mb": disk_mb})
         except Failed as error:
             if parent and _gone_snapshot(error):
@@ -838,6 +996,35 @@ class Boat(HostSide):
                 self.kill(builder)
             except Exception as error:   # its auto-stop ends it; Boat keeps its disk 14 days
                 log(f"Boat: could not delete builder {builder}: {error}")
+
+    def _reclaim_builders(self, log):
+        """Delete this installation's builders older than BUILD_SECONDS: a
+        build that died with sbx-control left them (labelled sbx_build)."""
+        try:
+            found = self.call(lambda: self.api().sandboxes(limit=200, label=[f"{INSTALL_LABEL}={_installation()}"],
+                                                          **self._org_args())).sandboxes
+        except Exception as error:   # the build goes on; the next one looks again
+            log(f"Boat: could not list old builders: {error}")
+            return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for sandbox in found:
+            if BUILD_LABEL in (sandbox.labels or {}) and sandbox.created_at and \
+                    (now - sandbox.created_at).total_seconds() > BUILD_SECONDS:
+                log(f"Boat: deleting builder {sandbox.id}, left from an earlier build")
+                try:
+                    self.kill(sandbox.id)
+                except Exception as error:
+                    log(f"Boat: could not delete builder {sandbox.id}: {error}")
+
+    def env_file(self, sandbox_id: str, envs: dict) -> str:
+        """envs as a file in the sandbox (ENV_DIR, 0700), through the files
+        API: what a command reads once and removes (wrap)."""
+        if sandbox_id not in self._env_dirs:
+            Handle(self, sandbox_id).commands.run(f"install -d -m 700 {ENV_DIR}", timeout=30)
+            self._env_dirs.add(sandbox_id)
+        path = f"{ENV_DIR}/{uuid.uuid4().hex}"
+        Handle(self, sandbox_id).files._put(path, "".join(export_line(k, v) for k, v in envs.items()).encode())
+        return path
 
     def _replay(self, handle: Handle, steps: list, log):
         user, workdir, env = "user", HOME, {}
@@ -869,7 +1056,7 @@ class Boat(HostSide):
     @staticmethod
     def _persist(commands: _Commands, env: dict, workdir: str):
         """The template's env and workdir as every later command and shell sees them."""
-        text = "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in env.items())
+        text = "".join(export_line(k, v) for k, v in env.items())
         text += f"export SBX_TEMPLATE_WORKDIR={shlex.quote(workdir)}\n"
         encoded = base64.b64encode(text.encode()).decode()
         commands.run(f"sudo mkdir -p /etc/sbx && echo {encoded} | base64 -d | sudo tee {TEMPLATE_FILE} >/dev/null "
@@ -916,6 +1103,7 @@ class Boat(HostSide):
     def _account(self) -> dict:
         """What Boat says of the account: its plan, and the key's expiry when Boat lists it."""
         found = self.call(lambda: self.api().limits(**self._org_args()))
+        self._plan = (time.monotonic(), found.sandbox_plan_key or "")
         facts = {"plan": found.sandbox_plan_key or "", "running_at_boat": found.active_sandboxes,
                  "at_once": found.max_active_sandboxes}
         try:
@@ -956,7 +1144,7 @@ class Boat(HostSide):
         facts["running"] = running
         notes = []
         if facts.get("plan") == "trial":
-            notes.append("trial")
+            notes.append(TRIAL_NOTE.rstrip("."))
         if warning := self._expiry_warning(facts):
             notes.append(warning)
         most = self._limits.sandboxes
@@ -975,7 +1163,9 @@ class Boat(HostSide):
                           f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})")]
         checks = [Check("Boat API", True, f"answers; plan {facts.get('plan') or 'unknown'}; {count} saved snapshots")]
         if facts.get("plan") == "trial":
-            checks.append(Check("Boat plan", True, "the trial: 2 sandboxes at once, runs up to 2 hours"))
+            checks.append(Check("Boat plan", False, "the trial: 2 sandboxes at once, up to 2 hours, no saved snapshots",
+                                "Templates need the first payment: Boat answers \"Saved snapshots are not available "
+                                "during the free trial\". Pay in Boat's dashboard (Billing), then build again."))
         if warning := self._expiry_warning(facts):
             checks.append(Check("Boat API key", False, warning, "create a new key and add it again"))
         return checks

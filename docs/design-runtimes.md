@@ -161,12 +161,16 @@ servers and internal hosts through endpoints (`endpoints.py`;
    (starting, waking, its step, the app stopped, failed, deleted, no such
    name, no access, nothing on the port) is one page, polling sbx's state
    with no time cap and handing over to the exact URL once the app's port
-   answers. nginx sends the gate's refusals and an upstream's 502 or 504 to
-   it; non-HTML requests get the status with `Retry-After`. The gate starts a
-   resume and answers within 2.5 seconds instead of holding nginx.
-4. **Tested against a fake Boat API behind the real SDK**; a live run with a
-   Boat account ($20 plan or more: the trial saves no snapshots) is still to
-   do.
+   answers. nginx sends the gate's refusals and its own 502 or 504 (not
+   reachable, timed out) to it, never an app's own answer; a navigation
+   waits on the page until the port listens. Non-HTML requests get the
+   status with `Retry-After`. The gate starts a resume and answers within
+   2.5 seconds instead of holding nginx.
+4. **A trial account is accepted; templates need the first payment.** Run
+   live on a trial account: the base template's replay worked on real
+   Boat and the save was refused ("Saved snapshots are not available during
+   the free trial"). sbx now refuses a build on the trial before it starts a
+   builder and says so in the status, the check and the trial preset.
 
 ## Out of phase 1
 

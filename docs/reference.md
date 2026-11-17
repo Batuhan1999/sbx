@@ -637,13 +637,21 @@ and they need a domain reachable from the internet.
 | `BOAT_MAX_CPU`, `BOAT_MAX_MEMORY_MB`, `BOAT_MAX_DISK_MB` | Per sandbox; default 8 vCPUs, 16384 MiB, 113664 MiB (the $20 plan's `large`). |
 | `BOAT_MAX_SANDBOXES` | Running at once; default 100 ($20 plan). |
 
-The web app offers Boat's paid plans as presets, from Boat's
+The web app offers Boat's plans as presets, from Boat's
 [pricing](https://docs.boat.dev/pricing.md), [limits](https://docs.boat.dev/limits.md)
 and [machines](https://docs.boat.dev/machines.md) as read on 2026-11-17:
-$20 (up to `large`: 8 vCPUs, 16 GB, 111 GB; 100 at once), $100 (`xlarge`:
-16 vCPUs, 32 GB, 251 GB; 300), $500 (1,000) and $2000 (2,000), each with
-30-day auto-stop. Not the free trial: it can't save snapshots, which sbx's
-templates are, so the $20 plan is the least sbx runs on. A sandbox gets the
+the trial (2 at once, 2-hour auto-stop, the `default` size), $20 (up to
+`large`: 8 vCPUs, 16 GB, 111 GB; 100 at once), $100 (`xlarge`: 16 vCPUs,
+32 GB, 251 GB; 300), $500 (1,000) and $2000 (2,000), the paid ones with
+30-day auto-stop.
+
+**Trial: templates need the first payment.** A trial account is accepted,
+but Boat saves no snapshots during the trial (it answers "Saved snapshots
+are not available during the free trial. End the trial (first payment) to
+unlock them."), and sbx's templates are saved snapshots. So on the trial a
+template build is refused before it starts a builder, saying so; the
+status, the runtime's check and the trial preset say it too. Pay in Boat's
+dashboard (Billing), and the next build round builds the templates. A sandbox gets the
 smallest machine its size fits: `small` (2 vCPUs, 4 GB, 51 GB), `default`
 (4, 8, 51), `large` (8, 16, 111) or `xlarge` (16, 32, 251). Boat's refusals
 (sandboxes at once, starts per minute, a size the plan lacks, billing, the
@@ -658,8 +666,17 @@ How sbx runs on it:
   own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused), saves it
   under the template's name and deletes the builder. A Dockerfile's `RUN`,
   `ENV`, `WORKDIR`, `USER` and `ARG` replay; `COPY` and `ADD` are refused
-  (fetch the file in a `RUN`). The start command becomes an enabled systemd
-  unit, which Boat starts again on every resume.
+  (fetch the file in a `RUN`); `ENV` and `ARG` values expand `$VAR` and
+  `${VAR}` as Docker does, and comment lines inside a continued instruction
+  are dropped. The start command becomes an enabled systemd unit, which
+  Boat starts again on every resume. A builder is labelled with the
+  installation and the template it builds (`sbx_build`), runs at most 4
+  hours (or the plan's auto-stop), and one a crashed build left behind is
+  deleted at the next build.
+- **Commands** go through Boat's API, which takes no env: a command's env
+  is written to a 0700 folder in the sandbox through the files API, read
+  once and removed, so no value is ever in the command text Boat keeps (its
+  command history). A failed `cd` to the command's folder stops it.
 - **Pause is Boat's stop, and every resume a cold boot.** Boat keeps the
   disk, not the memory: on resume sbx puts back what lives in `/run/sbx`
   (env, keys, the guest helper, endpoint certificates) and restarts the
@@ -668,11 +685,18 @@ How sbx runs on it:
   template starts a new one.
 - **Previews** go to `https://<subdomain>-<port>.on.boat.dev`. Each port
   answers only with its own token: the first request for a port exposes it
-  (private, never public; through Boat's relay when the app listens on
-  loopback only), sbx keeps the token until the sandbox stops, and nginx
-  appends it to the request's cookies as `_port_auth`, after the app's own,
-  for Boat's sandboxes only (a browser's own `_port_auth` is dropped). Boat
-  reserves ports 22, 6080, 8090, 8911 and 47984-48010: never previews.
+  (private, never public). Until the app answers on the port, sbx looks at
+  how it listens again (every few seconds) and exposes it again through
+  Boat's relay when it listens on loopback only; after a resume the relay
+  stays as it was last seen. The gate writes the Cookie header Boat gets:
+  the app's cookies without sbx's session and without any `_port_auth` the
+  browser sent, then `_port_auth=<token>`, for Boat's sandboxes only. A
+  `_port_auth` cookie Boat sets in an answer is marked HttpOnly, Secure and
+  SameSite=Strict (nginx can't drop one Set-Cookie). Boat keeps a port's
+  token while it stays private and offers no way to rotate it without
+  making the port public for a moment, which sbx never does: the token is
+  the sandbox's for its lifetime. Boat reserves ports 22, 6080, 8090, 8911
+  and 47984-48010: never previews.
 - **The desktop** is Boat's own: the `-desktop` preview opens a fresh
   Boat desktop URL (valid 10 minutes to open). sbx starts no noVNC there.
 - Sandboxes are created with none of the Boat account's secrets (`noEnv`)
@@ -957,11 +981,18 @@ the app), backing off to every 5 seconds with no time cap. Once the app's
 port answers it says Ready and replaces itself with the exact URL asked for
 (path, query and hash; Back does not return to it). A request that waits
 for a resume waits up to 2.5 seconds, then gets the page: nginx never hangs
-on it. An upstream 502 or 504 (the app not listening yet) is the page too;
-the app's own 401, 403 and other errors reach the browser as they are. A
-non-HTML request (XHR, websocket, API client) gets the status and a JSON
-body (`{"error": "<state>", ...}`), never the page. `/.sbx/status` is the
-one path sbx reserves on preview hosts.
+on it. A browser's navigation also gets the page until something listens on
+the preview's port; other requests go through. A 502 or 504 that nginx
+itself answers (the runtime not reachable, a timeout) is the page too; every
+answer of the app's (401, 403, its own 502 or 504) reaches the client as it
+is. A non-HTML request (XHR, websocket, API client) that sbx answers gets
+the status and a JSON body (`{"error": "<state>", ...}`), never the page.
+`/.sbx/status` is the one path sbx reserves on preview hosts: it needs a
+sign-in for every method, never wakes a sandbox, and tells someone who may
+not open the preview what it tells for an unknown name. A poll that lost
+its session sends the browser to the login, which brings it back. States of
+a sandbox that isn't listed (being made, failed, deleted) are shown only to
+whoever may view it; anyone else gets "No sandbox named X".
 
 Declared preview URLs survive restart and pause and are released on delete.
 Ports the platform detects without a declaration are reclaimed after five

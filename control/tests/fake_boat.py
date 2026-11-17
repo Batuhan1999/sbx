@@ -28,6 +28,7 @@ class FakeBoat:
         self.processes: dict = {}       # process id -> {"polls", "stdout", "exit"}
         self.hosted: dict = {}          # (sandbox id, port) -> {"token", "localhost", "public"}
         self.calls: list = []           # (method, path, query, body)
+        self.requests: list = []        # the same with the request's headers
         self.ran: list = []             # (sandbox id, command, detached)
         self.respond = None
         self.failures: list = []
@@ -45,6 +46,7 @@ class FakeBoat:
         path = parts.path.split("/api/v1", 1)[-1]
         query = urllib.parse.parse_qs(parts.query)
         self.calls.append((method, path, query, body))
+        self.requests.append((method, path, query, body, dict(headers or {})))
         for index, (m, pattern, status, code, extra) in enumerate(self.failures):
             if m == method and re.fullmatch(pattern, path):
                 del self.failures[index]
@@ -127,7 +129,7 @@ class FakeBoat:
         size = {"small": (2, 4), "default": (4, 8), "large": (8, 16), "xlarge": (16, 32)}[kind]
         box = {"id": sandbox_id, "name": body.get("name") or sandbox_id, "state": "provisioning",
                "labels": body.get("labels") or {}, "subdomain": f"word-{sandbox_id[3:]}", "type": kind,
-               "vcpu": size[0], "memoryGB": size[1], "createdAt": NOW, "archiveAfter": NOW, "stoppedAt": None,
+               "vcpu": size[0], "memoryGB": size[1], "createdAt": now(), "archiveAfter": NOW, "stoppedAt": None,
                "ttlSeconds": body.get("ttlSeconds"), "error": None, "from": source, "env": body.get("env"),
                "noEnv": body.get("noEnv")}
         self.sandboxes[sandbox_id] = box
@@ -287,6 +289,10 @@ def sandbox_id_for(number: int) -> str:
         number, digit = divmod(number, len(ALPHABET))
         letters = ALPHABET[digit] + letters
     return "bx_" + letters
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def configured(fake: FakeBoat | None = None, **secrets):

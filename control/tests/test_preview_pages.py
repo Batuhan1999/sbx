@@ -44,7 +44,7 @@ class Template(unittest.TestCase):
         self.assertEqual((neutral.name, neutral.action, neutral.state), ("", (), "starting"))
 
 
-class Gate(TwoRuntimes, Server):
+class GateCase(TwoRuntimes, Server):
     def setUp(self):
         super().setUp()
         from sbx_control import auth, core, gate, recipes, settings
@@ -87,6 +87,8 @@ class Gate(TwoRuntimes, Server):
         accept = {"Accept": "text/html,application/xhtml+xml"} if html else {"Accept": "application/json"}
         return self.ask(host, token, "/gate/page", **accept, **headers)
 
+
+class Gate(GateCase):
     def test_signed_out_is_the_login_whatever_the_name(self):
         for host in ("memos-a.example.test", "nothing-here.example.test"):
             self.assertEqual(self.ask(host).status_code, 401, host)
@@ -229,6 +231,64 @@ class Gate(TwoRuntimes, Server):
         self.assertEqual(redirect.headers["location"], f"https://desk.example.test/{self.vm}#token=t")
 
 
+class Review(GateCase):
+    """What review found: the poll's sign-in and what it may touch, who
+    learns of a sandbox, navigations before the app listens, the token cookie."""
+
+    def test_the_poll_needs_a_sign_in_for_every_method_and_wakes_nothing(self):
+        from sbx_control import core
+        self.runtime.pause(self.vm)
+        self.gate.sandbox_owner(self.vm, fresh=True)
+        with patch.object(core, "attach") as resume, patch.object(self.runtime, "connect") as connect:
+            for method in ("OPTIONS", "GET"):
+                answer = self.ask("memos-a.example.test", None, "/gate/status", **{"X-Original-Method": method})
+                self.assertEqual(answer.status_code, 401, method)
+            found = self.ask("memos-a.example.test", self.owner, "/gate/status").json()
+            resume.assert_not_called()
+            connect.assert_not_called()
+        self.assertEqual((found["state"], found["reload"]), ("waking", True))   # the page's navigation wakes it
+
+    def test_the_poll_tells_no_one_else_of_an_owner_only_preview(self):
+        found = self.ask("memos-a-desktop.example.test", self.other, "/gate/status").json()
+        self.assertEqual(found["state"], "missing")
+        self.assertNotIn("memos-a", found["title"].replace("memos-a-desktop", ""))
+
+    def test_someone_else_learns_nothing_of_a_sandbox_being_made_or_deleted(self):
+        from sbx_control import lifecycle, sandboxes
+        sandboxes.register("memos-b", "operator@example.com", "main", "memos-b", kind="fake")
+        lifecycle.begin("memos-b", "create").advance("allocating")
+        self.assertIn("Starting memos-b", self.page("memos-b.example.test", self.owner).text)
+        other = self.page("memos-b.example.test", self.other)
+        self.assertEqual(other.status_code, 404)
+        self.assertIn("No sandbox named memos-b", other.text)   # as for a name that doesn't exist
+        self.assertNotIn("Creating", other.text)
+
+    def test_a_navigation_waits_on_the_page_until_the_port_listens_and_other_requests_pass(self):
+        with patch.object(self.gate, "_listens", return_value=False):
+            navigation = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+            api = self.ask("memos-a.example.test", self.owner, Accept="application/json")
+        self.assertEqual((navigation.status_code, navigation.headers.get("x-sbx-page")), (403, "starting"))
+        self.assertEqual(api.status_code, 200)   # the app's own answer, whatever it is
+        with patch.object(self.gate, "_listens", return_value=True):
+            self.assertEqual(self.ask("memos-a.example.test", self.owner, Accept="text/html").status_code, 200)
+
+    def test_a_cookie_runtime_gets_the_apps_cookies_without_any_token_cookie_then_its_own(self):
+        self.fake.upstream_token_cookie = "_port_auth"
+        self.fake.upstream_token = lambda sandbox_id, port, fetch=True: "tok"
+        response = self.ask("memos-a.example.test", self.owner,
+                            Cookie="a=1; _port_auth=evil; sbx_session=x; b=2; _port_auth=again")
+        self.assertEqual(response.headers["x-sbx-upstream-cookie"], "a=1; b=2; _port_auth=tok")
+
+    def test_a_poll_that_lost_its_session_goes_to_the_login_and_errors_keep_polling(self):
+        from sbx_control.preview_pages import Page, render
+        text = render(Page("starting", "memos-a"), login="https://sbx.example.test/auth/login")
+        self.assertIn("r.status === 401 && d.login", text)
+        self.assertIn('"login": "https://sbx.example.test/auth/login"', text)
+        self.assertIn("encodeURIComponent(location.href)", text)
+        self.assertIn("if (!r.ok) return again();", text)
+        self.assertIn(".catch(again)", text)
+
+
 class Nginx(unittest.TestCase):
     """The nginx side, as tls.sh and ip_previews write it (also run in a real
     nginx:1.29 against fakes while building this)."""
@@ -238,8 +298,8 @@ class Nginx(unittest.TestCase):
         sandbox = self.SCRIPT[self.SCRIPT.index("  location @sandbox {"):]
         sandbox = sandbox[:sandbox.index("\n  }\n")]
         self.assertIn("try_files /.sbx-no-such-file @sandbox;", self.SCRIPT)   # after auth_request
-        self.assertIn("proxy_intercept_errors on;", sandbox)
-        self.assertIn("error_page 502 504 = @unavailable;", sandbox)
+        self.assertNotIn("proxy_intercept_errors on", sandbox)   # an app's own 502 or 504 is the app's
+        self.assertIn("error_page 502 504 = @unavailable;", sandbox)   # nginx's own: not reachable, timed out
         self.assertNotIn("error_page 401", sandbox)   # the app's own 401 and 403 pass
         self.assertIn("rewrite ^ /gate/page? break;", self.SCRIPT)
         self.assertIn("location = /.sbx/status {", self.SCRIPT)
@@ -254,16 +314,18 @@ class Nginx(unittest.TestCase):
                 patch.object(runtime, "upstream_token_headers", return_value={}), \
                 patch.object(runtime, "upstream_token_cookies", return_value={"boat": "_port_auth"}):
             maps = ip_previews.runtime_upstreams()
-            self.assertIn('boat "${sbx_ingress_cookie_sep_1}_port_auth=${sbx_ingress_token}";', maps)
+            self.assertIn("boat $sbx_ingress_upstream_cookie;", maps)   # the Cookie header the gate wrote
             self.assertIn("default $sandbox_cookie;", maps)   # any other runtime: the app's cookies as they are
-            self.assertIn(r'"~^(?<before>.*?);\s*_port_auth=[^;]*(?<after>.*)$"', maps)   # a browser's own dropped
             self.assertEqual(ip_previews.upstream_cookie(), "sbx_ingress_cookie")
-            self.assertIn("auth_request_set $sbx_ingress_token", ip_previews.upstream_token_set())
-            self.assertEqual(ip_previews.upstream_token_send(), "")   # no header for a cookie runtime
+            self.assertIn("auth_request_set $sbx_ingress_upstream_cookie $upstream_http_x_sbx_upstream_cookie;",
+                          ip_previews.upstream_token_set())
+            self.assertEqual(ip_previews.upstream_token_send().strip(),
+                             "proxy_cookie_flags _port_auth httponly secure samesite=strict;")
             with patch.object(ip_previews, "port_range", return_value=(21000, 21000)):
                 ip = ip_previews.nginx("203.0.113.10", "bootstrap")
         self.assertIn("proxy_set_header Cookie $ip_ingress_cookie;", ip)
         self.assertIn("error_page 502 504 = @ip_unavailable;", ip)
+        self.assertNotIn("proxy_intercept_errors on", ip)
         self.assertIn("try_files /.sbx-no-such-file @ip_sandbox;", ip)
         self.assertIn("location = /.sbx/status {", ip)
         with patch.object(runtime, "ingresses", return_value={"embed": ("http://127.0.0.1:3002", ())}), \

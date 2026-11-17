@@ -258,7 +258,8 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   host's `/.sbx/status`) for every state a sandbox's app can't answer in.
   nginx (`tls.sh`, `ip_previews.nginx`) passes the gate in `location /`,
   proxies from `@sandbox` (reached by `try_files`, after `auth_request`) so
-  an upstream's 502 or 504 becomes the page while the app's own errors pass,
+  nginx's own 502 or 504 (not reachable, timed out; no `proxy_intercept_errors`)
+  becomes the page while every answer of the app's passes,
   and sends refusals to `@denied`. `test_preview_pages.py` covers each state.
   To try nginx itself, render `default.conf`, `gate.inc` and
   `gate-page.inc` from `tls.sh`'s heredocs and run them in `nginx:1.29-alpine`

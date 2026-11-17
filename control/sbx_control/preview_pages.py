@@ -32,6 +32,7 @@ class Page:
     port: int | None = None
     detail: str = ""
     action: tuple = ()            # (label, url)
+    reload: bool = False          # nothing wakes it: the page loads itself again (a navigation wakes it)
 
     @property
     def waiting(self) -> bool:
@@ -76,6 +77,7 @@ class Page:
     def view(self) -> dict:
         """As the status endpoint answers it."""
         return {"state": self.state, "title": self.title(), "line": self.line(), "waiting": self.waiting,
+                "reload": self.reload,
                 **({"action": {"label": self.action[0], "url": self.action[1]}} if self.action else {})}
 
 
@@ -96,14 +98,15 @@ def plain(page: Page) -> str:
     return json.dumps({"error": page.state, "title": page.title(), "detail": page.line()})
 
 
-def render(page: Page, *, reason: str = "denied") -> str:
+def render(page: Page, *, reason: str = "denied", login: str = "") -> str:
     """The page, light or dark as the browser prefers. reason: why nginx
-    sent the request here ("unavailable": the app answered with an upstream
-    error, so a handover that meets it again is counted and stopped)."""
+    sent the request here ("unavailable": nginx could not reach the app, so a
+    handover that meets it again is counted and stopped); login: where a poll
+    answered 401 sends the browser (with next= this page's URL)."""
     action = (f'<a class="action" href="{html.escape(page.action[1])}">{html.escape(page.action[0])}</a>'
               if page.action else "")
     data = json.dumps({"waiting": page.waiting, "status": STATUS_PATH, "reason": reason,
-                       "port": page.port}).replace("<", "\\u003c")
+                       "port": page.port, "login": login}).replace("<", "\\u003c")
     return TEMPLATE.format(title=html.escape(page.title()), line=html.escape(page.line()), action=action,
                            state=html.escape(page.state), data=data,
                            busy="true" if page.waiting else "false")
@@ -188,15 +191,19 @@ main.ready .bar::after {{ animation: none; width: 100%; background: var(--ok); t
       setTimeout(function () {{ location.replace(location.href); }}, reduce ? 0 : 200);
     }}, reduce ? 150 : 350);
   }}
+  function again() {{ setTimeout(poll, wait = Math.min(wait * 1.5, 5000)); }}
   function poll() {{
-    fetch(d.status, {{credentials: "same-origin", cache: "no-store", headers: {{"Accept": "application/json",
-        "X-Sbx-Path": location.pathname}}}})
-      .then(function (r) {{ return r.json(); }})
-      .then(function (v) {{
-        if (v.state === "ready") return handover();
-        show(v);
-        if (v.waiting) setTimeout(poll, wait = Math.min(wait * 1.5, 5000));
-      }}, function () {{ setTimeout(poll, wait = Math.min(wait * 1.5, 5000)); }});
+    fetch(d.status, {{credentials: "same-origin", cache: "no-store", headers: {{"Accept": "application/json"}}}})
+      .then(function (r) {{
+        if (r.status === 401 && d.login) {{ location.replace(d.login + "?next=" + encodeURIComponent(location.href)); return; }}
+        if (!r.ok) return again();
+        return r.json().then(function (v) {{
+          if (v.state === "ready") return handover();
+          show(v);
+          if (v.reload) return setTimeout(function () {{ location.replace(location.href); }}, wait);
+          if (v.waiting) again();
+        }});
+      }}).catch(again);
   }}
   setTimeout(poll, wait);
 }})();

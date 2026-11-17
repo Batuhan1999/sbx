@@ -112,7 +112,8 @@ class Web(TwoRuntimes, Server):
         self.assertEqual([p["name"] for p in cloud["presets"]], ["hobby", "pro"])
         boat = found["boat"]   # the same form machinery: its keys, plans and limits, nothing Boat-specific in core
         self.assertEqual((boat["enabled"], boat["can_run"], boat["title"]), (False, True, "Boat"))
-        self.assertEqual([p["name"] for p in boat["presets"]], ["20", "100", "500", "2000"])
+        self.assertEqual([p["name"] for p in boat["presets"]], ["trial", "20", "100", "500", "2000"])
+        self.assertIn("templates need the first payment", boat["presets"][0]["note"])
         self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})

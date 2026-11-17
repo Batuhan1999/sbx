@@ -224,6 +224,9 @@ location = /_sbx_gate {
   # A CORS preflight carries no credentials: the gate lets it through to a
   # declared preview, without a login, and names its runtime.
   proxy_set_header X-Original-Method \$sbx_method;
+  # A browser's navigation waits on the page until the app's port listens.
+  proxy_set_header X-Original-Upgrade \$http_upgrade;
+  proxy_set_header Accept \$http_accept;
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
@@ -234,7 +237,7 @@ location = /_sbx_gate {
   # one that names a page to wait on: the next request may find it running.
   proxy_no_cache \$upstream_http_x_sbx_upstream_token \$upstream_http_x_sbx_wait;
   # The method first: an anonymous preflight's allow never answers a GET.
-  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
+  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization|\$http_upgrade|\$http_accept";
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
@@ -330,15 +333,16 @@ $upstream_token_set
     error_page 401 = @login;
     error_page 403 = @denied;
     # Past the gate (try_files runs after auth_request), on to @sandbox: there
-    # an upstream's 502 or 504 becomes the page, while the app's own 401 or
-    # 403 stays the app's.
+    # nginx's own 502 or 504 becomes the page, while every answer of the
+    # app's (401, 403, 502, ...) stays the app's.
     try_files /.sbx-no-such-file @sandbox;
   }
   location @sandbox {
     proxy_pass \$sbx_ingress;
 $upstream_tls
 $upstream_token_send
-    proxy_intercept_errors on;
+    # Only what nginx itself answers (the app not reachable, a timeout):
+    # an app's own 502 or 504 reaches the client as the app sent it.
     error_page 502 504 = @unavailable;
     proxy_connect_timeout 15s;
     proxy_http_version 1.1;
