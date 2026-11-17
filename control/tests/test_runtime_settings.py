@@ -373,6 +373,16 @@ class Web(TwoRuntimes, Server):
             self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
         self.assertEqual(taken, ["runtime-change"])
 
+    def test_the_cli_removes_a_runtime_whose_key_is_missing(self):
+        from sbx_control import admin, runtime
+        self.file.write_text(self.RUNTIME_ENV.replace("FAKE_RUNTIME_TOKEN=test-only-fake\n", ""))
+        out = io.StringIO()
+        with patch.object(self.fake, "configure", side_effect=SystemExit("FAKE_RUNTIME_TOKEN is not set")), \
+                patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "remove", "fake"]), 0, out.getvalue())
+        self.assertEqual(runtime.enabled(), ["embed"])
+        self.assertIn("is disabled", out.getvalue())
+
     def test_limits_are_held_to_their_range_and_the_plan_is_named(self):
         from sbx_control import runtimes
         from sbx_control.runtime.e2b_cloud import PRESETS

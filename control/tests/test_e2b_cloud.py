@@ -289,7 +289,7 @@ class RuntimeAdmin(Installation):
         self.assertNotIn(first, store)
         self.assertIn(f"E2B_CLOUD_API_KEY={next(iter(store))}", self.file.read_text())
         # remove: the reference stays until the configuration without it loads.
-        with patch.object(platform, "connect", side_effect=[None, SystemExit("nope"), None]):
+        with patch.object(platform, "connect", side_effect=[SystemExit("nope"), None]):   # the check, then put back
             self.assertEqual(self.admin("remove", "e2b-cloud")[0], 1)
         self.assertEqual(list(store.values()), ["test-only-second"])
         self.assertEqual(self.admin("remove", "e2b-cloud")[0], 0)

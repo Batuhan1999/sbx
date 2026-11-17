@@ -288,10 +288,12 @@ def do_runtime(a) -> int:
     from . import platform, runtime, runtime_changes, runtimes
     if a.action == "apply-pending":
         return runtime_changes.apply_pending()
-    if a.action == "add":   # add mends a runtime's missing key too: nothing is connected first
+    # Nothing connected first: add mends a runtime's missing key, and remove takes one whose keys are
+    # missing (as from the web app); the change itself is checked as sbx-control will read it.
+    if a.action in ("add", "remove"):
         return do_runtime_change(a)
     platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
-    if a.action in ("remove", "default"):
+    if a.action == "default":
         return do_runtime_change(a)
     if a.action == "apply":
         kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
