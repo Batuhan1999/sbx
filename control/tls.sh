@@ -232,7 +232,9 @@ location = /_sbx_gate {
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
   # Its answer carries the Cookie header the upstream gets (X-Sbx-Upstream-Cookie).
+  # Room for that header; nginx needs the buffers to match its size.
   proxy_buffer_size 16k;
+  proxy_buffers 4 16k;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;

@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -205,6 +206,11 @@ path.write_text(path.read_text().replace(before, after))
         # A deleted sandbox's preview is a 404 within a second, not a 502 for as long as an allow is cached.
         gate = (self.root / "tls/nginx/gate.inc").read_text()
         self.assertIn("proxy_cache_valid 200 1s;", gate)
+        # nginx -t refuses a buffer size its proxy_buffers can't hold twice over
+        # (busy buffers default to two of them, and must leave one buffer free).
+        size = int(re.search(r"proxy_buffer_size (\d+)k;", gate)[1])
+        count, each = map(int, re.search(r"proxy_buffers (\d+) (\d+)k;", gate).groups())
+        self.assertLess(2 * max(size, each), count * each - each)
         # A CORS preflight goes through the gate too, named by its method, which
         # comes first in the cache key: an anonymous OPTIONS's allow never answers a GET.
         self.assertIn("proxy_set_header X-Original-Method $sbx_method;", gate)
