@@ -100,8 +100,9 @@ RENAMED_EFFECTS = {"embed-env": "runtime-env", "embed-network": "runtime-network
 
 def shell() -> dict:
     """The settings as the host scripts read them (settings.shell_lines)."""
-    from . import extensions, settings
-    lines = settings.shell_lines(settings.current(), {c.kind: c.settings() for c in extensions.connectors() if c.section})
+    from . import endpoints, extensions, settings
+    lines = settings.shell_lines(settings.current(), {c.kind: c.settings() for c in extensions.connectors() if c.section},
+                                 endpoints.public_ports())
     return dict(shlex.split(line)[0].split("=", 1) for line in lines)
 
 
@@ -302,6 +303,9 @@ def apply(key: str) -> int:
         write([acme])
         _activate(acme)
         return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
+    if key == "endpoints":
+        from . import endpoints
+        return endpoints.apply_host()
     if key == "host-guard":
         _systemctl("restart", "sbx-host-guard", check=True)
     elif key == "control":

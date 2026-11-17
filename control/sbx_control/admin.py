@@ -32,6 +32,9 @@
   sbx-admin server exec NAME [--database DB] < seed.sql  import or prepare development base data
   sbx-admin server down NAME [--delete-data]     stop a managed server; optionally remove its owned data
   sbx-admin network apply           apply private service access before creating sandboxes
+  sbx-admin endpoint ls|add|rm|grant|revoke   private services for sandboxes on provider runtimes (as sbx
+                                     endpoints): add --server NAME | --name N --target HOST:PORT [--repo R];
+                                     rm NAME; grant|revoke NAME REPO
   sbx-admin store enable|status     initialize and move to the default Infisical store, or inspect delivery status
   sbx-admin sign-in password         password sign-in for the admins and allowed_emails (a first install's;
                                      one is generated and printed when none is set)
@@ -121,6 +124,13 @@ def do_doctor() -> int:
         for check in connections.get(status.kind).test():
             print(f"  {'ok ' if check.ok else 'NO '} {check.name}: {check.detail}" + (f" — {check.fix}" if not check.ok and check.fix else ""))
             bad += not check.ok
+    from . import endpoints
+    found = endpoints.describe()
+    if found["endpoints"]:
+        print(f"Endpoints: {len(found['endpoints'])} exposed to sandboxes on provider runtimes")
+        for line in endpoints.doctor_lines():
+            print(line)
+        bad += sum(e["state"] == "failed" for e in found["endpoints"])
     return 1 if bad else 0
 
 
@@ -395,6 +405,14 @@ def main(argv: list) -> int:
     server_up.add_argument('--data-root', type=pathlib.Path, help='existing XFS root; otherwise create an owned XFS image')
     server_up.add_argument('--storage-gb', type=int, help='new Postgres XFS image size (default: 32 GiB)')
     sub.add_parser("network").add_argument("action", choices=["apply"])
+    endpoint = sub.add_parser("endpoint")
+    endpoint.add_argument("action", choices=["ls", "add", "rm", "grant", "revoke"])
+    endpoint.add_argument("name", nargs="?", help="rm, grant, revoke: the endpoint")
+    endpoint.add_argument("repo", nargs="?", help="grant, revoke: owner/name")
+    endpoint.add_argument("--repo", dest="repos", action="append", help="add: a repo that may use it (repeatable)")
+    endpoint.add_argument("--server", help="add: a managed server's endpoint")
+    endpoint.add_argument("--name", dest="endpoint_name", help="add: the endpoint's name")
+    endpoint.add_argument("--target", help="add: HOST:PORT within network.internal_cidrs")
     sub.add_parser('store').add_argument('action', choices=['enable', 'status'])
     sub.add_parser("sign-in").add_argument("method", choices=["password"])
     sub.add_parser("upgrade").add_argument("tag", nargs="?")
@@ -439,6 +457,30 @@ def main(argv: list) -> int:
         except (ValueError, RuntimeError, OSError) as error:
             print(str(error), file=sys.stderr)
             return 1
+    if a.cmd == "endpoint":
+        from . import endpoints
+        try:
+            if a.action == "ls":
+                result = endpoints.describe()
+            elif a.action == "add":
+                result = endpoints.add(server=a.server, name=a.endpoint_name, target=a.target, repos=a.repos,
+                                       by="sbx-admin")
+            elif a.action in ("grant", "revoke"):
+                if not a.name or not a.repo:
+                    p.error(f"endpoint {a.action} NAME REPO")
+                now = endpoints.one(a.name)["repos"]
+                repo = a.repo.lower()
+                result = endpoints.set_repos(a.name, [*now, repo] if a.action == "grant" else
+                                             [r for r in now if r != repo])
+            else:
+                if not a.name:
+                    p.error("endpoint rm NAME")
+                result = endpoints.remove(a.name)
+        except (ValueError, LookupError) as error:
+            print(str(error).strip("'\""), file=sys.stderr)
+            return 1
+        print(json.dumps(result))
+        return 0
     if a.cmd == "preview":
         from . import runtime
         if not 0 <= a.listen <= 65535 or (a.port is not None and not 1 <= a.port <= 65535):

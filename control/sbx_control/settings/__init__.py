@@ -36,6 +36,7 @@ class HostUnit(enum.StrEnum):
     RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Runtime.apply_host)
     UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
     RUNTIME_CHANGE = "runtime-change"  # add, change, remove a runtime or make one the default (runtime_changes.py)
+    ENDPOINTS = "endpoints"          # nginx's stream listener for the endpoints, and the firewall (endpoints.py)
 
 
 class Section(BaseModel):
@@ -439,12 +440,15 @@ def opened_ports(s: Settings) -> tuple[int, ...] | Literal["all"]:
     return "all" if ports == "all" else tuple(dict.fromkeys((*ports, *s.domain.needs_ports())))
 
 
-def shell_lines(s: Settings, extensions: dict | None = None) -> list[str]:
+def shell_lines(s: Settings, extensions: dict | None = None, opened: tuple[int, ...] = ()) -> list[str]:
     """`python -m sbx_control.settings shell`: the keys tls.sh, host-install.sh
     and sbx-host-guard read, then <extension>_<field> for each extension's
-    section (a connector's host script reads its own)."""
+    section (a connector's host script reads its own). opened: ports the
+    public interface accepts beyond the settings' (the endpoints' listener)."""
     import shlex
     public = opened_ports(s)
+    if public != "all":
+        public = tuple(dict.fromkeys((*public, *opened)))
     preview_ports = [f'{s.network.ip_preview_first_port}:{s.network.ip_preview_last_port}'] \
         if s.domain.address and not s.domain.name else []
     pairs = {"domain": s.domain.name, "login": s.base_url.removeprefix("https://"),

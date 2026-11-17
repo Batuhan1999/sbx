@@ -207,13 +207,27 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
 - `control/sbx_control/runtimes.py` is the core's side of several runtimes:
   which one a new sandbox runs on (`choose`: the request's `runtime`, else the
   repo's setting from `PUT /api/repos/{repo}/runtime`, else the default,
-  refused with the reason when it is not enabled, when managed servers are
-  attached to the repo and it lacks `private_networks`, or when the recipe is
-  beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
+  refused with the reason when it is not enabled, when it lacks
+  `private_networks` and a private target the repo uses has no endpoint
+  (`endpoints.missing`), or when the recipe is beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
   templates the scheduler builds), `GET /api/runtimes` and
   `/api/runtimes/available`, adding, changing and removing one (`add`,
   `remove`, `set_default`; `prepare` checks a change from the web app
   without writing), and `sbx-admin runtime verify [KIND]`.
+- `control/sbx_control/endpoints.py` gives sandboxes on runtimes without
+  `private_networks` this host's private services: the endpoint records and
+  `/api/endpoints` (`endpoints_api.py`), who may use each (`permitted`: a
+  managed server's attached repos, an internal host's grants), a CA per
+  endpoint and the sandboxes' 24-hour client certificates (written with the
+  runtime, pushed on resume, pulled by the forwarder through
+  `/api/sandbox/endpoint-certs`), nginx's stream servers and their root-side
+  apply (`sbx-apply endpoints`), `Routes` (a sandbox's values with the
+  targets of the endpoints it may use replaced by the forwarder's loopback
+  address; `core` applies it to the services' outputs and the env, and
+  writes the forwarder's files with the runtime), and the gate (`missing`).
+  The forwarder itself is `sbx_guest.py forward`, standard library only.
+  `test_endpoints.py` covers them, the forwarder against local TLS servers
+  that each verify their own endpoint's CA.
 - `control/sbx_control/runtime_changes.py` queues a change from the web app
   for the root side (`/run/sbx/apply/runtime-change`, a secret only as a
   store reference), applies it as root (`sbx-admin runtime apply-pending`,
@@ -273,7 +287,7 @@ are where nginx sends a preview. It also names what it reads from
 `/etc/sbx/runtime.env` (`credential_keys`, and the `secret_key` that store
 enable seals) and what it can do (`capabilities`): `private_networks` (its
 sandboxes reach this host's private ranges) for `network.internal_cidrs` and
-managed servers, `egress_rules` (it applies each sandbox's `deny_out`) for
+managed servers (without it, only through endpoints), `egress_rules` (it applies each sandbox's `deny_out`) for
 `access.public_repos`, `snapshots` for Amp's project caches. Settings a
 runtime can't enforce are refused by the capability's name and not offered
 on the settings page (`reach.py`).

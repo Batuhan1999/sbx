@@ -657,6 +657,84 @@ def wait_runtime_change(change, timeout, interval=2.0):
             pass
 
 
+def endpoints_cmd(args):
+    """sbx endpoints [ls | add | rm NAME | grant NAME REPO | revoke NAME REPO] (admins): this server's
+    private services for sandboxes on runtimes that don't reach its private network, and which repos'
+    sandboxes may use each; add and rm wait until the server applied the change."""
+    if args.action in (None, "ls"):
+        found = api("GET", "/api/endpoints")
+        if args.json:
+            print(json.dumps(found))
+            return
+        if not found["domain"]:
+            print("no domain yet: endpoints need one (sbx setup address, or Settings)")
+        for e in found["endpoints"]:
+            used = f"; used by {', '.join(e['used_by'])}" if e["used_by"] else ""
+            print(f"{e['name']:<20} {e['state']:<9} {e['address']} -> {e['target']} "
+                  f"({e['server'] or 'internal host'}; for {', '.join(e.get('repos') or []) or 'no repo yet'}){used}"
+                  + (f": {e['message']}" if e["message"] else ""))
+        for c in found["candidates"]:
+            print(f"{'':<20} {'off':<9} managed server {c['server']} ({c['kind']}): sbx endpoints add --server {c['server']}")
+        if not found["endpoints"] and not found["candidates"]:
+            print("no endpoints" + ("" if found["needed"] else " (no enabled runtime needs one)"))
+        return
+    if args.action in ("grant", "revoke"):
+        if not args.endpoint or not args.repo_name:
+            sys.exit(f"sbx endpoints {args.action} NAME OWNER/REPO")
+        path = f"/api/endpoints/{urllib.parse.quote(args.endpoint, safe='')}"
+        found = next((e for e in api("GET", "/api/endpoints")["endpoints"] if e["name"] == args.endpoint), None)
+        if found is None:
+            sys.exit(f"there is no endpoint {args.endpoint}: sbx endpoints lists them")
+        repo, now = args.repo_name.lower(), found.get("repos") or []
+        changed = api("PUT", path, {"repos": [*now, repo] if args.action == "grant" else [r for r in now if r != repo]})
+        print(json.dumps(changed) if args.json else
+              f"{changed['name']}: for {', '.join(changed['repos']) or 'no repo'}")
+        return
+    if args.action == "add":
+        if bool(args.server) == bool(args.target):
+            sys.exit("sbx endpoints add --server NAME, or --name NAME --target HOST:PORT [--repo OWNER/REPO ...]")
+        body = ({"server": args.server, "name": args.name} if args.server else
+                {"name": args.name, "target": args.target, "repos": args.repo})
+        added = api("POST", "/api/endpoints", {k: v for k, v in body.items() if v})
+        name = added["name"]
+    else:
+        if not args.endpoint:
+            sys.exit("sbx endpoints rm NAME (sbx endpoints lists them)")
+        name = args.endpoint
+        added = api("DELETE", f"/api/endpoints/{urllib.parse.quote(name, safe='')}")
+    if args.no_wait:
+        print(json.dumps(added) if args.json else f"{args.action}: {name}, applying (sbx endpoints shows it)")
+        return
+    done = wait_endpoints(name, removed=args.action == "rm", timeout=args.timeout)
+    print(json.dumps(done) if args.json else (f"{name}: on, at {done['address']}" if done else f"{name}: removed"))
+
+
+def wait_endpoints(name, removed, timeout, interval=2.0):
+    """The endpoint once the server applied it (None once a removal is applied);
+    exits non-zero when it failed or the wait ran out."""
+    deadline, said = time.monotonic() + timeout, False
+    while True:
+        found = api("GET", "/api/endpoints")
+        endpoint = next((e for e in found["endpoints"] if e["name"] == name), None)
+        if removed:
+            if endpoint is None and not found.get("applying"):
+                if found.get("failure"):
+                    sys.exit(f"removing {name} failed: {found['failure']}")
+                return None
+        elif endpoint is None:
+            sys.exit(f"the endpoint {name} is gone")
+        elif endpoint["state"] == "on":
+            return endpoint
+        elif endpoint["state"] == "failed":
+            sys.exit(f"the endpoint {name} failed: {endpoint['message'] or 'see the server log'}")
+        if not said:
+            note("applying on the server")
+            said = True
+        if time.monotonic() > deadline:
+            sys.exit(f"the endpoint {name} is still applying after {timeout} s: sbx endpoints shows it once applied")
+        time.sleep(interval)
+
+
 # sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
 
 
@@ -1330,6 +1408,22 @@ def parser():
                         "test: an enabled one's checks")
     p.add_argument("kind", nargs="?", help="test, add, set, remove, default: the runtime (e2b-cloud, ...)")
     change_flags(p)
+    p = command("endpoints", endpoints_cmd, "admins: this server's private services (managed servers, internal "
+                "hosts) for sandboxes on runtimes that don't reach its private network, over TLS at <name>.<domain>")
+    p.add_argument("action", nargs="?", choices=["ls", "add", "rm", "grant", "revoke"],
+                   help="none or ls: list them and the managed servers without one; add: --server NAME, or --name "
+                        "NAME --target HOST:PORT --repo OWNER/REPO; rm NAME; grant | revoke NAME OWNER/REPO: which "
+                        "repos' sandboxes may use an internal host's endpoint")
+    p.add_argument("endpoint", nargs="?", metavar="NAME", help="rm, grant, revoke: the endpoint")
+    p.add_argument("repo_name", nargs="?", metavar="REPO", help="grant, revoke: owner/name")
+    p.add_argument("--repo", action="append", metavar="OWNER/REPO",
+                   help="add, an internal host: a repo whose sandboxes may use it (repeatable)")
+    p.add_argument("--server", help="add: a managed server (sbx-admin server ls)")
+    p.add_argument("--name", help="add: the endpoint's name, a host name label (default for --server: its name)")
+    p.add_argument("--target", metavar="HOST:PORT", help="add: an internal host within network.internal_cidrs")
+    p.add_argument("--no-wait", action="store_true", help="add, rm: return once recorded")
+    p.add_argument("--timeout", type=int, default=300, help="seconds to wait for the server to apply it (default 300)")
+    p.add_argument("--json", action="store_true", help="as the API answers")
 
     p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the link install.sh "
                 "printed (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")

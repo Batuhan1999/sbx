@@ -479,6 +479,92 @@ SETUP_STATE = {"complete": False, "can_complete": False, "host": {"address": "20
                          {"step": "runtime", "done": False, "summary": "no sandbox runtime is set up"}]}
 
 
+def endpoint(state, **more):
+    return {"name": "dev-pg", "address": "dev-pg.sbx.example.com", "kind": "managed-server", "server": "dev_pg",
+            "server_kind": "postgres", "target": "172.29.50.10:5432", "state": state, "message": "", "used_by": [],
+            **more}
+
+
+def endpoints(*found, applying=False, failure="", candidates=()):
+    return {"endpoints": list(found), "candidates": list(candidates), "domain": "sbx.example.com", "needed": True,
+            "applying": applying, "failure": failure}
+
+
+class EndpointCliTests(CliTests):
+    """sbx endpoints: list, add and rm over the HTTP API, waiting until the server applied the change."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+
+    def polls(self, *answers):
+        found = list(answers)
+        self.routes[("GET", "/api/endpoints")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_ls_shows_each_and_the_servers_without_one(self):
+        self.polls(endpoints(endpoint("on", used_by=["owner/app"], repos=["owner/app"]),
+                             candidates=[{"server": "dev_ch", "kind": "clickhouse", "address": "dev-ch.sbx.example.com"}]))
+        code, out, err = self.run_cli("endpoints")
+        self.assertEqual(code, 0, err)
+        self.assertIn("dev-pg               on        dev-pg.sbx.example.com -> 172.29.50.10:5432 (dev_pg; for owner/app); used by owner/app", out)
+        self.assertIn("sbx endpoints add --server dev_ch", out)
+        code, out, err = self.run_cli("endpoints", "ls", "--json")
+        self.assertEqual(json.loads(out)["endpoints"][0]["name"], "dev-pg")
+
+    def test_add_waits_until_it_is_on(self):
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying"))
+        self.polls(endpoints(endpoint("applying"), applying=True), endpoints(endpoint("on")))
+        code, out, err = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "dev-pg: on, at dev-pg.sbx.example.com\n")
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3], {"server": "dev_pg"})
+
+    def test_add_an_internal_host_for_its_repos_without_waiting(self):
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying", name="temporal"))
+        code, out, err = self.run_cli("endpoints", "add", "--name", "temporal", "--target", "10.0.0.5:7233",
+                                      "--repo", "owner/app", "--repo", "other/app", "--no-wait", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["state"], "applying")
+        self.assertEqual(self.control.calls[-1][3], {"name": "temporal", "target": "10.0.0.5:7233",
+                                                     "repos": ["owner/app", "other/app"]})
+
+    def test_grant_and_revoke_replace_the_repos(self):
+        temporal = endpoint("on", name="temporal", kind="internal", server="", repos=["owner/app"])
+        self.polls(endpoints(temporal))
+        self.routes[("PUT", "/api/endpoints/temporal")] = lambda q, body: {**temporal, "repos": sorted(body["repos"])}
+        code, out, err = self.run_cli("endpoints", "grant", "temporal", "Other/App")
+        self.assertEqual((code, out), (0, "temporal: for other/app, owner/app\n"))
+        self.assertEqual(self.control.calls[-1][3], {"repos": ["owner/app", "other/app"]})
+        code, out, err = self.run_cli("endpoints", "revoke", "temporal", "owner/app")
+        self.assertEqual((code, out), (0, "temporal: for no repo\n"))
+        self.routes[("PUT", "/api/endpoints/dev-pg")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
+        self.polls(endpoints(endpoint("on")))
+        code, _, _ = self.run_cli("endpoints", "grant", "dev-pg", "owner/app")
+        self.assertEqual(code, "sbx-control: attach the server to the repo instead")
+        code, _, _ = self.run_cli("endpoints", "grant", "nope", "owner/app")
+        self.assertIn("there is no endpoint nope", code)
+
+    def test_refusals_and_failures_exit_non_zero(self):
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "a", "--target", "10.0.0.5:1")
+        self.assertIn("--server NAME, or --name NAME --target HOST:PORT", code)
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (409, {"detail": "connect a domain first: ..."})
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, "sbx-control: connect a domain first: ...")
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying"))
+        self.polls(endpoints(endpoint("failed", message="nginx did not take the endpoints' configuration")))
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, "the endpoint dev-pg failed: nginx did not take the endpoints' configuration")
+        self.routes[("DELETE", "/api/endpoints/dev-pg")] = lambda q, body: (409, {"detail": "sandboxes of owner/app use it"})
+        code, _, _ = self.run_cli("endpoints", "rm", "dev-pg")
+        self.assertEqual(code, "sbx-control: sandboxes of owner/app use it")
+
+    def test_rm_waits_until_the_server_applied_it(self):
+        self.routes[("DELETE", "/api/endpoints/dev-pg")] = lambda q, body: (202, {"name": "dev-pg", "deleted": True})
+        self.polls(endpoints(applying=True), endpoints())
+        code, out, err = self.run_cli("endpoints", "rm", "dev-pg")
+        self.assertEqual((code, out), (0, "dev-pg: removed\n"))
+
+
 class SetupCliTests(CliTests):
     """sbx setup: a fresh server set up without a browser, with the setup link (SBX_SETUP_LINK, never argv)
     as the Setup authorization and every secret on stdin."""

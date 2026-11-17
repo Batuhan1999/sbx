@@ -203,7 +203,8 @@ class Choosing(TwoRuntimes, Installation):
         with self.assertRaisesRegex(self.runtimes.Refused, "no runtime nope is enabled"):
             self.runtimes.set_setting("owner/app", "nope", by="test")
         with patch("sbx_control.hosted_services.attached_to", return_value=["pg"]):
-            with self.assertRaisesRegex(self.runtimes.Refused, r"Fake runtime \(fake\).*managed server pg.*private_networks"):
+            with self.assertRaisesRegex(self.runtimes.Refused, r"Fake runtime \(fake\).*private_networks.*managed "
+                                        r"server pg has none; an admin adds it: sbx endpoints add --server pg"):
                 self.runtimes.choose("owner/app", "fake")
             self.assertEqual(self.runtimes.choose("owner/app", "embed"), "embed")
         self.fake.limit = self.runtime.Limits(memory_mb=1024)

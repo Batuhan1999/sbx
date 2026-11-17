@@ -106,6 +106,21 @@ failed step before presenting it as done.
    is refused (409); then the owner runs `sbx-admin runtime add e2b-cloud`
    on the server with the key on stdin. The base template then builds on it
    (about ten minutes); `sbx runtimes test` says when it is built.
+
+   **Shared servers for E2B Cloud's sandboxes.** A repository that uses a
+   managed server (`sbx-admin server up`) or an internal host is refused on
+   E2B Cloud until that server has an endpoint; the refusal names the
+   command. Ask the owner before exposing one, then:
+
+   ```sh
+   sbx endpoints                          # the managed servers without one
+   sbx endpoints add --server dev-pg      # for the repos attached to it; waits until it is on
+   sbx endpoints add --name temporal --target 10.0.0.5:7233 --repo owner/app   # an internal host, per repo
+   ```
+
+   Sandboxes then connect to `127.0.0.1` in plain text and sbx injects those
+   addresses (an internal host's also as `SBX_ENDPOINT_<NAME>`) ([endpoints](reference.md#endpoints)); check one with a real
+   query from a sandbox (`sbx sandbox exec`), not only that it starts.
 5. **Set up the repository.** In the checkout, `sbx repo connect --agent`
    starts Claude Code (or `--agent codex`) with the server's setup brief.
    Without that agent installed, it prints the brief for another agent to

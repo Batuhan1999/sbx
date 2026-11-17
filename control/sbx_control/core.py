@@ -15,8 +15,8 @@ import threading
 import time
 import uuid
 
-from . import (addressing, contributions, delivery, extensions, ip_previews, lifecycle, paths, platform, recipes,
-               runtime, secret_store, settings, state, variables)
+from . import (addressing, contributions, delivery, endpoints, extensions, ip_previews, lifecycle, paths, platform,
+               recipes, runtime, secret_store, settings, state, variables)
 from .template_files import sbx_guest
 
 RUN = platform.RUN
@@ -378,17 +378,20 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
                     operation.advance("services_ready")
                 operation.advance("allocating")
             result = _start(a, env, app_env(a, env, trusted=False), public_keys, trusted=False,
-                            operation=operation, metadata=metadata, kind=kind)
+                            operation=operation, metadata=metadata, kind=kind,
+                            routes=endpoints.routes(kind, a.repo))
         else:
             if operation:
                 operation.advance("provisioning_services")
             created = create_services(a, env)
-            values, hidden = trusted_values(a, env, created, audience(metadata), personal(metadata))
+            # On a runtime without private_networks: the forwarder's address for each endpoint the repo may use.
+            routes = endpoints.routes(kind, a.repo)
+            values, hidden = trusted_values(a, env, routes.outputs(created), audience(metadata), personal(metadata))
             if operation:
                 operation.advance("services_ready")
                 operation.advance("allocating")
             result = _start(a, env, values, public_keys, hidden=hidden,
-                            operation=operation, metadata=metadata, kind=kind)
+                            operation=operation, metadata=metadata, kind=kind, routes=routes)
         if operation:
             operation.advance("preparing_workspace", sandbox_id=result["sandbox_id"], runtime="running")
             # A new sandbox's checkout is its template's: what the template's setup changed is nobody's edit.
@@ -447,11 +450,18 @@ def shared(metadata: dict | None) -> bool:
     return (metadata or {}).get("shared") == "team"
 
 
-def runtime_layer(name: str, a: recipes.App, envs: dict, trusted: bool, metadata: dict | None):
-    """(the env with what extensions add, their runtime layers as one) for the sandbox."""
+def runtime_layer(name: str, a: recipes.App, envs: dict, trusted: bool, metadata: dict | None,
+                  routes: endpoints.Routes | None = None):
+    """(the env with what extensions add, their runtime layers as one) for the
+    sandbox; with routes, its env's endpoint targets localized and the
+    forwarder's files (a fresh client certificate) among the layers."""
+    routes = routes or endpoints.Routes()
+    envs = routes.env(envs)
     target = extensions.Target(repo=a.repo, name=name, trusted=trusted, connector=(metadata or {}).get("connector", ""),
                                env=envs)
-    layer = contributions.merged_runtime(extensions.contributions_for(target))
+    found = extensions.contributions_for(target)
+    forwarder = routes.contribution(name, a.repo)
+    layer = contributions.merged_runtime([*found, *([forwarder] if forwarder else [])])
     return {**envs, **layer.env}, layer
 
 
@@ -463,9 +473,10 @@ def target_of(info) -> extensions.Target:
 
 
 def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool = True,
-           hidden: set = frozenset(), operation=None, metadata=None, kind: str | None = None) -> dict:
+           hidden: set = frozenset(), operation=None, metadata=None, kind: str | None = None,
+           routes: endpoints.Routes | None = None) -> dict:
     name, slug = env["SBX_NAME"], env["SBX_SLUG"]
-    envs, layer = runtime_layer(name, a, _envs(env, app_env, kind), trusted, metadata)
+    envs, layer = runtime_layer(name, a, _envs(env, app_env, kind), trusted, metadata, routes)
     # The cloud metadata service, denied per sandbox where the runtime
     # applies egress rules (one without them may deny it already). Private
     # ranges are the runtime's to enforce (Runtime.apply_network), not per sandbox.
@@ -578,7 +589,17 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
         f"&& chmod -R go-rwx {RUN} && mkdir -p {HOME}/.ssh && chmod 700 {HOME}/.ssh "
         f"&& touch {HOME}/.ssh/authorized_keys && chmod 600 {HOME}/.ssh/authorized_keys "
         f"{git}&& cat /etc/ssh/ssh_host_ed25519_key.pub").stdout.split()[:2]
+    if f"{endpoints.FOLDER}/config.json" in layer.files:
+        start_forwarder(sbx)
     return host_key
+
+
+def start_forwarder(sbx):
+    """The endpoints' forwarder (sbx_guest.py forward), started unless it
+    runs; it follows its config's changes and stops once the config is gone."""
+    ship_guest(sbx)
+    config = f"{contributions.folder(endpoints.FOLDER)}/config.json"
+    sbx.commands.run(f"{guest('forward', 'ensure', config)} >> /tmp/sbx-endpoints.log 2>&1", timeout=60)
 
 
 def check_app(info) -> str | None:
@@ -602,12 +623,13 @@ def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
     name = meta["sbx"]
     env = sbx_env(name, slug_of(info), a, meta.get("owner", ""), meta.get("branch", ""), meta.get("template", ""))
     kind = runtime.kind_of(info)
+    routes = endpoints.routes(kind, a.repo)
     if settings.trust(a.repo) != "trusted":
-        envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False), kind), False, meta)
+        envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False), kind), False, meta, routes)
         return envs, set(), layer
     created = extensions.packages().refresh(name, a.repo)
-    values, hidden = trusted_values(a, env, created, audience(meta), personal(meta))
-    envs, layer = runtime_layer(name, a, _envs(env, values, kind), True, meta)
+    values, hidden = trusted_values(a, env, routes.outputs(created), audience(meta), personal(meta))
+    envs, layer = runtime_layer(name, a, _envs(env, values, kind), True, meta, routes)
     return envs, hidden, layer
 
 
@@ -660,6 +682,10 @@ def connect(name: str, why: str, info=None):
     if paused:
         lifecycle.observe(name, info.sandbox_id, "running")
         state.event(name, "resumed", f"{why}, in {time.time() - began:.0f}s")
+        try:   # its endpoint certificates may have run out while it slept
+            endpoints.push(sbx, info)
+        except Exception as error:   # the forwarder pulls them itself then
+            state.event(name, "endpoint certificates not pushed", type(error).__name__, internal=True)
     return sbx, info
 
 

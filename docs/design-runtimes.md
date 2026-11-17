@@ -2,7 +2,7 @@
 
 Status: phase 1 of [sbx#18](https://github.com/Batuhan1999/sbx/issues/18). This
 file is the contract the backend, the web app and the docs build against; it
-is removed or folded into `docs/development.md` once phase 1 has landed.
+is removed or folded into `docs/development.md` once phase 1 has landed. Phase 4's decisions are below.
 
 ## Goal
 
@@ -101,6 +101,44 @@ runtime; it asks the registry.
   `PUT /api/repos/{repo}/runtime` with `{"runtime": "<kind>" | null}` (admins)
   sets or clears it.
 - CLI: `sbx up NAME --runtime KIND`; `sbx runtimes` lists them.
+
+## Phase 4: shared services over one TLS path
+
+Sandboxes on a runtime without `private_networks` reach this host's managed
+servers and internal hosts through endpoints (`endpoints.py`;
+[reference](reference.md#endpoints)).
+
+1. **One generic path.** nginx's stream module on one port (7443)
+   terminates TLS with the wildcard certificate; a server per endpoint,
+   chosen by SNI `<name>.<domain>`, proxies to its target; other names'
+   handshakes are rejected. No per-protocol code: in the sandbox, the guest
+   helper's forwarder turns `127.0.0.1:<local port>` into TLS to that name.
+2. **Opt-in per endpoint.** An endpoint is `{name, target}`: a managed
+   server's (`--server`) or an internal host's within
+   `network.internal_cidrs`. With none, nothing listens and no port opens.
+3. **Access per repository, explicit, not by trust.** A managed server's
+   endpoint is for the repositories attached to it; an internal host's for
+   the repositories granted it (`repos`, `PUT /api/endpoints/NAME`, `sbx
+   endpoints grant | revoke`). Enforced by certificates: a CA per endpoint,
+   nginx verifying each endpoint's clients against its own CA, and a
+   sandbox holding certificates only for the endpoints its repository may
+   use.
+4. **mTLS, short-lived.** A 24-hour client certificate per sandbox and
+   endpoint: written with the runtime, renewed by the keeper while running,
+   pushed when sbx resumes the sandbox, and pulled by the forwarder with the
+   sandbox's own credential when less than an hour is left. No IP
+   allowlists, no revocation lists; a deleted sandbox or a revoked grant gets
+   no new certificate. The service's own auth stays on top.
+5. **Values per runtime.** On a provider runtime, endpoint targets in the
+   sandbox's env and its services' outputs become the forwarder's loopback
+   address, and an internal host's endpoint is `SBX_ENDPOINT_<NAME>`;
+   Embed's sandboxes keep the private ones.
+6. **The gate.** `runtimes.choose` refuses a provider runtime while a
+   private target the repository uses is not reachable for it, naming `sbx
+   endpoints add ...` or `sbx endpoints grant ...`.
+7. **API and CLI.** `GET/POST /api/endpoints`, `PUT/DELETE
+   /api/endpoints/NAME` (admins), `POST /api/sandbox/endpoint-certs` (a
+   sandbox); `sbx endpoints [ls | add | rm | grant | revoke]`.
 
 ## Out of phase 1
 

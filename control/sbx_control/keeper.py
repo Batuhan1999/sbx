@@ -6,7 +6,7 @@ import shlex
 import threading
 import time
 
-from . import core, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, views
+from . import core, delivery, endpoints, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, views
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -139,6 +139,16 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     return True
 
 
+def renew_certificates():
+    """Queue a runtime write (no app restart) for each sandbox whose endpoint
+    certificate runs out within endpoints.RENEW_HOURS: the write issues a new one."""
+    names = endpoints.due()
+    waiting = delivery.waiting() if names else set()
+    for name in names:
+        if name not in waiting:
+            delivery.queue(name, [], restart=False)
+
+
 def look_once():
     """A deleted paused preview comes back with the PR's next push."""
     listing = core.sandboxes()
@@ -160,6 +170,10 @@ def look_once():
         sandboxes.redeliver_on_certificate_change(((i.metadata or {}).get("sbx") for i in infos), complete)
     except Exception as error:   # the round's other work goes on; tried again next round
         print(f"keeper: certificate pin delivery: {error!r}", flush=True)
+    try:   # endpoint certificates that run out soon: written again (running now, paused when they resume)
+        renew_certificates()
+    except Exception as error:
+        print(f"keeper: endpoint certificates: {error!r}", flush=True)
     sandboxes.deliver_waiting(running)
     sandboxes.prepare_waiting({(i.metadata or {}).get("sbx") for i in infos})
 

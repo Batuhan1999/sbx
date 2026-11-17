@@ -6,6 +6,7 @@ sandbox's runtime directory (core.ship_guest) and runs one subcommand:
   identity WORKSPACE_ID                    fresh SSH host keys, once per workspace (root)
   swap --mb N                              the recipe's swap budget (root)
   usage                                    memory and disk use, as JSON
+  forward ensure|run CONFIG                the endpoints' forwarder (127.0.0.1 to TLS)
 
 The functions above main() are also what extensions' own guest scripts
 import (they are shipped next to this file). Standard library only: it runs
@@ -451,6 +452,221 @@ def usage():
                      "used_bytes": (disk.f_blocks - disk.f_bfree) * disk.f_frsize}}
 
 
+# forward: the endpoints' forwarder (sbx_control/endpoints.py). It listens on
+# 127.0.0.1:<local_port> for each endpoint in its config and wraps each
+# connection into TLS to <address>:<port>, with the sandbox's certificate for
+# that endpoint, the server verified as <address> (against the public CAs, or
+# the installation's self-signed certificate when the config names one).
+# Each new connection takes the newest certificate it has: the config's, or
+# one sbx pushed or the forwarder pulled since (RENEWED); with less than
+# RENEW_BEFORE left it first asks sbx-control for new ones, with the
+# sandbox's own credential. Open connections keep the certificate they began
+# with. It reads the config again every few seconds (endpoints come and go)
+# and exits once the config has been gone for a while.
+
+FORWARD_PID = "forwarder.json"          # in RUN: its pid and start time
+FORWARD_POLL = 2.0
+FORWARD_GONE = 15.0                     # seconds without a config before it exits
+RENEWED = "endpoint-certs"              # in RUN: <name>.pem, <name>-key.pem and renewed.json {name: not_after}
+RENEW_BEFORE = 3600                     # seconds left on a certificate that make a connection renew it first
+
+
+def _certificate(endpoint, folder, renewed):
+    """(cert path, key path, not_after) of the newest certificate for the endpoint."""
+    found = [(str(folder / endpoint["cert"]), str(folder / endpoint["key"]), float(endpoint.get("not_after") or 0))]
+    later = read_json(Path(renewed) / "renewed.json").get(endpoint["name"])
+    if later:
+        found.append((str(Path(renewed) / f"{endpoint['name']}.pem"),
+                      str(Path(renewed) / f"{endpoint['name']}-key.pem"), float(later)))
+    return max(found, key=lambda f: f[2])
+
+
+def renew(config, folder, renewed):
+    """New certificates for every endpoint the sandbox may use, from
+    sbx-control (its callback, with the sandbox's credential), into renewed."""
+    import ssl
+    import urllib.error
+    import urllib.request
+    target = config["renew"]
+    trust = config.get("trust")
+    context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
+    request = urllib.request.Request(target["url"], method="POST", data=b"{}", headers={
+        "Authorization": f"Bearer {target['sandbox']}:{target['credential']}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=context) as response:
+            found = json.loads(response.read())["endpoints"]
+    except urllib.error.HTTPError as error:   # refused: a deleted sandbox, a revoked grant
+        error.close()
+        raise
+    renewed = Path(renewed)
+    renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
+    times = {}
+    for item in found:
+        for suffix, value in ((".pem", item["cert"]), ("-key.pem", item["key"])):
+            path = renewed / f"{item['name']}{suffix}"
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(value)
+        times[item["name"]] = item["not_after"]
+    write_json(renewed / "renewed.json", times)
+    return times
+
+
+def forward_context(config_path, endpoint, renewed, lock=None, now=None):
+    """The TLS client context for a new connection to the endpoint, with its
+    newest certificate, renewed first when it runs out within RENEW_BEFORE
+    (a renewal that fails leaves the one there is, while it lasts)."""
+    import contextlib
+    import ssl
+    config = json.loads(Path(config_path).read_text())
+    folder = Path(config_path).parent
+    now = time.time() if now is None else now
+    with lock or contextlib.nullcontext():
+        cert, key, not_after = _certificate(endpoint, folder, renewed)
+        if not_after - now < RENEW_BEFORE and config.get("renew"):
+            try:
+                renew(config, folder, renewed)
+                cert, key, not_after = _certificate(endpoint, folder, renewed)
+            except (OSError, ValueError, KeyError) as error:
+                say(f"forward {endpoint.get('name')}: renewing its certificate: {type(error).__name__}: {error}")
+    trust = config.get("trust")
+    context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    return context
+
+
+def forward_dial(address, port, timeout=10):
+    import socket
+    return socket.create_connection((address, port), timeout=timeout)
+
+
+def _pipe(source, sink):
+    import socket
+    try:
+        while True:
+            data = source.recv(65536)
+            if not data:
+                break
+            sink.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for sock, how in ((sink, socket.SHUT_WR), (source, socket.SHUT_RD)):
+            try:
+                sock.shutdown(how)
+            except OSError:
+                pass
+
+
+def forward_one(client, endpoint, config_path, renewed, lock=None):
+    """One app connection, through TLS to the endpoint, until both sides close."""
+    import threading
+    try:
+        context = forward_context(config_path, endpoint, renewed, lock)
+        raw = forward_dial(endpoint["address"], endpoint["port"])
+        server = context.wrap_socket(raw, server_hostname=endpoint["address"])
+        server.settimeout(None)
+    except (OSError, ValueError) as error:
+        say(f"forward {endpoint.get('name')}: {type(error).__name__}: {error}")
+        client.close()
+        return
+    back = threading.Thread(target=_pipe, args=(server, client), daemon=True)
+    back.start()
+    _pipe(client, server)
+    back.join()
+    for sock in (client, server):
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+class Forwarder:
+    """The listeners, kept to what the config says (reconcile)."""
+
+    def __init__(self, config_path, host="127.0.0.1", renewed=None):
+        import threading
+        self.config_path, self.host = str(config_path), host
+        self.renewed = Path(renewed) if renewed else RUN / RENEWED
+        self.lock = threading.Lock()   # one renewal at a time
+        self.listeners = {}   # local_port -> (socket, endpoint)
+
+    def reconcile(self):
+        """Listen for each endpoint in the config, stop for those gone;
+        whether the config is there."""
+        import socket
+        import threading
+        try:
+            wanted = {int(e["local_port"]): e for e in json.loads(Path(self.config_path).read_text())["endpoints"]}
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        for port in [p for p in self.listeners if p not in wanted]:
+            self.listeners.pop(port)[0].close()
+        for port, endpoint in wanted.items():
+            if port in self.listeners:
+                self.listeners[port] = (self.listeners[port][0], endpoint)
+                continue
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                listener.bind((self.host, port))
+            except OSError as error:
+                say(f"forward {endpoint.get('name')}: can't listen on {self.host}:{port}: {error}")
+                listener.close()
+                continue
+            listener.listen(64)
+            self.listeners[port] = (listener, endpoint)
+            threading.Thread(target=self._accept, args=(port, listener), daemon=True).start()
+        return True
+
+    def _accept(self, port, listener):
+        import threading
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:   # closed: the endpoint is gone
+                return
+            found = self.listeners.get(port)
+            if not found or found[0] is not listener:
+                client.close()
+                return
+            threading.Thread(target=forward_one, args=(client, found[1], self.config_path, self.renewed, self.lock),
+                             daemon=True).start()
+
+    def close(self):
+        for listener, _ in self.listeners.values():
+            listener.close()
+        self.listeners.clear()
+
+    def run(self, poll=FORWARD_POLL, gone=FORWARD_GONE):
+        missing_since = None
+        while True:
+            if self.reconcile():
+                missing_since = None
+            else:
+                missing_since = missing_since or time.monotonic()
+                if time.monotonic() - missing_since > gone:
+                    self.close()
+                    return
+            time.sleep(poll)
+
+
+def forward(action, config_path):
+    """ensure: start the forwarder unless it runs (detached); run: be it."""
+    state_file = RUN / FORWARD_PID
+    if action == "run":
+        write_json(state_file, record(os.getpid()))
+        Forwarder(config_path).run()
+        return
+    if alive(read_json(state_file)):
+        return
+    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=open("/tmp/sbx-endpoints.log", "a"), start_new_session=True)
+    write_json(state_file, record(process.pid))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -465,6 +681,9 @@ def main(argv=None):
     p.add_argument("--ssh-port", type=int, required=True)
     sub.add_parser("swap").add_argument("--mb", type=int, required=True)
     sub.add_parser("usage")
+    p = sub.add_parser("forward")
+    p.add_argument("action", choices=["ensure", "run"])
+    p.add_argument("config")
     args = parser.parse_args(argv)
     try:
         if args.command == "processes":
@@ -473,6 +692,8 @@ def main(argv=None):
             identity(args.workspace, args.ssh_port)
         elif args.command == "swap":
             swap(args.mb)
+        elif args.command == "forward":
+            forward(args.action, args.config)
         else:
             print(json.dumps(usage()))
     except GuestError as error:

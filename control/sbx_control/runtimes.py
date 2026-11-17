@@ -110,7 +110,9 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
     repo's setting, else the default. Refused, naming the runtime and why,
     when it is not enabled, when managed servers are attached to the repo
     and its sandboxes don't reach this host's private network, or when the
-    recipe's size (when given) is beyond its limits; sbx never falls back to
+    recipe's size (when given) is beyond its limits (on a runtime without
+    private_networks: when a private target it uses has no endpoint, as
+    endpoints.missing says); sbx never falls back to
     another runtime."""
     chosen = setting(repo)
     if not requested and chosen and chosen not in runtime.enabled():
@@ -127,13 +129,14 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
         raise Refused(f"there is no runtime {kind} (enabled here: {', '.join(runtime.enabled())})")
     title = runtime.title(kind)
     if repo and not runtime.capabilities(kind).private_networks:
-        from . import hosted_services
-        servers = hosted_services.attached_to(repo)
-        if servers:
-            raise Refused(f"{title} ({kind}) can't run {repo}'s sandboxes: the managed server"
-                          f"{'s' if len(servers) > 1 else ''} {', '.join(servers)} attached to it "
-                          "run on this host's private network, which its sandboxes don't reach "
-                          "(private_networks); choose another runtime")
+        from . import endpoints
+        lacking = endpoints.missing(repo)
+        if lacking:
+            raise Refused(f"{title} ({kind}) can't run {repo}'s sandboxes yet: they reach this host's private "
+                          f"network (private_networks) only through endpoints, and "
+                          f"{', '.join(what for what, _ in lacking)} {'has' if len(lacking) == 1 else 'have'} "
+                          f"none; an admin adds {'it' if len(lacking) == 1 else 'them'}: "
+                          f"{'; '.join(command for _, command in lacking)}, or choose another runtime")
     if size and (why := runtime.beyond_limits(size, kind)):
         raise Refused(f"{title} ({kind}) can't run it: {why}")
     if repo:

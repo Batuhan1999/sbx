@@ -186,9 +186,11 @@ server's network. The first `server up` asks for the host's routes and leaves
 `sbx-admin network apply` pending for Embed. Managed servers and
 `access.public_repos` exclude each other, as `internal_cidrs` and
 `public_repos` do: the runtime opens private ranges to every sandbox alike.
-A runtime whose sandboxes can't reach this host's private ranges refuses
-`internal_cidrs` and managed servers; one that can't apply per-sandbox egress
-rules refuses `public_repos`.
+A runtime whose sandboxes can't reach this host's private ranges (E2B
+Cloud's) reaches managed servers and internal hosts only through
+[endpoints](#endpoints); without a domain it refuses `internal_cidrs` and
+managed servers. One that can't apply per-sandbox egress rules refuses
+`public_repos`.
 
 Managed Postgres is PostgreSQL 18 on an owned, reflink-enabled XFS image
 (default 32 GiB, `--storage-gb N`, or `--data-root DIR` on an existing XFS
@@ -210,6 +212,94 @@ data parts. Views and replicated, shared or external engines are refused.
 `sbx-admin server down NAME` stops a server and keeps its data;
 `--delete-data` removes its storage. Both refuse while recipes or sandboxes use
 the server.
+
+### Endpoints
+
+Sandboxes on a runtime whose sandboxes don't reach this host's private
+network (`capabilities.private_networks` false: E2B Cloud) reach a managed
+server or an internal host through an endpoint: one TLS path that every
+service and protocol shares. Endpoints are off until an admin adds one; an
+installation without one listens for none and opens no port for them.
+
+```sh
+sbx endpoints                                   # each, its repos and state; the managed servers without one
+sbx endpoints add --server dev-pg               # a managed server's, at dev-pg.<domain>
+sbx endpoints add --name temporal --target 10.0.0.5:7233 --repo owner/app   # an internal host's
+sbx endpoints grant temporal owner/other        # another repo may use it; revoke takes it back
+sbx endpoints rm temporal                       # refused while sandboxes on a provider runtime use it
+```
+
+`add` and `rm` wait until the server has applied the change and exit
+non-zero when it is refused or fails (`--no-wait` returns at once, `--json`
+prints the API's answer). On the server, `sbx-admin endpoint
+ls|add|rm|grant|revoke` does the same, and `sbx-admin doctor` lists them. An
+endpoint needs a domain; its name is a host name label (a managed server's
+name, with `_` as `-`, unless `--name` gives one), its target an IP address
+and port (an internal host's within `network.internal_cidrs`).
+
+**Who may use one** is per repository and explicit, whatever the
+repository's trust: a managed server's endpoint is for the repositories
+whose attachments bind to that server; an internal host's for the
+repositories an admin granted it (`--repo`, `grant`, `revoke`). A public
+repository (`access.public_repos`) may be granted an internal host's too.
+The rule is kept with certificates, not addresses: each endpoint has a CA of
+its own, nginx checks a client against that endpoint's CA only, and a
+sandbox gets certificates only for the endpoints its repository may use.
+
+How it works:
+
+- **The host.** nginx's stream module listens on port 7443 while an
+  endpoint exists (sbx's host firewall opens it then, and closes it with the
+  last one). One server per endpoint, chosen by the TLS server name
+  `<name>.<domain>`, terminates TLS with the installation's wildcard
+  certificate, requires a client certificate from that endpoint's CA
+  (`ssl_client_certificate`, `ssl_verify_client on`) and proxies to the
+  target; any other name's handshake is rejected. sbx-control records a
+  change and touches `/run/sbx/apply/endpoints`; the root side (`sbx-apply
+  endpoints`) writes `/opt/sbx-tls/nginx/endpoints.stream` and the CAs'
+  certificates, tests and reloads nginx, keeps the configuration before when
+  nginx refuses it, and records the outcome the API shows (`on`,
+  `applying`, `failed`). nginx's main configuration
+  (`/opt/sbx-tls/nginx.conf`, with a `stream` block) is mounted into its
+  container. The sandbox's own egress rules (`deny_out`) deny only the cloud
+  metadata service, so `<name>.<domain>:7443` is reachable.
+- **Certificates.** An endpoint's CA is made with it; its key is sealed in
+  the secret store (sbx-control issues the sandboxes' certificates on
+  demand), its certificate is public. A sandbox's certificate for an
+  endpoint is valid 24 hours. It is issued whenever the sandbox's runtime is
+  written (create, a cold boot, an env delivery; the keeper renews a running
+  one with less than 12 hours left), pushed when sbx resumes the sandbox
+  (the gate, the API, the keeper), and pulled by the forwarder itself before
+  a new connection when less than an hour is left (`POST
+  /api/sandbox/endpoint-certs` with the sandbox's own credential, the one its
+  git credential helper uses), so a sandbox woken after a long pause by
+  anyone renews on its first connection. Open connections keep the
+  certificate they began with. Nothing is revoked: a certificate runs out,
+  and a deleted sandbox or a revoked grant gets no new one. No key appears in
+  a log, an event or an admin's API answer.
+- **The sandbox.** The guest helper's forwarder (`sbx_guest.py forward`)
+  listens on `127.0.0.1:<local port>` (17400 and up, one per endpoint) for
+  each endpoint the sandbox may use and wraps each connection into TLS to
+  `<name>.<domain>:7443` with that endpoint's certificate, verifying the
+  server as `<name>.<domain>` (against the public CAs, or the installation's
+  own certificate with `--dns none`). Apps connect to 127.0.0.1 in plain
+  text, so Postgres's `sslmode=disable` URLs keep working; the service's own
+  login (`postgres-clone`'s per-sandbox role) stays on top.
+- **The values.** On such a runtime, every `host:port` in a sandbox's env
+  and its services' outputs that is the target of an endpoint it may use (a
+  URL, an address, or `host` and `port` outputs) becomes the forwarder's
+  `127.0.0.1:<local port>`: `postgres-clone`'s `DATABASE_URL`, ClickHouse's
+  URL, a Temporal address. Each internal host's endpoint is also
+  `SBX_ENDPOINT_<NAME>=127.0.0.1:<port>` (`temporal`: `SBX_ENDPOINT_TEMPORAL`).
+  Values must name an IP address with its port. Embed's sandboxes keep the
+  private addresses.
+- **The gate.** A repo's sandboxes are refused on such a runtime while a
+  private target they use is not theirs to reach: a managed server its
+  attachments bind to without an endpoint, or an address within
+  `network.internal_cidrs` in a bound connection's values or in `sbx.yaml`'s
+  `env` without an endpoint or a grant. The refusal names the command
+  (`sbx endpoints add --server dev-pg`, `sbx endpoints grant temporal
+  owner/app`). Hosted packages (Neon, PlanetScale, Upstash, ...) need none.
 
 ### Development baselines
 
@@ -509,10 +599,11 @@ plan's limit is the E2B team's, shared with the others. Embed runs one
 installation per server: its sandbox listing and template names are as
 before.
 
-What it does not support: managed servers and `network.internal_cidrs`.
 Its sandboxes do not reach this host's private network
-(`private_networks` is false), so a repository with managed servers
-attached is refused on it, naming the servers. It applies `deny_out`
+(`private_networks` is false): they reach managed servers and
+`network.internal_cidrs` hosts through [endpoints](#endpoints), and a
+repository that uses one without an endpoint is refused on it, naming the
+command that adds it. It applies `deny_out`
 (`egress_rules`), so untrusted repos can run there, and takes filesystem
 snapshots.
 
@@ -813,6 +904,9 @@ building or has no room), with `Retry-After` when waiting helps.
 | `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
 | `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default`, `POST /api/runtimes/KIND/test` | admin, and the first-run setup link | `sbx runtimes available | add | set | remove | default | test`: add, change, remove a runtime, choose the default, run its checks; changes are checked, then applied by the host ([from the web app](#from-the-web-app)). |
+| `GET /api/endpoints` | admin | `sbx endpoints`: `{"endpoints": [{"name", "address", "kind": "managed-server" or "internal", "server", "server_kind", "target", "repos", "state": "on" or "applying" or "failed", "message", "used_by"}], "candidates": [{"server", "kind", "address", "target"}], "domain", "needed", "applying", "failure"}`. `repos`: who may use it (an internal host's grants; the repositories attached to a managed server); `used_by`: the repositories whose sandboxes hold its certificate, for which `DELETE` is refused; candidates are the managed servers without an endpoint; `needed` says an enabled runtime's sandboxes don't reach this host's private network; `applying` that a change is not applied yet, `failure` why the last one failed ([endpoints](#endpoints)). |
+| `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add | grant | revoke | rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories (400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
+| `POST /api/sandbox/endpoint-certs` | a sandbox (`Bearer NAME:CREDENTIAL`, its own credential) | The forwarder's renewal: new certificates and keys for the endpoints the sandbox's repository may use now; 401 for a wrong credential, 404 for a sandbox that is gone, 403 when it may use none. Not cached. |
 | `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
 | `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |

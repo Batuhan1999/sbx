@@ -17,7 +17,10 @@ def _fence() -> bool:
 
 
 def _private() -> bool:
-    return any(runtime.capabilities(kind).private_networks for kind in runtime.enabled())
+    """Whether internal ranges do something: a runtime's sandboxes reach them,
+    or, with a domain, sandboxes on any runtime through endpoints (endpoints.py)."""
+    return any(runtime.capabilities(kind).private_networks for kind in runtime.enabled()) \
+        or bool(settings.current().domain.name)
 
 
 def offered() -> dict:
@@ -42,6 +45,7 @@ def _network(before, after):
         return
     if not _private():
         raise ValueError("network.internal_cidrs needs a runtime whose sandboxes reach this host's private network "
-                         "(private_networks), and this one's don't: the ranges would do nothing")
+                         "(private_networks), and this one's don't: the ranges would do nothing until a domain is "
+                         "connected and they get endpoints")
     if settings.current().access.public_repos:
         raise ValueError(SHARED)
