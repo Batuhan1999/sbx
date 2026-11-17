@@ -1098,6 +1098,9 @@ def repo_cmd(args):
         for key, value in api("GET", f"/api/repos/{repo}").items():
             print(f"{key:<16} {', '.join(value) if isinstance(value, list) else value}")
         return
+    if args.action == "brief":
+        print(api("GET", f"/api/repos/{repo}/setup-brief", raw=True))
+        return
     me = api("GET", "/api/me")
     status = api("GET", f"/api/repos/{repo}")
     if not status["trust"]:
@@ -1116,7 +1119,8 @@ def repo_cmd(args):
         r = scaffold(checkout, repo, args.prebuild)
         found = r["found"]
         print(f"wrote {', '.join(sorted(r['files']))}")
-        print(f"  start: {found['dev'] or '(none found; the agent starts the app)'}; preview on port {found['port']}")
+        print(f"  start: {found['dev'] or '(none found; the agent starts the app)'}; preview on port "
+              f"{found['port'] or '(none found; the agent sets it)'}")
         wanted = found["secrets"]
     elif checkout:
         print(".sbx/ is already there; kept it")
@@ -1133,7 +1137,7 @@ def repo_cmd(args):
         print(f"starting {args.agent} with the setup brief; it writes .sbx/, tries it in a sandbox "
               "and verifies the application")
         run_agent(args.agent, api("GET", f"/api/repos/{repo}/setup-brief", raw=True), checkout)
-    print("Next: sbx recipe apply (the server uses .sbx/ before it is committed), then sbx up try-1"
+    print("Next: give your agent the setup brief (sbx repo brief prints it), or sbx recipe apply, then sbx up check-a"
           + ("; it has a template of its own: sbx template build" if args.prebuild or status.get("prebuilt") else ""))
 
 
@@ -1280,8 +1284,17 @@ def catalog_cmd(args):
             choices = ", ".join(repr(c["value"]) for c in i.get("choices", ()))
             print(f"  input {n}{' (required)' if i['required'] else ''}{' secret' if i['secret'] else ''}: {about}"
                   + (f" (one of {choices})" if choices else ""))
+        for n, o in (e.get("outputs") or {}).items():
+            print(f"  output {n}{' (secret)' if o.get('sensitive') else ''}: ${{services.KEY.{n}}}")
+        for var, value in (e.get("env") or {}).items():
+            print(f"  sets {var}: {value}")
         for slot, r in e["requires"].items():
-            print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})")
+            # The saved connections of that kind (listed to admins): what connections: {slot: NAME} names.
+            saved = [c["key"] for c in api("GET", f"/api/catalog/{r['kind']}").get("connections") or []]
+            print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})"
+                  + (f"; saved: {', '.join(saved)}" if saved else ""))
+        for c in e.get("connections") or []:
+            print(f"  saved connection {c['key']}")
         if args.files:
             for path, text in api("GET", f"/api/catalog/{name}/files")["files"].items():
                 print(f"\n--- {path}\n{text}")
@@ -1470,8 +1483,9 @@ def parser():
     p = command("push", push, "push a local branch into the sandbox's checkout")
     p.add_argument("name")
     p.add_argument("--branch", help="default: the current one")
-    p = command("sandbox", sandbox_cmd, "agent operations; each prints the sandbox's JSON: info [--wait], restart "
-                "(the app), prepare (reapply the recipe), pause, resume, resources, exec (a script on stdin)")
+    p = command("sandbox", sandbox_cmd, "agent operations; each prints the sandbox's JSON on stdout (progress goes to "
+                "stderr): info [--wait], restart (the app), prepare (reapply the recipe), pause, resume, resources, "
+                "exec (a script on stdin; prints its output)")
     p.add_argument("action", choices=["info", "restart", "prepare", "pause", "resume", "resources", "exec"])
     p.add_argument("name")
     p.add_argument("--wait", action="store_true", help="info: until its operation finishes")
@@ -1483,8 +1497,9 @@ def parser():
                    "and register them in Claude Desktop (again after up or down)")
     p.add_argument("--remove", action="store_true", help="take all of it out again")
     p = command("repo", repo_cmd, "status: what the server knows about the repo; connect: set it up for sandboxes "
-                "(an admin adds it to the server; drafts .sbx/ from the checkout)")
-    p.add_argument("action", choices=["status", "connect"])
+                "(an admin adds it to the server; drafts .sbx/ from the checkout); brief: print the setup brief "
+                "an agent follows")
+    p.add_argument("action", choices=["status", "connect", "brief"])
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--dir", help="connect: the checkout (default: the one you are in)")
     p.add_argument("--agent", nargs="?", const="claude", metavar="COMMAND",

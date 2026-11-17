@@ -150,6 +150,38 @@ class CliTests(unittest.TestCase):
         self.assertIn("setup exited 1", str(code))
         self.assertEqual(out, "")
 
+    def test_lifecycle_operations_print_only_the_sandboxs_json_on_stdout(self):
+        phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"}, SANDBOX["lifecycle"]])
+        self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: {**SANDBOX, "lifecycle": next(phases, SANDBOX["lifecycle"])}
+        for action in ("restart", "resume", "pause"):
+            self.routes[("POST", f"/api/sandboxes/try/{action}")] = lambda q, body: SANDBOX
+        progress = ""
+        for action in ("restart", "resume", "pause"):
+            with self.subTest(action=action):
+                code, out, err = self.run_cli("sandbox", action, "try")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["name"], "try")
+                progress += err
+        self.assertIn("starting app", progress)   # the progress lines, on stderr
+
+    def test_repo_brief_prints_the_servers_setup_brief(self):
+        self.routes[("GET", "/api/repos/owner/app/setup-brief")] = lambda q, body: b"# Set up owner/app\n"
+        code, out, err = self.run_cli("repo", "brief", "--repo", "owner/app")
+        self.assertEqual((code, out), (0, "# Set up owner/app\n\n"))
+
+    def test_catalog_show_lists_outputs_the_env_they_set_and_saved_connections(self):
+        self.routes[("GET", "/api/catalog/postgres-clone")] = lambda q, body: {
+            "title": "Postgres clone", "kind": "provision", "source": "builtin", "description": "A database per sandbox.",
+            "inputs": {}, "outputs": {"url": {"sensitive": True}, "host": {}}, "env": {"DATABASE_URL": "${outputs.url}"},
+            "requires": {"server": {"kind": "postgres-server", "expose": {"url": "PG_ADMIN_URL"}}}, "connections": []}
+        self.routes[("GET", "/api/catalog/postgres-server")] = lambda q, body: {"connections": [{"key": "dev-pg"}]}
+        code, out, err = self.run_cli("catalog", "show", "postgres-clone")
+        self.assertEqual(code, 0, err)
+        self.assertIn("output url (secret): ${services.KEY.url}", out)
+        self.assertIn("output host: ${services.KEY.host}", out)
+        self.assertIn("sets DATABASE_URL: ${outputs.url}", out)
+        self.assertIn("requires server: a postgres-server connection (url -> PG_ADMIN_URL); saved: dev-pg", out)
+
     def test_exec_sends_stdin_and_exits_with_the_scripts_code(self):
         self.routes[("POST", "/api/sandboxes/try/exec")] = lambda q, body: {
             "exit_code": 3, "stdout": f"ran {len(body['script'])}\n", "stderr": "warn\n"}
@@ -664,6 +696,24 @@ class CliApiTests(Server):
         self.assertNotIn("template", recipe)
         self.assertEqual(r["found"]["secrets"], ["API_KEY", "DB_URL"])
         self.assertEqual(r["executable"], [".sbx/setup"])
+
+    def test_a_scaffold_names_a_port_only_where_the_checkout_shows_one(self):
+        from sbx_control import repo_onboarding
+        go = repo_onboarding.detect({"go.mod", "go.sum", "main.go"}, {})
+        self.assertIsNone(go["port"])
+        recipe = repo_onboarding.scaffold("owner/app", go)["files"][".sbx/sbx.yaml"]
+        self.assertNotIn("3000", recipe)
+        self.assertIsNone((yaml.safe_load(recipe) or {}).get("previews"))
+        express = repo_onboarding.detect({"package.json"}, {"package.json": json.dumps(
+            {"scripts": {"dev": "node server.js"}, "dependencies": {"express": "4"}})})
+        recipe = yaml.safe_load(repo_onboarding.scaffold("owner/app", express)["files"][".sbx/sbx.yaml"])
+        self.assertEqual(recipe["processes"]["web"], "npm run dev")
+        self.assertNotIn("health", recipe)
+        self.assertNotIn("env", recipe)
+        nextjs = repo_onboarding.detect({"package.json"}, {"package.json": json.dumps(
+            {"scripts": {"dev": "next dev"}, "dependencies": {"next": "15"}})})
+        recipe = yaml.safe_load(repo_onboarding.scaffold("owner/app", nextjs)["files"][".sbx/sbx.yaml"])
+        self.assertEqual((recipe["previews"][""], recipe["env"]["PORT"]), (3000, "3000"))
 
     def test_the_cli_writes_the_recipe_the_server_drafts_for_its_checkout(self):
         self.repo_admin()
