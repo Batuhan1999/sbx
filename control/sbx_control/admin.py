@@ -538,7 +538,11 @@ def main(argv: list) -> int:
     if a.cmd == "jobs":
         from . import jobs
         if a.verb == "run":
-            print(jobs.run_now(a.id or ""))
+            try:
+                print(jobs.run_now(a.id or "", detached=True))
+            except RuntimeError as error:
+                print(str(error), file=sys.stderr)
+                return 1
             return 0
         for j in jobs.jobs():
             when = f"last {j.get('last') or '-'}, next {j.get('next') or j.get('schedule') or '-'}" if j.get("available") else "not on this host"
