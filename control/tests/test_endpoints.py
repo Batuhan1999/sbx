@@ -34,11 +34,11 @@ def provider(runtime):
 
 class Setup:
     def configure(self):
-        from sbx_control import endpoints, hosted_services, runtime, settings
+        from sbx_control import endpoints, host_requests, hosted_services, runtime, settings
         from sbx_control.catalog import attachments
         from sbx_control.endpoints import certs, model, nginx
         self.endpoints, self.hosted, self.runtime, self.settings = endpoints, hosted_services, runtime, settings
-        self.certs, self.model, self.nginx = certs, model, nginx
+        self.certs, self.model, self.nginx, self.host_requests = certs, model, nginx, host_requests
         settings.update("domain", {"name": DOMAIN}, by="test")
         settings.update("network", {"internal_cidrs": ["10.0.0.0/24"]}, by="test")
         self.servers = {"dev_pg": ("postgres", PG)}
@@ -49,7 +49,7 @@ class Setup:
             {"name": n, "kind": k} for n, (k, _) in sorted(self.servers.items())]))
         self.enterContext(patch.object(hosted_services, "attached_to", side_effect=lambda repo: self.bound.get(repo, [])))
         self.enterContext(patch.object(attachments, "repos", side_effect=lambda: sorted(self.bound)))
-        nginx._applied_file().unlink(missing_ok=True)   # the class's earlier tests' applies
+        host_requests._record_file("endpoints").unlink(missing_ok=True)   # the class's earlier tests' applies
         # Deliveries to running sandboxes: recorded here, run where a test asks for them (delivered()).
         self.deliveries = []
         self.enterContext(patch.object(model, "_background", side_effect=self.deliveries.append))
@@ -107,7 +107,7 @@ class ApiTests(Setup, Server):
         found = self.client.get("/api/endpoints").json()
         self.assertTrue(found["applying"])
         self.assertEqual((found["domain"], found["needed"], found["failure"]), (DOMAIN, False, ""))
-        self.nginx._applied_file().write_text(json.dumps({"revision": 1, "ok": True, "ok_revision": 1}))
+        self.host_requests.record("endpoints", {"revision": 1, "ok": True, "ok_revision": 1})
         found = self.client.get("/api/endpoints").json()
         self.assertEqual(found["endpoints"][0]["state"], "on")
         self.assertFalse(found["applying"])
@@ -184,15 +184,15 @@ class ApiTests(Setup, Server):
 
     def test_a_failed_apply_and_one_never_picked_up_are_failed(self):
         self.client.post("/api/endpoints", json={"name": "t", "target": "10.0.0.5:80"})
-        self.nginx._applied_file().write_text(json.dumps({"revision": 1, "ok": False, "message": "nginx said no"}))
+        self.host_requests.record("endpoints", {"revision": 1, "ok": False, "message": "nginx said no"})
         found = self.client.get("/api/endpoints").json()
         self.assertEqual((found["endpoints"][0]["state"], found["endpoints"][0]["message"]), ("failed", "nginx said no"))
         self.assertEqual(found["failure"], "nginx said no")
-        self.nginx._applied_file().unlink()
+        self.host_requests._record_file("endpoints").unlink()
         request = self.root / "run/apply/endpoints"
         request.parent.mkdir(parents=True, exist_ok=True)
         request.write_text("0\n")
-        old = time.time() - self.endpoints.status.PICKUP_SECONDS - 5
+        old = time.time() - self.host_requests.PICKUP_SECONDS - 5
         import os
         os.utime(request, (old, old))
         self.assertIn("did not pick up", self.client.get("/api/endpoints").json()["endpoints"][0]["message"])

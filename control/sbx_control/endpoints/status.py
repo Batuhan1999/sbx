@@ -3,24 +3,16 @@ repos, users and state (on, applying, failed), and the managed servers that
 could have one."""
 from __future__ import annotations
 
-import time
-
-from .. import paths, settings
+from .. import host_requests, settings
 from . import certs
 from .model import REVISION, Endpoint, address, domain, find, label, repos_of, rows
 from .nginx import applied
 
-PICKUP_SECONDS = 120                    # a request the root side has not taken this long has failed
-
 
 def _not_picked_up() -> str:
-    """Why the request failed when the root side has not taken it for PICKUP_SECONDS; "" otherwise."""
-    try:
-        age = time.time() - (paths.run() / "apply" / settings.HostUnit.ENDPOINTS).stat().st_mtime
-    except OSError:
-        return ""
+    """Why the request failed when the root side never took it (host_requests.stuck); "" otherwise."""
     return ("the server did not pick up the change: check sbx-apply-endpoints.path "
-            "(systemctl status sbx-apply-endpoints.path)") if age > PICKUP_SECONDS else ""
+            "(systemctl status sbx-apply-endpoints.path)") if host_requests.stuck(settings.HostUnit.ENDPOINTS) else ""
 
 
 def _state(revision: int, record: dict) -> tuple[str, str]:

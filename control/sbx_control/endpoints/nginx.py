@@ -4,11 +4,10 @@ tested and reloaded, the files before put back when nginx refuses them."""
 from __future__ import annotations
 
 import datetime
-import json
 import subprocess
 import sys
 
-from .. import paths
+from .. import host_requests, paths, settings
 from ..tls_front import HTTPS_BACKEND, PORT
 from .model import REVISION, Endpoint, domain, routable
 
@@ -92,22 +91,15 @@ def write_nginx(folder):
     replace(folder, render(routable(), domain()))
 
 
-def _applied_file():
-    return paths.state_dir() / "endpoints-applied.json"
-
-
 def applied() -> dict:
-    """The root side's last apply: {revision, ok, message, ok_revision, at}."""
-    try:
-        return json.loads(_applied_file().read_text())
-    except (OSError, ValueError):
-        return {}
+    """The root side's last apply (its host_requests record): {revision, ok, message, ok_revision, at}."""
+    return host_requests.last(settings.HostUnit.ENDPOINTS)
 
 
 def apply_host() -> int:
     """sbx-apply endpoints, as root: nginx's stream configuration from the
     records now, nginx tested and reloaded (the configuration before kept
-    when it fails). Its outcome in endpoints-applied.json, which the API
+    when it fails). Its outcome in its host_requests record, which the API
     reads; nginx's own words go to the journal only."""
     folder = paths.tls() / "nginx"
     revision = int(REVISION.get("0"))
@@ -130,6 +122,5 @@ def apply_host() -> int:
         print(f"endpoints: {error}", file=sys.stderr, flush=True)
         code = 1
     record["at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    _applied_file().write_text(json.dumps(record))
-    _applied_file().chmod(0o644)
+    host_requests.record(settings.HostUnit.ENDPOINTS, record)
     return code
