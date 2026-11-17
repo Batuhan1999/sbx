@@ -156,7 +156,7 @@ def _runtime(kind: str, is_default: bool) -> dict:
     backend = runtime.get(kind)
     try:
         found = runtime.status(kind)
-        status = {"state": found.state, "summary": found.summary}
+        status = {"state": found.state, "summary": found.summary, "running": (found.facts or {}).get("running")}
     except Exception as error:  # one runtime that does not answer must not hide the others
         status = {"state": "attention", "summary": f"{backend.title} did not answer: {type(error).__name__}: {error}"}
     try:

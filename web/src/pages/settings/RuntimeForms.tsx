@@ -12,7 +12,10 @@ import { gigabytes, planSummary, runLength } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const CUSTOM = 'custom'
-const VERBS: Record<string, string> = { add: 'Adding', change: 'Changing', remove: 'Removing', default: 'Making the default:' }
+const OUTCOMES: Record<string, { done: string; failed: string }> = {
+  add: { done: 'Added', failed: "Couldn't add" }, change: { done: 'Saved', failed: "Couldn't save" },
+  remove: { done: 'Removed', failed: "Couldn't remove" }, default: { done: 'Default changed', failed: "Couldn't change the default" },
+}
 
 export type ChangeFlow = ReturnType<typeof useRuntimeChangeFlow>
 
@@ -53,21 +56,20 @@ export function changeShown(flow: ChangeFlow, dismissed: string | null): boolean
 
 /** The change in flight or the last one's outcome: applying, failed (why, with a dismiss), or done (only right
  * after this page asked for it). */
-export function ChangeStatus({ flow, title, className }: { flow: ChangeFlow; title?: (kind: string) => string; className?: string }) {
+export function ChangeStatus({ flow, className }: { flow: ChangeFlow; className?: string }) {
   const [dismissed, setDismissed] = useState<string | null>(null)
   const c = flow.change
   if (!c || !changeShown(flow, dismissed)) return null
-  const what = `${VERBS[c.operation] ?? 'Changing'} ${title?.(c.kind) || c.kind}`
+  const words = OUTCOMES[c.operation] ?? OUTCOMES.change
+  // The server's reason, without what the UI says already (nothing changed).
+  const reason = (c.message || 'try again').replace(/; nothing was changed$/, '')
   return <div className={className}>
-    {flow.busy ? <div role="status" className="rounded-lg border border-line bg-sunken px-3 py-2 text-[13px]">
-      <Spinner label={`${what}…`} />
-      <p className="mt-1 text-[12.5px] text-muted">The server applies it and restarts; this page follows on its own.</p>
-    </div>
+    {flow.busy ? <div role="status" className="rounded-lg border border-line bg-sunken px-3 py-2 text-[13px]"><Spinner label="Applying…" /></div>
       : c.state === 'failed' ? <div className="flex items-start gap-2">
-        <ErrorState compact className="min-w-0 flex-1" error={`${what} failed: ${c.message || 'see the server log'}`} />
+        <ErrorState compact className="min-w-0 flex-1" error={`${words.failed}: ${reason}`} />
         <Button size="sm" variant="ghost" onClick={() => setDismissed(c.at)}>Dismiss</Button>
       </div>
-      : <p role="status" className="text-[12.5px] text-ok">{c.message || 'Done.'}</p>}
+      : <p role="status" className="text-[12.5px] text-muted">{/already/.test(c.message) ? 'Already the default' : words.done}</p>}
   </div>
 }
 
@@ -166,12 +168,12 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
     {secret && <form.AppField name={secret.key} validators={{
       onChangeListenTo: advanced.filter(s => s.rekey).map(s => s.key),
       onChange: ({ value, fieldApi }) => !value?.trim() && keyNeeded(k => fieldApi.form.getFieldValue(k))
-        ? (mode === 'add' || !keySet ? `Enter the ${secret.label}.` : `Type the ${secret.label} again: the one set is never sent to a new domain.`)
+        ? (mode === 'add' || !keySet ? `Enter the ${secret.label}.` : `Enter the ${secret.label} again to change the domain.`)
         : undefined,
     }}>
       {field => <field.TextField label={secret.label} type="password" autoComplete="off" spellCheck={false}
-        placeholder={keySet ? 'Set · type to replace' : undefined}
-        help={keySet ? 'Set. Leave it empty to keep it.' : secret.help || undefined} />}
+        placeholder={keySet ? 'Saved · type to replace' : undefined}
+        help={keySet ? undefined : secret.help || undefined} />}
     </form.AppField>}
 
     {r.presets.length > 0 && <fieldset className="min-w-0">
@@ -182,7 +184,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         {r.presets.map(p => <PlanCard key={p.name} group={r.kind} name={p.name} title={p.title} summary={presetSummary(r, presetValues(p, limits), p.adjustable)} checked={plan === p.name} onChoose={choose} />)}
-        <PlanCard group={r.kind} name={CUSTOM} title="Custom" summary="Set each limit yourself" checked={plan === CUSTOM} onChoose={choose} />
+        <PlanCard group={r.kind} name={CUSTOM} title="Custom" summary="Set each limit" checked={plan === CUSTOM} onChoose={choose} />
       </div>
       {(plan === CUSTOM || adjustable.length > 0) && <div className="mt-3 space-y-4 rounded-lg border border-line bg-sunken/60 p-3 sm:p-4">
         {chosen?.note && <p className="text-[12.5px] text-muted">{chosen.note}</p>}
@@ -197,14 +199,14 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       <div className="space-y-3 border-t border-line px-3 py-3">
         {advanced.map(s => <form.AppField key={s.key} name={s.key} validators={{ onChange: ({ value }) => fieldError(s, value) }}>
           {field => <field.TextField label={s.label} optional={s.optional} autoComplete="off" spellCheck={false} placeholder={s.default}
-            help={<>{s.help}{s.rekey && secret && keySet && <span className="block">Changing it needs the {secret.label} again.</span>}</>} />}
+            help={s.rekey && secret && keySet ? `${s.help} Changing it needs the ${secret.label} again.` : s.help || undefined} />}
         </form.AppField>)}
       </div>
     </details>}
 
     <div className="flex flex-wrap items-center justify-end gap-2">
       {onCancel && <Button variant="ghost" onClick={onCancel}>Cancel</Button>}
-      <SubmitButton form={form} disabled={flow.busy}>{mode === 'add' ? `Add ${r.title}` : 'Save settings'}</SubmitButton>
+      <SubmitButton form={form} disabled={flow.busy}>{mode === 'add' ? `Add ${r.title}` : 'Save'}</SubmitButton>
     </div>
   </AppForm>
 }

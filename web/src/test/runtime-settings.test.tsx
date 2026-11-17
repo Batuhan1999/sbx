@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { setSetupToken } from '@/api/client'
 import type { AvailableRuntime, RuntimeChange, SandboxRuntime } from '@/api/types'
-import { Runtimes } from '@/pages/settings/Runtimes'
+import { Runtimes, runtimeLine } from '@/pages/settings/Runtimes'
 import SetupPage from '@/pages/setup/SetupPage'
 import { ME, renderApp, stubApi } from './render'
 
@@ -64,7 +64,7 @@ describe('Settings → Sandbox runtimes', () => {
     })
     renderApp(<Runtimes />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add a runtime' }))
+    await user.click(await screen.findByRole('button', { name: 'Add runtime' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     // The plans as cards, Hobby chosen: their limits in words, nothing to edit.
     const hobby = within(form).getByRole('radio', { name: /Hobby/ }) as HTMLInputElement
@@ -93,13 +93,13 @@ describe('Settings → Sandbox runtimes', () => {
     expect(within(form).getByText('Enter the API key.')).toBeTruthy()
     await user.type(within(form).getByLabelText('API key'), 'test-only-key')
     await user.click(within(form).getByRole('button', { name: 'Add E2B Cloud' }))
-    expect(await screen.findByText('Adding E2B Cloud…')).toBeTruthy()
+    expect(await screen.findByText('Applying…')).toBeTruthy()
     expect(calls.find(c => c.method === 'POST')!.body).toEqual({ kind: 'e2b-cloud', values: {
       E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_MAX_TIMEOUT: '5400', E2B_CLOUD_MAX_CPU: '8', E2B_CLOUD_MAX_MEMORY_MB: '4096',
       E2B_CLOUD_MAX_DISK_MB: '10240', E2B_CLOUD_MAX_SANDBOXES: '100' } })
     await waitFor(() => expect(calls.filter(c => c.url === '/api/runtimes/change').length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
-    expect(screen.getByText('Adding E2B Cloud…')).toBeTruthy()            // done, but the old process answered: still waiting
-    expect(await screen.findByText('E2B Cloud (e2b-cloud) is enabled', undefined, { timeout: 10000 })).toBeTruthy()
+    expect(screen.getByText('Applying…')).toBeTruthy()            // done, but the old process answered: still waiting
+    expect(await screen.findByText('Added', undefined, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect(screen.getAllByRole('heading', { name: 'E2B Cloud' }).length).toBe(1))
   }, 25000)
 
@@ -115,16 +115,16 @@ describe('Settings → Sandbox runtimes', () => {
     renderApp(<Runtimes />)
     const user = userEvent.setup()
     const cloud = (await screen.findByRole('heading', { name: 'E2B Cloud' })).closest('li')!
-    expect(cloud.textContent).toContain('E2B refused a 2 h timeout: your plan allows 1 h')
+    expect(cloud.textContent).toContain('E2B refused a 2 h timeout: your plan allows 1 h.')
     expect((await within(cloud).findByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(cloud.textContent).toContain("Can't remove: 1 sandbox run on E2B Cloud (login)")
+    expect(cloud.querySelector('[title]')!.getAttribute('title')).toBe('Delete its sandboxes first (login)')
     const embed = screen.getByRole('heading', { name: 'E2B Embed' }).closest('li')!
-    expect(embed.textContent).toContain('Set up by install.sh on this server.')
+    expect(embed.textContent).toContain('Managed by install.sh on this server.')
     expect(within(embed).queryByRole('button', { name: 'Remove' })).toBeNull()
-    expect(within(embed).queryByRole('button', { name: 'Change settings' })).toBeNull()
+    expect(within(embed).queryByRole('button', { name: 'Edit' })).toBeNull()
     await user.click(within(cloud).getByRole('button', { name: 'Make default' }))
     await waitFor(() => expect(calls.find(c => c.url === '/api/runtimes/default')?.body).toEqual({ kind: 'e2b-cloud' }))
-    expect(await screen.findByText('Making the default: E2B Cloud…')).toBeTruthy()
+    expect(await screen.findByText('Applying…')).toBeTruthy()
   })
 
   it('preselects the plan the stored limits are, keeps the key, and moves to another plan', async () => {
@@ -139,10 +139,10 @@ describe('Settings → Sandbox runtimes', () => {
     renderApp(<Runtimes />)
     const user = userEvent.setup()
     const row = (await screen.findByRole('heading', { name: 'E2B Cloud' })).closest('li')!
-    expect(row.textContent).toContain('Hobby plan · 1 h runs · 8 vCPU · 8 GB RAM · 10 GB disk · 10 at once')
-    await user.click(await screen.findByRole('button', { name: 'Change settings' }))
+    expect(row.textContent).toContain('Hobby · up to 10 at once')
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
-    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('Set · type to replace')
+    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('Saved · type to replace')
     expect(within(form).getByRole('radio', { name: /Hobby/ })).toHaveProperty('checked', true)
     expect(within(form).queryByRole('slider')).toBeNull()                 // Hobby fixes every limit
     await user.click(within(form).getByRole('radio', { name: /Pro/ }))
@@ -152,7 +152,7 @@ describe('Settings → Sandbox runtimes', () => {
     expect(within(form).getByRole('slider', { name: 'vCPUs' }).getAttribute('aria-valuetext')).toBe('8 vCPU')
     await user.clear(within(form).getByLabelText('vCPUs: exact value'))
     await user.type(within(form).getByLabelText('vCPUs: exact value'), '16{Enter}')
-    await user.click(within(form).getByRole('button', { name: 'Save settings' }))
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
     expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { ...PRO, E2B_CLOUD_MAX_CPU: '16' } })   // no key: kept; the domain is as it was
   })
@@ -167,21 +167,21 @@ describe('Settings → Sandbox runtimes', () => {
     })
     renderApp(<Runtimes />)
     const user = userEvent.setup()
-    expect((await screen.findByRole('heading', { name: 'E2B Cloud' })).closest('li')!.textContent).toContain('Custom limits · 20 at once')
-    await user.click(await screen.findByRole('button', { name: 'Change settings' }))
+    expect((await screen.findByRole('heading', { name: 'E2B Cloud' })).closest('li')!.textContent).toContain('Custom limits · up to 20 at once')
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     expect(within(form).getByRole('radio', { name: /Custom/ })).toHaveProperty('checked', true)
     expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100 at once')   // 200 by hand in runtime.env: the slider's top
     const advanced = within(form).getByText('Advanced').closest('details')!
     expect(advanced.open).toBe(false)                                   // the domain is out of the way
     await user.click(within(form).getByText('Advanced'))
-    expect(within(advanced).getByText('Changing it needs the API key again.')).toBeTruthy()
+    expect(within(advanced).getByText(/Changing it needs the API key again./)).toBeTruthy()
     await user.type(within(form).getByLabelText(/Domain/), 'e2b.example.com')
-    await user.click(within(form).getByRole('button', { name: 'Save settings' }))
-    expect(await within(form).findByText('Type the API key again: the one set is never sent to a new domain.')).toBeTruthy()
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
+    expect(await within(form).findByText('Enter the API key again to change the domain.')).toBeTruthy()
     expect(calls.some(c => c.method === 'PUT')).toBe(false)
     await user.type(within(form).getByLabelText('API key'), 'test-only-key')
-    await user.click(within(form).getByRole('button', { name: 'Save settings' }))
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
     expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_DOMAIN: 'e2b.example.com' } })   // the untouched 200 is never lowered
   })
@@ -195,12 +195,12 @@ describe('Settings → Sandbox runtimes', () => {
     })
     renderApp(<Runtimes />)
     const user = userEvent.setup()
-    expect((await screen.findByRole('alert')).textContent).toContain('Adding E2B Cloud failed: E2B Cloud did not take the settings: E2B Cloud API: HTTP 401')
-    await user.click(await screen.findByRole('button', { name: 'Add a runtime' }))
-    expect(screen.getByText(/sbx-admin runtime add e2b-cloud/)).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toContain("Couldn't add: E2B Cloud did not take the settings: E2B Cloud API: HTTP 401")
+    await user.click(await screen.findByRole('button', { name: 'Add runtime' }))
+    expect(screen.getByText('Add it on the server instead: sbx-admin runtime add e2b-cloud')).toBeTruthy()
     expect(screen.queryByRole('form', { name: 'E2B Cloud settings' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByText(/Adding E2B Cloud failed/)).toBeNull()
+    expect(screen.queryByText(/Couldn't add/)).toBeNull()
   })
 
   it('does not show someone else’s old failure', async () => {
@@ -213,7 +213,7 @@ describe('Settings → Sandbox runtimes', () => {
     renderApp(<Runtimes />)
     expect(await screen.findByRole('heading', { name: 'E2B Embed' })).toBeTruthy()
     await new Promise(r => setTimeout(r, 50))
-    expect(screen.queryByText(/failed/)).toBeNull()
+    expect(screen.queryByText(/Couldn't/)).toBeNull()
   })
 
   it('shows nothing to change for someone who is not an admin', async () => {
@@ -257,13 +257,13 @@ describe('first-run setup without a runtime', () => {
     expect(await screen.findByRole('heading', { name: 'Where will sandboxes run?' })).toBeTruthy()
     const embed = await screen.findByRole('radio', { name: /E2B Embed/ }) as HTMLInputElement
     expect(embed.disabled).toBe(true)
-    expect(screen.getByText("Can't run here: needs /dev/kvm: bare metal, or a VM with nested virtualization enabled")).toBeTruthy()
+    expect(screen.getByText('Needs /dev/kvm')).toBeTruthy()
     expect((screen.getByRole('radio', { name: /E2B Cloud/ }) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('radio', { name: /Hobby/ }) as HTMLInputElement).checked).toBe(true)   // the same form as in Settings
     await user.type(screen.getByLabelText('API key'), 'test-only-key')
     await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
-    expect(await screen.findByText('Adding E2B Cloud…')).toBeTruthy()
+    expect(await screen.findByText('Applying…')).toBeTruthy()
     // Applied: on to the admin step, the new runtime listed with the server's checks.
     expect(await screen.findByRole('heading', { name: 'Who runs this server?' }, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect(screen.getByRole('list', { name: 'Sandbox runtimes' }).textContent).toContain('E2B Cloud'))
@@ -283,9 +283,19 @@ describe('first-run setup without a runtime', () => {
     })
     renderApp(<SetupPage />, '/app/setup')
     const user = userEvent.setup()
-    expect((await screen.findByRole('alert')).textContent).toContain('connect a domain first')
+    expect((await screen.findByRole('alert')).textContent).toContain('Needs a domain first.')
     expect(screen.queryByRole('form', { name: 'E2B Cloud settings' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Choose a domain' }))
     expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
+  })
+})
+
+describe('a runtime in one line', () => {
+  it('says its plan and how many run of how many, or why it needs attention', () => {
+    const hobby = runtime('e2b-cloud', 'E2B Cloud', { plan: { name: 'hobby', title: 'Hobby' }, limits: { sandboxes: 10 },
+      status: { state: 'connected', summary: 'E2B Cloud · 0 running here (the plan runs 10 at once per E2B team)', running: 0 } })
+    expect(runtimeLine(hobby)).toBe('Hobby · 0 of 10 running')
+    expect(runtimeLine({ ...hobby, status: { state: 'attention', summary: 'E2B Cloud did not answer' } })).toBe('E2B Cloud did not answer')
+    expect(runtimeLine({ ...EMBED, status: { state: 'connected', summary: 'E2B Embed · 3 running', running: 3 } })).toBe('On this server · 3 running')
   })
 })

@@ -36,12 +36,12 @@ describe('sandbox runtimes in settings', () => {
     const embed = (await screen.findByText('E2B Embed')).closest('li')!
     expect(within(embed).getByText('Default')).toBeTruthy()
     expect(within(embed).getByText('Connected')).toBeTruthy()
-    expect(embed.textContent).toContain('Runs on this server. 3 sandboxes running')
+    expect(embed.textContent).toContain('On this server · 3 sandboxes running')
     expect(embed.textContent).toContain('Each at most 16 vCPUs, 30720 MB memory')
     const hosted = screen.getByText('Hosted runtime').closest('li')!
     expect(within(hosted).queryByText('Default')).toBeNull()
     expect(within(hosted).getByText('Needs attention')).toBeTruthy()
-    expect(hosted.textContent).toContain('Runs at the provider. The API key was refused')
+    expect(hosted.textContent).toContain('The API key was refused')
     expect(hosted.textContent).toContain('Up to 20 running at once')
   })
 })
@@ -135,9 +135,9 @@ describe('first-run setup', () => {
     renderApp(<SetupPage />, '/app/setup')
     const list = await screen.findByRole('list', { name: 'Sandbox runtimes' })
     const embed = within(list).getByText('E2B Embed').closest('li')!
-    expect(embed.textContent).toContain('Runs on this server')
+    expect(embed.textContent).toContain('On this server')
     expect(await within(embed).findByText('KVM is available')).toBeTruthy()
-    expect(within(list).getByText('Hosted runtime').closest('li')!.textContent).toContain('Runs at the provider')
+    expect(within(list).getByText('Hosted runtime').closest('li')!.textContent).toContain('The API key was refused')
     expect(within(list).queryByText('Infisical answers')).toBeNull()
     expect(screen.getByText('Infisical answers')).toBeTruthy()
     const fetchInit = (vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/runtimes')![1] ?? {}) as RequestInit
