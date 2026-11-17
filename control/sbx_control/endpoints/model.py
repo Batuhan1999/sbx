@@ -91,7 +91,9 @@ def address(name: str) -> str:
 
 
 @contextlib.contextmanager
-def _lock():
+def lock():
+    """Endpoint changes, and a sandbox's registration (sandboxes.register):
+    a name checked against the other kind's and recorded as one step."""
     paths.state_dir().mkdir(parents=True, exist_ok=True)
     with (paths.state_dir() / "endpoints.lock").open("a") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
@@ -207,9 +209,9 @@ def add(*, server: str | None = None, name: str | None = None, target: str | Non
             cidrs = ", ".join(settings.current().network.internal_cidrs) or "none set"
             raise Refused(f"{target} is outside network.internal_cidrs ({cidrs}); an endpoint reaches only "
                           "those ranges, or a managed server (--server)")
-    _check_name(name)
     grants = _repos(repos)
-    with _lock():
+    with lock():
+        _check_name(name)
         existing = rows()
         if any(r.name == name for r in existing):
             raise Conflict(f"there is an endpoint {name} already")
@@ -262,7 +264,7 @@ def _change_grants(name: str, change) -> dict:
     revoke makes the endpoint's CA anew, so what the revoked repo's
     sandboxes hold (and any copy of it) no longer passes once nginx has the
     new one; the sandboxes still granted get certificates from it at once."""
-    with _lock():
+    with lock():
         row = find(name)
         if not row.internal:
             raise Refused(f"{name} is a managed server's endpoint, for the repos attached to it: attach the "
@@ -298,7 +300,7 @@ def _answer(name: str) -> dict:
 
 def remove(name: str) -> dict:
     """Refused (Conflict) while sandboxes on a provider runtime use it."""
-    with _lock():
+    with lock():
         row = find(name)
         using = certs.used_by().get(name)
         if using:
@@ -310,7 +312,7 @@ def remove(name: str) -> dict:
 
 def forget_server(server: str):
     """A managed server deleted with its data: its endpoint goes too."""
-    with _lock():
+    with lock():
         for row in rows():
             if row.server == server:
                 _delete(row)
