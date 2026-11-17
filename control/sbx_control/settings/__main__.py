@@ -14,9 +14,7 @@ def main(argv: list) -> int:
     command = argv[:1]
     if command == ["shell"]:
         s = current()
-        from .. import endpoints
-        print("\n".join(shell_lines(s, {c.kind: c.settings() for c in extensions.connectors() if c.section},
-                                     endpoints.public_ports())))
+        print("\n".join(shell_lines(s, {c.kind: c.settings() for c in extensions.connectors() if c.section})))
     elif command == ["secret"] and len(argv) == 2:
         value = vault.get(vault.key(argv[1])) or ""
         if not value:

@@ -100,9 +100,8 @@ RENAMED_EFFECTS = {"embed-env": "runtime-env", "embed-network": "runtime-network
 
 def shell() -> dict:
     """The settings as the host scripts read them (settings.shell_lines)."""
-    from . import endpoints, extensions, settings
-    lines = settings.shell_lines(settings.current(), {c.kind: c.settings() for c in extensions.connectors() if c.section},
-                                 endpoints.public_ports())
+    from . import extensions, settings
+    lines = settings.shell_lines(settings.current(), {c.kind: c.settings() for c in extensions.connectors() if c.section})
     return dict(shlex.split(line)[0].split("=", 1) for line in lines)
 
 
@@ -432,6 +431,15 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
     saved_env = out / "runtime.env"
     runtime_env = (f"install -m 600 {q(str(saved_env))} {q(str(paths.runtime_env()))}\n"
                    if saved_env.exists() else "")
+    # nginx as that release writes it: its HTTPS server may own 443 itself, so
+    # this release's stream front goes, and that release's tls.sh makes the
+    # container afresh, in its own layout (an upgrade again makes it anew too).
+    nginx = paths.tls() / "nginx"
+    https = (f"rm -f {q(str(nginx))}/*.stream {q(str(nginx))}/endpoint-*-ca.pem\n"
+             f"docker rm -f sbx-tls-nginx >/dev/null 2>&1 || true\n"
+             f"(cd {q(str(previous))} && sh tls.sh) > /tmp/sbx-rollback-tls.log 2>&1 || "
+             f"echo \"nginx: tls.sh failed (/tmp/sbx-rollback-tls.log); run it again: cd {previous} && sh tls.sh\" >&2\n"
+             if previous else "")
     return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
             f"# active, its unit files, sbx.db and runtime.env. Sandboxes and the runtime are left as they are.\n"
             f"set -eu\n"
@@ -443,7 +451,7 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
             # The upgrade may have disabled the release's effect paths (remove_stale_effects).
             f"for unit in {q(str(out / 'systemd'))}/sbx-apply-*.path; do\n"
             f"  [ ! -e \"$unit\" ] || systemctl enable -q --now \"$(basename \"$unit\")\" || true\ndone\n"
-            f"systemctl start {units}\n"
+            f"systemctl start {units}\n{https}"
             f"echo 'rolled back to {previous or 'the release before'}'\n")
 
 

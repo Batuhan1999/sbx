@@ -108,10 +108,12 @@ Sandboxes on a runtime without `private_networks` reach this host's managed
 servers and internal hosts through endpoints (`endpoints.py`;
 [reference](reference.md#endpoints)).
 
-1. **One generic path.** nginx's stream module on one port (7443)
-   terminates TLS with the wildcard certificate; a server per endpoint,
-   chosen by SNI `<name>.<domain>`, proxies to its target; other names'
-   handshakes are rejected. No per-protocol code: in the sandbox, the guest
+1. **One generic path, on 443.** nginx's stream module owns 443 and
+   routes by SNI without decrypting (`ssl_preread`): endpoint names to a
+   loopback listener where a server per endpoint terminates TLS with the
+   wildcard certificate and proxies to its target, every other name to the
+   HTTPS server on loopback (client address in the PROXY protocol). No
+   extra port: cloud firewalls often open only the standard ones. No per-protocol code: in the sandbox, the guest
    helper's forwarder turns `127.0.0.1:<local port>` into TLS to that name.
 2. **Opt-in per endpoint.** An endpoint is `{name, target}`: a managed
    server's (`--server`) or an internal host's within

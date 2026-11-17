@@ -5,7 +5,7 @@ Cloud), over one TLS path shared by every service and protocol.
 
 An endpoint is {name, target host:port}: a managed server's (`--server`) or
 an internal host's within network.internal_cidrs. Off until an admin adds
-one; with none, nothing listens and no port opens.
+one; with none, every name goes to the HTTPS server as before.
 
 Access is per repo and explicit, whatever the repo's trust: a managed
 server's endpoint is for the repos whose attachments bind to that server,
@@ -14,12 +14,15 @@ enforced by certificates: every endpoint has a CA of its own, nginx verifies
 a client against that endpoint's CA only, and a sandbox gets certificates
 only for the endpoints its repo may use.
 
-- The host: nginx's stream module on PORT, one server per endpoint selected
-  by SNI <name>.<domain> (server_name), each with the installation's
-  wildcard certificate, its own ssl_client_certificate and
-  ssl_verify_client on, proxied to the endpoint's target; any other name's
-  handshake is rejected. Written by the root side (the endpoints effect,
-  apply_host; tls.sh too), never by sbx-control.
+- The host: no port of its own. nginx's stream module owns 443 and reads
+  the TLS server name without decrypting (ssl_preread): an endpoint's
+  <name>.<domain> goes to an internal listener where a server per endpoint
+  (server_name) terminates TLS with the installation's wildcard
+  certificate, requires a client certificate from that endpoint's own CA
+  (ssl_verify_client on) and proxies to its target; every other name goes
+  to the HTTPS server, which moved to an internal listener and takes the
+  client's address from the PROXY protocol. Written by the root side (the
+  endpoints effect, apply_host; tls.sh too), never by sbx-control.
 - Certificates: an endpoint's CA is made with it, its key sealed in the
   secret store (sbx-control issues the sandboxes' certificates, on demand).
   A sandbox's certificate for an endpoint lasts CERT_HOURS. It is issued when
@@ -58,7 +61,9 @@ import time
 
 from . import contributions, paths, runtime, secret_store, settings, state
 
-PORT = 7443                             # nginx's stream listener; an implementation detail, never in user messages
+PORT = 443                              # where sandboxes reach endpoints: the HTTPS port, shared by SNI
+ENDPOINTS_BACKEND = "127.0.0.1:8441"    # nginx's TLS servers for the endpoints, behind the stream front on PORT
+HTTPS_BACKEND = "127.0.0.1:8442"        # nginx's HTTPS server (tls.sh: HTTPS_LISTEN), behind the same front
 LOCAL_PORTS = range(17400, 17800)      # the forwarder's listeners in a sandbox, one per endpoint
 CERT_HOURS = 24
 RENEW_HOURS = 12                        # the keeper renews a running sandbox's certificates with less than this left
@@ -758,23 +763,40 @@ def issue(sandbox: str, row: dict, hours: float = CERT_HOURS) -> tuple[str, str,
 
 
 def stream_config(rows: list | None = None, name: str | None = None) -> str:
-    """nginx's stream servers for the endpoints, one per endpoint selected by
-    SNI, each verifying clients against its own CA; "" without a domain or
-    an endpoint (nothing listens)."""
+    """nginx's stream configuration: the front on 443, which reads the TLS
+    server name without terminating (ssl_preread) and sends an endpoint's
+    <name>.<domain> to ENDPOINTS_BACKEND and everything else to the HTTPS
+    server on HTTPS_BACKEND, both with the client's address in the PROXY
+    protocol; and, with a domain, a server per endpoint on ENDPOINTS_BACKEND,
+    chosen by server_name, verifying clients against that endpoint's own CA."""
     rows = _rows() if rows is None else rows
     name = domain() if name is None else name
-    if not rows or not name:
-        return ""
-    out = [f"""# sbx endpoints (endpoints.py): TLS with the installation's certificate; a server per
-# endpoint, chosen by SNI, verifies the client against that endpoint's own CA. Any other
-# name's handshake is rejected.
+    rows = rows if name else []
+    routes_ = "".join(f"  {r['name']}.{name} {ENDPOINTS_BACKEND};\n" for r in rows)
+    out = [f"""# sbx's front on 443 (endpoints.py): the TLS server name picks the backend, nothing is
+# decrypted here. Endpoints go to their TLS servers below; everything else to the HTTPS
+# server (tls.sh), which takes the client's address from the PROXY protocol.
+map $ssl_preread_server_name $sbx_backend {{
+  default {HTTPS_BACKEND};
+{routes_}}}
 server {{
-  listen {PORT} ssl;
-  ssl_reject_handshake on;
+  listen {PORT};
+  ssl_preread on;
+  proxy_pass $sbx_backend;
+  proxy_protocol on;
+  proxy_connect_timeout 10s;
+  proxy_timeout 1d;
 }}"""]
+    if rows:
+        out.append(f"""# Endpoints: TLS with the installation's certificate; a server per endpoint, chosen by
+# SNI, verifies the client against that endpoint's own CA. Any other name is rejected.
+server {{
+  listen {ENDPOINTS_BACKEND} ssl proxy_protocol;
+  ssl_reject_handshake on;
+}}""")
     for row in rows:
         out.append(f"""server {{
-  listen {PORT} ssl;
+  listen {ENDPOINTS_BACKEND} ssl proxy_protocol;
   server_name {row['name']}.{name};
   ssl_certificate /etc/letsencrypt/live/{name}/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/{name}/privkey.pem;
@@ -790,64 +812,60 @@ server {{
     return "\n".join(out) + "\n"
 
 
-MAIN_CONF = """# nginx's main configuration (tls.sh, endpoints.py): the image's own, and a
-# stream block for the endpoints (conf.d/*.stream; none without one).
+MAIN_CONF = f"""# nginx's main configuration (tls.sh, endpoints.py): the image's own, the client's
+# address from the PROXY protocol (the stream front on 443 passes it to the HTTPS
+# server on {HTTPS_BACKEND}), and the stream block (conf.d/*.stream).
 user nginx;
 worker_processes auto;
 error_log /var/log/nginx/error.log notice;
 pid /run/nginx.pid;
-events {
+events {{
   worker_connections 1024;
-}
-http {
+}}
+http {{
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
+  set_real_ip_from 127.0.0.1;
+  real_ip_header proxy_protocol;
   log_format main '$remote_addr - $remote_user [$time_local] "$request" '
                   '$status $body_bytes_sent "$http_referer" "$http_user_agent" "$http_x_forwarded_for"';
   access_log /var/log/nginx/access.log main;
   sendfile on;
   keepalive_timeout 65;
   include /etc/nginx/conf.d/*.conf;
-}
-stream {
+}}
+stream {{
   include /etc/nginx/conf.d/*.stream;
-}
+}}
 """
 
 
-def write_nginx(folder) -> bool:
-    """The stream servers and each endpoint's CA certificate in nginx's
-    folder, or none; whether nginx listens for endpoints."""
-    rows, text = _rows(), stream_config()
-    keep = {CA_FILES.format(r["name"]) for r in rows} if text else set()
+def write_nginx(folder):
+    """The stream configuration and each endpoint's CA certificate in nginx's folder."""
+    rows = _rows() if domain() else []
+    keep = {CA_FILES.format(r["name"]) for r in rows}
     for old in folder.glob(CA_FILES.format("*")):
         if old.name not in keep:
             old.unlink()
-    if not text:
-        (folder / STREAM_FILE).unlink(missing_ok=True)
-        return False
     for row in rows:
         (folder / CA_FILES.format(row["name"])).write_text(row["ca_cert"])
-    (folder / STREAM_FILE).write_text(text)
-    return True
+    (folder / STREAM_FILE).write_text(stream_config())
 
 
 def apply_host() -> int:
     """sbx-apply endpoints, as root: nginx's stream configuration from the
     records now, nginx tested and reloaded (the configuration before kept
-    when it fails), the firewall when the listener comes or goes. Its
-    outcome in endpoints-applied.json, which describe() reads; nginx's own
-    words go to the journal only."""
+    when it fails). Its outcome in endpoints-applied.json, which describe()
+    reads; nginx's own words go to the journal only."""
     folder = paths.tls() / "nginx"
     revision = int(REVISION.get("0"))
     record = applied()
     names = [STREAM_FILE, *(p.name for p in folder.glob(CA_FILES.format("*")))] if folder.is_dir() else []
     before = {f: (folder / f).read_text() if (folder / f).exists() else None for f in names}
-    listening_before = before.get(STREAM_FILE) is not None
     try:
         if not (folder.is_dir() and (paths.tls() / "nginx.conf").exists()):
             raise RuntimeError("nginx is not set up on this server yet (connect a domain first)")
-        listening = write_nginx(folder)
+        write_nginx(folder)
         result = subprocess.run([NGINX], capture_output=True, text=True, timeout=300)
         if result.returncode:
             print(result.stdout + result.stderr, file=sys.stderr, flush=True)
@@ -862,10 +880,7 @@ def apply_host() -> int:
             subprocess.run([NGINX], capture_output=True, timeout=300)
             raise RuntimeError("nginx did not take the endpoints' configuration; the one before stays "
                                "(journalctl -u sbx-apply-endpoints says why)")
-        if listening != listening_before:
-            subprocess.run(["systemctl", "restart", "sbx-host-guard"], check=True, timeout=300)
-        record = {**record, "revision": revision, "ok": True, "message": "", "ok_revision": revision,
-                  "listening": listening}
+        record = {**record, "revision": revision, "ok": True, "message": "", "ok_revision": revision}
         code = 0
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         record = {**record, "revision": revision, "ok": False, "message": str(error)}
@@ -875,11 +890,6 @@ def apply_host() -> int:
     _applied_file().write_text(json.dumps(record))
     _applied_file().chmod(0o644)
     return code
-
-
-def public_ports() -> tuple[int, ...]:
-    """What the endpoints open on the public interface: PORT while one exists with a domain."""
-    return (PORT,) if domain() and exist() else ()
 
 
 def doctor_lines() -> list[str]:
@@ -906,5 +916,7 @@ if __name__ == "__main__":
         write_nginx(Path(sys.argv[2]))
     elif sys.argv[1:] == ["main-conf"]:
         print(MAIN_CONF, end="")
+    elif sys.argv[1:] == ["https-listen"]:
+        print(f"{HTTPS_BACKEND} ssl proxy_protocol")
     else:
-        raise SystemExit("usage: python -m sbx_control.endpoints nginx FOLDER | main-conf")
+        raise SystemExit("usage: python -m sbx_control.endpoints nginx FOLDER | main-conf | https-listen")

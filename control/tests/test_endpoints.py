@@ -89,7 +89,7 @@ class ApiTests(Setup, Server):
         found = self.client.get("/api/endpoints").json()
         self.assertEqual(found["endpoints"][0]["state"], "on")
         self.assertFalse(found["applying"])
-        self.assertNotIn(str(self.endpoints.PORT), json.dumps(found))   # the port is not the user's concern
+        self.assertFalse(any(port in json.dumps(found) for port in ("8441", "8442", ":443")))   # ports are not the user's concern
         self.assertNotIn("PRIVATE KEY", json.dumps(found))
 
     def test_grants_are_replaced_with_put_and_a_managed_server_s_follow_its_attachments(self):
@@ -220,37 +220,45 @@ class HostTests(Setup, Installation):
         (self.tls / "nginx").mkdir()
         self.enterContext(patch.object(self.endpoints.paths, "tls", return_value=self.tls))
 
-    def test_a_server_per_endpoint_verifies_its_own_ca_and_nothing_listens_without_one(self):
-        self.assertEqual(self.endpoints.stream_config(), "")
-        self.assertEqual(self.endpoints.public_ports(), ())
-        self.assertFalse(self.endpoints.write_nginx(self.tls / "nginx"))
-        self.assertEqual(sorted(p.name for p in (self.tls / "nginx").iterdir()), [])
+    def test_443_s_front_sends_endpoint_names_to_their_servers_and_the_rest_to_https(self):
+        front = self.endpoints.stream_config()
+        self.assertIn("map $ssl_preread_server_name $sbx_backend {\n  default 127.0.0.1:8442;\n}", front)
+        self.assertIn("  listen 443;\n  ssl_preread on;\n  proxy_pass $sbx_backend;\n  proxy_protocol on;", front)
+        self.assertNotIn("8441", front)   # no endpoint: every name goes to the HTTPS server, as before
+        self.endpoints.write_nginx(self.tls / "nginx")
+        self.assertEqual(sorted(p.name for p in (self.tls / "nginx").iterdir()), ["endpoints.stream"])
         self.endpoints.add(server="dev_pg", by="test")
         self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app"], by="test")
         text = self.endpoints.stream_config()
-        self.assertIn("ssl_reject_handshake on;", text.split("server {")[1])   # the first server: any other name
+        self.assertIn(f"  default 127.0.0.1:8442;\n  dev-pg.{DOMAIN} 127.0.0.1:8441;\n  temporal.{DOMAIN} 127.0.0.1:8441;\n",
+                      text)
         servers = text.split("server {")[2:]
-        self.assertEqual(len(servers), 2)
-        for server, name, target in zip(servers, ("dev-pg", "temporal"), (PG, "10.0.0.5:7233")):
+        self.assertIn("listen 127.0.0.1:8441 ssl proxy_protocol;\n  ssl_reject_handshake on;", servers[0])
+        self.assertEqual(len(servers), 3)
+        for server, name, target in zip(servers[1:], ("dev-pg", "temporal"), (PG, "10.0.0.5:7233")):
+            self.assertIn("listen 127.0.0.1:8441 ssl proxy_protocol;", server)
             self.assertIn(f"server_name {name}.{DOMAIN};", server)
             self.assertIn(f"ssl_client_certificate /etc/nginx/conf.d/endpoint-{name}-ca.pem;", server)
             self.assertIn("ssl_verify_client on;", server)
             self.assertIn(f"proxy_pass {target};", server)
-            self.assertIn(f"listen {self.endpoints.PORT} ssl;", server)
-        self.assertTrue(self.endpoints.write_nginx(self.tls / "nginx"))
+        self.assertEqual(text.count("listen 443;"), 1)   # 443 has one owner: the front
+        self.endpoints.write_nginx(self.tls / "nginx")
         cas = {p.name: p.read_text() for p in (self.tls / "nginx").glob("endpoint-*-ca.pem")}
         self.assertEqual(sorted(cas), ["endpoint-dev-pg-ca.pem", "endpoint-temporal-ca.pem"])
         self.assertNotEqual(cas["endpoint-dev-pg-ca.pem"], cas["endpoint-temporal-ca.pem"])   # a CA each
         self.assertNotIn("PRIVATE KEY", "".join(cas.values()))
-        self.assertEqual(self.endpoints.public_ports(), (self.endpoints.PORT,))
-        lines = self.settings.shell_lines(self.settings.current(), {}, self.endpoints.public_ports())
-        self.assertIn(f"public_ports='22 443 53 {self.endpoints.PORT}'", lines)
+        # The HTTPS server learns the client's address from the PROXY protocol, from the front only.
+        self.assertIn("set_real_ip_from 127.0.0.1;\n  real_ip_header proxy_protocol;", self.endpoints.MAIN_CONF)
         self.assertIn("stream {\n  include /etc/nginx/conf.d/*.stream;", self.endpoints.MAIN_CONF)
+        # No port opens for endpoints: the firewall's ports are the settings' alone.
+        self.assertIn("public_ports='22 443 53'", self.settings.shell_lines(self.settings.current(), {}))
         self.endpoints._delete("temporal")
         self.endpoints.write_nginx(self.tls / "nginx")
         self.assertEqual([p.name for p in (self.tls / "nginx").glob("endpoint-*-ca.pem")], ["endpoint-dev-pg-ca.pem"])
         self.settings.update("domain", {"name": ""}, by="test")
-        self.assertEqual((self.endpoints.stream_config(), self.endpoints.public_ports()), ("", ()))
+        self.assertEqual(self.endpoints.stream_config(), front)   # without a domain: the front alone
+        self.endpoints.write_nginx(self.tls / "nginx")
+        self.assertEqual(list((self.tls / "nginx").glob("endpoint-*-ca.pem")), [])
 
     def nginx(self, code):
         script = self.tls / "fake-nginx"
@@ -259,19 +267,19 @@ class HostTests(Setup, Installation):
         (self.tls / "nginx.conf").write_text(self.endpoints.MAIN_CONF)
         return patch.object(self.endpoints, "NGINX", str(script))
 
-    def test_apply_records_its_outcome_and_restarts_the_guard_when_the_listener_comes(self):
+    def test_apply_records_its_outcome_and_leaves_the_firewall_alone(self):
         self.endpoints.add(server="dev_pg", by="test")
         real = self.endpoints.subprocess.run
         calls = []
 
         def run(argv, **kwargs):
             calls.append(argv)
-            return real(argv, **kwargs) if argv[0] != "systemctl" else SimpleNamespace(returncode=0)
+            return real(argv, **kwargs)
         with self.nginx(0), patch.object(self.endpoints.subprocess, "run", side_effect=run):
             self.assertEqual(self.endpoints.apply_host(), 0)
-        self.assertIn(["systemctl", "restart", "sbx-host-guard"], calls)
+        self.assertEqual(calls, [[str(self.tls / "fake-nginx")]])
         self.assertEqual(self.endpoints.one("dev-pg")["state"], "on")
-        self.assertTrue((self.tls / "nginx/endpoints.stream").exists())
+        self.assertIn(f"dev-pg.{DOMAIN} 127.0.0.1:8441;", (self.tls / "nginx/endpoints.stream").read_text())
 
     def test_a_refused_configuration_keeps_the_one_before_and_keeps_nginx_s_words_out_of_the_answer(self):
         (self.tls / "nginx/endpoints.stream").write_text("# before\n")
@@ -426,8 +434,8 @@ class RouteTests(Setup, Installation):
         files = contribution.runtime.files
         config = json.loads(files["config.json"].content)
         self.assertEqual([(e["name"], e["address"], e["port"], e["local_port"]) for e in config["endpoints"]], [
-            ("dev-pg", f"dev-pg.{DOMAIN}", self.endpoints.PORT, 17400),
-            ("temporal", f"temporal.{DOMAIN}", self.endpoints.PORT, 17401)])
+            ("dev-pg", f"dev-pg.{DOMAIN}", 443, 17400),
+            ("temporal", f"temporal.{DOMAIN}", 443, 17401)])
         self.assertNotIn("secret-svc.pem", files)   # no certificate for an endpoint the repo may not use
         self.assertEqual(config["renew"]["url"], f"https://login.{DOMAIN}/api/sandbox/endpoint-certs")
         self.assertIn("BEGIN CERTIFICATE", files["dev-pg.pem"].content)

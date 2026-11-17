@@ -5,8 +5,11 @@
 #   <login_host>.<domain>  sbx-control: the login, the API, /install
 #   <service>.<domain>     the operator's services, behind the login
 #   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
-#   <endpoint>.<domain>    on 7443 (nginx's stream module), only while endpoints exist: this host's
-#                          private services for sandboxes on provider runtimes, mutual TLS (endpoints.py)
+#   <endpoint>.<domain>    this host's private services for sandboxes on provider runtimes,
+#                          mutual TLS (endpoints.py)
+# All on 443: nginx's stream module owns it and picks by the TLS server name,
+# without decrypting, an endpoint's TLS server or the HTTPS server below, which
+# listens on loopback and takes the client's address from the PROXY protocol.
 # Every request to a service or a sandbox passes sbx-control's /gate first:
 # previews for anyone signed in, owner-only ports for their owner. nginx
 # removes the login cookie, and an sbx token, before a request reaches a
@@ -26,12 +29,14 @@ upstream_token=$(venv/bin/python -m sbx_control.ip_previews upstream-token)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
-# nginx's main configuration: the image's own, and a stream block that
-# includes the endpoints' server (sbx_control/endpoints.py; written in place,
-# the container mounts this file). The endpoints' files follow the records:
-# none without a domain or an endpoint, so nothing listens then.
+# nginx's main configuration: the image's own, the client's address from the
+# PROXY protocol, and the stream block (sbx_control/endpoints.py; written in
+# place, the container mounts this file). The stream front on 443 always; the
+# endpoints' servers and CAs follow the records.
 venv/bin/python -m sbx_control.endpoints main-conf > "$dir/nginx.conf"
 venv/bin/python -m sbx_control.endpoints nginx "$dir/nginx"
+# Where every HTTPS server below listens: behind the stream front.
+https_listen=$(venv/bin/python -m sbx_control.endpoints https-listen)
 
 # nginx in its container, started once, then told to read its configuration
 # again: here and after every certificate a renewal script gets.
@@ -42,13 +47,15 @@ set -eu
 # first install, and both would find no container and create one.
 exec 9>$dir/nginx-start.lock
 flock 9
-# A container from before the main configuration was sbx's (no stream block): made again, once.
+# A container of an earlier layout (443 on the HTTPS server itself, no main
+# configuration of sbx's) is made again, once: a fresh start binds 443 to the
+# stream front, where a reload might not move it.
 if docker inspect sbx-tls-nginx >/dev/null 2>&1 &&
-    ! docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' sbx-tls-nginx | grep -q '/etc/nginx/nginx.conf'; then
+    [ "\$(docker inspect -f '{{index .Config.Labels "sbx.nginx-layout"}}' sbx-tls-nginx)" != 2 ]; then
   docker rm -f sbx-tls-nginx >/dev/null
 fi
 docker inspect sbx-tls-nginx >/dev/null 2>&1 || docker run -d --name sbx-tls-nginx --restart unless-stopped \\
-  --network host -v $dir/nginx.conf:/etc/nginx/nginx.conf:ro \\
+  --label sbx.nginx-layout=2 --network host -v $dir/nginx.conf:/etc/nginx/nginx.conf:ro \\
   -v $dir/nginx:/etc/nginx/conf.d:ro -v $dir/letsencrypt:/etc/letsencrypt:ro \\
   -v /var/cache/sbx-gate:/var/cache/nginx nginx:1.29-alpine >/dev/null || docker inspect sbx-tls-nginx >/dev/null
 docker exec sbx-tls-nginx nginx -t
@@ -122,7 +129,7 @@ if [ -z "$domain" ]; then
   cat > "$dir/nginx/default.conf" <<NGINX
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
 server {
-  listen 443 ssl default_server;
+  listen $https_listen default_server;
   http2 on;
   server_name _;
   ssl_certificate /etc/letsencrypt/live/$ip_cert/fullchain.pem;
@@ -187,7 +194,7 @@ if [ -n "$bootstrap_address" ] && [ -f "$dir/letsencrypt/live/bootstrap/fullchai
   preview_default=""
   cat > "$bootstrap" <<NGINX
 server {
-  listen 443 ssl default_server;
+  listen $https_listen default_server;
   http2 on;
   server_name $bootstrap_address;
   ssl_certificate /etc/letsencrypt/live/$ip_cert/fullchain.pem;
@@ -252,7 +259,7 @@ ssl_certificate $cert/fullchain.pem;
 ssl_certificate_key $cert/privkey.pem;
 
 server {
-  listen 443 ssl;
+  listen $https_listen;
   http2 on;
   server_name $login;
   include /etc/nginx/conf.d/control.inc;
@@ -260,7 +267,7 @@ server {
 
 # Sandboxes: every other name under the domain.
 server {
-  listen 443 ssl $preview_default;
+  listen $https_listen $preview_default;
   http2 on;
   server_name $domain *.$domain;
   client_max_body_size 0;
@@ -300,7 +307,7 @@ for service in $services; do
   cat >> "$dir/nginx/default.conf" <<NGINX
 
 server {
-  listen 443 ssl;
+  listen $https_listen;
   http2 on;
   server_name $name.$domain;
   client_max_body_size 50m;

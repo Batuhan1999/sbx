@@ -218,8 +218,9 @@ the server.
 Sandboxes on a runtime whose sandboxes don't reach this host's private
 network (`capabilities.private_networks` false: E2B Cloud) reach a managed
 server or an internal host through an endpoint: one TLS path that every
-service and protocol shares. Endpoints are off until an admin adds one; an
-installation without one listens for none and opens no port for them.
+service and protocol shares, on the HTTPS port (443): there is no port to
+open, in the host's firewall or a cloud provider's. Endpoints are off until
+an admin adds one.
 
 ```sh
 sbx endpoints                                   # each, its repos and state; the managed servers without one
@@ -248,12 +249,16 @@ sandbox gets certificates only for the endpoints its repository may use.
 
 How it works:
 
-- **The host.** nginx's stream module listens on port 7443 while an
-  endpoint exists (sbx's host firewall opens it then, and closes it with the
-  last one). One server per endpoint, chosen by the TLS server name
-  `<name>.<domain>`, terminates TLS with the installation's wildcard
-  certificate, requires a client certificate from that endpoint's CA
-  (`ssl_client_certificate`, `ssl_verify_client on`) and proxies to the
+- **The host.** nginx's stream module owns port 443 and reads the TLS
+  server name of each connection without decrypting it (`ssl_preread`): an
+  endpoint's `<name>.<domain>` goes to a loopback listener (127.0.0.1:8441)
+  and every other name to the HTTPS server, which listens on 127.0.0.1:8442
+  and takes the client's address from the PROXY protocol (`real_ip_header
+  proxy_protocol`), so the gate, logs and previews see it as before; with no
+  endpoint, every name goes there. On the endpoints' listener, one server per
+  endpoint, chosen by `server_name`, terminates TLS with the installation's
+  wildcard certificate, requires a client certificate from that endpoint's
+  CA (`ssl_client_certificate`, `ssl_verify_client on`) and proxies to the
   target; any other name's handshake is rejected. sbx-control records a
   change and touches `/run/sbx/apply/endpoints`; the root side (`sbx-apply
   endpoints`) writes `/opt/sbx-tls/nginx/endpoints.stream` and the CAs'
@@ -261,8 +266,10 @@ How it works:
   nginx refuses it, and records the outcome the API shows (`on`,
   `applying`, `failed`). nginx's main configuration
   (`/opt/sbx-tls/nginx.conf`, with a `stream` block) is mounted into its
-  container. The sandbox's own egress rules (`deny_out`) deny only the cloud
-  metadata service, so `<name>.<domain>:7443` is reachable.
+  container; the upgrade that brings this layout makes the container anew
+  once, and a rollback (`rollback.sh`) puts the release before's back. The
+  sandbox's own egress rules (`deny_out`) deny only the cloud metadata
+  service, so `<name>.<domain>:443` is reachable.
 - **Certificates.** An endpoint's CA is made with it; its key is sealed in
   the secret store (sbx-control issues the sandboxes' certificates on
   demand), its certificate is public. A sandbox's certificate for an
@@ -280,7 +287,7 @@ How it works:
 - **The sandbox.** The guest helper's forwarder (`sbx_guest.py forward`)
   listens on `127.0.0.1:<local port>` (17400 and up, one per endpoint) for
   each endpoint the sandbox may use and wraps each connection into TLS to
-  `<name>.<domain>:7443` with that endpoint's certificate, verifying the
+  `<name>.<domain>:443` with that endpoint's certificate, verifying the
   server as `<name>.<domain>` (against the public CAs, or the installation's
   own certificate with `--dns none`). Apps connect to 127.0.0.1 in plain
   text, so Postgres's `sslmode=disable` URLs keep working; the service's own
