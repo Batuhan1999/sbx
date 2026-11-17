@@ -129,17 +129,13 @@ function RepoPicker({ value, onChange, onBlur, error }: { value: string[]; onCha
   </fieldset>
 }
 
-/** An internal host's repositories, replaced as a whole. */
+/** An internal host's repositories, replaced as a whole; none takes the last one's access back. */
 function EditRepos({ e, onDone }: { e: Endpoint; onDone: () => void }) {
   const qc = useQueryClient()
   const [repos, setRepos] = useState(e.repos ?? [])
-  const [tried, setTried] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const invalid = reposError(repos)
   const save = async () => {
-    setTried(true)
-    if (invalid) return
     setBusy(true); setError(null)
     try {
       await api.endpoints.setRepos(e.name, repos)
@@ -148,7 +144,7 @@ function EditRepos({ e, onDone }: { e: Endpoint; onDone: () => void }) {
     } catch (x) { setError(x) } finally { setBusy(false) }
   }
   return <div className="mt-2 space-y-2 rounded-lg border border-line p-3">
-    <RepoPicker value={repos} onChange={setRepos} error={tried ? invalid : undefined} />
+    <RepoPicker value={repos} onChange={setRepos} />
     <ErrorState compact error={error} />
     <div className="flex justify-end gap-2">
       <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Cancel</Button>
