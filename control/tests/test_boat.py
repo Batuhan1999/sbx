@@ -263,10 +263,12 @@ class Settings(unittest.TestCase):
     def test_presets_are_the_trial_and_the_paid_plans_and_the_defaults_the_20_plan(self):
         from sbx_control.runtime import boat
         self.assertEqual([p.name for p in boat.PRESETS], ["trial", "20", "100", "500", "2000"])
-        twenty = boat.PRESETS[0].values
+        trial, twenty = boat.PRESETS[0].values, boat.PRESETS[1].values
+        self.assertEqual((trial["BOAT_MAX_CPU"], trial["BOAT_MAX_SANDBOXES"], trial["BOAT_MAX_TIMEOUT"]),
+                         ("4", "2", str(2 * 3600)))   # the trial: the default size, 2 at once, 2 hours
         self.assertEqual((twenty["BOAT_MAX_CPU"], twenty["BOAT_MAX_SANDBOXES"], twenty["BOAT_MAX_TIMEOUT"]),
                          ("8", "100", str(30 * 86400)))
-        self.assertEqual(boat.PRESETS[1].values["BOAT_MAX_CPU"], "16")   # xlarge from $100
+        self.assertEqual(boat.PRESETS[2].values["BOAT_MAX_CPU"], "16")   # xlarge from $100
         backend, _ = configured()
         self.assertEqual(backend.limits().known(), {"timeout_seconds": 30 * 86400, "cpu": 8, "memory_mb": 16384,
                                                     "disk_mb": 111 * 1024, "sandboxes": 100})

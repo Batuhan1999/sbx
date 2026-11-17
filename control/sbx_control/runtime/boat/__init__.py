@@ -813,7 +813,7 @@ class Boat(HostSide):
             raise LimitRefused(f"a {cpu} vCPU template needs Boat's {kind} machines, beyond {LIMITS['cpu'][0]}",
                                field="cpu", asked=cpu, allowed=self._limits.cpu)
         request = CreateSandboxRequest(var_from=saved_name(parent) if parent else None, type=kind,
-                                       ttl_seconds=4 * 3600, no_env=True, environment=None,
+                                       ttl_seconds=min(4 * 3600, self._limits.timeout_seconds or 4 * 3600), no_env=True, environment=None,
                                        name=f"build {alias}"[:120],
                                        labels={"sbx_build": alias}, **self._org_args())
         log(f"Boat: starting a {kind} builder" + (f" from {parent}" if parent else " from Boat's Ubuntu 24.04"))
