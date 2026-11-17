@@ -37,7 +37,7 @@ submodules are refused.
 | `secrets` | Names of values the app needs that only the owner can supply (API keys, account tokens); listed as missing until set. See [environment](#environment-and-secrets). |
 | `resources` | The size of every sandbox of the repository: `cpu`, `memory_mb`, `disk_mb` (defaults 2, 4096, 8192), with or without `template:` (see [sandbox size](#sandbox-size)), and `swap_mb` (256–65536). |
 | `build_resources` | Replaces `resources`' `cpu`, `memory_mb` and `disk_mb` when present; it is the same size, not a separate build budget. |
-| `lifecycle` | `{resume: preserve}` (default) keeps processes across pause; `{resume: restart}` restarts the app after resume, for apps whose connections go stale. |
+| `lifecycle` | `{resume: preserve}` (default) keeps processes across pause; `{resume: restart}` restarts the app after resume, for apps whose connections go stale. Boat restarts the app on every resume either way. |
 | `template` | Present and non-empty: build a prebuilt template for this repository (see [templates](#templates)). Absent: start from the default template and clone. |
 | `workdir` | Where the checkout is; default `/home/user/<repository-name>`. |
 
@@ -149,7 +149,7 @@ connection (a saved server or account) set up once. Choose packages with
 services:
   db:
     uses: postgres-clone          # the package
-    connections: {server: dev-pg} # its required connection, when there is more than one
+    connections: {server: dev-pg} # the saved connection it uses, by name
     with: {template: template0}   # its inputs
 env:
   DATABASE_URL: ${services.db.url}
@@ -157,6 +157,32 @@ env:
 
 A service takes only `uses`, `connections` and `with`; a recipe with any other
 key is refused when it is installed.
+
+`connections:` maps a package's slot (`server` above) to the name of a
+connection saved on this server. A managed server's connection has the
+server's name (`dev-pg` from `sbx-admin server up dev-pg`). `sbx catalog
+show PACKAGE` lists the saved connections a slot can take (to admins), as do
+`sbx-admin catalog connections` and the web app's **Extensions** page. With
+one saved connection of the slot's kind, `connections:` can be left out. A
+name the server doesn't have stops the launch, and the error names the ones it
+has.
+
+Each service's outputs are `${services.KEY.OUTPUT}`; a package also sets its
+usual variables itself. `sbx catalog show PACKAGE` lists both. The shipped
+provision packages:
+
+| Package | Outputs (secret ones marked *) | Sets |
+| --- | --- | --- |
+| `postgres-clone` | `url`*, `password`*, `user`, `database`, `host`, `port` | `DATABASE_URL` |
+| `clickhouse-database` | `url`*, `http_url`*, `host`, `port`, `user`, `password`*, `database` | `CLICKHOUSE_URL` |
+| `neon-branch` | `url`*, `host`, `port`, `user`, `password`*, `database` | `DATABASE_URL` |
+| `planetscale-branch` | `url`*, `password`*, `host`, `port`, `user`, `database`, `branch` | `DATABASE_URL` |
+| `supabase-branch` | `url`*, `host`, `port`, `user`, `password`*, `database`, `api_url`, `anon_key`*, `service_role_key`*, `ref` | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |
+| `upstash-redis`, `upstash-redis-branch` | `url`*, `rest_url`, `rest_token`*, `host`, `port`, `user`, `password`*, `database`, `database_id` | `REDIS_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` |
+| `tinybird-branch` | `url`, `workspace`, `branch`, `token`* | `TINYBIRD_URL`, `TINYBIRD_TOKEN`, `TINYBIRD_BRANCH_TOKEN` |
+| `temporal-namespace` | `address`, `namespace` | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` |
+| `openrouter-key` | `key`*, `hash`, `base_url`, `anthropic_base_url` | `OPENROUTER_API_KEY` |
+| `aws-profile` | `profile`, `region` | `AWS_PROFILE`, `AWS_REGION`, `AWS_DEFAULT_REGION` |
 
 `sbx attach PACKAGE` adds an attachment from the CLI; `sbx detach KEY` removes
 it. Resources are created before `.sbx/setup` runs. Each attachment gets a
@@ -392,7 +418,7 @@ preparation.
 | create | `POST /api/sandboxes` (`sbx up`) | Allocate the VM, provision services, prepare the checkout; returns when SSH works. Setup and start continue in the background unless `start_app=false`. |
 | prepare | `POST /api/sandboxes/NAME/prepare` | Refresh the recipe and env, rerun setup and start; source edits are kept. |
 | restart | `POST /api/sandboxes/NAME/restart` (`sbx sandbox restart`) | Restart the app; files and service state are kept. |
-| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
+| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
 | delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Remove the VM and its owned resources. |
 | env_update | (on a variable change) | Rewrite the env files; restart the app when a value changed, unless the change asked for no restart. |
 
@@ -706,7 +732,7 @@ How sbx runs on it:
   (fetch the file in a `RUN`); `ENV` and `ARG` values expand `$VAR` and
   `${VAR}` as Docker does, and comment lines inside a continued instruction
   are dropped. The start command becomes an enabled systemd unit, which
-  Boat starts again on every resume. A builder is labelled with the
+  Boat starts again when a resume boots a new machine. A builder is labelled with the
   installation and the template it builds (`sbx_build`), runs at most 4
   hours (or the plan's auto-stop), and one a crashed build left behind is
   deleted at the next build.
@@ -714,10 +740,15 @@ How sbx runs on it:
   is written to a 0700 folder in the sandbox through the files API, read
   once and removed, so no value is ever in the command text Boat keeps (its
   command history). A failed `cd` to the command's folder stops it.
-- **Pause is Boat's stop, and every resume a cold boot.** Boat keeps the
-  disk, not the memory: on resume sbx puts back what lives in `/run/sbx`
-  (env, keys, the guest helper, endpoint certificates) and restarts the
-  recipe's processes, whatever `lifecycle.resume` says. A sandbox stopped
+- **Pause is Boat's stop, and sbx treats every resume as a cold boot.**
+  A stop keeps the disk. Boat keeps the machine for 10 minutes after it: a
+  resume within them usually gets the same machine back, memory and
+  processes included; a later one boots a new machine from the disk. sbx
+  can't count on the first, so on every resume it puts back what lives in
+  `/run/sbx` (env, keys, the guest helper, endpoint certificates) and
+  restarts the recipe's processes, whatever `lifecycle.resume` says. If a
+  resumed sandbox's app doesn't come back, `sbx sandbox prepare NAME` runs
+  setup and start again, keeping its files. A sandbox stopped
   for more than 14 days may have lost its disk (Boat's retention); its
   template starts a new one.
 - **Previews** go to `https://<subdomain>-<port>.on.boat.dev`. Each port
@@ -996,6 +1027,15 @@ before proxying. It does not rewrite the app: use `${SBX_URL_*}` for origins and
 callbacks. Browser cookies are per host, not per port, so on an IP-only server
 give the app a cookie prefix with `${SBX_NAME}` to keep simultaneous sandboxes'
 logins apart; `sbx_session` is reserved.
+
+Scripts and agents open a preview with an [API token](#http-api) instead of
+a browser session; the app never sees the header:
+
+```sh
+curl -fsS -H "Authorization: Bearer $SBX_TOKEN" https://NAME.example.com/
+```
+
+Without a token or a session, a preview sends the client to the sign-in.
 
 ### When the app can't answer
 
