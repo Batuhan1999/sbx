@@ -197,13 +197,16 @@ kvm="" tun="" vmx=""
 first=""; configured || first=1
 # The runtimes this installation enables now (SBX_RUNTIMES in runtime.env,
 # missing: Embed alone; present and empty: none yet); none before a first
-# install writes the file.
+# install writes the file. An installation without the file runs Embed, as
+# sbx reads it: never an empty selection written over it.
 installed="" has_env=""
 if [ -f /etc/sbx/runtime.env ]; then
   has_env=1
   # As sbx reads it: its own reader, before a release is unpacked.
   installed=$(python3 -I "$src/control/sbx_control/runtime/env_file.py" runtimes /etc/sbx/runtime.env) ||
     die "could not read /etc/sbx/runtime.env (above)"
+elif configured; then
+  installed=embed
 fi
 enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
 # Why E2B Embed can't run on this host ("" when it can).

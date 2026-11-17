@@ -718,21 +718,24 @@ class InstallerWithoutARuntime(Installation):
         with tempfile.TemporaryDirectory(prefix="sbx-install-none-") as directory:
             env = Path(directory) / "runtime.env"
             cases = (
-                (None, False, "none=1 embed= cloud="),
-                ("SBX_RUNTIMES=''\n", False, "none=1 embed= cloud="),
-                ("E2B_API_KEY=x\n", False, "FAILED"),
-                (None, True, "none= embed=1 cloud="),                   # a first install where Embed fits
-                ("SBX_RUNTIMES=''\n", True, "none=1 embed= cloud="),    # none enabled stays so: no auto-enable
+                (None, False, "none=1 embed= cloud=", False),
+                ("SBX_RUNTIMES=''\n", False, "none=1 embed= cloud=", False),
+                ("E2B_API_KEY=x\n", False, "FAILED", False),
+                (None, True, "none= embed=1 cloud=", False),            # a first install where Embed fits
+                ("SBX_RUNTIMES=''\n", True, "none=1 embed= cloud=", False),   # none enabled stays so: no auto-enable
+                # An installation without runtime.env runs Embed (as sbx reads it): never none written over it.
+                (None, True, "none= embed=1 cloud=", True),
+                (None, False, "FAILED: no /dev/kvm", True),
             )
-            for before, kvm, expected in cases:
-                with self.subTest(before=before, kvm=kvm):
+            for before, kvm, expected, installed in cases:
+                with self.subTest(before=before, kvm=kvm, installed=installed):
                     env.unlink(missing_ok=True)
                     if before is not None:
                         env.write_text(before)
                     device = "1" if kvm else ""   # the preflight's facts: /dev/kvm and /dev/net/tun
                     script = (f"set -eu\nsrc={Path(__file__).parents[2]}\n"
                               "mem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
-                              f"sign_in= domain= check= kvm={device} tun={device}\nconfigured() {{ false; }}\n"
+                              f"sign_in= domain= check= kvm={device} tun={device}\nconfigured() {{ {str(installed).lower()}; }}\n"
                               "die() { echo \"FAILED: $*\"; exit 1; }\n"
                               + step.replace("/etc/sbx/runtime.env", str(env))
                               + 'echo "none=$none embed=$embed cloud=$cloud"\n')
