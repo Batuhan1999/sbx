@@ -142,9 +142,9 @@ class RuntimeAdmin(Installation):
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.listed = []
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: self.listed))
-        from sbx_control import template_builds
-        self.real_start_detached = template_builds.start_detached   # never run for real: it starts builds
-        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+        from sbx_control import template_scheduler
+        self.real_start_detached = template_scheduler.start_detached   # never run for real: it starts builds
+        self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("sbx-template-builds-e2b-cloud.service", True)))
         self.effects()
 
@@ -160,8 +160,8 @@ class RuntimeAdmin(Installation):
 
     def test_builds_run_in_a_process_of_their_own(self):
         import subprocess
-        from sbx_control import template_builds
-        self.assertIsNot(self.real_start_detached, template_builds.start_detached)   # setUp's stand-in
+        from sbx_control import template_scheduler
+        self.assertIsNot(self.real_start_detached, template_scheduler.start_detached)   # setUp's stand-in
         done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
         # Not running yet (is-active: 3): systemd-run starts the unit.
         with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run, \
@@ -530,9 +530,9 @@ class JobsRunDetached(TwoRuntimes, Installation):
         return code, out.getvalue()
 
     def test_the_build_runs_detached_and_says_where_to_follow_it(self):
-        from sbx_control import template_builds, templates
+        from sbx_control import template_builds, template_scheduler, templates
         unit = "sbx-template-builds-fake.service (journalctl -u sbx-template-builds-fake)"
-        with patch.object(template_builds, "start_detached", return_value=(unit, True)) as detached, \
+        with patch.object(template_scheduler, "start_detached", return_value=(unit, True)) as detached, \
                 patch.object(template_builds, "start") as in_process, \
                 patch.object(template_builds, "base_not_ready", return_value=""):
             code, said = self.jobs_run(f"template@fake:{templates.BASE}")
@@ -547,9 +547,9 @@ class JobsRunDetached(TwoRuntimes, Installation):
 
     def test_the_detached_command_builds_that_key_even_when_current(self):
         import subprocess
-        from sbx_control import template_builds
+        from sbx_control import template_scheduler
         done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
         with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run:
-            template_builds.start_detached("fake", [["key", "owner/app"]], if_stale=False)
+            template_scheduler.start_detached("fake", [["key", "owner/app"]], if_stale=False)
         self.assertIn("-m sbx_control.template_builds key owner/app --runtime fake", run.call_args.args[0][-1])
         self.assertNotIn("--if-stale", run.call_args.args[0][-1])

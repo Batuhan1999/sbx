@@ -216,7 +216,8 @@ def of(sandbox_id: str):
 
 def kind_of(info) -> str:
     """The kind of a listed sandbox's runtime: its tag, else of()."""
-    return info.runtime or of(info.sandbox_id).kind
+    found = getattr(info, "runtime", "")
+    return found if isinstance(found, str) and found else of(info.sandbox_id).kind
 
 
 def configure(secrets: dict) -> None:

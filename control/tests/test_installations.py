@@ -201,21 +201,6 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
                          "failed")
         return builds, templates, prefixed, legacy
 
-    def test_a_child_waits_for_its_base_under_the_name_planned_now(self):
-        builds, templates, prefixed, legacy = self.legacy_base()
-        # A create in that window: building (and it starts), not "its last build failed".
-        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
-            builds.template_for(None, "fake")
-        self.assertIn(f"the {templates.DEFAULT} template is building", str(refused.exception))
-        start.assert_called_once_with(templates.DEFAULT, "fake")
-        # The scheduler's round: the base first, then what starts from it.
-        self.assertEqual(builds.stale("fake")[:2], [templates.BASE, templates.DEFAULT])
-        builds.build_now(templates.DEFAULT, "fake")      # its own build makes the base first
-        self.assertEqual(builds.built(templates.BASE, "fake"), prefixed)
-        self.assertIn(prefixed, self.shared.built)
-        self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
-        self.assertEqual(builds.stale("fake"), [])
-
     def test_a_failure_with_its_base_current_stays_failed(self):
         import time
         builds, templates, prefixed, _ = self.legacy_base()

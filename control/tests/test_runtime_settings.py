@@ -55,7 +55,7 @@ class Web(TwoRuntimes, Server):
 
     def setUp(self):
         super().setUp()
-        from sbx_control import runtime, secret_store, settings, template_builds, vault
+        from sbx_control import runtime, secret_store, settings, template_scheduler, vault
         from sbx_control.connections.base import Check
         from sbx_control.runtime.e2b_cloud import Cloud
         self.file = self.root / "etc/runtime.env"
@@ -63,7 +63,7 @@ class Web(TwoRuntimes, Server):
         self.checks = [Check("E2B Cloud API", True, "answers")]
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: []))
-        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+        self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("unit", True)))
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
         # The managed store, as references: sealing makes one per value.
