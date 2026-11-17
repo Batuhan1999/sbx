@@ -323,6 +323,7 @@ def processes(args):
 HOST_KEYS = ("ed25519", "ecdsa", "rsa")
 SSH = Path("/etc/ssh")
 IDENTITY = Path("/etc/sbx-workspace-identity.json")
+IDENTITY_LOCK = Path("/run/sbx-ssh-identity.lock")
 KEPT_KEYS = Path("/etc/sbx-host-keys")   # root's copy: a runtime whose cold boot makes new host keys gets these back
 
 
@@ -383,15 +384,20 @@ def identity(workspace, ssh_port):
         raise GuestError("fresh workspace SSH identity requires an owned logical identity")
     os.umask(0o077)
     public = SSH / "ssh_host_ed25519_key.pub"
-    with open("/run/sbx-ssh-identity.lock", "a") as lock:
+    with open(IDENTITY_LOCK, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         previous = read_json(IDENTITY)
         if previous.get("workspace_id") == workspace and previous.get("phase") == "ready":
-            if public.read_text().split()[:2] != previous.get("ed25519_public"):
-                restore_host_keys(previous.get("ed25519_public"))
+            recorded = previous.get("ed25519_public")
+            if public.read_text().split()[:2] != recorded:
+                restore_host_keys(recorded)
             elif not (KEPT_KEYS / "ssh_host_ed25519_key.pub").exists():
                 keep_host_keys()   # a workspace from before the copy was kept
             key_permissions(SSH)
+            if not serves(recorded):   # stopped, or still the cold boot's key after a failed restore
+                restart_listener()
+                if not wait_until(lambda: serves(recorded), 15):
+                    raise GuestError("workspace SSH listener does not serve its identity")
             return
         sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
                                   capture_output=True, text=True, check=True, timeout=10)
@@ -463,8 +469,6 @@ def restore_host_keys(recorded):
             os.replace(SSH / f".{name}.sbx", SSH / name)
     key_permissions(SSH)
     restart_listener()
-    if not wait_until(lambda: serves(recorded), 15):
-        raise GuestError("workspace SSH listener did not take its identity back")
 
 
 # swap: resize the swap file without changing the VM's allocation.

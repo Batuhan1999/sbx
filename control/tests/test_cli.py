@@ -703,7 +703,11 @@ class CliApiTests(Server):
         self.assertIsNone(go["port"])
         recipe = repo_onboarding.scaffold("owner/app", go)["files"][".sbx/sbx.yaml"]
         self.assertNotIn("3000", recipe)
-        self.assertIsNone((yaml.safe_load(recipe) or {}).get("previews"))
+        self.assertEqual(yaml.safe_load(recipe)["previews"], {})
+        from sbx_control import recipes   # the draft applies as it is
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "sbx.yaml").write_text(recipe)
+            recipes.validate("owner/app", Path(directory))
         express = repo_onboarding.detect({"package.json"}, {"package.json": json.dumps(
             {"scripts": {"dev": "node server.js"}, "dependencies": {"express": "4"}})})
         recipe = yaml.safe_load(repo_onboarding.scaffold("owner/app", express)["files"][".sbx/sbx.yaml"])

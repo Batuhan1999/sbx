@@ -184,6 +184,25 @@ class IdentityTests(unittest.TestCase):
                 sbx_guest.restore_host_keys(["ssh-ed25519", "ours-ed25519"])
             self.assertEqual((ssh / "ssh_host_rsa_key").read_text(), "private rsa boot\n")
 
+    def test_a_ready_workspace_s_listener_is_brought_back_to_its_identity(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-guest-ready-")))
+        ssh, kept = root / "ssh", root / "kept"
+        self.host_keys(ssh, "ours")
+        ours = ["ssh-ed25519", "ours-ed25519"]
+        (root / "identity.json").write_text(json.dumps({"workspace_id": "a" * 32, "phase": "ready", "ed25519_public": ours}))
+        for listening, restarts in ((True, []), (False, [True])):
+            with self.subTest(listening=listening):
+                live, restarted = [listening], []
+                with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", kept), \
+                        patch.object(sbx_guest, "IDENTITY", root / "identity.json"), \
+                        patch.object(sbx_guest, "IDENTITY_LOCK", root / "identity.lock"), \
+                        patch.object(sbx_guest.os, "geteuid", return_value=0), \
+                        patch.object(sbx_guest, "restart_listener", lambda: (restarted.append(True), live.append(True))), \
+                        patch.object(sbx_guest, "serves", lambda expected: expected == ours and live[-1]):
+                    sbx_guest.identity("a" * 32, 22)
+                self.assertEqual(restarted, restarts)
+                self.assertTrue((kept / "ssh_host_ed25519_key.pub").exists())
+
     def test_ssh_listener_is_systemd_s_or_the_standalone_sshd(self):
         """A fake / (its /proc/1/comm and /run/sshd.pid) and a fake systemctl."""
         for init, managed, standalone, expected in [("systemd", "123", "456", 123), ("systemd", "0", "456", 456),

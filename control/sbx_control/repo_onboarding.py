@@ -280,7 +280,7 @@ def scaffold(repo: str, found: dict, prebuild: bool = False) -> dict:
         lines += ["previews:            # \"\" is the main link; others become <sandbox>-<name>", f"  \"\": {port}"]
         lines += [f"  {name}: {p}" for name, p in found["previews"].items()]
     else:
-        lines += ["# previews:          # no port found; the port the app listens on gets the main link",
+        lines += ["previews: {}        # no port found; the port the app listens on gets the main link:",
                   "#   \"\": <port>"]
     if found["dev"]:
         lines += ["processes:           # each runs as a service, restarted when it fails", f"  web: {found['dev']}"]
