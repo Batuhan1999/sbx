@@ -37,8 +37,9 @@ mkdir -m 700 -p ~/.sbx-install
 Every secret file is created readable only by its owner (`umask 077`, as
 the commands below do), and never printed: to check a file arrived, count
 its bytes (`wc -c < FILE`). Once sbx has stored a key (step 5), delete its
-file. At the end, only `setup-link` and `admin-password` may remain, and
-the owner keeps or deletes them.
+file. At the end, only `setup-link`, `admin-password` and `api-header` (step
+5d) may remain, and the owner keeps or deletes them. `sbx-admin token ls`
+and `token revoke ID` end the token.
 
 ## 1. Inspect the server
 
@@ -162,7 +163,7 @@ Decide:
      | | E2B Cloud | Boat |
      |---|---|---|
      | New sandbox ready | about 1–2 s | about 5–6 s |
-     | Pause and resume | keeps memory: processes continue | keeps the disk: a resume after ~10 minutes is a cold boot and sbx restarts the app |
+     | Pause and resume | keeps memory: processes continue | keeps the disk, and sbx restarts the app on every resume; after 10 minutes paused, a resume is a cold boot |
      | Plans | Hobby: 1 h before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 GiB disk, 10 at once. Pro: 24 h, 20 GiB disk, 100 at once | `20`: up to 8 vCPUs, 16 GiB, 100 at once; `100` and up add 16 vCPUs, 32 GiB. The trial can't save snapshots, and sbx's templates are snapshots, so plan on `20` or above |
      | Price | per second while a sandbox runs | per second while a sandbox runs (e.g. 4 vCPUs, 8 GiB: about $0.04 an hour) |
 
@@ -200,7 +201,7 @@ Decide:
 | Embed alone | works: a trusted IP certificate (port 80), previews on ports 21000–21255 | previews at `<name>.D` on 443 |
 | E2B Cloud, Boat | no: their sandboxes call the server back at `login.D` | required |
 | Endpoints (step 6) | no | required |
-| The `sbx` CLI | works | works with a trusted certificate (not `--dns none`) |
+| The `sbx` CLI and `ssh sbx-NAME` | work | work with a trusted certificate (not `--dns none`) |
 
 If the decision needs a domain, or the owner prefers one, ask for:
 
@@ -216,14 +217,16 @@ If the decision needs a domain, or the owner prefers one, ask for:
   - `route53`: the A records. On EC2 it uses the instance role. Elsewhere,
     the owner saves an AWS access key id and its secret as two lines in
     `~/.sbx-install/aws-keys`.
-  - `none`: a self-signed certificate, for a quick test only. With
-    `D` set to the public IP with dashes for dots, plus `.sslip.io` (IP
-    `203.0.113.10` → `203-0-113-10.sslip.io`), DNS needs no records at all.
-    Browsers warn, and the `sbx` CLI refuses the certificate (only
-    `python3 ~/.sbx-install/sbx.py setup … --insecure` takes it), so steps 6
-    to 8 can't use the CLI. In provider
-    sandboxes, only sbx's own calls accept it. Use it to look at sbx, not to
-    onboard a team or a repository.
+  - `none`: a self-signed certificate, for a quick test. With `D` set to
+    the public IP with dashes for dots, plus `.sslip.io` (IP `203.0.113.10`
+    → `203-0-113-10.sslip.io`), DNS needs no records at all. Browsers warn.
+    The desktop CLI refuses the certificate, and so does `websocat`, which
+    carries `ssh sbx-NAME`, `sbx logs` and `sbx push`; only
+    `python3 ~/.sbx-install/sbx.py setup … --insecure` takes it. Steps 6 to 8
+    then go through the [HTTP API](reference.md#http-api) with a token (step
+    5d) and `curl -k`: it covers the whole onboarding, and
+    `POST /api/sandboxes/NAME/exec` replaces ssh. In provider sandboxes, only
+    sbx's own calls accept the certificate. A team needs a trusted one.
 
 Once the owner says the records are in, check them from outside before you
 go on:
@@ -308,7 +311,7 @@ waits until HTTPS works, for up to 15 minutes:
 
 Then fetch the link again. It now names the trusted address, so the
 commands below no longer need `--insecure`. Only the quick test keeps
-`--insecure` on every command below.
+`--insecure` on every command below, and `curl -k` on every API call.
 
 ```sh
 ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link
@@ -360,8 +363,8 @@ provider instead, see OIDC in the [README](../README.md#host-requirements).
 setup-link` in their own terminal and open the link. The wizard has the same
 steps. Continue when they say it is finished.
 
-**d. Sign in the desktop CLI** (macOS). It is needed from step 6 on, and it
-doesn't work with the quick test's certificate:
+**d. Sign in the desktop CLI** (macOS, with a trusted certificate). It is
+needed from step 6 on:
 
 ```sh
 curl -fsSL https://login.D/install | sh    # IP only: https://IP/install
@@ -371,11 +374,19 @@ The installer ends with `sbx login`, which opens the browser. The owner signs
 in there with `owner@example.com` and the password file (if that sign-in was
 skipped, run `~/.local/bin/sbx login`). When it prints that you are
 signed in, `~/.local/bin/sbx runtimes` lists the enabled runtimes. Below,
-`sbx` means `~/.local/bin/sbx`. The desktop CLI runs on macOS only. On
-Linux, use the [HTTP API](reference.md#http-api) with a token from
-`ssh HOST sudo sbx-admin token create owner@example.com --label agent`
-(printed once: write it to a file in `~/.sbx-install`), and the server-side
-commands given below.
+`sbx` means `~/.local/bin/sbx`.
+
+**Without the desktop CLI** (Linux, or the quick test's certificate), use the
+[HTTP API](reference.md#http-api) with a token, and the server-side commands
+given below. The CLI signs in only through the browser; a token is for the
+API. Make one for the admin (`sbx-admin user ls` shows their email, marked
+`admin`). `token create` prints only the token on stdout (its note goes to
+stderr), so this writes a header file that holds nothing else:
+
+```sh
+(umask 077; ssh HOST sudo sbx-admin token create owner@example.com --label agent | sed 's/^/Authorization: Bearer /' > ~/.sbx-install/api-header)
+curl -fsS -H @$HOME/.sbx-install/api-header https://login.D/api/me    # -k for the quick test
+```
 
 ## 6. Optional: shared servers
 
@@ -402,7 +413,9 @@ Keep only the lines you need.
   per sandbox (its own CA, 24-hour certificates, only for the repositories
   allowed to use it). It needs the domain from step 3. **Ask the owner
   before you add one**, naming the service and the address it will have.
-  Then:
+  Binding a repository to a managed server that has an endpoint (its
+  recipe's `connections:`) gives that repository's sandboxes access through
+  it: confirm that with the owner too. Then:
 
   ```sh
   sbx endpoints                                    # the managed servers without one
@@ -425,9 +438,10 @@ Keep only the lines you need.
    and selects the repository. A public repository URL works without a
    GitHub App.
 2. **Recipe.** In the repository's checkout, `sbx repo connect --agent`
-   starts Claude Code (or `--agent codex`) with the server's setup brief.
-   Without that agent, it prints the brief for you to follow (the API serves
-   it at `GET /api/repos/OWNER/NAME/setup-brief`). The
+   drafts `.sbx/` and starts Claude Code (or `--agent codex`) with the
+   server's setup brief. Without `--agent`, it only drafts `.sbx/`; then
+   `sbx repo brief` prints the brief for you to follow (the API serves it at
+   `GET /api/repos/OWNER/NAME/setup-brief`). The
    [setup brief](../control/sbx_control/template_files/setup-brief.md) is the
    procedure from discovery to a verified first launch. It chooses services
    with [service selection](service-selection.md), declares every variable,
@@ -448,13 +462,14 @@ Keep only the lines you need.
 
 ```sh
 ssh HOST sudo sbx-admin doctor                 # each part: ok / NO with the fix; exit 1 when one is NO
-sbx runtimes test KIND                     # per enabled runtime; exit 1 on a NO
+sbx runtimes test KIND                     # per enabled runtime; exit 1 on a NO (API: POST /api/runtimes/KIND/test)
 ssh HOST sudo sbx-admin runtime verify KIND   # end to end: create, command, file, pause/resume, preview, delete
 curl -sS -o /dev/null -w '%{http_code}\n' https://login.D/   # from your machine: a 200 or 30x, no TLS error
 ```
 
 - `doctor` and `runtimes test` print one line per check, `ok` or `NO` with
-  the fix. Fix every `NO` before you go on.
+  the fix. Fix every `NO` you can. One that needs the owner (an admin's
+  password, a provider key, a DNS record) goes into the report as theirs.
 - `runtimes test` counts only once it reports `Base template: built` and a
   reachability line: while the base template builds, it passes without
   reaching the server from a sandbox. Wait and run it again until it does.
@@ -471,6 +486,9 @@ Report to the owner:
 - working preview links, and the commands to start another sandbox
   (`sbx up`), read logs (`sbx logs`), change variables (`sbx env`) and delete
   one (`sbx down`);
+- how to read a value the recipe generates, such as an admin password from
+  `${random:32}`: `echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox
+  exec SANDBOX` (never the value itself);
 - what you verified, with the evidence (the checks' output, the checklist),
   and what you did not verify;
 - what is limited (for example a `--dns none` certificate, or a plan's
@@ -508,8 +526,9 @@ lowercase letters, digits and dashes):
       data and schema.
 - [ ] Restart A (`sbx sandbox restart check-a`), then pause and resume it
       (`sbx sandbox pause|resume check-a`, or `POST /api/sandboxes/check-a/pause` and `/resume`):
-      its working data is still there. (On Boat every resume is a cold boot:
-      the app must start again from the recipe.)
+      its working data is still there. (On Boat sbx restarts the app on every
+      resume, and a pause longer than 10 minutes makes it a cold boot: pause
+      that long once to check the app starts again from the recipe.)
 - [ ] On a provider runtime with an endpoint: a real query from a sandbox
       reaches the shared server through it.
 - [ ] Delete A (`sbx down check-a`): B still works, and A's owned resources (its
