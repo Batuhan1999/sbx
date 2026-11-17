@@ -231,7 +231,9 @@ class ApiTests(Setup, Server):
         self.assertEqual(response.status_code, 403)
         self.bound["owner/app"] = ["dev_pg"]
         sandboxes.unregister("box")   # deleted
-        self.assertEqual(renew().status_code, 404)
+        self.assertEqual(renew().status_code, 401)
+        self.register("box")   # made again for the same repo: the old credential is not its
+        self.assertEqual(renew().status_code, 401)
 
     def test_a_revoke_during_a_renewal_leaves_the_revoked_repo_nothing_the_new_ca_signed(self):
         from cryptography import x509

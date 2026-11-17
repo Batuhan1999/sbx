@@ -247,6 +247,10 @@ class Layer(sandbox_layers.SandboxLayer):
         sandbox_runtime.ship_guest(sbx)
         ensure_forwarder(sbx)
 
+    def forget(self, name):
+        """A deleted sandbox's credential goes with it: one made again under the name never takes it."""
+        certs.forget(name)
+
     def on_resume(self, sbx, info):
         push(sbx, info)   # its certificates may have run out while it slept
 
