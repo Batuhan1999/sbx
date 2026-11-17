@@ -150,6 +150,16 @@ class Backend(unittest.TestCase):
         self.assertEqual(handle.files.read("/home/user/big.bin", format="bytes"), big)
         self.assertTrue(any(p.endswith("/files/download-url") for _, p, _, _ in self.fake.calls))
 
+    def test_a_staged_file_waits_where_only_its_user_reads_and_goes_when_the_move_fails(self):
+        from sbx_control.runtime import CommandFailed
+        handle = self.create()
+        self.fake.respond = lambda _, command: ("mv: cannot move", 1) if "mv -f" in command else None
+        with self.assertRaises(CommandFailed):
+            handle.files.write("/run/sbx/env", "export TOKEN=x\n")
+        staged = next(p for p in self.fake.files[handle.sandbox_id] if "upload-" in p)
+        self.assertTrue(staged.startswith("/tmp/.sbx-env/"), staged)   # 0700, not /tmp itself
+        self.assertIn(f"|| {{ rm -f {staged}; exit 1; }}", self.fake.ran[-1][1])
+
     def test_a_ports_token_is_fetched_once_exposed_private_and_forgotten_on_stop(self):
         handle = self.create()
         sandbox_id = handle.sandbox_id
@@ -186,6 +196,24 @@ class Backend(unittest.TestCase):
         self.backend.upstream_token(sandbox_id, 5173)
         hosts = [b["localhost"] for _, p, _, b in self.fake.calls if p.endswith("/host")]
         self.assertEqual(hosts, [False, True, True])             # the relay kept, not turned off
+
+    def test_an_exposure_under_way_when_the_sandbox_stops_is_not_kept(self):
+        import threading
+        sandbox_id = self.create().sandbox_id
+        self.fake.respond = lambda _, command: ("LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\n"
+                                                if "sport = :3000" in command else None)
+        expose, stops = self.backend._expose, []
+
+        def stopped_meanwhile(*args):
+            stop = threading.Thread(target=self.backend._forget, args=(sandbox_id,))
+            stop.start()
+            stop.join(0.3)   # a stop's reset, while Boat answers the exposure
+            stops.append(stop)
+            return expose(*args)
+        with patch.object(self.backend, "_expose", side_effect=stopped_meanwhile):
+            self.backend.upstream_token(sandbox_id, 3000)
+        stops[0].join()
+        self.assertEqual(self.backend.upstream_token(sandbox_id, 3000, fetch=False), "")   # asked again on the next machine
 
     def test_a_loopback_only_app_is_exposed_through_boats_relay(self):
         handle = self.create()
@@ -246,7 +274,7 @@ class Backend(unittest.TestCase):
         self.assertTrue(any("export V=1\n" in e for e in envs))
         unit = next(c for c in commands if "sbx-start.service" in c)
         self.assertIn("base64 -d | sudo tee", unit)
-        self.assertTrue(any("systemctl enable --now sbx-start" in c for c in commands))
+        self.assertTrue(any("systemctl enable sbx-start && sudo systemctl restart sbx-start" in c for c in commands))
         persisted = [c for c in commands if "sudo tee /etc/sbx/template.sh" in c]
         text = base64.b64decode(persisted[-1].split("echo ")[1].split(" ")[0]).decode()
         self.assertIn("export TOOL_HOME=/opt/tool", text)
@@ -256,6 +284,43 @@ class Backend(unittest.TestCase):
         self.assertIn(("abcd1234--repo-1", "ready"), self.backend.templates())
         self.assertTrue(self.backend.delete_template("abcd1234--repo-1"))
         self.assertFalse(self.backend.delete_template("abcd1234--repo-1"))
+
+    def written(self, path):
+        """What the build last wrote to path through base64 | sudo tee."""
+        command = [c for _, c, _ in self.fake.ran if f"sudo tee {path} " in c][-1]
+        return base64.b64decode(command.split("echo ")[1].split(" ")[0]).decode()
+
+    def test_the_start_command_runs_whole_through_a_shell(self):
+        import subprocess
+        from sbx_control.runtime import TemplateSpec
+        self.backend.build_template(TemplateSpec().from_template("tpl").set_start_cmd("cd / && echo started", "true"),
+                                    alias="s", cpu=2, memory_mb=4096, disk_mb=1024)
+        shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/start.sh")], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "started\n")   # exec would run cd alone, or nothing after its &&
+
+    def test_a_child_template_keeps_its_parents_env_and_workdir(self):
+        from sbx_control.runtime import TemplateSpec
+        self.fake.respond = lambda _, command: ("export BASE=ok\nexport SBX_TEMPLATE_WORKDIR=/srv/parent\n"
+                                                if "cat /etc/sbx/template.sh" in command else None)
+        self.backend.build_template(TemplateSpec().from_template("tpl").set_envs({"CHILD": "1"}).run_cmd("make"),
+                                    alias="c", cpu=2, memory_mb=4096, disk_mb=1024)
+        self.assertEqual(self.written("/etc/sbx/template.sh"),
+                         "export BASE=ok\nexport CHILD=1\nexport SBX_TEMPLATE_WORKDIR=/srv/parent\n")
+        self.assertIn("cd /srv/parent || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
+
+    def test_a_dockerfile_workdir_expands_its_variables(self):
+        import subprocess
+        from sbx_control.runtime import TemplateSpec
+        steps = dockerfile.dockerfile_steps("FROM x\nENV APP=/srv/app\nWORKDIR $APP/web\n")
+        exports = "".join(dockerfile.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        shown = subprocess.run(["bash", "-c", exports + f"printf %s {steps[-1][1]}"], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "/srv/app/web")
+        self.fake.respond = lambda _, command: "/srv/app/web" if 'printf %s "$APP/web"' in command else None
+        self.backend.build_template(TemplateSpec().from_template("tpl").dockerfile("ENV APP=/srv/app\nWORKDIR $APP/web\n"
+                                                                                    "RUN make"),
+                                    alias="w", cpu=2, memory_mb=4096, disk_mb=1024)
+        self.assertIn("export SBX_TEMPLATE_WORKDIR=/srv/app/web\n", self.written("/etc/sbx/template.sh"))
+        self.assertIn("cd /srv/app/web || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
 
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
@@ -300,6 +365,19 @@ class Backend(unittest.TestCase):
         self.fake._create = restoring
         handle = self.create()
         self.assertTrue(self.fake.sandboxes[handle.sandbox_id]["hydrated"])   # waited for it
+
+    def test_a_sandbox_that_fails_to_start_is_deleted(self):
+        from sbx_control.runtime import Failed
+        original = self.fake._create
+
+        def failing(body):
+            status, payload = original(body)
+            self.fake.sandboxes[payload["sandbox"]["id"]]["state"] = "error"
+            return status, payload
+        self.fake._create = failing
+        with self.assertRaisesRegex(Failed, "failed to start"):
+            self.create()
+        self.assertEqual(self.fake.sandboxes, {})   # not left running until its timeout
 
     def test_a_resume_without_a_timeout_keeps_the_auto_stop(self):
         handle = self.create()
@@ -350,6 +428,20 @@ class Backend(unittest.TestCase):
         self.fake.sandboxes[handle.sandbox_id]["state"] = "archived"
         with self.assertRaises(NotRunning):
             handle.commands.run("true")
+
+    def test_a_command_that_may_have_run_is_not_sent_again(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        path = f"/sandboxes/{handle.sandbox_id}/commands"
+        before = len(self.fake.calls)
+        self.fake.fail("POST", path, 502, "sandbox_direct_failed", details={"retryable": True, "message": "reset"})
+        with self.assertRaises(BoatError):
+            handle.commands.run("echo once >> log")
+        self.assertEqual(sum(m == "POST" and p == path for m, p, _, _ in self.fake.calls[before:]), 1)
+        self.fake.fail("GET", f"/sandboxes/{handle.sandbox_id}/files", 502, "sandbox_direct_failed",
+                       details={"retryable": True, "message": "reset"})
+        handle.files.write("/home/user/a", "x")
+        self.assertEqual(handle.files.read("/home/user/a"), "x")   # a file read gives the same again
 
     def test_saved_names_follow_boats_rules(self):
         name = self.boat_module.build.saved_name

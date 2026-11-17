@@ -62,10 +62,12 @@ class Kept:
     ports: dict = dataclasses.field(default_factory=dict)   # port -> Port
 
     def reset_machine(self):
-        """Its machine went (a stop): its exposures and env folder with it."""
+        """Its machine went (a stop): its exposures and env folder with it,
+        once an exposure under way is done (else it would be kept after)."""
         self.env_dir = False
-        for port in self.ports.values():
-            port.exposed = None
+        for port in list(self.ports.values()):
+            with port.lock:
+                port.exposed = None
 
 
 class Previews:

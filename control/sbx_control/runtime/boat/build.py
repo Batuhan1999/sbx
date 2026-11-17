@@ -15,7 +15,7 @@ import time
 import uuid
 
 from ..base import CommandFailed, Failed, LimitRefused, Snapshot, TemplateGone, TemplateSpec, Timeout
-from ..dockerfile import dockerfile_steps, export_line
+from ..dockerfile import ShellWord, dockerfile_steps, export_line
 from ..listening import listening
 from .errors import POLL_SECONDS, BoatError
 from .plans import LIMITS, MACHINES, PLAN_CACHE_SECONDS, TRIAL_REFUSAL, machine
@@ -168,17 +168,21 @@ class Builds:
                     log(f"Boat: could not delete builder {sandbox.id}: {error}")
 
     def _replay(self, handle: Handle, steps: list, log):
-        user, workdir, env = "user", HOME, {}
+        user, workdir, env, inherited = "user", HOME, {}, ""
         commands = handle.commands
         for what, value in steps:
-            if what in ("image", "template"):
+            if what == "template":
+                inherited, workdir = self._inherited(commands)
+                continue
+            if what == "image":
                 continue
             if what == "user":
                 user = value
             elif what == "workdir":
-                workdir = value
-                commands.run(f"sudo mkdir -p {shlex.quote(value)} && sudo chown {shlex.quote(user)} "
-                             f"{shlex.quote(value)} 2>/dev/null || true", timeout=60)
+                # A Dockerfile's (a ShellWord) as the path its $VAR give, with the env so far.
+                workdir = commands.run(f"printf %s {value}", timeout=60).stdout if isinstance(value, ShellWord) else value
+                commands.run(f"sudo mkdir -p {shlex.quote(workdir)} && sudo chown {shlex.quote(user)} "
+                             f"{shlex.quote(workdir)} 2>/dev/null || true", timeout=60)
             elif what == "env":
                 env.update(value)
             elif what == "run":
@@ -186,18 +190,31 @@ class Builds:
                 commands.run(value, user=user, envs=env, cwd=workdir, timeout=0, on_output=lambda text: [
                     log(line) for line in text.splitlines() if line.strip()])
             elif what == "start":
-                self._persist(commands, env, workdir)
+                self._persist(commands, env, workdir, inherited)
                 command, ready = value
                 self._start_unit(handle, command, ready, log)
                 continue
             else:
                 raise ValueError(f"unknown template step {what}")
-            self._persist(commands, env, workdir)
+            self._persist(commands, env, workdir, inherited)
 
     @staticmethod
-    def _persist(commands, env: dict, workdir: str):
-        """The template's env and workdir as every later command and shell sees them."""
-        text = "".join(export_line(k, v) for k, v in env.items())
+    def _inherited(commands) -> tuple[str, str]:
+        """The parent template's env (its TEMPLATE_FILE but the workdir) and its workdir."""
+        text = commands.run(f"cat {TEMPLATE_FILE} 2>/dev/null || true", timeout=60).stdout
+        lines, workdir = [], HOME
+        for line in text.splitlines():
+            if line.startswith("export SBX_TEMPLATE_WORKDIR="):
+                workdir = shlex.split(line)[1].partition("=")[2] or HOME
+            elif line.strip():
+                lines.append(line + "\n")
+        return "".join(lines), workdir
+
+    @staticmethod
+    def _persist(commands, env: dict, workdir: str, inherited: str = ""):
+        """The template's env and workdir as every later command and shell
+        sees them: the parent's env (inherited) first, the template's own after it."""
+        text = inherited + "".join(export_line(k, v) for k, v in env.items())
         text += f"export SBX_TEMPLATE_WORKDIR={shlex.quote(workdir)}\n"
         encoded = base64.b64encode(text.encode()).decode()
         commands.run(f"sudo mkdir -p /etc/sbx && echo {encoded} | base64 -d | sudo tee {TEMPLATE_FILE} >/dev/null "
@@ -207,16 +224,17 @@ class Builds:
     @staticmethod
     def _start_unit(handle: Handle, command: str, ready, log):
         """The start command as an enabled systemd unit (Boat starts enabled
-        units again on every resume), started now and waited for."""
+        units again on every resume), started now and waited for: restarted,
+        as a builder from a parent template runs the parent's already."""
         script = f"#!/bin/bash\n[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}\ncd \"${{SBX_TEMPLATE_WORKDIR:-$HOME}}\"\n" \
-                 f"exec {command}\n"
+                 f"exec bash -c {shlex.quote(command)}\n"
         unit = ("[Unit]\nDescription=sbx start command\nAfter=network.target\n[Service]\nUser=user\n"
                 "ExecStart=/bin/bash /etc/sbx/start.sh\nRestart=on-failure\n[Install]\nWantedBy=multi-user.target\n")
         commands = handle.commands
         for path, text in (("/etc/sbx/start.sh", script), (f"/etc/systemd/system/{START_UNIT}.service", unit)):
             encoded = base64.b64encode(text.encode()).decode()
             commands.run(f"echo {encoded} | base64 -d | sudo tee {path} >/dev/null", timeout=60)
-        commands.run(f"sudo systemctl daemon-reload && sudo systemctl enable --now {START_UNIT}", timeout=120)
+        commands.run(f"sudo systemctl daemon-reload && sudo systemctl enable {START_UNIT} && sudo systemctl restart {START_UNIT}", timeout=120)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             try:

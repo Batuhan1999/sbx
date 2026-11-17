@@ -99,7 +99,7 @@ def dockerfile_steps(text: str) -> list:
             if sep:
                 steps.append(("env", {name.strip(): shell_word(value.strip())}))
         elif word == "WORKDIR":
-            steps.append(("workdir", rest))
+            steps.append(("workdir", shell_word(rest, quoted=True)))   # $VAR expands, as Docker does
         elif word == "USER":
             steps.append(("user", rest.split(":")[0]))
         elif word in ("COPY", "ADD"):

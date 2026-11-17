@@ -63,8 +63,15 @@ class Sandboxes:
                 raise TemplateGone(template, f"Boat has no saved snapshot {saved_name(template)}") from error
             raise
         sandbox_id = created.sandbox.id
-        self._ready(sandbox_id)
-        self._machine_ready(sandbox_id)
+        try:
+            self._ready(sandbox_id)
+            self._machine_ready(sandbox_id)
+        except Exception:
+            try:
+                self.kill(sandbox_id)   # else it runs, and bills, until its timeout
+            except Exception:   # its timeout still ends it
+                pass
+            raise
         return Handle(self, sandbox_id)
 
     def _ready(self, sandbox_id: str, seconds: float = 600):
@@ -190,13 +197,17 @@ class Sandboxes:
             raise NotRunning(f"Boat sandbox {sandbox_id} is {found.state}")
 
 
-    def env_file(self, sandbox_id: str, envs: dict) -> str:
-        """envs as a file in the sandbox (ENV_DIR, 0700), through the files
-        API: what a command reads once and removes (sandbox.wrap)."""
+    def env_dir(self, sandbox_id: str) -> str:
+        """ENV_DIR on the sandbox's machine (0700, the default user's), made once per machine."""
         kept = self._kept_of(sandbox_id)
         if not kept.env_dir:
             Handle(self, sandbox_id).commands.run(f"install -d -m 700 {ENV_DIR}", timeout=30)
             kept.env_dir = True
-        path = f"{ENV_DIR}/{uuid.uuid4().hex}"
+        return ENV_DIR
+
+    def env_file(self, sandbox_id: str, envs: dict) -> str:
+        """envs as a file in the sandbox (ENV_DIR, 0700), through the files
+        API: what a command reads once and removes (sandbox.wrap)."""
+        path = f"{self.env_dir(sandbox_id)}/{uuid.uuid4().hex}"
         Handle(self, sandbox_id).files._put(path, "".join(export_line(k, v) for k, v in envs.items()).encode())
         return path
