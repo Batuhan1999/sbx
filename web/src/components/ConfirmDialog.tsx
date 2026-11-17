@@ -3,8 +3,8 @@ import { Button } from './ui/button'
 import { Dialog } from './ui/dialog'
 import { ErrorState } from './states'
 
-export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger' }: {
-  trigger: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'
+export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger', note = 'This cannot be undone.' }: {
+  trigger: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'; note?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -17,6 +17,6 @@ export function ConfirmDialog({ trigger, title, description, confirm, onConfirm,
         try { await onConfirm(); setOpen(false) } catch (e) { setError(e) } finally { setBusy(false) }
       }}>{confirm}</Button>
     </>}>
-    {error ? <ErrorState error={error} compact /> : <p className="text-[13px] text-muted">This cannot be undone.</p>}
+    {error ? <ErrorState error={error} compact /> : note ? <p className="text-[13px] text-muted">{note}</p> : null}
   </Dialog>
 }

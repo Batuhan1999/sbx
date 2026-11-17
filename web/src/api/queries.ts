@@ -30,6 +30,7 @@ export const keys = {
   runtimes: ['runtimes'] as const,
   runtimesAvailable: ['runtimes', 'available'] as const,
   runtimeChange: ['runtimes', 'change'] as const,
+  endpoints: ['endpoints'] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)
@@ -86,6 +87,12 @@ export const useRuntimeChange = (enabled = true) => useQuery({
   refetchInterval: q => (pending(q.state.data) ? 2_000 : false),
 })
 export const isApplying = (change?: { state: string; restarting?: boolean }) => pending(change)
+
+/** What provider sandboxes reach, for admins; every 2 s while one is applying (a failed poll keeps the last answer). */
+export const useEndpoints = (enabled = true) => useQuery({
+  queryKey: keys.endpoints, queryFn: api.endpoints.list, enabled, retry: false,
+  refetchInterval: q => (q.state.data?.endpoints.some(e => e.state === 'applying') ? 2_000 : false),
+})
 
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
 export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })

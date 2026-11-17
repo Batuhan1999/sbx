@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { api } from '@/api/endpoints'
-import { useAvailableRuntimes, useMe, useRuntimes } from '@/api/queries'
-import type { AvailableRuntime, ConnectionState, RuntimeChange, SandboxRuntime } from '@/api/types'
+import { Link } from 'react-router'
+import { useAvailableRuntimes, useEndpoints, useMe, useRuntimes } from '@/api/queries'
+import type { AvailableRuntime, ConnectionState, Endpoints, RuntimeChange, SandboxRuntime } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
@@ -11,6 +12,7 @@ import { limitsText, planSummary } from '@/lib/format'
 import type { Tone } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { CONNECTION_STATE } from '../extensions/ConnectionCard'
+import { ENDPOINTS_LINK, QUIET_LINK } from './Endpoints'
 import { ChangeStatus, RuntimeSettingsForm, useRuntimeChangeFlow, type ChangeFlow } from './RuntimeForms'
 
 /** Where sandboxes run. Admins add a runtime, change one's settings, make one the default or remove one. */
@@ -19,6 +21,7 @@ export function Runtimes() {
   const runtimes = useRuntimes()
   const available = useAvailableRuntimes(admin)
   const flow = useRuntimeChangeFlow(admin)
+  const endpoints = useEndpoints(admin).data
   const [adding, setAdding] = useState(false)
   const byKind = Object.fromEntries((available.data ?? []).map(a => [a.kind, a]))
   const addable = (available.data ?? []).filter(a => !a.enabled && !a.host && a.can_run)
@@ -30,7 +33,10 @@ export function Runtimes() {
     {adding && <AddRuntime choices={addable} flow={flow} onClose={() => setAdding(false)} />}
     <QueryView query={runtimes} inline loading={<SkeletonRows rows={1} />}>{d => d.runtimes.length === 0
       ? <EmptyState title="No sandbox runtime yet">Sandboxes need one to run on.{admin && addable.length > 0 ? ' Add one above.' : ''}</EmptyState>
-      : <RuntimeList runtimes={d.runtimes}>{r => admin && byKind[r.kind] ? <RuntimeActions r={r} a={byKind[r.kind]} flow={flow} /> : null}</RuntimeList>}
+      : <RuntimeList runtimes={d.runtimes}>{r => <>
+        {endpoints && !r.capabilities.private_networks && <Reaches endpoints={endpoints} />}
+        {admin && byKind[r.kind] && <RuntimeActions r={r} a={byKind[r.kind]} flow={flow} />}
+      </>}</RuntimeList>}
     </QueryView>
   </Panel>
 }
@@ -109,4 +115,15 @@ function RuntimeRow({ r, children }: { r: SandboxRuntime; children?: ReactNode }
     {r.limit_hit && <p role="note" className="mt-1 break-words text-[12.5px] text-warn">{r.limit_hit.message}</p>}
     {children}
   </li>
+}
+
+/** For a runtime whose sandboxes can't reach this server's private network: the addresses they reach instead. */
+function Reaches({ endpoints }: { endpoints: Endpoints }) {
+  const on = endpoints.endpoints.filter(e => e.state === 'on').map(e => e.name)
+  const link = QUIET_LINK
+  return <p className="mt-1 break-words text-[12.5px] text-muted">
+    {on.length
+      ? <>Reaches <Link to={ENDPOINTS_LINK} className={link}>{on.join(', ')}</Link></>
+      : <>Reaches nothing yet — <Link to={ENDPOINTS_LINK} className={link}>Share a server</Link></>}
+  </p>
 }
