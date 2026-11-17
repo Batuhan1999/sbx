@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -626,10 +627,24 @@ class SetupCliTests(CliTests):
             link.write_text(f"{self.control.url}/setup#t=from-a-file\n")
             self.assertEqual(self.run_cli("setup", "status", "--link-file", str(link))[0], 0)
         self.assertEqual(self.control.calls[-1][4], "Setup from-a-file")
-        with patch.dict(os.environ, {"SBX_SETUP_LINK": "https://203.0.113.7/setup"}):
-            self.assertIn("not a setup link", str(self.run_cli("setup", "status")[0]))
+        for bad in ("https://203.0.113.7/setup", "http://203.0.113.7/setup#t=x", "ftp://127.0.0.1/setup#t=x"):
+            with patch.dict(os.environ, {"SBX_SETUP_LINK": bad}):   # http only to this machine
+                self.assertIn("not a setup link", str(self.run_cli("setup", "status")[0]), bad)
         self.routes[("GET", "/api/setup")] = lambda q, body: (401, {"detail": "the setup token"})
         self.assertIn("the setup link was refused", str(self.run_cli("setup", "status")[0]))
+
+
+    def test_a_server_out_of_reach_is_said_not_a_traceback(self):
+        with socket.socket() as free:
+            free.bind(("127.0.0.1", 0))
+            port = free.getsockname()[1]
+        for link, hint in ((f"https://127.0.0.1:{port}/setup#t=x", True), (f"http://localhost:{port}/setup#t=x", True)):
+            with patch.dict(os.environ, {"SBX_SETUP_LINK": link}):
+                said = str(self.run_cli("setup", "status")[0])
+            self.assertIn(f"cannot reach {link.split('/setup')[0]}", said)
+            self.assertEqual("add --insecure" in said, hint)
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"https://127.0.0.1:{port}/setup#t=x"}):
+            self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
 
 
 class CliApiTests(Server):

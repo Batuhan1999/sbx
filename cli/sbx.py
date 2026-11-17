@@ -105,10 +105,16 @@ class Client:
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
     def api(self, method, path, body=None, raw=False, timeout=600):
+        """request(), exiting with the refusal or why the server could not be reached (request() itself
+        raises OSError, which follow() retries while sbx-control restarts)."""
         try:
             return self.request(method, path, body, raw, timeout)
         except Refused as error:
             sys.exit(str(error))
+        except OSError as error:
+            reason = getattr(error, "reason", None) or error
+            hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
+            sys.exit(f"cannot reach {self.base}: {reason}{hint}")
 
 
 def request(method, path, body=None, raw=False, timeout=600):
@@ -751,7 +757,9 @@ def setup_client(args):
                  "by --link-file; never on the command line")
     url = urllib.parse.urlsplit(link)
     token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
-    if url.scheme not in ("https", "http") or not url.netloc or not token:
+    # http only to this machine itself (a tunnel): the token never crosses a network in plain text.
+    plain_ok = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
+    if not (url.scheme == "https" or plain_ok) or not url.netloc or not token:
         sys.exit("that is not a setup link: https://HOST/setup#t=TOKEN")
     context = None
     if args.insecure:
