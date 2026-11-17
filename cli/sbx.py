@@ -681,18 +681,19 @@ def endpoints_cmd(args):
     if args.action in ("grant", "revoke"):
         if not args.endpoint or not args.repo_name:
             sys.exit(f"sbx endpoints {args.action} NAME OWNER/REPO")
-        path = f"/api/endpoints/{urllib.parse.quote(args.endpoint, safe='')}"
-        found = next((e for e in api("GET", "/api/endpoints")["endpoints"] if e["name"] == args.endpoint), None)
-        if found is None:
-            sys.exit(f"there is no endpoint {args.endpoint}: sbx endpoints lists them")
-        repo, now = args.repo_name.lower(), found.get("repos") or []
-        changed = api("PUT", path, {"repos": [*now, repo] if args.action == "grant" else [r for r in now if r != repo]})
+        path = f"/api/endpoints/{urllib.parse.quote(args.endpoint, safe='')}/repos"
+        repo = args.repo_name.lower()
+        changed = (api("POST", path, {"repo": repo}) if args.action == "grant" else
+                   api("DELETE", f"{path}/{urllib.parse.quote(repo, safe='/')}"))
         print(json.dumps(changed) if args.json else
               f"{changed['name']}: for {', '.join(changed['repos']) or 'no repo'}")
         return
     if args.action == "add":
         if bool(args.server) == bool(args.target):
             sys.exit("sbx endpoints add --server NAME, or --name NAME --target HOST:PORT [--repo OWNER/REPO ...]")
+        if args.server and args.repo:
+            sys.exit("a managed server's endpoint is for the repos attached to it: attach the server to the repo "
+                     "instead (sbx attach)")
         body = ({"server": args.server, "name": args.name} if args.server else
                 {"name": args.name, "target": args.target, "repos": args.repo})
         added = api("POST", "/api/endpoints", {k: v for k, v in body.items() if v})

@@ -528,21 +528,26 @@ class EndpointCliTests(CliTests):
         self.assertEqual(self.control.calls[-1][3], {"name": "temporal", "target": "10.0.0.5:7233",
                                                      "repos": ["owner/app", "other/app"]})
 
-    def test_grant_and_revoke_replace_the_repos(self):
+    def test_grant_and_revoke_one_repo_at_a_time(self):
         temporal = endpoint("on", name="temporal", kind="internal", server="", repos=["owner/app"])
-        self.polls(endpoints(temporal))
-        self.routes[("PUT", "/api/endpoints/temporal")] = lambda q, body: {**temporal, "repos": sorted(body["repos"])}
+        self.routes[("POST", "/api/endpoints/temporal/repos")] = lambda q, body: {
+            **temporal, "repos": sorted({*temporal["repos"], body["repo"]})}
         code, out, err = self.run_cli("endpoints", "grant", "temporal", "Other/App")
         self.assertEqual((code, out), (0, "temporal: for other/app, owner/app\n"))
-        self.assertEqual(self.control.calls[-1][3], {"repos": ["owner/app", "other/app"]})
+        self.assertEqual(self.control.calls[-1][:4], ("POST", "/api/endpoints/temporal/repos", {}, {"repo": "other/app"}))
+        self.routes[("DELETE", "/api/endpoints/temporal/repos/owner/app")] = lambda q, body: {**temporal, "repos": []}
         code, out, err = self.run_cli("endpoints", "revoke", "temporal", "owner/app")
         self.assertEqual((code, out), (0, "temporal: for no repo\n"))
-        self.routes[("PUT", "/api/endpoints/dev-pg")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
-        self.polls(endpoints(endpoint("on")))
+        self.routes[("DELETE", "/api/endpoints/temporal/repos/owner/app")] = lambda q, body: (
+            404, {"detail": "owner/app is not granted the endpoint temporal"})
+        code, _, _ = self.run_cli("endpoints", "revoke", "temporal", "owner/app")
+        self.assertEqual(code, "sbx-control: owner/app is not granted the endpoint temporal")
+        self.routes[("POST", "/api/endpoints/dev-pg/repos")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
         code, _, _ = self.run_cli("endpoints", "grant", "dev-pg", "owner/app")
         self.assertEqual(code, "sbx-control: attach the server to the repo instead")
-        code, _, _ = self.run_cli("endpoints", "grant", "nope", "owner/app")
-        self.assertIn("there is no endpoint nope", code)
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg", "--repo", "owner/app")
+        self.assertIn("attach the server to the repo instead", code)
+        self.assertFalse(any(c[0] == "POST" and c[1] == "/api/endpoints" for c in self.control.calls))
 
     def test_refusals_and_failures_exit_non_zero(self):
         code, _, _ = self.run_cli("endpoints", "add", "--server", "a", "--target", "10.0.0.5:1")

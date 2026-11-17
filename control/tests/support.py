@@ -20,7 +20,7 @@ class Installation(unittest.TestCase):
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
              "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
-             "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs")
+             "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials")
 
     @classmethod
     def setUpClass(cls):

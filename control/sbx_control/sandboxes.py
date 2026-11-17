@@ -109,6 +109,10 @@ def check_slug(slug: str, name: str = "") -> str:
         raise core.SandboxError(f"{slug} is taken: it is the host of a port in {slug.rpartition('-')[0]}")
     if slug_taken(slug, name):
         raise core.SandboxError(f"{slug} is another sandbox's")
+    from . import endpoints
+    if found := endpoints.slug_taken(slug):
+        raise core.SandboxError(f"{slug} is taken: {found}.<domain> is an endpoint (sbx endpoints), which a "
+                                f"preview host of {slug} would be; choose another name or slug")
     return slug
 
 
@@ -251,6 +255,7 @@ def create_locked(body: CreateSandbox, email: str, *, start_app: bool = True, me
     kind = runtimes.choose(repo, body.runtime, None if start_from else recipes.load(body.repo).size)
     template = start_from or template_builds.template_for(repo, kind)
     register(body.name, email, branch, slug, metadata, kind)
+    advise_endpoints(body.name, repo, kind)
     try:
         result = core.create(body.name, slug, email, branch, body.public_keys, body.repo,
                              source_commit=body.source_commit, template=template,
@@ -264,6 +269,23 @@ def create_locked(body: CreateSandbox, email: str, *, start_app: bool = True, me
                                 lambda operation: core.prepare_and_start(body.name, branch, operation=operation))
     info = core.find(body.name)
     return {**result, **(describe(info) if info else {})}
+
+
+def advise_endpoints(name: str, repo: str | None, kind: str):
+    """An internal address in the recipe's env that its sandboxes on this
+    runtime won't reach (no endpoint, or not granted to the repo): not a
+    refusal, an event that says what would make it reachable."""
+    from . import endpoints, runtime
+    try:
+        if not repo or runtime.capabilities(kind).private_networks:
+            return
+        found = endpoints.missing(repo, sources=("env",))
+    except Exception:
+        return
+    domain = "" if endpoints.domain() else " (endpoints need a domain: connect one first)"
+    for what, command in found:
+        state.event(name, "endpoint suggested", f"its sandboxes on this runtime don't reach {what}; an admin adds "
+                                                f"it: {command}{domain}")
 
 
 def restart(name: str, info, prepare: bool = False):
