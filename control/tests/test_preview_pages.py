@@ -278,7 +278,7 @@ class Review(GateCase):
             self.assertEqual(self.ask("memos-a.example.test", self.owner, Accept="text/html").status_code, 200)
 
     def test_a_cookie_runtime_gets_the_apps_cookies_without_any_token_cookie_then_its_own(self):
-        self.fake.upstream_token_cookie = "_port_auth"
+        self.fake.upstream_token_at = self.runtime.TokenPlace("cookie", "_port_auth")
         self.fake.upstream_token = lambda sandbox_id, port, fetch=True: "tok"
         response = self.ask("memos-a.example.test", self.owner,
                             Cookie="a=1; _port_auth=evil; sbx_session=x; b=2; _port_auth=again")
@@ -320,14 +320,14 @@ class Nginx(unittest.TestCase):
 
     def test_every_upstream_gets_the_cookie_header_the_gate_wrote(self):
         from sbx_control import ip_previews, preview_proxy, runtime
+        from sbx_control.runtime.base import TokenPlace
         self.assertNotIn("sandbox_cookie", self.SCRIPT)   # no second way: nginx strips nothing itself
         self.assertEqual(self.SCRIPT.count(r"auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;"), 2)
         self.assertEqual(self.SCRIPT.count(r"proxy_set_header Cookie \$sbx_cookie;"), 2)   # sandboxes and services
         self.assertIn(r"\$http_cookie|\$http_authorization", self.SCRIPT)   # the cached allow is the cookies'
         with patch.object(runtime, "ingresses", return_value={"embed": ("http://127.0.0.1:3002", ()),
                                                               "boat": ("https://sbx-ingress.on.boat.dev", ())}), \
-                patch.object(runtime, "upstream_token_headers", return_value={}), \
-                patch.object(runtime, "upstream_token_cookies", return_value={"boat": "_port_auth"}):
+                patch.object(runtime, "upstream_token_places", return_value={"boat": TokenPlace("cookie", "_port_auth")}):
             self.assertNotIn("_cookie", preview_proxy.runtime_upstreams())
             self.assertEqual(preview_proxy.upstream_token_set(), "")
             self.assertEqual(preview_proxy.upstream_token_send().strip(),

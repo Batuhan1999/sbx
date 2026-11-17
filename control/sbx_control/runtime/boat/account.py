@@ -6,6 +6,7 @@ import datetime
 import json
 import time
 
+from ..hosted import hosted_status
 from .plans import API_KEY, KEY_WARN_DAYS, KIND, TRIAL_NOTE
 
 
@@ -50,29 +51,16 @@ class Account:
             return ""
         return "the API key has expired" if days < 0 else f"the API key expires in {days} days"
 
-    def status(self):
-        from ...connections.base import Field, Status
-        if not self._key:
-            return Status("runtime", "Sandbox runtime", "not_connected", f"Boat: no {API_KEY} in runtime.env",
-                          {}, (), ("test",))
-        try:
-            from ... import runtime   # this installation's sandboxes, not the whole account's
-            running = len(runtime.sandboxes(None, [runtime.RUNNING], kind=self.kind))
-            facts = self._account()
-        except Exception as error:
-            return Status("runtime", "Sandbox runtime", "attention", f"Boat did not answer: {error}", {}, (),
-                          ("test",))
-        facts["running"] = running
-        notes = []
-        if facts.get("plan") == "trial":
-            notes.append(TRIAL_NOTE.rstrip("."))
+    def _notes(self, facts: dict) -> list:
+        notes = [TRIAL_NOTE.rstrip(".")] if facts.get("plan") == "trial" else []
         if warning := self._expiry_warning(facts):
             notes.append(warning)
-        most = self._limits.sandboxes
-        full = most is not None and running >= most
-        summary = " · ".join([f"Boat · {running} running here", *notes, *(["full"] if full else [])])
-        return Status("runtime", "Sandbox runtime", "attention" if notes or full else "connected", summary, facts,
-                      (Field("api_url", "API URL", value=self._url),), ("test",))
+        return notes
+
+    def status(self):
+        from ...connections.base import Field
+        return hosted_status(self, configured=bool(self._key), account=self._account, notes=self._notes,
+                             fields=(Field("api_url", "API URL", value=self._url),))
 
     def test(self):
         from ...connections.base import Check

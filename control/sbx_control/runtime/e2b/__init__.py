@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime
 
-from ..base import Busy, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateGone, TemplateSpec, Timeout
+from ..base import Backend, Busy, CommandFailed, Info, NoRoom, NotRunning, Snapshot, TemplateGone, TemplateSpec, Timeout
 
 DEFAULT_DOMAIN = "e2b.app"   # the SDK's own default: E2B Cloud
 ENVD_PORT = 49983            # E2B's control daemon in every sandbox; it checks its own access token
@@ -114,10 +114,9 @@ class Handle:
         return self._sandbox.kill()
 
 
-class Compute:
+class Compute(Backend):
     """The compute part of the contract over the E2B SDK, every call with
     this backend's own connection (connect_with, from configure)."""
-    upstream_token_header: str | None = None
     # What every create's network has beneath its deny_out (E2B Cloud: its
     # ports answer only with the sandbox's traffic token).
     network_defaults: dict = {}
@@ -136,9 +135,6 @@ class Compute:
     def connection(self) -> dict:
         """What every SDK call of this backend passes."""
         return dict(self._connection)
-
-    def upstream_token(self, sandbox_id: str, port: int = 0, *, fetch: bool = True) -> str:
-        return ""
 
     def _handle(self, sandbox) -> Handle:
         return Handle(sandbox)

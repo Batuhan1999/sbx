@@ -7,12 +7,11 @@ the locations of sbx's preview page and its poll.
   python -m sbx_control.preview_proxy upstreams | upstream-tls | upstream-token-set |
                                       upstream-token-send | page-locations LOGIN_HOST | default-ingress
 """
-import dataclasses
 import sys
-from typing import Literal
 from urllib.parse import urlsplit
 
 from . import platform, runtime
+from .runtime.base import TokenPlace
 
 # The CA bundle in nginx's image (alpine's ca-certificates): what an https
 # ingress's certificate is verified against.
@@ -20,22 +19,8 @@ CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 NO_INGRESS = "http://127.0.0.1:9"   # the discard port: nothing listens
 
 
-# replaced by phase-2 contract: base.TokenPlace and runtime.upstream_token_places()
-@dataclasses.dataclass(frozen=True)
-class TokenPlace:
-    place: Literal["header", "cookie"]
-    name: str
-
-
-def token_places() -> dict:
-    """kind -> where the runtime wants its sandboxes' token, for each that wants one."""
-    # replaced by phase-2 contract: runtime.upstream_token_places()
-    return {**{kind: TokenPlace("header", name) for kind, name in runtime.upstream_token_headers().items()},
-            **{kind: TokenPlace("cookie", name) for kind, name in runtime.upstream_token_cookies().items()}}
-
-
 def _named(place: str) -> list[str]:
-    return sorted({p.name for p in token_places().values() if p.place == place})
+    return sorted({p.name for p in runtime.upstream_token_places().values() if p.place == place})
 
 
 # The Cookie header an upstream gets
@@ -101,7 +86,7 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") 
     lines.append(f"  default {default_ingress()};")
     lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]
     lines.append("}")
-    places = token_places()
+    places = runtime.upstream_token_places()
     headers = _named("header")
     if headers:
         lines.append("# The sandbox's token, in the header its runtime wants, to that runtime only.")

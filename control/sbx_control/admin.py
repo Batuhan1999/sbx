@@ -301,23 +301,9 @@ def do_runtime_change(a) -> int:
 
 
 def start_template_builds(kind: str) -> None:
-    """A runtime just added starts its base and default templates now, not
-    on the scheduler's next round; in a process of their own, so this
-    command returns."""
-    from . import runtime, template_builds, templates
-    title = runtime.title(kind)
-    try:
-        where, started = template_builds.start_detached(kind)
-    except Exception as error:
-        print(f"could not start the template builds on {title} ({error}); the scheduler starts them within "
-              f"minutes, or: sbx-admin jobs run template@{kind}:{templates.BASE}", file=sys.stderr)
-        return
-    if not started:
-        print(f"the {templates.BASE} and {templates.DEFAULT} builds on {title} are already running ({where}); "
-              f"`sbx-admin runtime verify {kind}` works once they're built")
-        return
-    print(f"building {templates.BASE} and {templates.DEFAULT} on {title} now (about 10 minutes the first time; "
-          f"{where}); `sbx-admin runtime verify {kind}` works once they're built")
+    # Moved to template_scheduler; runtime_changes.py (not this change's file) still imports it from here.
+    from .template_scheduler import start_template_builds as start
+    start(kind)
 
 
 def do_runtime(a) -> int:

@@ -1,6 +1,6 @@
 """Boat (boat.dev): hosted Ubuntu sandboxes, through Boat's Python SDK
-(boat-sdk), which only this package imports. It has no host side
-(HostSide), like E2B Cloud.
+(boat-sdk), which only this package imports. Hosted, like E2B Cloud: it
+has no host part, and the registry scopes it to this installation (Scoped).
 
 What sbx asks for, as Boat has it, one module each:
 
@@ -27,27 +27,26 @@ import threading
 import urllib.parse
 import urllib.request
 
-from ..base import HOSTNAME, Capabilities, Failed, HostSide
+from ..base import HOSTNAME, Backend, Capabilities, Failed, Limits, TokenPlace
 from .account import Account
 from .build import Builds
 from .errors import call, is_failure
 from .lifecycle import Sandboxes
-from .plans import API_KEY, API_URL_KEY, DEFAULT_API_URL, KIND, LIMITS, ORG_KEY, PRESETS, SETTINGS, limits_from
+from .plans import API_KEY, API_URL_KEY, DEFAULT_API_URL, KIND, LIMITS, ORG_KEY, PRESETS, SETTINGS, SOURCE
 from .previews import COOKIE, HOSTED_DOMAIN, RESERVED_PORTS, Previews
 
 
-class Boat(Sandboxes, Builds, Previews, Account, HostSide):
+class Boat(Sandboxes, Builds, Previews, Account, Backend):
     kind = KIND
     title = "Boat"
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)
     ingress_cleared = ()
     ports = RESERVED_PORTS
-    credential_keys = (API_KEY, API_URL_KEY, ORG_KEY, *(key for key, _ in LIMITS.values()))
+    credential_keys = (API_KEY, API_URL_KEY, ORG_KEY, *(s.key for s in LIMITS))
     secret_key = API_KEY
     settings = SETTINGS
     presets = PRESETS
-    upstream_token_header = None
-    upstream_token_cookie = COOKIE
+    upstream_token_at = TokenPlace("cookie", COOKIE)
     desktop = "provider"
     cold_resume = True
     internal_suffix = HOSTED_DOMAIN
@@ -57,7 +56,7 @@ class Boat(Sandboxes, Builds, Previews, Account, HostSide):
         self._key = ""
         self._url = DEFAULT_API_URL
         self._org = ""
-        self._limits = limits_from({})
+        self._limits = Limits.read(LIMITS, {}, SOURCE)
         self._local = threading.local()
         self.transport = None   # a stand-in for the SDK's HTTP client (tests)
         self.http_open = None   # a stand-in for the signed-URL transfers (tests)
@@ -76,7 +75,7 @@ class Boat(Sandboxes, Builds, Previews, Account, HostSide):
             raise SystemExit(f"{API_URL_KEY}={url!r} in /etc/sbx/runtime.env is not an https URL such as "
                              f"{DEFAULT_API_URL}")
         self._key, self._url, self._org = key, url.rstrip("/"), secrets.get(ORG_KEY, "")
-        self._limits = limits_from(secrets)
+        self._limits = Limits.read(LIMITS, secrets, SOURCE)
 
     def api(self):
         """The SDK's API object over this backend's own connection, one per thread."""

@@ -58,8 +58,9 @@ class TemplateRoomTests(Installation):
             with self.assertRaisesRegex(self.builds.NotBuilt, "cannot build now: building the owner/app template needs 16.0 GB"):
                 self.builds.template_for("owner/app")
             self.assertIn("owner/app", self.builds.stale())   # not failed: the next round tries again
+            from sbx_control import template_scheduler
             with patch.object(self.builds, "build_now", side_effect=self.builds.NoRoom("fixture")) as build:
-                self.builds._build_quietly("owner/app")
+                template_scheduler._build_quietly("owner/app")
             build.assert_called_once()
 
     # While it runs.

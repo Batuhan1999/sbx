@@ -259,7 +259,7 @@ def _signed_in_as(request: Request) -> tuple[str | None, str]:
 def _cookie(request: Request, kind: str | None = None, token: str = "") -> dict:
     """The Cookie header the upstream gets: the browser's without sbx's
     session, with the token for a runtime that wants it in a cookie."""
-    place = preview_proxy.token_places().get(kind) if kind else None
+    place = runtime.upstream_token_places().get(kind) if kind else None
     name = place.name if place and place.place == "cookie" else None
     return {COOKIE: preview_proxy.upstream_cookie(request.headers.get("cookie", ""), name, token)}
 

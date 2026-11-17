@@ -338,8 +338,9 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
         t = t.set_start_cmd(platform.start(own_desktop), platform.ready_port(own_desktop))
         hidden = [token for token, _ in served]
         try:
-            return runtime.build_template(t, alias=runtime.template_name(p.name, kind), cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],
-                                          disk_mb=p.size["disk_mb"], on_log=build_logger(p.key, hidden, kind), kind=kind)
+            return runtime.build_template(t, alias=runtime.template_name(p.name, kind), cpu=p.size["cpu"],
+                                          memory_mb=p.size["memory_mb"], disk_mb=p.size["disk_mb"],
+                                          on_log=build_logger(p.key, hidden, kind), kind=kind)
         except Exception as error:
             # The runtime's error repeats the command that failed.
             raise BuildFailed(mask(str(error), hidden)) from None

@@ -1,7 +1,7 @@
 """Previews on Boat: each port answers only with its own token. A port is
 exposed the first time the gate asks for it (private, never public; relayed
 from loopback when the app listens only there) and its token kept; nginx
-appends it to the request's Cookie (upstream_token_cookie). Boat's own
+appends it to the request's Cookie (upstream_token_at). Boat's own
 desktop (desktop = "provider") replaces sbx's noVNC.
 
 What the backend keeps of a sandbox lives in one Kept per sandbox: a stop

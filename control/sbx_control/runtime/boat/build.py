@@ -23,6 +23,7 @@ from .sandbox import HOME, TEMPLATE_FILE, Handle
 
 INSTALL_LABEL, TEMPLATE_LABEL, BUILD_LABEL = "sbx_install", "sbx_template", "sbx_build"
 START_UNIT = "sbx-start"
+CPU_KEY = next(s.key for s in LIMITS if s.field == "cpu")
 BUILD_SECONDS = 4 * 3600   # the longest a builder runs; one older is an orphan
 SAVED_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 
@@ -118,7 +119,7 @@ class Builds:
                          "there. Start it from ubuntu:24.04 or from another template.")
         kind = machine(cpu, memory_mb, disk_mb)
         if kind not in [m[0] for m in MACHINES if m[1] <= (self._limits.cpu or 16)]:
-            raise LimitRefused(f"a {cpu} vCPU template needs Boat's {kind} machines, beyond {LIMITS['cpu'][0]}",
+            raise LimitRefused(f"a {cpu} vCPU template needs Boat's {kind} machines, beyond {CPU_KEY}",
                                field="cpu", asked=cpu, allowed=self._limits.cpu)
         request = CreateSandboxRequest(type=kind, ttl_seconds=min(BUILD_SECONDS, self._limits.timeout_seconds or BUILD_SECONDS),
                                        no_env=True, environment=None, name=f"build {alias}"[:120],

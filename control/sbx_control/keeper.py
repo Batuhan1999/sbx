@@ -6,7 +6,7 @@ import shlex
 import threading
 import time
 
-from . import core, delivery, endpoints, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, views
+from . import core, delivery, endpoints, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, tls_pin, views
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -191,7 +191,7 @@ def look_once():
             # timeout): nothing failed, the next round sees it as it is.
             gate.forget_preview_resume(info.sandbox_id)
     try:   # a new certificate's pin; delivered for good once every runtime listed (complete)
-        sandboxes.redeliver_on_certificate_change(((i.metadata or {}).get("sbx") for i in infos), complete)
+        tls_pin.redeliver(((i.metadata or {}).get("sbx") for i in infos), complete)
     except Exception as error:   # the round's other work goes on; tried again next round
         print(f"keeper: certificate pin delivery: {error!r}", flush=True)
     try:   # endpoint certificates that run out soon: written again (running now, paused when they resume)

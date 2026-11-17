@@ -2,7 +2,7 @@
 sbx may ask of a Boat account (Limits) and the machine class a size needs."""
 from __future__ import annotations
 
-from ..base import LimitRefused, Limits, Preset, SettingField
+from ..base import LimitRefused, LimitSpec, Preset, SettingField, limit_settings
 
 KIND = "boat"
 API_KEY = "BOAT_API_KEY"
@@ -17,24 +17,21 @@ MACHINES = (("small", 2, 4 * 1024, 51 * 1024), ("default", 4, 8 * 1024, 51 * 102
             ("large", 8, 16 * 1024, 111 * 1024), ("xlarge", 16, 32 * 1024, 251 * 1024))
 MONTH = 30 * 86400   # the longest auto-stop on a paid plan
 
-# The limits, by Limits field: the runtime.env key and its default, the $20
-# plan's (PRESETS).
-LIMITS = {"timeout_seconds": ("BOAT_MAX_TIMEOUT", MONTH), "cpu": ("BOAT_MAX_CPU", 8),
-          "memory_mb": ("BOAT_MAX_MEMORY_MB", 16 * 1024), "disk_mb": ("BOAT_MAX_DISK_MB", 111 * 1024),
-          "sandboxes": ("BOAT_MAX_SANDBOXES", 100)}
-LIMIT_FORM = {"timeout_seconds": ("Longest run", "seconds", 300, MONTH, 300),
-              "cpu": ("vCPUs", "", 2, 16, 2),
-              "memory_mb": ("Memory", "MiB", 4096, 32768, 4096),
-              "disk_mb": ("Disk", "MiB", 51 * 1024, 251 * 1024, 1024),
-              "sandboxes": ("Sandboxes at once", "", 1, 2000, 1)}
+# The limits: the runtime.env key that sets each, its default (the $20
+# plan's, PRESETS) and the web app's slider.
+LIMITS = (
+    LimitSpec("timeout_seconds", "BOAT_MAX_TIMEOUT", MONTH, "Longest run", "seconds", 300, MONTH, 300),
+    LimitSpec("cpu", "BOAT_MAX_CPU", 8, "vCPUs", "", 2, 16, 2),
+    LimitSpec("memory_mb", "BOAT_MAX_MEMORY_MB", 16 * 1024, "Memory", "MiB", 4096, 32768, 4096),
+    LimitSpec("disk_mb", "BOAT_MAX_DISK_MB", 111 * 1024, "Disk", "MiB", 51 * 1024, 251 * 1024, 1024),
+    LimitSpec("sandboxes", "BOAT_MAX_SANDBOXES", 100, "Sandboxes at once", "", 1, 2000, 1),
+)
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From Boat's dashboard: API keys (boat_…)."),
     SettingField(API_URL_KEY, "API URL", default=DEFAULT_API_URL, optional=True, rekey=True,
                  help="Only for another Boat API."),
     SettingField(ORG_KEY, "Organization", optional=True, help="Bill an organization's wallet instead of yours."),
-    *(SettingField(key, LIMIT_FORM[field][0], default=str(default), kind="int", limit=field, unit=LIMIT_FORM[field][1],
-                   min=LIMIT_FORM[field][2], max=LIMIT_FORM[field][3], step=LIMIT_FORM[field][4])
-      for field, (key, default) in LIMITS.items()),
+    *limit_settings(LIMITS),
 )
 # Boat's plans as limits, from https://docs.boat.dev/pricing.md,
 # https://docs.boat.dev/limits.md and https://docs.boat.dev/machines.md (read
@@ -48,6 +45,7 @@ SETTINGS = (
 # trial account is accepted (sandboxes from templates built once it pays)
 # and a template build on it is refused before it starts a builder.
 _PLAN_SOURCE = "https://docs.boat.dev/pricing.md"
+SOURCE = "your Boat plan"   # what sets the limits, as messages name it
 
 
 TRIAL_NOTE = "Trial: templates need the first payment (Boat saves no snapshots during the trial)."
@@ -55,9 +53,8 @@ TRIAL_NOTE = "Trial: templates need the first payment (Boat saves no snapshots d
 
 def _plan(name, title, sandboxes, largest, timeout=None, note=""):
     _, cpu, memory, disk = next(m for m in MACHINES if m[0] == largest)
-    return Preset(name, title, {"BOAT_MAX_TIMEOUT": str(timeout or MONTH), "BOAT_MAX_CPU": str(cpu),
-                                "BOAT_MAX_MEMORY_MB": str(memory), "BOAT_MAX_DISK_MB": str(disk),
-                                "BOAT_MAX_SANDBOXES": str(sandboxes)}, _PLAN_SOURCE, note=note)
+    return Preset(name, title, {"timeout_seconds": timeout or MONTH, "cpu": cpu, "memory_mb": memory,
+                                "disk_mb": disk, "sandboxes": sandboxes}, _PLAN_SOURCE, note=note).bound(LIMITS)
 
 
 PRESETS = (_plan("trial", "Trial", 2, "default", timeout=2 * 3600, note=TRIAL_NOTE), _plan("20", "$20", 100, "large"),
@@ -68,20 +65,6 @@ TRIAL_REFUSAL = ("Boat's free trial saves no snapshots (\"Saved snapshots are no
                  "(Billing), then build again.")
 KEY_WARN_DAYS = 14
 PLAN_CACHE_SECONDS = 300
-
-
-def limits_from(secrets: dict) -> Limits:
-    found = {}
-    for field, (key, default) in LIMITS.items():
-        value = secrets.get(key) or default
-        try:
-            found[field] = int(value)
-        except (TypeError, ValueError):
-            raise SystemExit(f"{key}={value} in /etc/sbx/runtime.env is not a whole number") from None
-    try:
-        return Limits(**found, source="your Boat plan", keys={f: key for f, (key, _) in LIMITS.items()})
-    except ValueError as error:
-        raise SystemExit(f"{LIMITS['timeout_seconds'][0]} in /etc/sbx/runtime.env: {error}") from None
 
 
 def machine(cpu: int | None, memory_mb: int | None, disk_mb: int | None) -> str:
