@@ -5,7 +5,7 @@ import ExtensionsPage from '@/pages/extensions/ExtensionsPage'
 import { webAddresses } from '@/components/LinkedText'
 import { AttachForm } from '@/components/AttachForm'
 import { inputLabel, providers, sentence, sentences, summary, suggestKey } from '@/lib/packages'
-import { ME, renderApp, stubApi } from './render'
+import { choose, isChecked, ME, optionNames, renderApp, stubApi } from './render'
 
 const LOGO = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4='
 const pkg = (name: string, title: string, kind: 'connection' | 'provision', logo = '') => ({
@@ -103,7 +103,7 @@ describe('the catalog for people', () => {
     expect(within(panel).queryByText(/has a check|shared connection|management_key/)).toBeNull()
   })
 
-  it('asks for inputs by label, offers choices as a list and yes or no as a checkbox', async () => {
+  it('asks for inputs by label, offers choices as a list and yes or no as a switch', async () => {
     const calls = stubApi({
       'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
       'GET /api/catalog/openrouter-account': { ...ACCOUNT, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
@@ -117,11 +117,11 @@ describe('the catalog for people', () => {
     await user.type(await within(dialog).findByLabelText('Management key'), 'fixture-key')
     expect(calls.some(c => c.url.startsWith('/api/catalog/openrouter-account'))).toBe(false)
     expect(within(dialog).getByText('A management key.')).toBeTruthy()
-    const region = within(dialog).getByLabelText('Data region') as HTMLSelectElement
-    expect([...region.options].map(o => o.text)).toEqual(['Europe', 'United States'])
-    await user.selectOptions(region, 'us')
-    const verify = within(dialog).getByRole('checkbox', { name: /Verify/ }) as HTMLInputElement
-    expect(verify.checked).toBe(true)
+    const region = within(dialog).getByLabelText('Data region')
+    expect(await optionNames(user, region)).toEqual(['Europe', 'United States'])
+    await choose(user, region, 'United States')
+    const verify = within(dialog).getByRole('switch', { name: /Verify/ })
+    expect(isChecked(verify)).toBe(true)
     await user.click(verify)
     expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('openrouter')
     await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
@@ -172,10 +172,10 @@ describe('editing a connection', () => {
     const key = await within(dialog).findByLabelText('Management key') as HTMLInputElement
     expect(key.value).toBe('')
     expect(key.placeholder).toBe('Saved; leave empty to keep it')
-    expect((within(dialog).getByLabelText('Data region') as HTMLSelectElement).value).toBe('us')
-    expect((within(dialog).getByRole('checkbox', { name: /Verify/ }) as HTMLInputElement).checked).toBe(false)
+    expect(within(dialog).getByLabelText('Data region').textContent).toBe('United States')
+    expect(isChecked(within(dialog).getByRole('switch', { name: /Verify/ }))).toBe(false)
     expect(within(dialog).queryByLabelText('Name')).toBeNull()
-    await user.selectOptions(within(dialog).getByLabelText('Data region'), 'eu')
+    await choose(user, within(dialog).getByLabelText('Data region'), 'Europe')
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toEqual({
       package: 'openrouter-account', key: 'openrouter', inputs: { region: 'eu', verify: 'false' },
@@ -263,7 +263,7 @@ describe('editing a package\'s settings', () => {
       secret_inputs: { token: true }, connections: {}, exports: [], disabled: false, state: 'ready', problem: null, project: false }
     renderApp(<AttachForm repo="acme/app" entry={entry as never} attachment={attachment as never} onDone={() => {}} />)
     const user = userEvent.setup()
-    await user.selectOptions(await screen.findByLabelText('Limit resets'), '')
+    await choose(user, await screen.findByLabelText('Limit resets'), 'Never')
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ inputs: { limit_reset: '' } }))
     expect((calls.find(c => c.method === 'POST')!.body as { inputs: Record<string, string> }).inputs).not.toHaveProperty('token')

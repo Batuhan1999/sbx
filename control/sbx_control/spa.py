@@ -1,6 +1,5 @@
 """Serve the web app and enforce same-origin writes."""
 import pathlib
-import secrets
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
@@ -26,16 +25,11 @@ async def same_origin_writes(request: Request, call_next):
 DIST = pathlib.Path(__file__).parent / "web_dist"
 
 
-def csp(nonce: str = "") -> str:
-    """The page's policy. nonce: the one <style> element the page itself may
-    add (Radix's scroll lock, whose CSS depends on the scrollbar's width, so
-    no hash fits); the page reads it from its csp-nonce meta tag."""
-    style = f"'self' 'nonce-{nonce}'" if nonce else "'self'"
-    return (f"default-src 'self'; img-src 'self' data:; style-src {style}; script-src 'self'; connect-src 'self'; "
-            "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com")
-
-
-HEADERS = {"Content-Security-Policy": csp(), "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin"}
+# Scripts only from this server. Inline styles are allowed: the UI libraries (Radix, Sonner) add
+# their own <style> at runtime, and React escapes all text, so no outside text becomes markup.
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
+       "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com")
+HEADERS = {"Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin"}
 TYPES = {".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".svg": "image/svg+xml",
          ".png": "image/png", ".map": "application/json"}
 
@@ -54,9 +48,7 @@ def index() -> HTMLResponse:
     if not page.exists():
         return HTMLResponse("<!doctype html><title>sbx</title><p>The web app is not built: "
                             "<code>cd web && npm run build</code>.</p>", status_code=503, headers=HEADERS)
-    nonce = secrets.token_urlsafe(18)
-    html = page.read_text().replace("<head>", f'<head>\n    <meta name="csp-nonce" content="{nonce}" />', 1)
-    return HTMLResponse(html, headers={**HEADERS, "Content-Security-Policy": csp(nonce), "Cache-Control": "no-store"})
+    return HTMLResponse(page.read_text(), headers={**HEADERS, "Cache-Control": "no-store"})
 
 
 @router.get("/app", include_in_schema=False)

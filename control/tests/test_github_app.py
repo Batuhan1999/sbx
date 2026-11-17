@@ -35,7 +35,7 @@ class GitHubAppValues(Installation):
         listed = {line.split()[0]: line for line in out.getvalue().splitlines()}
         self.assertIn("set", listed["github:APP"])
         self.assertNotIn("BEGIN KEY", out.getvalue())
-        self.assertIn("not set", listed["LOGIN_PASSWORD"])
+        self.assertIn("not set", listed["OIDC_CLIENT_SECRET"])
 
 
 

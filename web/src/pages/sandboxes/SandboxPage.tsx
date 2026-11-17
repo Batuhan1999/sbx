@@ -17,6 +17,7 @@ import { ago, dateTime, memory, plural } from '@/lib/format'
 import { lifecycleSteps, sandboxStatus, type LifecycleStep } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { mainPreview } from './SandboxTable'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 
 export default function SandboxPage() {
   const { name = '' } = useParams()
@@ -199,12 +200,14 @@ function Logs({ s }: { s: SandboxDetail }) {
     {data && <div className="space-y-3">
       {data.commit && <p className="text-[12.5px] text-muted">At <Code>{data.commit.slice(0, 10)}</Code> {data.subject}</p>}
       {data.logs.length === 0 && <p className="text-[13px] text-muted">The recipe names no readable logs.</p>}
-      {data.logs.map(l => <details key={l.path} open={data.logs.length === 1} className="rounded-md border border-line">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[12px]">{l.path}</summary>
-        <pre className="max-h-96 overflow-auto border-t border-line bg-sunken p-3 text-[11.5px] leading-relaxed">{l.text || '(empty)'}</pre>
-      </details>)}
-      {data.env.length > 0 && <details><summary className="cursor-pointer text-[12.5px] text-muted">{plural(data.env.length, 'environment variable')} set (names only)</summary>
-        <p className="mt-2 break-words font-mono text-[11.5px] text-muted">{data.env.join('  ')}</p></details>}
+      {data.logs.map(l => <Collapsible key={l.path} defaultOpen={data.logs.length === 1} className="rounded-md border border-line">
+        <CollapsibleTrigger className="px-3 py-2 font-mono text-[12px] text-ink">{l.path}</CollapsibleTrigger>
+        <CollapsibleContent><pre className="max-h-96 overflow-auto border-t border-line bg-sunken p-3 text-[11.5px] leading-relaxed">{l.text || '(empty)'}</pre></CollapsibleContent>
+      </Collapsible>)}
+      {data.env.length > 0 && <Collapsible>
+        <CollapsibleTrigger className="w-auto text-[12.5px]">{plural(data.env.length, 'environment variable')} set (names only)</CollapsibleTrigger>
+        <CollapsibleContent><p className="mt-2 break-words font-mono text-[11.5px] text-muted">{data.env.join('  ')}</p></CollapsibleContent>
+      </Collapsible>}
     </div>}
   </Panel>
 }
