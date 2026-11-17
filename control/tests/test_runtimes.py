@@ -598,6 +598,37 @@ class Review(TwoRuntimes, Installation):
             file.write_text(before)
         self.assertEqual(discarded, ["sealed-2", "sealed-1", "sealed-3"])
 
+    def test_an_unreadable_backup_discards_nothing(self):
+        from pathlib import Path
+        from sbx_control import paths, vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        backup = paths.state_dir() / "upgrade-backups/20261117-000001"
+        backup.mkdir(parents=True)
+        self.addCleanup(__import__("shutil").rmtree, backup.parent)
+        (backup / "runtime.env").write_text("E2B_API_KEY=sealed-1\n")
+        made, discarded = iter(range(1, 10)), []
+        real_read = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path.parent == backup:
+                raise OSError("unreadable")
+            return real_read(path, *args, **kwargs)
+
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append), \
+                    patch.object(Path, "read_text", read_text):
+                for value in ("one", "two", "three", "four"):
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        self.assertEqual(discarded, [])   # a backup it could not read may name any of them
+
     def test_amp_caches_from_before_are_the_default_runtime_s_once(self):
         from sbx_control import state
         from sbx_control.connectors.amp import Amp

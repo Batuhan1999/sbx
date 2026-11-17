@@ -448,6 +448,38 @@ class RouteTests(Setup, Installation):
             self.assertEqual([r["name"] for r in self.endpoints.routes("fake", "public/repo").rows], ["temporal"])
             self.assertEqual(self.endpoints.routes("fake", "nobody/repo").rows, [])
 
+    def test_running_sandboxes_get_a_grant_a_revoke_an_add_and_a_removal_without_a_restart(self):
+        from sbx_control import sandboxes
+        with patch.object(sandboxes, "deliver_env", return_value={"running": 1, "paused": 0}) as deliver:
+            self.endpoints.set_repos("temporal", ["owner/app", "new/repo"])          # public/repo revoked, new/repo granted
+            self.assertEqual(sorted(c.args[0] for c in deliver.call_args_list), ["new/repo", "public/repo"])
+            for call in deliver.call_args_list:
+                self.assertEqual((call.args[1], call.kwargs), (["SBX_ENDPOINT_TEMPORAL"], {"restart": False}))
+            deliver.reset_mock()
+            self.endpoints.add(name="cache", target="10.0.0.20:6379", repos=["owner/app"], by="test")
+            self.assertEqual([c.args[:2] for c in deliver.call_args_list], [("owner/app", ["SBX_ENDPOINT_CACHE"])])
+            deliver.reset_mock()
+            self.endpoints.remove("cache")
+            self.assertEqual([c.args[:2] for c in deliver.call_args_list], [("owner/app", ["SBX_ENDPOINT_CACHE"])])
+            deliver.reset_mock()
+            self.endpoints.set_repos("temporal", ["owner/app", "new/repo"])          # nothing changed: nothing to bring
+            deliver.assert_not_called()
+        with provider(self.runtime):   # what the revoked repo's sandbox is written with now
+            routes = self.endpoints.routes("fake", "public/repo")
+        self.assertEqual(routes.env({"A": "1"}), {"A": "1"})
+        self.assertIsNone(routes.contribution("box", "public/repo"))
+
+    def test_a_restart_writes_the_runtime_again(self):
+        from sbx_control import core
+        info = self.info("box")
+        with patch.object(core, "connect", return_value=("vm", info)), \
+                patch.object(core, "restore_runtime", return_value=False), \
+                patch.object(core, "app_of", return_value=SimpleNamespace(repo="owner/app")), \
+                patch.object(core, "_refresh_env") as refresh, patch.object(core, "_bring_up") as bring_up:
+            core._restart("box", SimpleNamespace(configure_workspace=lambda repo: None))
+        refresh.assert_called_once_with("vm", info, False)   # no restart of its own: the restart follows
+        bring_up.assert_called_once()
+
     def test_the_forwarder_s_ports_are_never_previews(self):
         from sbx_control import core, recipes
         listening = ("LISTEN 0 64 127.0.0.1:17400 0.0.0.0:*\nLISTEN 0 64 127.0.0.1:17401 0.0.0.0:*\n"
@@ -479,6 +511,8 @@ class RouteTests(Setup, Installation):
         core.write_runtime(sbx, "box", envs, layer)
         self.assertTrue(any("forward ensure" in c and f"{contributions.EXT}/endpoints/config.json" in c
                             for c in commands), commands)
+        # Certificates pushed or pulled for the runtime before go: a revoked endpoint's among them.
+        self.assertTrue(any(f"rm -rf {contributions.EXT}.old {core.RUN}/endpoint-certs" in c for c in commands))
 
 
 class ForwarderTests(Setup, Installation):

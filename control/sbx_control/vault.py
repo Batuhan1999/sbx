@@ -179,15 +179,16 @@ def seal_runtime_file() -> int:
     return 1
 
 
-def _backed_up_references() -> set:
+def _backed_up_references() -> set | None:
     """Every value the upgrade backups' copies of runtime.env hold (each
-    one's rollback.sh restores it), references into the store among them."""
+    one's rollback.sh restores it), references into the store among them;
+    None when a copy could not be read (nothing may be discarded then)."""
     found = set()
     for copy in (paths.state_dir() / "upgrade-backups").glob("*/runtime.env"):
         try:
             text = copy.read_text()
         except OSError:
-            continue
+            return None
         for line in text.splitlines():
             _, sep, value = line.partition("=")
             if sep and not line.lstrip().startswith("#") and value.strip():
@@ -206,6 +207,9 @@ def _keep_two(name: str, reference: str) -> None:
     history = state.Setting(f"runtime_sealed:{name}", encoded=True)
     found = [*history.get([]), reference]
     named = _backed_up_references()
+    if named is None:   # a backup could not be read: it may name any of them
+        history.set(found)
+        return
     kept = [old for old in found[:-2] if old in named]
     for old in found[:-2]:
         if old in named:
