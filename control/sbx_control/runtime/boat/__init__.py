@@ -94,22 +94,25 @@ SETTINGS = (
 # https://docs.boat.dev/limits.md and https://docs.boat.dev/machines.md (read
 # 2026-11-17). Every paid plan: auto-stop up to 30 days. $20: 100 sandboxes
 # at once, sizes up to large (8 vCPUs, 16 GB, 111 GB). $100: 300 at once and
-# xlarge (16 vCPUs, 32 GB, 251 GB). $500: 1,000. $2000: 2,000. The free trial
-# is not offered: it can't save snapshots, which sbx's templates are
-# ("trial_saved_snapshots_not_allowed"), and caps auto-stop at 2 hours.
+# xlarge (16 vCPUs, 32 GB, 251 GB). $500: 1,000. $2000: 2,000. The trial:
+# 2 at once, auto-stop at most 2 hours, the default size (4 vCPUs, 8 GB); the
+# docs say it can't save snapshots ("trial_saved_snapshots_not_allowed"), the
+# dashboard lists 10 included: sbx lets Boat decide and shows its refusal.
 _PLAN_SOURCE = "https://docs.boat.dev/pricing.md"
 
 
-def _plan(name, title, sandboxes, largest):
+def _plan(name, title, sandboxes, largest, timeout=None):
     _, cpu, memory, disk = next(m for m in MACHINES if m[0] == largest)
-    return Preset(name, title, {"BOAT_MAX_TIMEOUT": str(MONTH), "BOAT_MAX_CPU": str(cpu),
+    return Preset(name, title, {"BOAT_MAX_TIMEOUT": str(timeout or MONTH), "BOAT_MAX_CPU": str(cpu),
                                 "BOAT_MAX_MEMORY_MB": str(memory), "BOAT_MAX_DISK_MB": str(disk),
                                 "BOAT_MAX_SANDBOXES": str(sandboxes)}, _PLAN_SOURCE)
 
 
-PRESETS = (_plan("20", "$20", 100, "large"), _plan("100", "$100", 300, "xlarge"),
+PRESETS = (_plan("trial", "Trial", 2, "default", timeout=2 * 3600), _plan("20", "$20", 100, "large"),
+           _plan("100", "$100", 300, "xlarge"),
            _plan("500", "$500", 1000, "xlarge"), _plan("2000", "$2000", 2000, "xlarge"))
-TRIAL_NOTE = "The free trial can't save snapshots, which sbx's templates are: start a paid plan ($20 or more)."
+TRIAL_NOTE = ("On the trial Boat may refuse to save snapshots, which sbx's templates are; if it does, "
+              "start a paid plan ($20 or more).")
 KEY_WARN_DAYS = 14
 
 
@@ -953,7 +956,7 @@ class Boat(HostSide):
         facts["running"] = running
         notes = []
         if facts.get("plan") == "trial":
-            notes.append("trial: templates need a paid plan")
+            notes.append("trial")
         if warning := self._expiry_warning(facts):
             notes.append(warning)
         most = self._limits.sandboxes
@@ -972,7 +975,7 @@ class Boat(HostSide):
                           f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})")]
         checks = [Check("Boat API", True, f"answers; plan {facts.get('plan') or 'unknown'}; {count} saved snapshots")]
         if facts.get("plan") == "trial":
-            checks.append(Check("Boat plan", False, "the free trial", TRIAL_NOTE))
+            checks.append(Check("Boat plan", True, "the trial: 2 sandboxes at once, runs up to 2 hours"))
         if warning := self._expiry_warning(facts):
             checks.append(Check("Boat API key", False, warning, "create a new key and add it again"))
         return checks

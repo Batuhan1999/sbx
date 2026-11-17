@@ -260,9 +260,9 @@ class Backend(unittest.TestCase):
 
 
 class Settings(unittest.TestCase):
-    def test_presets_are_the_paid_plans_and_the_defaults_the_20_plan(self):
+    def test_presets_are_the_trial_and_the_paid_plans_and_the_defaults_the_20_plan(self):
         from sbx_control.runtime import boat
-        self.assertEqual([p.name for p in boat.PRESETS], ["20", "100", "500", "2000"])   # no trial: no snapshots
+        self.assertEqual([p.name for p in boat.PRESETS], ["trial", "20", "100", "500", "2000"])
         twenty = boat.PRESETS[0].values
         self.assertEqual((twenty["BOAT_MAX_CPU"], twenty["BOAT_MAX_SANDBOXES"], twenty["BOAT_MAX_TIMEOUT"]),
                          ("8", "100", str(30 * 86400)))
@@ -298,7 +298,7 @@ class Settings(unittest.TestCase):
         self.assertIn("trial", found.summary)
         self.assertIn("expires in", found.summary)
         checks = {c.name: c for c in backend.test()}
-        self.assertFalse(checks["Boat plan"].ok)
+        self.assertTrue(checks["Boat plan"].ok)   # Boat decides: it refuses what the trial can't do
         self.assertFalse(checks["Boat API key"].ok)
 
 
