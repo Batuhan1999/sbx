@@ -80,6 +80,7 @@ run, using the same checks as the install. It exits 1 when sbx can't be
 installed here.
 
 ```text
+==> Host check (nothing is changed)
 os:         Ubuntu 24.04.1 LTS
 machine:    a VM (kvm), 8 CPUs
 memory:     15988 MiB
@@ -185,8 +186,9 @@ Decide:
      sbx's secret store; delete the file then (`rm ~/.sbx-install/e2b-key`).
   3. A domain (step 3). Provider runtimes need one.
 - **Several runtimes** are fine. The first one enabled is the default for
-  new sandboxes. Change it with `sbx runtimes default KIND`, or set it per
-  repository.
+  new sandboxes. Change it later with `sbx runtimes default KIND` (step 5d
+  installs that CLI) or `ssh HOST sudo sbx-admin runtime default KIND`, or set
+  it per repository.
 - **Untrusted public repositories** (`access.public_repos`) can't be served
   while Boat is enabled (it has no per-sandbox egress rules). They can't
   share a server with managed servers or `internal_cidrs` either.
@@ -217,8 +219,9 @@ If the decision needs a domain, or the owner prefers one, ask for:
   - `none`: a self-signed certificate, for a quick test only. With
     `D` set to the public IP with dashes for dots, plus `.sslip.io` (IP
     `203.0.113.10` → `203-0-113-10.sslip.io`), DNS needs no records at all.
-    Browsers warn, and the `sbx` CLI refuses the certificate (only `sbx setup
-    --insecure` takes it), so steps 6 to 8 can't use the CLI. In provider
+    Browsers warn, and the `sbx` CLI refuses the certificate (only
+    `python3 ~/.sbx-install/sbx.py setup … --insecure` takes it), so steps 6
+    to 8 can't use the CLI. In provider
     sandboxes, only sbx's own calls accept it. Use it to look at sbx, not to
     onboard a team or a repository.
 
@@ -269,7 +272,7 @@ the repository needs them.
 
 ## 5. Finish the setup
 
-`sbx setup` takes the setup wizard's steps on your machine. It authenticates
+`python3 ~/.sbx-install/sbx.py setup` takes the setup wizard's steps on your machine. It authenticates
 with the setup link, which it reads from a file. Fetch the link into that
 file without printing it:
 
@@ -295,7 +298,9 @@ waits until HTTPS works, for up to 15 minutes:
 | IP only | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --ip` |
 | quick test | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --domain D --email E --dns none` |
 
-- `address ready: https://login.D` (or `https://IP`) means it is done.
+- `address ready: https://login.D` (or `https://IP`) means it is done. With
+  `--domain` the line goes on with `; the setup link is now
+  https://login.D/setup` (no token: not a secret).
 - `sbx-control: Check the DNS records ...` lists each DNS check. Fix the
   record it names and run the same line again.
 - `waiting for the certificate: ...` that runs out usually means a closed
@@ -334,15 +339,15 @@ python3 ~/.sbx-install/sbx.py setup admin owner@example.com --link-file ~/.sbx-i
 python3 ~/.sbx-install/sbx.py setup finish --admin owner@example.com --link-file ~/.sbx-install/setup-link < ~/.sbx-install/admin-password
 ```
 
-`finish` runs the server's checks, including one that starts a sandbox and
-reaches this server from inside it.
+`finish` runs the server's checks. Once the base template is built, one of
+them starts a sandbox and reaches this server from inside it; while the base
+template is still building, that check passes as `not checked yet`, so
+confirm it in step 8 (`sbx-admin doctor`).
 
 - `set up: https://login.D; the setup link no longer works. Next: sbx login`
   means it is done.
 - `The server needs attention before setup can finish` is followed by each
-  failed check. If the check says the base template is still building, wait
-  five minutes and run `finish` again. For anything else, fix what the check
-  names, then run `finish` again.
+  failed check. Fix what the check names, then run `finish` again.
 
 Tell the owner the admin password is in `~/.sbx-install/admin-password`.
 They can change it under **CLI & access**. Teammates get their own accounts
@@ -360,11 +365,11 @@ doesn't work with the quick test's certificate:
 
 ```sh
 curl -fsSL https://login.D/install | sh    # IP only: https://IP/install
-~/.local/bin/sbx login
 ```
 
-`sbx login` opens the browser. The owner signs in there with
-`owner@example.com` and the password file. When it prints that you are
+The installer ends with `sbx login`, which opens the browser. The owner signs
+in there with `owner@example.com` and the password file (if that sign-in was
+skipped, run `~/.local/bin/sbx login`). When it prints that you are
 signed in, `~/.local/bin/sbx runtimes` lists the enabled runtimes. Below,
 `sbx` means `~/.local/bin/sbx`. The desktop CLI runs on macOS only. On
 Linux, use the [HTTP API](reference.md#http-api) with a token from
@@ -405,9 +410,9 @@ Keep only the lines you need.
   sbx endpoints add --name temporal --target 10.0.0.5:7233 --repo owner/app   # a private host, per repo
   ```
 
-  `add` prints `NAME: on, at NAME.D:443` when it is done, and exits non-zero
+  `add` prints `NAME: on, at NAME.D` when it is done, and exits non-zero
   with the reason when it fails. On the server, `sbx-admin endpoint ls|add`
-  takes the same flags.
+  takes the same flags; it prints JSON and does not wait for the change.
 
   A repository that needs one and doesn't have it is refused on that runtime,
   and the refusal names the command. Sandboxes connect to `127.0.0.1` in
@@ -450,8 +455,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://login.D/   # from your machine
 
 - `doctor` and `runtimes test` print one line per check, `ok` or `NO` with
   the fix. Fix every `NO` before you go on.
-- When `runtimes test` says the base template is still building, wait and
-  run it again.
+- `runtimes test` counts only once it reports `Base template: built` and a
+  reachability line: while the base template builds, it passes without
+  reaching the server from a sandbox. Wait and run it again until it does.
 - `runtime verify` reports each step of a throwaway sandbox's life. Run it
   for each enabled runtime.
 
@@ -494,18 +500,19 @@ Before you start, make sure the recipe gives each sandbox:
   other sandbox's data.
 
 Then check, with two disposable, named sandboxes A and B on each runtime the
-repository uses (`sbx up A --runtime KIND`):
+repository uses (`sbx up check-a --runtime KIND`, and `check-b`; a name is
+lowercase letters, digits and dashes):
 
 - [ ] Both launch cleanly from the recipe and pass a useful app action.
 - [ ] Migrate and seed both. Change or reset A's data; B still has its original
       data and schema.
-- [ ] Restart A (`sbx sandbox restart A`), then pause and resume it
-      (`sbx sandbox pause|resume A`, or `POST /api/sandboxes/A/pause` and `/resume`):
+- [ ] Restart A (`sbx sandbox restart check-a`), then pause and resume it
+      (`sbx sandbox pause|resume check-a`, or `POST /api/sandboxes/check-a/pause` and `/resume`):
       its working data is still there. (On Boat every resume is a cold boot:
       the app must start again from the recipe.)
 - [ ] On a provider runtime with an endpoint: a real query from a sandbox
       reaches the shared server through it.
-- [ ] Delete A (`sbx down A`): B still works, and A's owned resources (its
+- [ ] Delete A (`sbx down check-a`): B still works, and A's owned resources (its
       database, branch, role or namespace) are gone while the shared servers stay.
 - [ ] No secret value appears in the recipe, the template, commits or logs.
 

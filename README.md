@@ -120,8 +120,9 @@ Running them at E2B Cloud or Boat (any small VPS, no KVM):
   private hosts only through [endpoints](docs/reference.md#endpoints).
 
 A server with KVM can run Embed and a provider; add one later in Settings →
-Sandbox runtimes, or with `sbx runtimes add KIND` (the key on stdin). For
-every server:
+Sandbox runtimes, or with `sbx runtimes add KIND --plan PLAN --secret KEY <
+key-file` (KEY is the runtime's key name, such as `E2B_CLOUD_API_KEY`; `sbx
+runtimes available` lists each runtime's keys and plans). For every server:
 
 - Inbound SSH and HTTPS (443). Validating a certificate for a bare IP also needs
   inbound TCP 80. A domain is optional.

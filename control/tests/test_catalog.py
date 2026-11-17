@@ -376,7 +376,7 @@ class CatalogTests(Server):
         # The canonical guides follow the steps, read from the docs themselves.
         for heading in ("# Service selection", "# Acceptance checklist", "# Resource guide"):
             self.assertIn(f"\n{heading}\n", brief)
-        self.assertIn("Delete A (`sbx down A`)", brief)
+        self.assertIn("Delete A (`sbx down check-a`)", brief)
         self.assertNotIn("Record what you verified", brief.split("# Acceptance checklist")[0])
 
     def test_a_release_ships_the_docs_the_setup_brief_carries(self):
