@@ -25,36 +25,41 @@ function inTurn(...answers: { status: number; body: unknown }[]) {
   return () => answers[Math.min(i++, answers.length - 1)]
 }
 
-const section = () => screen.findByRole('region', { name: 'Reachable from provider sandboxes' })
+const section = () => screen.findByRole('region', { name: 'Shared servers' })
 /** No port of a target shows anywhere on the page. */
 const noPort = () => expect(document.body.textContent).not.toMatch(/:\d{2,5}\b|5432|8080/)
 
-describe('Settings → Reachable from provider sandboxes', () => {
+describe('Settings → Shared servers', () => {
   it('is hidden while no runtime needs it and nothing is reachable', async () => {
     const calls = stubApi({ 'GET /api/endpoints': data({ needed: false }) })
     renderApp(<Endpoints />)
     await waitFor(() => expect(calls.some(c => c.url === '/api/endpoints')).toBe(true))
     await new Promise(r => setTimeout(r, 20))
-    expect(screen.queryByText('Reachable from provider sandboxes')).toBeNull()
+    expect(screen.queryByText('Shared servers')).toBeNull()
   })
 
-  it('lists each endpoint: its address, what it is, its state and who uses it, never a port', async () => {
-    stubApi({ 'GET /api/endpoints': data({ needed: false, endpoints: [PG, BILLING] }) })
+  it('lists each endpoint once: address, kind, state, repositories, never a port', async () => {
+    stubApi({
+      'GET /api/endpoints': data({ needed: false, endpoints: [PG, BILLING, endpoint('temporal', { server_kind: 'temporal' })] }),
+      'GET /api/runtimes': { default: 'embed', runtimes: [{ kind: 'e2b-cloud', title: 'E2B Cloud', default: false, host: false, capabilities: { snapshots: false, private_networks: false, egress_rules: false }, limits: {}, status: { state: 'connected', summary: '' } }] },
+    })
     renderApp(<Endpoints />)
-    const list = within(await section()).getByRole('list')
+    const s = await section()
+    expect(await within(s).findByText('Let sandboxes at E2B Cloud reach your servers.')).toBeTruthy()
+    const list = within(s).getByRole('list')
     const pg = within(list).getByText('dev-pg.example.com').closest('li')!
-    expect(pg.textContent).toContain('dev-pg · Postgres')
-    expect(within(pg).getByText('Reachable')).toBeTruthy()
-    expect(pg.textContent).toContain('Reached by: acme/shop, acme/api')
-    expect(pg.textContent).toContain('attaching it to a repository grants')
+    expect(within(pg).getByText('Shared')).toBeTruthy()
+    expect(s.querySelector('[class*="bg-ok"], [class*="text-ok"], [class*="text-accent"], [class*="bg-accent"]')).toBeNull()
+    expect(pg.textContent).toContain('Postgres·acme/shop, acme/api')
+    expect(pg.textContent!.match(/acme\/shop/g)).toHaveLength(1)
     expect(within(pg).queryByRole('button', { name: /^Edit/ })).toBeNull()
     expect(within(pg).getByRole('button', { name: 'Copy dev-pg.example.com' })).toBeTruthy()
-    expect((within(pg).getByRole('button', { name: 'Stop exposing' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(pg.textContent).toContain("Can't stop exposing it while acme/shop uses it.")
+    expect((within(pg).getByRole('button', { name: 'Stop sharing' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(pg).getByText('In use')).toBeTruthy()
     const billing = within(list).getByText('billing.example.com').closest('li')!
-    expect(billing.textContent).toContain('Internal host')
-    expect(billing.textContent).toContain('Repositories: acme/shop')
-    expect(within(billing).getByRole('button', { name: 'Edit repositories for billing.example.com' })).toBeTruthy()
+    expect(billing.textContent).toContain('Internal host·acme/shop')
+    expect(within(billing).getByRole('button', { name: 'Edit repositories for billing' })).toBeTruthy()
+    expect(within(list).getByText('temporal.example.com').closest('li')!.textContent).toContain('No repositories — attach temporal to one')
     noPort()
   })
 
@@ -62,12 +67,12 @@ describe('Settings → Reachable from provider sandboxes', () => {
     stubApi({ 'GET /api/endpoints': data({ domain: '' }) })
     renderApp(<Endpoints />)
     const s = await section()
-    expect(s.textContent).toContain('A domain is needed first')
-    expect(within(s).getByRole('link', { name: 'Set the domain' }).getAttribute('href')).toBe('/app/settings/general#domain')
-    expect(within(s).queryByRole('button', { name: 'Make reachable' })).toBeNull()
+    expect(s.textContent).toContain('Set a domain first.')
+    expect(within(s).getByRole('link', { name: 'Set domain' }).getAttribute('href')).toBe('/app/settings/general#domain')
+    expect(within(s).queryByRole('button', { name: 'Share a server' })).toBeNull()
   })
 
-  it('makes a managed server reachable: the confirm step shows its address, then it applies until on', async () => {
+  it('shares a managed server: the confirm step shows its address, then it applies until shared', async () => {
     const applying = endpoint('dev-pg', { server_kind: 'postgres', state: 'applying' })
     const after = inTurn(ok(data({ endpoints: [applying], candidates: [] })), ok(data({ endpoints: [{ ...applying, state: 'on' }], candidates: [] })))
     let added = false
@@ -77,26 +82,23 @@ describe('Settings → Reachable from provider sandboxes', () => {
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
-    await user.click(within(await section()).getByRole('button', { name: 'Make reachable' }))
+    await user.click(within(await section()).getByRole('button', { name: 'Share a server' }))
     expect((screen.getByRole('radio', { name: /dev-pg/ }) as HTMLInputElement).checked).toBe(true)
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    const confirm = screen.getByRole('region', { name: 'Make dev-pg reachable?' })
+    const confirm = screen.getByRole('region', { name: 'Share dev-pg?' })
     expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('dev-pg.db.example.com')
-    expect(confirm.textContent).toContain('Only sandboxes of repositories dev-pg is attached to reach it.')
-    expect(confirm.textContent).toContain('reachable from the internet')
-    expect(confirm.textContent).toContain('only by this installation')
-    expect(confirm.textContent).toContain('own certificate')
-    expect(confirm.textContent).toContain('login still applies')
+    expect(confirm.textContent).toContain('Reachable over the internet, only by sandboxes of repositories dev-pg is attached to.')
+    expect(confirm.textContent).toContain("Each sandbox has its own certificate, and the service's login still applies.")
     noPort()
-    await user.click(within(confirm).getByRole('button', { name: 'Make reachable' }))
+    await user.click(within(confirm).getByRole('button', { name: 'Share' }))
     expect(calls.find(c => c.method === 'POST')).toMatchObject({ url: '/api/endpoints', body: { server: 'dev-pg' } })
     const row = (await screen.findByText('dev-pg.example.com')).closest('li')!
-    expect(within(row).getByRole('status').textContent).toContain('Making reachable')
-    await waitFor(() => expect(within(row).getByText('Reachable')).toBeTruthy(), { timeout: 4000 })
+    expect(within(row).getByRole('status').textContent).toContain('Sharing…')
+    await waitFor(() => expect(within(row).getByText('Shared')).toBeTruthy(), { timeout: 4000 })
     expect(calls.filter(c => c.method === 'GET').length).toBeGreaterThanOrEqual(3)
   }, 8000)
 
-  it('makes an internal host reachable, checking its name and host:port first', async () => {
+  it('shares an internal host with chosen repositories, checking its name and host:port first', async () => {
     const calls = stubApi({
       'POST /api/endpoints': (body: unknown) => ({ status: 202, body: endpoint('billing', { kind: 'internal', server: '', state: 'applying', ...(body as object) }) }),
       'GET /api/endpoints': data({ endpoints: [PG], candidates: [] }),
@@ -104,21 +106,21 @@ describe('Settings → Reachable from provider sandboxes', () => {
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
-    await user.click(within(await section()).getByRole('button', { name: 'Make reachable' }))
-    expect((screen.getByRole('radio', { name: /An internal host/ }) as HTMLInputElement).checked).toBe(true)
+    await user.click(within(await section()).getByRole('button', { name: 'Share a server' }))
+    expect((screen.getByRole('radio', { name: /Internal host/ }) as HTMLInputElement).checked).toBe(true)
     const picker = screen.getByRole('group', { name: 'Repositories' })
     expect(await within(picker).findByRole('checkbox', { name: 'acme/docs' })).toBeTruthy()
     await user.type(screen.getByLabelText('Name'), 'Billing_API')
     await user.type(screen.getByLabelText('Host and port'), 'billing.internal')
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    expect(screen.getByText(/Use lowercase letters, digits and hyphens/)).toBeTruthy()
-    expect(screen.getByText('Enter the host and its port as host:port.')).toBeTruthy()
+    expect(screen.getByText('Use lowercase letters, digits and hyphens.')).toBeTruthy()
+    expect(screen.getByText('Enter it as host:port.')).toBeTruthy()
     expect(screen.getByText('Choose at least one repository.')).toBeTruthy()
     expect(calls.some(c => c.method === 'POST')).toBe(false)
     await new Promise(r => requestAnimationFrame(r)) // the form focuses the first invalid field
     await user.clear(screen.getByLabelText('Name'))
     await user.type(screen.getByLabelText('Name'), 'dev-pg')
-    expect(screen.getByText('Something is already reachable under that name.')).toBeTruthy()
+    expect(screen.getByText('That name is taken.')).toBeTruthy()
     await user.clear(screen.getByLabelText('Name'))
     await user.type(screen.getByLabelText('Name'), 'billing')
     expect(screen.getByText('billing.example.com')).toBeTruthy()
@@ -126,16 +128,16 @@ describe('Settings → Reachable from provider sandboxes', () => {
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/api' }))
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    const confirm = screen.getByRole('region', { name: 'Make this internal host reachable?' })
+    const confirm = screen.getByRole('region', { name: 'Share billing?' })
     expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('billing.example.com')
-    expect(confirm.textContent).toContain('Only sandboxes of acme/shop and acme/api reach it.')
+    expect(confirm.textContent).toContain('Reachable over the internet, only by sandboxes of acme/shop and acme/api.')
     noPort()
     // Back keeps what was entered.
     await user.click(within(confirm).getByRole('button', { name: 'Back' }))
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('billing')
     expect((screen.getByRole('checkbox', { name: 'acme/api' }) as HTMLInputElement).checked).toBe(true)
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    await user.click(within(screen.getByRole('region', { name: 'Make this internal host reachable?' })).getByRole('button', { name: 'Make reachable' }))
+    await user.click(within(screen.getByRole('region', { name: 'Share billing?' })).getByRole('button', { name: 'Share' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
     expect(calls.find(c => c.method === 'POST')!.body).toEqual({ name: 'billing', target: 'billing.internal:8080', repos: ['acme/shop', 'acme/api'] })
   })
@@ -150,7 +152,7 @@ describe('Settings → Reachable from provider sandboxes', () => {
     renderApp(<Endpoints />)
     const user = userEvent.setup()
     const row = (await screen.findByText('billing.example.com')).closest('li')!
-    await user.click(within(row).getByRole('button', { name: 'Edit repositories for billing.example.com' }))
+    await user.click(within(row).getByRole('button', { name: 'Edit repositories for billing' }))
     const picker = within(row).getByRole('group', { name: 'Repositories' })
     expect((await within(picker).findByRole('checkbox', { name: 'acme/shop' }) as HTMLInputElement).checked).toBe(true)
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
@@ -175,9 +177,9 @@ describe('Settings → Reachable from provider sandboxes', () => {
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
-    await user.click(within(await section()).getByRole('button', { name: 'Make reachable' }))
+    await user.click(within(await section()).getByRole('button', { name: 'Share a server' }))
     await user.click(screen.getByRole('button', { name: 'Continue' }))
-    await user.click(screen.getByRole('button', { name: 'Make reachable' }))
+    await user.click(screen.getByRole('button', { name: 'Share' }))
     expect((await screen.findByRole('alert')).textContent).toContain('Connect a domain first.')
     expect(screen.getByRole('button', { name: 'Back' })).toBeTruthy()
   })
@@ -186,12 +188,14 @@ describe('Settings → Reachable from provider sandboxes', () => {
     stubApi({ 'GET /api/endpoints': data({ endpoints: [endpoint('dev-ch', { server_kind: 'clickhouse', state: 'failed', message: 'The certificate could not be issued' })] }) })
     renderApp(<Endpoints />)
     const row = (await screen.findByText('dev-ch.example.com')).closest('li')!
-    expect(within(row).getByText('Failed')).toBeTruthy()
-    expect(within(row).getByRole('note').textContent).toBe('The certificate could not be issued')
-    expect(row.textContent).toContain('dev-ch · ClickHouse')
+    // Said once, in the message: no badge beside it, and nothing says "Shared".
+    expect(within(row).getByRole('note').textContent).toBe('Sharing failed: The certificate could not be issued')
+    expect(row.textContent!.match(/failed/gi)).toHaveLength(1)
+    expect(within(row).queryByText('Shared')).toBeNull()
+    expect(row.textContent).toContain('ClickHouse')
   })
 
-  it('stops exposing after a confirm', async () => {
+  it('stops sharing after a confirm', async () => {
     let removed = false
     const calls = stubApi({
       'DELETE /api/endpoints/temporal': () => { removed = true; return { status: 202, body: null } },
@@ -200,9 +204,10 @@ describe('Settings → Reachable from provider sandboxes', () => {
     renderApp(<Endpoints />)
     const user = userEvent.setup()
     const row = (await screen.findByText('temporal.example.com')).closest('li')!
-    await user.click(within(row).getByRole('button', { name: 'Stop exposing' }))
-    const dialog = screen.getByRole('dialog', { name: 'Stop exposing temporal.example.com?' })
-    await user.click(within(dialog).getByRole('button', { name: 'Stop exposing' }))
+    await user.click(within(row).getByRole('button', { name: 'Stop sharing' }))
+    const dialog = screen.getByRole('dialog', { name: 'Stop sharing temporal?' })
+    expect(dialog.textContent).toContain('Sandboxes at the provider lose access to it.')
+    await user.click(within(dialog).getByRole('button', { name: 'Stop sharing' }))
     await waitFor(() => expect(screen.queryByText('temporal.example.com')).toBeNull())
     expect(calls.some(c => c.method === 'DELETE' && c.url === '/api/endpoints/temporal')).toBe(true)
   })
@@ -214,9 +219,9 @@ describe('Settings → Reachable from provider sandboxes', () => {
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
-    await user.click(within((await screen.findByText('temporal.example.com')).closest('li')!).getByRole('button', { name: 'Stop exposing' }))
+    await user.click(within((await screen.findByText('temporal.example.com')).closest('li')!).getByRole('button', { name: 'Stop sharing' }))
     const dialog = screen.getByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: 'Stop exposing' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Stop sharing' }))
     expect((await within(dialog).findByRole('alert')).textContent).toContain('temporal is used by acme/shop, acme/api')
   })
 })
@@ -231,12 +236,12 @@ describe('Settings → Sandbox runtimes: what a provider runtime reaches', () =>
     'GET /api/runtimes': RUNTIMES, 'GET /api/endpoints': endpoints,
   })
 
-  it('names the addresses it reaches, linking to the section', async () => {
+  it('names the servers it reaches, linking to the section', async () => {
     stub(data({ endpoints: [PG, TEMPORAL, endpoint('dev-ch', { state: 'applying' })] }))
     renderApp(<Runtimes />)
     const cloud = (await screen.findByText('E2B Cloud')).closest('li')!
     const link = await within(cloud).findByRole('link')
-    expect(cloud.textContent).toContain('Reaches: dev-pg.example.com, temporal.example.com')
+    expect(cloud.textContent).toContain('Reaches dev-pg, temporal')
     expect(link.getAttribute('href')).toBe('/app/settings/general#endpoints')
     expect(screen.getByText('E2B Embed').closest('li')!.textContent).not.toContain('Reaches')
   })
@@ -245,7 +250,7 @@ describe('Settings → Sandbox runtimes: what a provider runtime reaches', () =>
     stub(data())
     renderApp(<Runtimes />)
     const cloud = (await screen.findByText('E2B Cloud')).closest('li')!
-    expect((await within(cloud).findByRole('link', { name: 'make one reachable' })).getAttribute('href')).toBe('/app/settings/general#endpoints')
-    expect(cloud.textContent).toContain('Reaches no shared servers — make one reachable')
+    expect((await within(cloud).findByRole('link', { name: 'Share a server' })).getAttribute('href')).toBe('/app/settings/general#endpoints')
+    expect(cloud.textContent).toContain('Reaches nothing yet — Share a server')
   })
 })

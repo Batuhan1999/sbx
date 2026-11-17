@@ -17,6 +17,6 @@ export function ConfirmDialog({ trigger, title, description, confirm, onConfirm,
         try { await onConfirm(); setOpen(false) } catch (e) { setError(e) } finally { setBusy(false) }
       }}>{confirm}</Button>
     </>}>
-    {error ? <ErrorState error={error} compact /> : <p className="text-[13px] text-muted">{note}</p>}
+    {error ? <ErrorState error={error} compact /> : note ? <p className="text-[13px] text-muted">{note}</p> : null}
   </Dialog>
 }

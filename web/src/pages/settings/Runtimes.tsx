@@ -12,7 +12,7 @@ import { limitsText, planSummary } from '@/lib/format'
 import type { Tone } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { CONNECTION_STATE } from '../extensions/ConnectionCard'
-import { ENDPOINTS_LINK } from './Endpoints'
+import { ENDPOINTS_LINK, QUIET_LINK } from './Endpoints'
 import { ChangeStatus, RuntimeSettingsForm, useRuntimeChangeFlow, type ChangeFlow } from './RuntimeForms'
 
 /** Where sandboxes run. Admins add a runtime, change one's settings, make one the default or remove one. */
@@ -119,11 +119,11 @@ function RuntimeRow({ r, children }: { r: SandboxRuntime; children?: ReactNode }
 
 /** For a runtime whose sandboxes can't reach this server's private network: the addresses they reach instead. */
 function Reaches({ endpoints }: { endpoints: Endpoints }) {
-  const on = endpoints.endpoints.filter(e => e.state === 'on').map(e => e.address)
-  const link = 'rounded-sm text-accent underline-offset-2 hover:underline focus-visible:underline'
+  const on = endpoints.endpoints.filter(e => e.state === 'on').map(e => e.name)
+  const link = QUIET_LINK
   return <p className="mt-1 break-words text-[12.5px] text-muted">
     {on.length
-      ? <>Reaches: <Link to={ENDPOINTS_LINK} className={cn(link, 'mono')}>{on.join(', ')}</Link></>
-      : <>Reaches no shared servers — <Link to={ENDPOINTS_LINK} className={link}>make one reachable</Link></>}
+      ? <>Reaches <Link to={ENDPOINTS_LINK} className={link}>{on.join(', ')}</Link></>
+      : <>Reaches nothing yet — <Link to={ENDPOINTS_LINK} className={link}>Share a server</Link></>}
   </p>
 }
