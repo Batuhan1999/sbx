@@ -102,6 +102,8 @@ class CommandName(unittest.TestCase):
         self.assertEqual(command_name("curl --user acct:hunter2 https://example.test"), "curl --user https://example.test")
         self.assertEqual(command_name("curl -fsSL -H 'X-Token: hunter2' https://example.test"),
                          "curl -fsSL -H https://example.test")
+        self.assertEqual(command_name("curl -uACCOUNT:hunter2 https://example.test"), "curl -u https://example.test")
+        self.assertEqual(command_name("curl -H'X-Token: hunter2' https://example.test"), "curl -H https://example.test")
         self.assertEqual(command_name("TOKEN='hunter2 more' false"), "false")
         self.assertEqual(command_name("bash -c 'export K=hunter2\nrun'"), "bash -c")
         self.assertNotIn("hunter2", str(CommandFailed(command="tool --api-key hunter2 go", exit_code=2)))

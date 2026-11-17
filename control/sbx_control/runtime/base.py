@@ -44,13 +44,15 @@ class Failed(Exception):
 # A flag whose value is a secret: --password, --token, --api-key, --user, a header, curl's -u and -H.
 SECRET_FLAG = re.compile(r"--?[\w-]*(pass(word|wd)?|token|secret|key|auth\w*|user|header|cookie|credentials?)"
                          r"|-[uH]", re.IGNORECASE)
+ATTACHED_SECRET = re.compile(r"(-[uH]).+", re.IGNORECASE)   # curl's -uACCOUNT:CREDENTIAL, -H'Name: value'
 
 
 def command_name(command: str) -> str:
     """What a failed command was, for its message: the words of its first
     line up to 80 characters, leaving out every word with "=" in it (an
     assignment: an env value, a key, quoted or not), what follows a word
-    that is a secret's flag (SECRET_FLAG) and a quote the next lines close.
+    that is a secret's flag (SECRET_FLAG) or is attached to one
+    (ATTACHED_SECRET), and a quote the next lines close.
     Never the command's values."""
     first = (command or "").strip().splitlines()[0] if (command or "").strip() else ""
     lexer = shlex.shlex(first, posix=True)
@@ -61,8 +63,9 @@ def command_name(command: str) -> str:
             if value or "=" in word:
                 value = False
                 continue
-            value = bool(SECRET_FLAG.fullmatch(word))
-            words.append(word)
+            attached = ATTACHED_SECRET.fullmatch(word)
+            value = not attached and bool(SECRET_FLAG.fullmatch(word))
+            words.append(attached.group(1) if attached else word)   # an attached value left out
             if len(" ".join(words)) > 80:
                 words[-1] = "…"
                 break
