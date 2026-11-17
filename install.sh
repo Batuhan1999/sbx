@@ -130,7 +130,8 @@ first=""; configured || first=1
 # missing: Embed alone); none before a first install writes the file.
 installed=""
 if [ -f /etc/sbx/runtime.env ]; then
-  installed=$(sed -n 's/^SBX_RUNTIMES=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ')
+  # As sbx reads it (runtime.configuration): spaces around the name are allowed.
+  installed=$(sed -n 's/^[[:space:]]*SBX_RUNTIMES[[:space:]]*=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ')
   [ -n "$installed" ] || installed=embed
 fi
 enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }

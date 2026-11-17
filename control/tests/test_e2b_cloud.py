@@ -327,6 +327,20 @@ class InstallerEnv(Installation):
         self.write(["E2B_CLOUD_API_KEY"], ["e2b-cloud"], {"E2B_CLOUD_API_KEY": "c"})
         self.assertIn("SBX_RUNTIMES=embed,e2b-cloud", self.file.read_text())   # missing meant Embed
 
+    def test_the_installer_reads_the_enabled_runtimes_as_sbx_does(self):
+        import subprocess
+        from pathlib import Path
+        from sbx_control import runtime
+        script = (Path(__file__).parents[2] / "install.sh").read_text()
+        line = next(x for x in script.splitlines() if x.strip().startswith("installed=$(sed"))
+        command = line.strip().replace("/etc/sbx/runtime.env", '"$1"') + '; printf %s "$installed"'
+        for text in ("SBX_RUNTIMES=embed,e2b-cloud\n", "  SBX_RUNTIMES = 'e2b-cloud'\n", "\tSBX_RUNTIMES=e2b-cloud\n"):
+            with self.subTest(text=text):
+                self.file.write_text(text)
+                found = subprocess.run(["sh", "-c", command, "sh", str(self.file)], capture_output=True, text=True,
+                                       check=True).stdout.split()
+                self.assertEqual(found, runtime.enabled())     # what sbx-control will run
+
     def test_no_key_in_arguments_and_the_cloud_key_only_where_written(self):
         from pathlib import Path
         script = (Path(__file__).parents[2] / "install.sh").read_text()

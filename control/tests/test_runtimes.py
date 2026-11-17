@@ -526,13 +526,28 @@ class Review(TwoRuntimes, Installation):
         file.write_text("# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=test-only\n"
                         "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=test-only-fake\n"
                         "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+        keys = []
+
+        def seal(value, key):
+            keys.append(key)
+            return f"sealed:{key.rpartition('/')[0]}"
         try:
-            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed:{key}"):
+            with patch.object(vault.secret_store, "seal", side_effect=seal):
                 self.assertEqual(vault.seal_runtime_file(), 1)
             self.assertEqual(file.read_text(),
                              "# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=sealed:runtime/E2B_API_KEY\n"
                              "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=sealed:runtime/FAKE_RUNTIME_TOKEN\n"
                              "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+            # A new value later (an upgrade's) goes under a key of its own: the
+            # reference the upgrade's backup of runtime.env holds still names the old one.
+            first = next(k for k in keys if k.startswith("runtime/E2B_API_KEY/"))
+            file.write_text(file.read_text().replace("E2B_API_KEY=sealed:runtime/E2B_API_KEY", "E2B_API_KEY=new"))
+            with patch.object(vault.secret_store, "seal", side_effect=seal), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed:")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v):
+                self.assertEqual(vault.seal_runtime_file(), 1)
+            self.assertNotEqual(keys[-1], first)
+            self.assertTrue(keys[-1].startswith("runtime/E2B_API_KEY/"))
         finally:
             file.write_text(before)
 

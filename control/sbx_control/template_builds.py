@@ -397,12 +397,12 @@ def gone(template: str, kind: str | None = None) -> str | None:
     None when no build of sbx's is named so (a snapshot, say)."""
     kind = _kind(kind)
     keys = _forget(template, kind)
-    said = None
-    for key in keys:
+    said = []
+    for key in keys:   # every key that had it starts again (they can share a name); the first one's answer
         with db() as conn:
             row = _read(conn, key, kind)
-        said = said or _building(key, row, kind)
-    return said
+        said.append(_building(key, row, kind))
+    return said[0] if said else None
 
 
 def forget_missing(kind: str) -> list:

@@ -149,6 +149,20 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         with self.assertRaises(self.runtime.TemplateGone):
             self.start("snapshot-that-went")
 
+    def test_every_key_that_had_the_gone_template_starts_again(self):
+        from sbx_control.state import db
+        builds, templates, name = self.built()
+        twin = templates.default_key({"cpu": 4, "memory_mb": 8192, "disk_mb": 20480})
+        with db() as conn:   # another key recorded under the same name
+            conn.execute("insert into template_builds (runtime, repo, status, built_fingerprint, built_template) "
+                         "values ('fake', ?, 'built', 'x', ?)", (twin, name))
+        del self.shared.built[name]
+        with patch.object(builds, "start") as start:
+            said = builds.gone(name, "fake")
+        self.assertIn("is building", said)
+        self.assertEqual(sorted(c.args for c in start.call_args_list),
+                         sorted([(templates.DEFAULT, "fake"), (twin, "fake")]))
+
     def test_the_scheduler_rebuilds_what_the_runtime_no_longer_lists_once(self):
         builds, templates, name = self.built()
         self.assertEqual(builds.forget_missing("fake"), [])

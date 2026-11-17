@@ -9,6 +9,7 @@ import dataclasses
 import hashlib
 import json
 import re
+import secrets as secrets_module
 import shlex
 
 from . import paths, secret_store, settings, state
@@ -169,7 +170,10 @@ def seal_runtime_file() -> int:
                if found.get(b.secret_key) and not secret_store.is_reference(raw.get(b.secret_key, ""))}
     if not secrets:
         return 0
-    edit_runtime_file({s: secret_store.seal(found[s], key=f"runtime/{s}") for s in secrets})
+    # Each value under a key of its own: an upgrade's backup of runtime.env
+    # (rollback.sh) keeps naming the object the value before is in.
+    edit_runtime_file({s: secret_store.seal(found[s], key=f"runtime/{s}/{secrets_module.token_hex(6)}")
+                       for s in secrets})
     return 1
 
 
