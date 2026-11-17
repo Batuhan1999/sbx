@@ -30,9 +30,13 @@ cert="/etc/letsencrypt/live/$domain"
 cat > /usr/local/sbin/sbx-tls-nginx <<NGINX
 #!/bin/sh
 set -eu
+# One at a time: the installer and the tls effect may both start it on a
+# first install, and both would find no container and create one.
+exec 9>/run/sbx-tls-nginx.lock
+flock 9
 docker inspect sbx-tls-nginx >/dev/null 2>&1 || docker run -d --name sbx-tls-nginx --restart unless-stopped \\
   --network host -v $dir/nginx:/etc/nginx/conf.d:ro -v $dir/letsencrypt:/etc/letsencrypt:ro \\
-  -v /var/cache/sbx-gate:/var/cache/nginx nginx:1.29-alpine >/dev/null
+  -v /var/cache/sbx-gate:/var/cache/nginx nginx:1.29-alpine >/dev/null || docker inspect sbx-tls-nginx >/dev/null
 docker exec sbx-tls-nginx nginx -t
 docker exec sbx-tls-nginx nginx -s reload
 NGINX
