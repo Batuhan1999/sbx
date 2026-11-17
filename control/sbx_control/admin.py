@@ -114,9 +114,16 @@ def do_restore(path: pathlib.Path, key: str) -> int:
 
 
 def do_doctor() -> int:
-    from . import connections, extensions
+    from . import connections, extensions, platform
     optional = {c.kind for c in extensions.connectors()}
     bad = 0
+    try:
+        # Each runtime its keys as sbx-control hands them over at start: unsealed from runtime.env
+        # (vault.runtime), so a runtime whose key is a reference into the store reads as set.
+        platform.connect()
+    except SystemExit as error:   # a key missing, a kind no package provides: what to fix, then the rest
+        print(f"Sandbox runtime: not_connected · {error}")
+        bad += 1
     for status in connections.status_all():
         print(f"{status.title}: {status.state} · {status.summary}")
         if status.kind in optional and status.state in ("off", "not_connected"):
