@@ -241,7 +241,7 @@ class ApiTests(Setup, Server):
         self.sandbox_found()
         self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app"], by="test")
         self.register("box")
-        self.credential("box")
+        mine = self.credential("box")
         chosen, revoking = sandbox.routes, []
 
         def routes(kind, repo):   # the revoke lands once the renewal has chosen its endpoints
@@ -253,7 +253,7 @@ class ApiTests(Setup, Server):
             return found
         with patch.object(sandbox, "routes", side_effect=routes):
             try:
-                issued = {e["name"]: e["cert"] for e in self.endpoints.issue_for("box")}
+                issued = {e["name"]: e["cert"] for e in self.endpoints.issue_for(f"Bearer box:{mine}")}
             except PermissionError:
                 issued = {}
         revoking[0].join()
@@ -282,6 +282,24 @@ class ApiTests(Setup, Server):
         with state.db() as conn:
             stored = conn.execute("select digest from endpoint_credentials").fetchone()[0]
         self.assertNotIn(new, stored)   # only its digest is kept
+
+    def test_a_name_made_again_between_a_renewal_s_check_and_its_issue_gives_it_nothing(self):
+        from sbx_control import endpoints
+        repos = self.sandbox_found()
+        self.client.post("/api/endpoints", json={"name": "theirs", "target": "10.0.0.6:80", "repos": ["other/repo"]})
+        self.register("box")
+        old = self.credential("box")
+        checked = endpoints.sandbox_of
+
+        def remade(authorization):   # the old credential passes, then box is deleted and made again for another repo
+            name = checked(authorization)
+            repos["box"] = "other/repo"
+            self.credential("box", "other/repo")
+            return name
+        self.client.cookies.clear()
+        with patch.object(endpoints, "sandbox_of", side_effect=remade):
+            response = self.client.post("/api/sandbox/endpoint-certs", headers={"Authorization": f"Bearer box:{old}"})
+        self.assertEqual(response.status_code, 404)   # not other/repo's certificates and keys
 
     def test_one_repo_is_granted_and_revoked_at_a_time(self):
         self.client.post("/api/endpoints", json={"name": "temporal", "target": "10.0.0.5:7233"})
@@ -905,9 +923,9 @@ class ForwarderTests(Setup, Installation):
         class Callback(http.server.BaseHTTPRequestHandler):
             def do_POST(self):   # what POST /api/sandbox/endpoint-certs does (ApiTests covers the route)
                 asked.append(self.path)
-                name = endpoints.sandbox_of(self.headers.get("Authorization", ""))
                 try:
-                    body, status = json.dumps({"endpoints": endpoints.issue_for(name)}).encode(), 200
+                    found = endpoints.issue_for(self.headers.get("Authorization", ""))
+                    body, status = json.dumps({"endpoints": found}).encode(), 200
                 except (LookupError, PermissionError, TypeError):
                     body, status = b"{}", 403
                 self.send_response(status)

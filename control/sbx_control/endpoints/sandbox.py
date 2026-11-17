@@ -177,17 +177,20 @@ def push(sbx, info) -> bool:
     return True
 
 
-def issue_for(name: str) -> list[dict]:
-    """POST /api/sandbox/endpoint-certs: new certificates for the sandbox's
-    endpoints, those its repo may use now. LookupError for a sandbox that is
-    gone; PermissionError when it may use none (a revoked grant, a runtime
-    that reaches the private network itself)."""
+def issue_for(authorization: str) -> list[dict]:
+    """POST /api/sandbox/endpoint-certs: new certificates for the endpoints
+    of the sandbox the callback's `Bearer NAME:CREDENTIAL` names, those its
+    repo may use now. LookupError for a sandbox that is gone, or that holds
+    another credential by now (made again under the name); PermissionError
+    when it may use none (a revoked grant, a runtime that reaches the
+    private network itself)."""
     from .. import core, sandboxes
-    info = core.find(name) if sandboxes.registered_owner(name) else None
+    name = authorization.removeprefix("Bearer ").partition(":")[0]
+    info = core.find(name) if name and sandboxes.registered_owner(name) else None
     if not info:
         raise LookupError(f"no sandbox {name}")
     repo = core.app_of(info).repo
-    if certs.bound_repo(name) != (repo or "").lower():
+    if certs.bound_repo(authorization) != (repo or "").lower():   # the credential checked again, with its repo
         raise LookupError(f"{name} is another sandbox now")
     issued = _issue(name, repo, runtime.kind_of(info))
     if not issued:

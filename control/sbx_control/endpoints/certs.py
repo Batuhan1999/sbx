@@ -156,19 +156,19 @@ def bind(sandbox: str, repo: str, credential: str):
                      (sandbox, _digest(credential), (repo or "").lower()))
 
 
-def bound_repo(sandbox: str) -> str | None:
-    with state.db() as conn:
-        found = conn.execute("select repo from endpoint_credentials where sandbox = ?", (sandbox,)).fetchone()
-    return found[0] if found else None
-
-
-def sandbox_of(authorization: str) -> str | None:
-    """The sandbox a callback's `Bearer NAME:CREDENTIAL` proves (its latest credential), or None."""
+def bound_repo(authorization: str) -> str | None:
+    """The repo a callback's `Bearer NAME:CREDENTIAL` is bound to while that
+    credential is the sandbox's latest, else None."""
     name, _, credential = authorization.removeprefix("Bearer ").partition(":")
     if not name or not credential:
         return None
     with state.db() as conn:
-        found = conn.execute("select digest from endpoint_credentials where sandbox = ?", (name,)).fetchone()
+        found = conn.execute("select digest, repo from endpoint_credentials where sandbox = ?", (name,)).fetchone()
     if not found or not hmac.compare_digest(found[0], _digest(credential)):
         return None
-    return name
+    return found[1]
+
+
+def sandbox_of(authorization: str) -> str | None:
+    """The sandbox a callback's `Bearer NAME:CREDENTIAL` proves (its latest credential), or None."""
+    return authorization.removeprefix("Bearer ").partition(":")[0] if bound_repo(authorization) is not None else None

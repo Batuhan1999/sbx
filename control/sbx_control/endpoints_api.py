@@ -101,11 +101,11 @@ def api_sandbox_certificates(request: Request):
     """The forwarder in a sandbox, with the sandbox's own credential (Bearer NAME:CREDENTIAL): new
     certificates and keys for the endpoints its repo may use now. 401 for a wrong credential, 404 for a
     sandbox that is gone, 403 when it may use none (a revoked grant). Never cached or logged."""
-    name = endpoints.sandbox_of(request.headers.get("authorization", ""))
-    if not name:
+    authorization = request.headers.get("authorization", "")
+    if not endpoints.sandbox_of(authorization):
         raise HTTPException(401)
     try:
-        found = endpoints.issue_for(name)
+        found = endpoints.issue_for(authorization)
     except LookupError:
         raise HTTPException(404, "no such sandbox") from None
     except PermissionError as error:
