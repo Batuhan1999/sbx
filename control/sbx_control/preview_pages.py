@@ -14,6 +14,8 @@ import dataclasses
 import html
 import json
 
+from . import settings
+
 # State -> the HTTP status a non-HTML request gets.
 STATUS = {"starting": 503, "waking": 503, "no_listener": 503, "app_stopped": 502, "failed": 502,
           "deleted": 404, "missing": 404, "forbidden": 403, "ready": 200}
@@ -79,6 +81,62 @@ class Page:
         return {"state": self.state, "title": self.title(), "line": self.line(), "waiting": self.waiting,
                 "reload": self.reload,
                 **({"action": {"label": self.action[0], "url": self.action[1]}} if self.action else {})}
+
+
+# What a sandbox is doing, in a few plain words, from sbx's record of it (lifecycle).
+
+STEPS = {"allocating": "Creating the sandbox", "provisioning_services": "Starting its services",
+         "preparing_workspace": "Preparing the workspace", "workspace_ready": "Starting the app",
+         "services_ready": "Starting the app", "setting_up": "Running setup", "starting_app": "Starting the app",
+         "restoring_runtime": "Waking up", "pausing": "Pausing"}
+FIRST_STEPS = {"create": "Creating the sandbox", "resume": "Waking up", "restart": "Restarting the app",
+               "prepare": "Preparing the workspace", "env_update": "Updating its environment", "pause": "Pausing"}
+
+
+def step_of(record: dict) -> str:
+    if record["phase"] == "queued":
+        return FIRST_STEPS.get(record["operation"], "Starting")
+    return STEPS.get(record["phase"], "Starting")
+
+
+def _what_failed(record: dict) -> str:
+    """The failed operation's step, as the page's line: what happened and what to do."""
+    error = record.get("error") or ""
+    during = error.partition(" during ")[2].partition(" ")[0]
+    if error.startswith("the app stopped"):
+        return "Its app stopped. Restart it in sbx."
+    if during in STEPS:
+        return f"It failed while {STEPS[during][0].lower()}{STEPS[during][1:].lower()}. Restart or delete it in sbx."
+    if record.get("phase") == "interrupted":
+        return "sbx restarted while it was busy. Restart or delete it in sbx."
+    return "Restart or delete it in sbx."
+
+
+def open_in_sbx(name: str, label: str = "Open in sbx") -> tuple:
+    """The owner's link to the sandbox's page in the web app."""
+    return (label, f"{settings.current().base_url}/app/sandboxes/{name}")
+
+
+def failed(name: str, detail: str, mine: bool) -> Page:
+    """The sandbox failed: what happened, and for its owner the link to act on it."""
+    return Page("failed", name, detail=detail, action=open_in_sbx(name) if mine else ())
+
+
+def page_for(name: str, record: dict | None, mine: bool) -> Page | None:
+    """The page sbx's own record of the sandbox calls for (an operation runs,
+    or the last one failed); None when it says nothing stands in the way.
+    mine: the visitor owns it (its page links to the web app)."""
+    if record is None:
+        return None
+    if record["phase"] in ("deleting", "deleted"):
+        return Page("deleted", name)
+    if record["active"]:
+        return Page("waking" if record["operation"] in ("resume", "pause") else "starting", name, step=step_of(record))
+    if record["phase"] in ("failed", "interrupted"):
+        return failed(name, _what_failed(record), mine)
+    if record.get("application") == "failed":
+        return Page("app_stopped", name, action=open_in_sbx(name, "Restart") if mine else ())
+    return None
 
 
 def wants_html(method: str, accept: str, upgrade: str = "") -> bool:

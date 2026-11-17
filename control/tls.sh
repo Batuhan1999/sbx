@@ -20,15 +20,15 @@ eval "$(venv/bin/python -m sbx_control.settings shell)"
 current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)')
 # Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
 # one upstream per enabled runtime, picked by the kind the gate names.
-upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
+upstreams=$(venv/bin/python -m sbx_control.preview_proxy upstreams)
 # An https ingress (a provider's): SNI with the sandbox's host, its certificate verified.
-upstream_tls=$(venv/bin/python -m sbx_control.ip_previews upstream-tls)
-# A runtime that answers its sandboxes' ports only with their token (E2B
-# Cloud's header, Boat's cookie): the gate names it, nginx sends it to that
-# runtime alone (taken in the gated location, sent from @sandbox).
-upstream_token_set=$(venv/bin/python -m sbx_control.ip_previews upstream-token-set)
-upstream_token_send=$(venv/bin/python -m sbx_control.ip_previews upstream-token-send)
-upstream_cookie=$(venv/bin/python -m sbx_control.ip_previews upstream-cookie)
+upstream_tls=$(venv/bin/python -m sbx_control.preview_proxy upstream-tls)
+# A runtime that answers its sandboxes' ports only with their token in a
+# header (E2B Cloud's): the gate names it, nginx sends it to that runtime
+# alone (taken in the gated location, sent from @sandbox). A cookie runtime's
+# token (Boat's) is in the Cookie header the gate writes for every request.
+upstream_token_set=$(venv/bin/python -m sbx_control.preview_proxy upstream-token-set)
+upstream_token_send=$(venv/bin/python -m sbx_control.preview_proxy upstream-token-send)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
@@ -210,6 +210,8 @@ else
   rm -f "$bootstrap"
 fi
 
+# sbx-control's preview page and its poll, for every preview host (preview_proxy).
+page_locations=$(venv/bin/python -m sbx_control.preview_proxy page-locations "$login")
 cat > "$dir/nginx/gate.inc" <<NGINX
 location = /_sbx_gate {
   internal;
@@ -229,6 +231,8 @@ location = /_sbx_gate {
   proxy_set_header Accept \$http_accept;
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
+  # Its answer carries the Cookie header the upstream gets (X-Sbx-Upstream-Cookie).
+  proxy_buffer_size 16k;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;
@@ -237,7 +241,7 @@ location = /_sbx_gate {
   # one that names a page to wait on: the next request may find it running.
   proxy_no_cache \$upstream_http_x_sbx_upstream_token \$upstream_http_x_sbx_wait;
   # The method first: an anonymous preflight's allow never answers a GET.
-  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization|\$http_upgrade|\$http_accept";
+  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$http_cookie|\$http_authorization|\$http_upgrade|\$http_accept";
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
@@ -246,48 +250,9 @@ location @login { return 302 https://$login/auth/login?next=https://\$host\$requ
 # gate refused (a sandbox starting, waking, stopped, deleted, no access) and
 # what the sandbox's runtime could not answer (502, 504: the app not up yet)
 # go to sbx-control's page (preview_pages), which a browser sees as a page
-# that opens the app once it answers, and anything else as the status.
-location @denied {
-  rewrite ^ /gate/page? break;
-  proxy_pass http://127.0.0.1:8080;
-  include /etc/nginx/conf.d/gate-page.inc;
-  proxy_set_header X-Sbx-Reason denied;
-}
-location @unavailable {
-  rewrite ^ /gate/page? break;
-  proxy_pass http://127.0.0.1:8080;
-  include /etc/nginx/conf.d/gate-page.inc;
-  proxy_set_header X-Sbx-Reason unavailable;
-}
-# The page's poll, on every preview host.
-location = /.sbx/status {
-  rewrite ^ /gate/status? break;
-  proxy_pass http://127.0.0.1:8080;
-  include /etc/nginx/conf.d/gate-page.inc;
-  proxy_set_header X-Sbx-Reason "";
-}
-NGINX
-
-# What sbx-control's preview page and its poll get of the request (gate.py).
-cat > "$dir/nginx/gate-page.inc" <<NGINX
-proxy_method GET;
-proxy_pass_request_body off;
-proxy_set_header Content-Length "";
-proxy_set_header Host $login;
-proxy_set_header X-Forwarded-Proto https;
-proxy_set_header X-Original-Host \$host;
-proxy_set_header X-Original-URI \$request_uri;
-proxy_set_header X-Original-Method \$request_method;
-proxy_set_header X-Original-Upgrade \$http_upgrade;
-proxy_set_header X-Original-Sandbox-Id \$http_e2b_sandbox_id;
-proxy_set_header X-Original-Sandbox-Port \$http_e2b_sandbox_port;
-proxy_set_header X-Original-Preview-Port "";
-proxy_set_header Accept \$http_accept;
-proxy_set_header Cookie \$http_cookie;
-proxy_set_header Authorization \$http_authorization;
-proxy_set_header Upgrade "";
-proxy_set_header Connection "";
-proxy_intercept_errors off;
+# that opens the app once it answers, and anything else as the status; the
+# page polls /.sbx/status on every preview host.
+$page_locations
 NGINX
 
 cat > "$dir/nginx/default.conf" <<NGINX
@@ -299,11 +264,6 @@ $upstreams
 # An sbx API token must not reach a sandbox either; an Authorization header the
 # gate did not use is the app's own (a JWT, Basic auth) and passes.
 map \$sbx_auth \$sandbox_authorization { bearer ""; default \$http_authorization; }
-map \$http_cookie \$sandbox_cookie {
-  "~^(?<before>.*?);\\s*sbx_session=[^;]*(?<after>.*)\$" "\$before\$after";
-  "~^sbx_session=[^;]*;?\\s*(?<after>.*)\$" "\$after";
-  default \$http_cookie;
-}
 ssl_certificate $cert/fullchain.pem;
 ssl_certificate_key $cert/privkey.pem;
 
@@ -329,6 +289,8 @@ server {
     auth_request_set \$sbx_auth \$upstream_http_x_sbx_auth;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
     auth_request_set \$sbx_runtime \$upstream_http_x_sbx_runtime;
+    # The Cookie header the gate wrote: the app's, without sbx's session.
+    auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;
 $upstream_token_set
     error_page 401 = @login;
     error_page 403 = @denied;
@@ -352,7 +314,7 @@ $upstream_token_send
     proxy_set_header X-Forwarded-Host \$host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header Cookie \$$upstream_cookie;
+    proxy_set_header Cookie \$sbx_cookie;
     proxy_set_header Authorization \$sandbox_authorization;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
@@ -376,13 +338,14 @@ server {
     set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
+    auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;
     error_page 401 = @login;
     error_page 403 = @denied;
     proxy_pass http://$upstream;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header Cookie \$sandbox_cookie;
+    proxy_set_header Cookie \$sbx_cookie;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
     proxy_buffering off;

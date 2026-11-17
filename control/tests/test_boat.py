@@ -4,10 +4,13 @@ resume, commands and files, templates as saved snapshots, the per-port
 preview token, Boat's desktop, its refusals as sbx's, and its settings."""
 import base64
 import shlex
+import time
 import unittest
 from unittest.mock import patch
 
 from fake_boat import configured
+
+from sbx_control.runtime import dockerfile
 from support import RUNTIME, Installation
 
 BOAT_ENV = RUNTIME + "SBX_RUNTIMES=boat\nBOAT_API_KEY=boat_unit-test\n"
@@ -17,8 +20,8 @@ class Backend(unittest.TestCase):
     def setUp(self):
         from sbx_control.runtime import boat
         self.boat_module = boat
-        self.enterContext(patch.object(boat.time, "sleep"))
-        self.enterContext(patch.object(boat, "_installation", return_value="inst-a"))
+        self.enterContext(patch.object(time, "sleep"))
+        self.enterContext(patch.object(boat.build, "_installation", return_value="inst-a"))
         self.backend, self.fake = configured()
         self.fake.saved["tpl"] = {"name": "tpl", "status": "ready", "sourceSandboxId": "x", "type": "default",
                                   "createdAt": "2026-11-17T12:00:00Z", "files": {"/home/user/app/README": b"hi"}}
@@ -161,7 +164,7 @@ class Backend(unittest.TestCase):
         listening = {"5173": ""}
         self.fake.respond = lambda _, command: (listening["5173"] if "sport = :5173" in command else None)
         clock = [100.0]
-        self.enterContext(patch.object(self.boat_module.time, "monotonic", side_effect=lambda: clock[0]))
+        self.enterContext(patch.object(time, "monotonic", side_effect=lambda: clock[0]))
         self.backend.upstream_token(sandbox_id, 5173)            # nothing listens yet: exposed as reachable
         listening["5173"] = "LISTEN 0 511 127.0.0.1:5173 0.0.0.0:*\n"
         self.backend.upstream_token(sandbox_id, 5173)            # within a few seconds: not asked again
@@ -219,6 +222,8 @@ class Backend(unittest.TestCase):
                 .dockerfile("FROM x\nARG V=1\nENV PATH_EXTRA=/x \\\n    MORE=2\nRUN echo $V \\\n  && true\n"
                             "WORKDIR /srv\nEXPOSE 80\n")
                 .set_start_cmd("bash -c 'sleep infinity'", 8081))
+        self.fake.respond = lambda _, command: ("LISTEN 0 511 0.0.0.0:8081 0.0.0.0:*\n"
+                                                if "sport = :8081" in command else None)
         logs = []
         self.assertEqual(self.backend.build_template(spec, alias="abcd1234--repo-1", cpu=2, memory_mb=4096,
                                                      disk_mb=10240, on_log=logs.append), "abcd1234--repo-1")
@@ -248,11 +253,11 @@ class Backend(unittest.TestCase):
 
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
-        steps = self.boat_module.dockerfile_steps(
+        steps = dockerfile.dockerfile_steps(
             "FROM x\nARG V=1\nRUN apt-get update \\\n  # a comment inside the continuation\n  && echo done\n"
             "ENV X=${V}-$V PATH=/opt/node/bin:$PATH A=\"x y\" C=$(id) D=`id` E=a;b\nENV MSG hello $V\n")
         self.assertEqual(steps[1], ("run", "apt-get update  && echo done"))
-        exports = "".join(self.boat_module.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        exports = "".join(dockerfile.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
         shown = subprocess.run(["bash", "-c", "PATH=/usr/bin:/bin\n" + exports + 'printf "%s|" "$X" "$PATH" "$A" "$C" '
                                 '"$D" "$E" "$MSG"'], capture_output=True, text=True, check=True).stdout
         self.assertEqual(shown, "1-1|/opt/node/bin:/usr/bin:/bin|x y|$(id)|`id`|a;b|hello 1|")   # no command ran
@@ -308,7 +313,7 @@ class Backend(unittest.TestCase):
 
     def test_sizes_map_to_the_smallest_machine_that_fits(self):
         from sbx_control.runtime import LimitRefused
-        machine = self.boat_module.machine
+        machine = self.boat_module.plans.machine
         self.assertEqual(machine(2, 4096, 10240), "small")
         self.assertEqual(machine(4, 4096, 51 * 1024), "default")
         self.assertEqual(machine(2, 12000, 0), "large")
@@ -341,7 +346,7 @@ class Backend(unittest.TestCase):
             handle.commands.run("true")
 
     def test_saved_names_follow_boats_rules(self):
-        name = self.boat_module.saved_name
+        name = self.boat_module.build.saved_name
         self.assertEqual(name("abcd1234--default-0f0f0f0f"), "abcd1234--default-0f0f0f0f")
         made = name("Amp_Cache:main/feature")
         self.assertRegex(made, r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -352,13 +357,13 @@ class Settings(unittest.TestCase):
     def test_presets_are_the_trial_and_the_paid_plans_and_the_defaults_the_20_plan(self):
         from sbx_control.runtime import boat
         self.assertEqual([p.name for p in boat.PRESETS], ["trial", "20", "100", "500", "2000"])
-        trial, twenty = boat.PRESETS[0].values, boat.PRESETS[1].values
+        trial, twenty = boat.PRESETS[0].by_key(), boat.PRESETS[1].by_key()
         self.assertEqual((trial["BOAT_MAX_CPU"], trial["BOAT_MAX_SANDBOXES"], trial["BOAT_MAX_TIMEOUT"]),
                          ("4", "2", str(2 * 3600)))   # the trial: the default size, 2 at once, 2 hours
         self.assertIn("templates need the first payment", boat.PRESETS[0].note)
         self.assertEqual((twenty["BOAT_MAX_CPU"], twenty["BOAT_MAX_SANDBOXES"], twenty["BOAT_MAX_TIMEOUT"]),
                          ("8", "100", str(30 * 86400)))
-        self.assertEqual(boat.PRESETS[2].values["BOAT_MAX_CPU"], "16")   # xlarge from $100
+        self.assertEqual(boat.PRESETS[2].by_key()["BOAT_MAX_CPU"], "16")   # xlarge from $100
         backend, _ = configured()
         self.assertEqual(backend.limits().known(), {"timeout_seconds": 30 * 86400, "cpu": 8, "memory_mb": 16384,
                                                     "disk_mb": 111 * 1024, "sandboxes": 100})
@@ -402,9 +407,8 @@ class Installed(Installation):
     def setUp(self):
         super().setUp()
         from sbx_control import runtime
-        from sbx_control.runtime import boat
         self.runtime = runtime
-        self.enterContext(patch.object(boat.time, "sleep"))
+        self.enterContext(patch.object(time, "sleep"))
         self.backend, self.fake = configured()
         self.enterContext(patch.dict(runtime._backends, {"boat": self.backend}))
         self.enterContext(patch.dict(runtime._index, clear=True))

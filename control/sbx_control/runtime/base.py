@@ -15,11 +15,10 @@ SDK per call. The E2B-based backends (Embed, E2B Cloud) share one SDK, which
 would read E2B_* from the process environment: they never write it, each
 passes its own connection on every call (runtime.e2b).
 
-The contract has two parts. Every backend implements the compute part
-(Runtime: create, list, connect, templates, ...). The host part (systemd
-units, the host's firewall, disk, capacity, readiness) is for a runtime that
-runs on this host; HostSide gives every member of it a no-op, so a hosted
-backend inherits it and implements nothing it does not have."""
+Every backend subclasses Backend: the compute part (create, list, connect,
+templates, ...) is abstract; the host part (systemd units, the host's
+firewall, disk, capacity, readiness) and every optional property have
+defaults, so a hosted backend implements nothing it does not have."""
 from __future__ import annotations
 
 import contextlib
@@ -27,7 +26,8 @@ import dataclasses
 import datetime
 import pathlib
 import re
-from typing import Any, Callable, ContextManager, Mapping, Protocol
+import abc
+from typing import Any, Callable, ContextManager, Literal, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
 # A sandbox the runtime lists but that failed (Boat's error state): not
@@ -165,6 +165,23 @@ class Limits:
         """The limits it sets, by field."""
         return {f: getattr(self, f) for f in LIMIT_FIELDS if getattr(self, f) is not None}
 
+    @classmethod
+    def read(cls, specs, secrets: Mapping[str, str], source: str) -> "Limits":
+        """The limits runtime.env sets (each LimitSpec's key, else its
+        default); SystemExit naming the key of a value that is not one."""
+        found = {}
+        for spec in specs:
+            value = secrets.get(spec.key) or spec.default
+            try:
+                found[spec.field] = int(value)
+            except (TypeError, ValueError):
+                raise SystemExit(f"{spec.key}={value} in /etc/sbx/runtime.env is not a whole number") from None
+        try:
+            return cls(**found, source=source, keys={s.field: s.key for s in specs})
+        except ValueError as error:
+            key = next((s.key for s in specs if s.field == "timeout_seconds"), "the timeout")
+            raise SystemExit(f"{key} in /etc/sbx/runtime.env: {error}") from None
+
 
 LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
 # The shortest timeout limit a runtime may set: several of the keeper's
@@ -207,27 +224,80 @@ class SettingField:
         """As the API shows it; a hostname's pattern (HOSTNAME) for the web app's own check."""
         return {**dataclasses.asdict(self), **({"pattern": HOSTNAME.pattern} if self.kind == "hostname" else {})}
 
+    def parse(self, raw) -> str | None:
+        """A value typed for it, as runtime.env keeps it: None when empty,
+        a host name lowercase without its trailing dot; ValueError saying
+        why one is not a value of it."""
+        value = "" if raw is None else str(raw).strip()
+        if not value:
+            return None
+        if self.kind == "int":
+            if not (value.isdigit() and int(value) >= 1):
+                raise ValueError(f"{self.label} ({self.key}) is a whole number, at least 1, not {value!r}")
+            if (self.min is not None and int(value) < self.min) or (self.max is not None and int(value) > self.max):
+                raise ValueError(f"{self.label} ({self.key}) is from {self.min} to {self.max}"
+                                 f"{' ' + self.unit if self.unit else ''}, not {value}")
+        if self.kind == "hostname":
+            value = value.lower().rstrip(".")
+            if not HOSTNAME.fullmatch(value):
+                raise ValueError(f"{self.label} ({self.key}) is a host name such as example.com, not {value!r}")
+        return value
+
+
+@dataclasses.dataclass(frozen=True)
+class LimitSpec:
+    """One Limits field a hosted runtime's settings set: its runtime.env key
+    and default, and how the web app's form shows it (a slider)."""
+    field: str
+    key: str
+    default: int
+    label: str
+    unit: str = ""
+    min: int | None = None
+    max: int | None = None
+    step: int | None = None
+
+
+def limit_settings(specs) -> tuple:
+    """The SettingFields of these limits, in order."""
+    return tuple(SettingField(s.key, s.label, default=str(s.default), kind="int", limit=s.field, unit=s.unit,
+                              min=s.min, max=s.max, step=s.step) for s in specs)
+
 
 @dataclasses.dataclass(frozen=True)
 class Preset:
-    """A provider plan's limits, as values of the backend's settings by key;
-    source says where they come from. adjustable: the keys the plan does not
-    fix (the provider publishes no number), set by the admin starting from
-    values; note says why."""
+    """A provider plan's limits, by Limits field; source says where they
+    come from. adjustable: the fields the plan does not fix (the provider
+    publishes no number), set by the admin starting from values; note says
+    why. keys: field -> the backend's runtime.env key (bound(), from its
+    LimitSpecs), which the settings form and runtime.env name."""
     name: str
     title: str
-    values: Mapping[str, str]
+    values: Mapping[str, int]
     source: str = ""
     adjustable: tuple = ()
     note: str = ""
+    keys: Mapping[str, str] = dataclasses.field(default_factory=dict)
+
+    def bound(self, specs) -> "Preset":
+        return dataclasses.replace(self, keys={s.field: s.key for s in specs})
+
+    def _key(self, field: str) -> str:
+        # Unbound (the phase-5 backend, Boat, until it keys its presets by field): values are by key already.
+        return self.keys.get(field, field)
+
+    def by_key(self) -> dict:
+        """Its values by runtime.env key, as strings."""
+        return {self._key(field): str(value) for field, value in self.values.items()}
 
     def matches(self, effective: Mapping[str, str]) -> bool:
-        """Whether settings with these effective values are this plan: its fixed values alike."""
-        return all(effective.get(key) == value for key, value in self.values.items() if key not in self.adjustable)
+        """Whether settings with these effective values (by key) are this plan: its fixed values alike."""
+        return all(effective.get(self._key(field)) == str(value) for field, value in self.values.items()
+                   if field not in self.adjustable)
 
     def view(self) -> dict:
-        return {"name": self.name, "title": self.title, "values": dict(self.values), "source": self.source,
-                "adjustable": list(self.adjustable), "note": self.note}
+        return {"name": self.name, "title": self.title, "values": self.by_key(), "source": self.source,
+                "adjustable": [self._key(f) for f in self.adjustable], "note": self.note}
 
 
 class LimitRefused(Failed):
@@ -305,37 +375,198 @@ class Handle(Protocol):
     def kill(self) -> Any: ...
 
 
-class Runtime(Protocol):
+@dataclasses.dataclass(frozen=True)
+class TokenPlace:
+    """Where a runtime that answers its sandboxes' ports only with a token
+    wants it: a request header (E2B Cloud's traffic token) or a cookie
+    appended to the app's own (Boat's per-port token)."""
+    place: Literal["header", "cookie"]
+    name: str
+
+
+class Backend(abc.ABC):
+    """A sandbox runtime: what sbx asks of one. The compute part is abstract;
+    every other member has a default, so a hosted backend implements only
+    what it has. The host part (systemd units, the host's firewall, disk,
+    capacity, readiness) is for a runtime on this host (host=True), which
+    overrides it."""
     kind: str
     title: str
-    host: bool        # it runs on this server (its host part does something)
-    capabilities: Capabilities
-    disk_path: str    # where it keeps templates and snapshots, as messages name it
+    capabilities: Capabilities = Capabilities()
+    host = False          # it runs on this server (its host part does something)
+    disk_path = ""        # where it keeps templates and snapshots, as messages name it
     # The last hop of a preview: nginx proxies to ingress with the Host
     # upstream_host names, after clearing the request headers in
     # ingress_cleared (a browser must not pick the VM). Without a domain the
     # app sees hosts ending in internal_suffix.
-    ingress: str
-    ingress_cleared: tuple
-    internal_suffix: str
-    ports: frozenset  # its own ports in every sandbox: never a preview
-    host_unit: str | None   # the systemd unit that runs it on this host, which the host's guard needs
-    credential_keys: tuple  # what it reads from /etc/sbx/runtime.env (vault.runtime)
-    secret_key: str         # the one of them that is a secret, sealed into the store
+    ingress = ""
+    ingress_cleared: tuple = ()
+    internal_suffix = ""
+    ports: frozenset = frozenset()   # its own ports in every sandbox: never a preview
+    host_unit: str | None = None     # the systemd unit that runs it on this host, which the host's guard needs
+    credential_keys: tuple = ()      # what it reads from /etc/sbx/runtime.env (vault.runtime)
+    secret_key = ""                  # the one of them that is a secret, sealed into the store
     # What an admin sets in the web app (SettingFields, keys of credential_keys);
     # empty for a runtime install.sh sets up (on this host). presets: plans
     # the form offers for its limits.
-    settings: tuple
-    presets: tuple
+    settings: tuple = ()
+    presets: tuple = ()
+    # Where it wants the token it answers its sandboxes' ports with (None:
+    # it needs none). The gate hands nginx the token, nginx adds it on that
+    # runtime's requests only; a browser never sees it.
+    upstream_token_at: TokenPlace | None = None
+    # Which desktop a sandbox has: "sbx" (sbx's own noVNC on
+    # platform.NOVNC_PORT, which the templates' start command runs and the
+    # desktop preview proxies to) or "provider" (the provider's own, which
+    # desktop_url opens; sbx starts none of its own there).
+    desktop = "sbx"
+    # Every resume boots the VM afresh (a provider without memory
+    # snapshots): its tmpfs is empty and nothing of what ran is running, so
+    # sbx re-ships what lives in platform.RUN and restarts the recipe's
+    # processes on every resume, whatever lifecycle.resume says.
+    cold_resume = False
+
+    # The compute part
+
+    @abc.abstractmethod
+    def configure(self, secrets: dict) -> None:
+        """Take its credentials from the platform secrets (runtime.env);
+        SystemExit when they are missing."""
+
+    @abc.abstractmethod
+    def upstream_host(self, port: int, sandbox_id: str) -> str:
+        """The Host nginx sends a sandbox port's requests to ingress with
+        (and, to an https ingress, the name it asks for: SNI)."""
+
+    @abc.abstractmethod
+    def create(self, template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
+               deny_out: list | None = None, on_timeout: str | None = None,
+               auto_resume: bool | None = None) -> Handle:
+        """A new sandbox from a template or snapshot. deny_out: ranges it may
+        not reach, given only with egress_rules; on_timeout: "pause" or
+        "kill" when its timeout passes; auto_resume: traffic resumes it."""
+
+    @abc.abstractmethod
+    def connect(self, sandbox_id: str, *, timeout: int | None = None) -> Handle:
+        """The running sandbox, resuming a paused one; timeout: seconds until it
+        pauses. Raises NotRunning when the runtime has no such sandbox, and a
+        handle's calls raise it when the sandbox paused or went meanwhile."""
+
+    @abc.abstractmethod
+    def sandboxes(self, metadata: dict | None = None, states: list | None = None) -> list[Info]: ...
+
+    @abc.abstractmethod
+    def info(self, sandbox_id: str) -> Info:
+        """Raises NotRunning when the runtime has no such sandbox."""
+
+    @abc.abstractmethod
+    def kill(self, sandbox_id: str) -> bool: ...
+
+    @abc.abstractmethod
+    def pause(self, sandbox_id: str) -> None:
+        """Raises Busy when the runtime would not pause it now, NotRunning
+        when it has no such sandbox; one already paused stays paused."""
+
+    @abc.abstractmethod
+    def set_timeout(self, sandbox_id: str, seconds: int) -> None:
+        """Raises NotRunning when it is not running (paused or gone)."""
+
+    @abc.abstractmethod
+    def snapshot(self, sandbox_id: str, name: str) -> Snapshot: ...
+
+    @abc.abstractmethod
+    def delete_snapshot(self, snapshot_id: str) -> None: ...
+
+    @abc.abstractmethod
+    def build_template(self, spec: TemplateSpec, *, alias: str, cpu: int, memory_mb: int, disk_mb: int,
+                       on_log: Callable | None = None) -> Any: ...
+
+    @abc.abstractmethod
+    def templates(self) -> list[tuple[str, str]]:
+        """Every template the runtime holds: (name, build status)."""
+
+    @abc.abstractmethod
+    def delete_template(self, name: str) -> bool:
+        """False when it has no template of that name."""
+
+    @abc.abstractmethod
+    def limits(self) -> Limits:
+        """The most it allows per sandbox and at once."""
+
+    @abc.abstractmethod
+    def status(self):
+        """Its connections.Status on the settings page."""
+
+    @abc.abstractmethod
+    def test(self) -> list:
+        """Its checks (connections.Check), as sbx-admin doctor runs them."""
+
+    def __init_subclass__(cls, **kwargs):
+        # Shim for the phase-5 backend (Boat) until it declares upstream_token_at.
+        super().__init_subclass__(**kwargs)
+        for place in ("header", "cookie"):
+            name = cls.__dict__.get(f"upstream_token_{place}")
+            if name and "upstream_token_at" not in cls.__dict__:
+                cls.upstream_token_at = TokenPlace(place, name)
+
+    def failure(self, error: BaseException) -> bool:
+        """Whether an error is the runtime's or the connection's to it."""
+        return False
+
+    def upstream_token(self, sandbox_id: str, port: int, *, fetch: bool = True) -> str:
+        """The sandbox's token for its port, for a runtime with upstream_token_at
+        (one with one token per sandbox ignores port). Without fetch only one
+        the backend kept ("" when none: asking the provider may wake the
+        sandbox or expose the port); with fetch it asks, raising (Failed,
+        NotRunning) rather than answering without one."""
+        return ""
+
+    def desktop_url(self, sandbox_id: str) -> str:
+        """For a "provider" desktop: a fresh URL that opens the sandbox's
+        desktop (it may carry a short-lived token)."""
+        raise Failed(f"{self.title} has no desktop of its own")
+
+    def own_route(self, host: str, sandbox_id: str, port: str):
+        """For a request to the runtime's own host (Embed's dashboard): True
+        to let it through ungated, (port, sandbox_id) to gate it like any
+        preview; None for every other host."""
+        return None
+
+    def template_name(self, name: str) -> str:
+        """The name a template or snapshot of sbx's has on the runtime: as is,
+        but on a hosted one (scoped.Scoped) after the installation's prefix."""
+        return name
+
+    def listed(self, sandbox_ids: set) -> None:
+        """After a full listing: forget what it keeps per sandbox (a token)
+        for one no longer there, whoever ended it."""
+
+    def preview(self, name: str, port: int | None, listen: int, *, preserve_host: bool = False) -> None:
+        """sbx-admin preview: serve a sandbox's app port on this host's
+        loopback until interrupted; a runtime without a local proxy says so."""
+        raise ValueError(f"{self.title} has no loopback preview on this host; open the sandbox's preview URL instead")
+
+    def why_busy(self, memory_mb: int | None) -> str:
+        """Why it refused to pause a sandbox of memory_mb (Busy), as what to do about it."""
+        return "the runtime is busy; pause again in a minute"
+
+    def snapshot_usage(self, sandbox_id: str) -> dict:
+        """What a sandbox's snapshots hold: {"gb", "snapshots"}; {} when unknown."""
+        return {}
+
+    # The host part: nothing, for a runtime that does not run on this host
 
     def can_run(self, facts: dict) -> str:
         """Why it can't run on this host, given setup.host_facts ("" when it can)."""
+        return ""
 
     def host_units(self) -> list:
         """Its systemd units on this host (host.Unit), installed before the platform's."""
+        return []
 
     def host_commands(self, into) -> dict:
         """Its commands in /usr/local/sbin: name -> script, into(command) runs one in the active release."""
+        return {}
 
     def guard_host(self) -> None:
         """Its own rules on this host's firewall, after the platform's
@@ -346,104 +577,13 @@ class Runtime(Protocol):
         the runtime's; False when it is not. settings.HostUnit.RUNTIME_ENV
         is always the runtime's: the installation's names changed (True,
         whether or not it has anything to do)."""
+        from ..settings import HostUnit
+        return key == HostUnit.RUNTIME_ENV
 
     def readiness(self, facts: dict) -> list:
         """What the first-run setup checks before its own test (connections.Check),
         given setup.host_facts."""
-
-    def configure(self, secrets: dict) -> None:
-        """Take its credentials from the platform secrets (runtime.env);
-        SystemExit when they are missing."""
-
-    def upstream_host(self, port: int, sandbox_id: str) -> str:
-        """The Host nginx sends a sandbox port's requests to ingress with
-        (and, to an https ingress, the name it asks for: SNI)."""
-
-    # Where a runtime that answers a sandbox's ports only with a token wants
-    # it: a request header (upstream_token_header, E2B Cloud's traffic
-    # token) or a cookie (upstream_token_cookie, Boat's per-port token);
-    # None for what it does not use. The gate hands nginx the token, nginx
-    # adds the header, or appends the cookie to the app's own, on that
-    # runtime's requests only; a browser never sees it.
-    upstream_token_header: str | None
-    upstream_token_cookie: str | None
-
-    def upstream_token(self, sandbox_id: str, port: int, *, fetch: bool = True) -> str:
-        """The sandbox's token for its port (a runtime with one token per
-        sandbox ignores port). Without fetch only one the backend kept (""
-        when none: asking the provider may wake the sandbox or expose the
-        port); with fetch it asks, raising (Failed, NotRunning) rather than
-        answering without one."""
-
-    # Which desktop a sandbox has: "sbx" (sbx's own noVNC on
-    # platform.NOVNC_PORT, which the templates' start command runs and the
-    # desktop preview proxies to) or "provider" (the provider's own, which
-    # desktop_url opens; sbx starts none of its own there).
-    desktop: str
-
-    def desktop_url(self, sandbox_id: str) -> str:
-        """For a "provider" desktop: a fresh URL that opens the sandbox's
-        desktop (it may carry a short-lived token). Optional otherwise."""
-
-    # Every resume boots the VM afresh (a provider without memory
-    # snapshots): its tmpfs is empty and nothing of what ran is running, so
-    # sbx re-ships what lives in platform.RUN and restarts the recipe's
-    # processes on every resume, whatever lifecycle.resume says.
-    cold_resume: bool
-
-    def own_route(self, host: str, sandbox_id: str, port: str):
-        """For a request to the runtime's own host (Embed's dashboard): True
-        to let it through ungated, (port, sandbox_id) to gate it like any
-        preview; None for every other host."""
-
-    def create(self, template: str, *, timeout: int, envs: dict | None = None, metadata: dict | None = None,
-               deny_out: list | None = None, on_timeout: str | None = None,
-               auto_resume: bool | None = None) -> Handle:
-        """A new sandbox from a template or snapshot. deny_out: ranges it may
-        not reach, given only with egress_rules; on_timeout: "pause" or
-        "kill" when its timeout passes; auto_resume: traffic resumes it."""
-
-    def connect(self, sandbox_id: str, *, timeout: int | None = None) -> Handle:
-        """The running sandbox, resuming a paused one; timeout: seconds until it
-        pauses. Raises NotRunning when the runtime has no such sandbox, and a
-        handle's calls raise it when the sandbox paused or went meanwhile."""
-
-    def sandboxes(self, metadata: dict | None = None, states: list | None = None) -> list[Info]: ...
-
-    def info(self, sandbox_id: str) -> Info:
-        """Raises NotRunning when the runtime has no such sandbox."""
-
-    def kill(self, sandbox_id: str) -> bool: ...
-
-    def pause(self, sandbox_id: str) -> None:
-        """Raises Busy when the runtime would not pause it now, NotRunning
-        when it has no such sandbox; one already paused stays paused."""
-
-    def set_timeout(self, sandbox_id: str, seconds: int) -> None:
-        """Raises NotRunning when it is not running (paused or gone)."""
-
-    def snapshot(self, sandbox_id: str, name: str) -> Snapshot: ...
-
-    def delete_snapshot(self, snapshot_id: str) -> None: ...
-
-    def build_template(self, spec: TemplateSpec, *, alias: str, cpu: int, memory_mb: int, disk_mb: int,
-                       on_log: Callable | None = None) -> Any: ...
-
-    def templates(self) -> list[tuple[str, str]]:
-        """Every template the runtime holds: (name, build status)."""
-
-    def delete_template(self, name: str) -> bool:
-        """False when it has no template of that name."""
-
-    def failure(self, error: BaseException) -> bool:
-        """Whether an error is the runtime's or the connection's to it."""
-
-    def limits(self) -> Limits:
-        """The most it allows per sandbox and at once."""
-
-    def capacity(self, memory_mb: int) -> dict:
-        """Room for sandboxes of memory_mb: {"known": True, "memory_mb",
-        "slots_free", "free_mb", ...}, or {"known": False} when it can't say."""
+        return []
 
     def apply_network(self) -> dict:
         """Make the runtime enforce what sandboxes may reach now
@@ -451,99 +591,33 @@ class Runtime(Protocol):
         take what extensions add to it:
         {"status": "applied" or "unchanged", "allowed_cidrs": [...]};
         refused (ValueError) when it can't while sandboxes exist."""
+        return {"status": "unchanged", "allowed_cidrs": []}
 
     def disk(self) -> dict | None:
         """Its disk: {"percent": used, "free_gb"}; None when it can't be read."""
+        return None
 
     def free_disk_mb(self) -> int | None:
         """Free MiB for templates and snapshots; None when it keeps none here."""
-
-    def why_busy(self, memory_mb: int | None) -> str:
-        """Why it refused to pause a sandbox of memory_mb (Busy), as what to do about it."""
-
-    def snapshot_usage(self, sandbox_id: str) -> dict:
-        """What a sandbox's snapshots hold: {"gb", "snapshots"}; {} when unknown."""
+        return None
 
     def collect_storage(self) -> None:
         """Reclaim what nothing uses now (a failed build's layers, a deleted template's)."""
 
     def jobs(self) -> list:
         """Its upkeep as jobs.Job entries (Settings → Operations, sbx-admin jobs)."""
+        return []
 
-    def status(self):
-        """Its connections.Status on the settings page."""
-
-    def test(self) -> list:
-        """Its checks (connections.Check), as sbx-admin doctor runs them."""
-
-    def preview(self, name: str, port: int | None, listen: int, *, preserve_host: bool = False) -> None:
-        """sbx-admin preview: serve a sandbox's app port on this host's
-        loopback until interrupted. Optional: a runtime without a local
-        proxy leaves it out (runtime.preview says so)."""
+    def capacity(self, memory_mb: int) -> dict:
+        """Room for sandboxes of memory_mb: {"known": True, "memory_mb",
+        "slots_free", "free_mb", ...}, or {"known": False} when it can't say."""
+        return {"known": False}
 
     def placing(self) -> ContextManager:
         """Held while a sandbox is placed, so two creations can't both take
         the last room."""
-
-
-class HostSide:
-    """The host part of the contract, as nothing: what a runtime that does
-    not run on this host (a hosted provider) inherits. A runtime on this host
-    (Embed) overrides what it has. It also holds the defaults of the compute
-    part's optional properties (desktop, cold_resume, the token's place)."""
-    host = False
-    desktop = "sbx"
-    cold_resume = False
-    upstream_token_cookie: str | None = None
-    settings: tuple = ()
-    presets: tuple = ()
-
-    def can_run(self, facts: dict) -> str:
-        return ""
-    host_unit: str | None = None
-    disk_path = ""
-
-    def host_units(self) -> list:
-        return []
-
-    def host_commands(self, into) -> dict:
-        return {}
-
-    def guard_host(self) -> None:
-        return None
-
-    def apply_host(self, key: str) -> bool:
-        """The installation's names changed (RUNTIME_ENV) are every runtime's
-        to take, with nothing to do here; any other key is not its."""
-        from ..settings import HostUnit
-        return key == HostUnit.RUNTIME_ENV
-
-    def apply_network(self) -> dict:
-        return {"status": "unchanged", "allowed_cidrs": []}
-
-    def disk(self) -> dict | None:
-        return None
-
-    def free_disk_mb(self) -> int | None:
-        return None
-
-    def collect_storage(self) -> None:
-        return None
-
-    def jobs(self) -> list:
-        return []
-
-    def capacity(self, memory_mb: int) -> dict:
-        return {"known": False}
-
-    def placing(self) -> ContextManager:
         return contextlib.nullcontext()
 
-    def readiness(self, facts: dict) -> list:
-        return []
 
-    def why_busy(self, memory_mb: int | None) -> str:
-        return "the runtime is busy; pause again in a minute"
-
-    def snapshot_usage(self, sandbox_id: str) -> dict:
-        return {}
+# The names before Backend: the phase-5 backend (Boat) still subclasses HostSide.
+Runtime = HostSide = Backend

@@ -14,7 +14,8 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 
 def with_token(fake):
     """The fake as a runtime that answers its sandboxes' ports only with their token."""
-    fake.upstream_token_header = TOKEN_HEADER
+    from sbx_control.runtime import TokenPlace
+    fake.upstream_token_at = TokenPlace("header", TOKEN_HEADER)
     fake.kept = set()       # the sandboxes whose token it holds (else: fetched, which may wake one)
     fake.fetched = []
 
@@ -97,20 +98,20 @@ class TrafficToken(TwoRuntimes, Server):
         self.assertNotIn("x-sbx-upstream-token", response.headers)
 
     def test_nginx_sends_the_token_to_its_runtime_alone(self):
-        from sbx_control import ip_previews
-        maps = ip_previews.runtime_upstreams()
+        from sbx_control import ip_previews, preview_proxy
+        maps = preview_proxy.runtime_upstreams()
         self.assertIn('map $sbx_runtime $sbx_ingress_token_1 {\n  default "";\n  fake $sbx_ingress_token;\n}', maps)
         self.assertNotIn("embed $sbx_ingress_token", maps)   # an Embed sandbox's request never carries it
-        lines = ip_previews.upstream_token()
+        lines = preview_proxy.upstream_token()
         self.assertIn("auth_request_set $sbx_ingress_token $upstream_http_x_sbx_upstream_token;", lines)
         self.assertIn(f"proxy_set_header {TOKEN_HEADER} $sbx_ingress_token_1;", lines)
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
         self.assertIn('map $ip_runtime $ip_ingress_token_1 {\n  default "";\n  fake $ip_ingress_token;\n}', config)
         self.assertIn(f"proxy_set_header {TOKEN_HEADER} $ip_ingress_token_1;", config)
         self.assertIn("proxy_ssl_name $ip_upstream;", config)
-        del self.fake.upstream_token_header
-        self.assertEqual(ip_previews.upstream_token(), "")
-        self.assertNotIn("_token", ip_previews.runtime_upstreams())
+        self.fake.upstream_token_at = None
+        self.assertEqual(preview_proxy.upstream_token(), "")
+        self.assertNotIn("_token", preview_proxy.runtime_upstreams())
 
     def test_the_public_never_reaches_the_gate_itself(self):
         script = (__import__("pathlib").Path(__file__).parents[1] / "tls.sh").read_text()
@@ -141,9 +142,9 @@ class RuntimeAdmin(Installation):
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.listed = []
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: self.listed))
-        from sbx_control import template_builds
-        self.real_start_detached = template_builds.start_detached   # never run for real: it starts builds
-        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+        from sbx_control import template_scheduler
+        self.real_start_detached = template_scheduler.start_detached   # never run for real: it starts builds
+        self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("sbx-template-builds-e2b-cloud.service", True)))
         self.effects()
 
@@ -159,8 +160,8 @@ class RuntimeAdmin(Installation):
 
     def test_builds_run_in_a_process_of_their_own(self):
         import subprocess
-        from sbx_control import template_builds
-        self.assertIsNot(self.real_start_detached, template_builds.start_detached)   # setUp's stand-in
+        from sbx_control import template_scheduler
+        self.assertIsNot(self.real_start_detached, template_scheduler.start_detached)   # setUp's stand-in
         done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
         # Not running yet (is-active: 3): systemd-run starts the unit.
         with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run, \
@@ -367,8 +368,9 @@ class InstallerEnv(Installation):
         from pathlib import Path
         from sbx_control import runtime
         script = (Path(__file__).parents[2] / "install.sh").read_text()
-        line = next(x for x in script.splitlines() if x.strip().startswith("installed=$(sed"))
-        command = line.strip().replace("/etc/sbx/runtime.env", '"$1"') + '; printf %s "$installed"'
+        line = next(x for x in script.splitlines() if x.strip().startswith("installed=$(python3"))
+        command = (f"src={Path(__file__).parents[2]}; " + line.strip().rstrip("| ").replace("/etc/sbx/runtime.env", '"$1"')
+                   + '; printf %s "$installed"')
         for text in ("SBX_RUNTIMES=embed,e2b-cloud\n", "  SBX_RUNTIMES = 'e2b-cloud'\n", "\tSBX_RUNTIMES=e2b-cloud\n"):
             with self.subTest(text=text):
                 self.file.write_text(text)
@@ -441,50 +443,50 @@ class CredentialHelper(Installation):
         self.assertIn(f"cat {github.PIN}", layer.files["credential"].content)
 
     def test_a_listing_that_missed_a_runtime_delivers_to_what_it_has(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
             # One runtime did not answer: the listed sandboxes get the pin now, once.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=False))
             self.assertEqual(delivery.waiting(), {"a"})
             delivery.forget("a")
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertFalse(tls_pin.redeliver(["a"], complete=False))
             self.assertEqual(delivery.waiting(), set())
             # Every runtime answers: the ones missed before, and the pin counts as delivered.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+            self.assertTrue(tls_pin.redeliver(["a", "b"], complete=True))
             self.assertEqual(delivery.waiting(), {"b"})
             delivery.forget("b")
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+            self.assertFalse(tls_pin.redeliver(["a", "b"], complete=True))
         self.assertEqual(delivery.waiting(), set())
 
     def test_going_back_to_the_pin_before_a_partial_delivery_queues_again(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
-            sandboxes.redeliver_on_certificate_change(["a"], complete=True)   # pin one delivered everywhere
+            tls_pin.redeliver(["a"], complete=True)   # pin one delivered everywhere
             delivery.forget("a")
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
             # A listing that missed a runtime: "a" gets pin two, the round is incomplete.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=False))
             delivery.forget("a")
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
             # Back to pin one: "a" holds two now, so it is queued again.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=True))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=True))
         self.assertEqual(delivery.waiting(), {"a"})
         delivery.forget("a")
 
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value=""):
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # a public CA's: nothing
+            self.assertFalse(tls_pin.redeliver(["a", "b"]))   # a public CA's: nothing
         self.assertEqual(delivery.waiting(), set())
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b", None]))
+            self.assertTrue(tls_pin.redeliver(["a", "b", None]))
             self.assertEqual(delivery.waiting(), {"a", "b"})
             self.assertEqual(delivery.pending("a")[:2], ([], False))         # no values, no app restart
             for name in ("a", "b"):
                 delivery.forget(name)
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # unchanged: once
+            self.assertFalse(tls_pin.redeliver(["a", "b"]))   # unchanged: once
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"]))
+            self.assertTrue(tls_pin.redeliver(["a"]))
         self.assertEqual(delivery.waiting(), {"a"})
 
 
@@ -529,9 +531,9 @@ class JobsRunDetached(TwoRuntimes, Installation):
         return code, out.getvalue()
 
     def test_the_build_runs_detached_and_says_where_to_follow_it(self):
-        from sbx_control import template_builds, templates
+        from sbx_control import template_builds, template_scheduler, templates
         unit = "sbx-template-builds-fake.service (journalctl -u sbx-template-builds-fake)"
-        with patch.object(template_builds, "start_detached", return_value=(unit, True)) as detached, \
+        with patch.object(template_scheduler, "start_detached", return_value=(unit, True)) as detached, \
                 patch.object(template_builds, "start") as in_process, \
                 patch.object(template_builds, "base_not_ready", return_value=""):
             code, said = self.jobs_run(f"template@fake:{templates.BASE}")
@@ -546,9 +548,9 @@ class JobsRunDetached(TwoRuntimes, Installation):
 
     def test_the_detached_command_builds_that_key_even_when_current(self):
         import subprocess
-        from sbx_control import template_builds
+        from sbx_control import template_scheduler
         done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
         with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run:
-            template_builds.start_detached("fake", [["key", "owner/app"]], if_stale=False)
+            template_scheduler.start_detached("fake", [["key", "owner/app"]], if_stale=False)
         self.assertIn("-m sbx_control.template_builds key owner/app --runtime fake", run.call_args.args[0][-1])
         self.assertNotIn("--if-stale", run.call_args.args[0][-1])

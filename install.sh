@@ -201,12 +201,9 @@ first=""; configured || first=1
 installed="" has_env=""
 if [ -f /etc/sbx/runtime.env ]; then
   has_env=1
-  # As sbx reads it (runtime.configuration): spaces around the name are allowed.
-  if grep -q '^[[:space:]]*SBX_RUNTIMES[[:space:]]*=' /etc/sbx/runtime.env; then
-    installed=$(sed -n 's/^[[:space:]]*SBX_RUNTIMES[[:space:]]*=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ' | xargs)
-  else
-    installed=embed
-  fi
+  # As sbx reads it: its own reader, before a release is unpacked.
+  installed=$(python3 -I "$src/control/sbx_control/runtime/env_file.py" runtimes /etc/sbx/runtime.env) ||
+    die "could not read /etc/sbx/runtime.env (above)"
 fi
 enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
 # Why E2B Embed can't run on this host ("" when it can).

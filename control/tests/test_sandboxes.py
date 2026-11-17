@@ -293,7 +293,7 @@ class WorkspaceTests(Server):
                 'Cookie': 'app=a; sbx_session=first; other=b; sbx_session=second'})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.headers['x-sbx-upstream'], '3000-vm-fixture.e2b.sandboxes.internal')
-            self.assertEqual(response.headers['x-sbx-cookies'], 'app=a; other=b')
+            self.assertEqual(response.headers['x-sbx-upstream-cookie'], 'app=a; other=b')
             self.assertEqual(response.headers['x-sbx-auth'], 'bearer')
             resume.assert_called_once()
         ip_previews.remove('ip-gate-fixture')

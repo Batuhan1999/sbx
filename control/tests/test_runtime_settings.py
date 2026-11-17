@@ -28,9 +28,9 @@ class Schema(Installation):
         self.assertTrue(all(f.kind == "int" and f.default.isdigit() for f in cloud.settings if f.limit))
         self.assertEqual([p.name for p in cloud.presets], ["hobby", "pro"])
         for preset in cloud.presets:
-            self.assertEqual(set(preset.values), {f.key for f in cloud.settings if f.limit})
+            self.assertEqual(set(preset.by_key()), {f.key for f in cloud.settings if f.limit})
             self.assertIn("e2b.dev/pricing", preset.source)
-        self.assertEqual(dict(cloud.presets[0].values)["E2B_CLOUD_MAX_TIMEOUT"], "3600")
+        self.assertEqual(cloud.presets[0].by_key()["E2B_CLOUD_MAX_TIMEOUT"], "3600")
 
     def test_embed_is_install_sh_s_and_says_when_the_host_cannot_run_it(self):
         from sbx_control.runtime.embed import Embed
@@ -55,7 +55,7 @@ class Web(TwoRuntimes, Server):
 
     def setUp(self):
         super().setUp()
-        from sbx_control import runtime, secret_store, settings, template_builds, vault
+        from sbx_control import runtime, secret_store, settings, template_scheduler, vault
         from sbx_control.connections.base import Check
         from sbx_control.runtime.e2b_cloud import Cloud
         self.file = self.root / "etc/runtime.env"
@@ -63,7 +63,7 @@ class Web(TwoRuntimes, Server):
         self.checks = [Check("E2B Cloud API", True, "answers")]
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: []))
-        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+        self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("unit", True)))
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
         # The managed store, as references: sealing makes one per value.
@@ -377,7 +377,7 @@ class Web(TwoRuntimes, Server):
             "E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_MAX_CPU": "64"}})
         self.assertEqual(too_big.status_code, 400)
         self.assertIn("vCPUs (E2B_CLOUD_MAX_CPU) is from 1 to 32", too_big.json()["detail"])
-        pro = {**PRESETS[1].values, "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
+        pro = {**PRESETS[1].by_key(), "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
             "E2B_CLOUD_API_KEY": KEY, **pro}}).status_code, 202)
         self.assertEqual(self.apply()[0], 0)
@@ -551,7 +551,7 @@ class NoRuntimeYet(Server):
         self.addCleanup(self.file.write_text, self.RUNTIME_ENV)
 
     def test_sbx_control_runs_and_says_what_to_do(self):
-        from sbx_control import ip_previews, jobs, runtimes
+        from sbx_control import jobs, preview_proxy, runtimes
         self.assertEqual((self.runtime.enabled(), self.runtime.default()), ([], ""))
         self.assertEqual(self.client.get("/api/runtimes", headers=self.headers).json(), {"default": "", "runtimes": []})
         with self.assertRaisesRegex(runtimes.Refused, "no sandbox runtime is set up: add one in Settings"):
@@ -560,7 +560,7 @@ class NoRuntimeYet(Server):
             self.runtime.get()
         self.assertEqual(list(self.runtime.sandboxes()), [])
         self.assertEqual(self.runtime.status().state, "not_connected")
-        self.assertIn("default http://127.0.0.1:9;", ip_previews.runtime_upstreams())
+        self.assertIn("default http://127.0.0.1:9;", preview_proxy.runtime_upstreams())
         jobs.jobs()                                                     # nothing of a runtime's
         from sbx_control import template_builds
         out = io.StringIO()
@@ -701,7 +701,8 @@ class InstallerWithoutARuntime(Installation):
                     if before is not None:
                         env.write_text(before)
                     device = "1" if kvm else ""   # the preflight's facts: /dev/kvm and /dev/net/tun
-                    script = (f"set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
+                    script = (f"set -eu\nsrc={Path(__file__).parents[2]}\n"
+                              "mem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
                               f"sign_in= domain= check= kvm={device} tun={device}\nconfigured() {{ false; }}\n"
                               "die() { echo \"FAILED: $*\"; exit 1; }\n"
                               + step.replace("/etc/sbx/runtime.env", str(env))

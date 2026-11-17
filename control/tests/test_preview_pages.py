@@ -49,16 +49,16 @@ class Template(unittest.TestCase):
 class GateCase(TwoRuntimes, Server):
     def setUp(self):
         super().setUp()
-        from sbx_control import auth, core, gate, recipes, settings
-        self.gate = gate
+        from sbx_control import auth, core, gate, recipes, settings, waking
+        self.gate, self.waking = gate, waking
         self.repo_admin()
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "example.test"}, by="test")
         self.client.cookies.clear()
         self.app = recipes.App("owner/app", Path("/unused"), {"previews": {
             "": {"port": 3000, "access": "team"}, "desktop": {"port": 6080, "access": "owner"}}})
         self.enterContext(patch.object(core, "app_of", return_value=self.app))
-        self.enterContext(patch.dict(gate._owners, {"fetched_at": 0.0, "by_id": {}, "state": {}, "app": {}, "info": {}}))
-        for kept in (gate._waking, gate._wake_errors, gate._listening, gate._last_access):
+        self.enterContext(patch.object(gate, "_snapshot", gate.Snapshot(0.0, {})))
+        for kept in (waking._waking, waking._wake_errors, gate._listening, waking._last_access):
             self.enterContext(patch.dict(kept, clear=True))
         self.owner = auth.mint_token("operator@example.com", "test")
         self.other = auth.mint_token("other@example.com", "test")
@@ -157,14 +157,14 @@ class Gate(GateCase):
         def slow_resume(name, why, info=None):
             release.wait(10)
             self.runtime.connect(self.vm)
-        with patch.object(core, "attach", side_effect=slow_resume), patch.object(self.gate, "WAKE_WAIT_SECONDS", 0.05):
+        with patch.object(core, "attach", side_effect=slow_resume), patch.object(self.waking, "WAKE_WAIT_SECONDS", 0.05):
             response = self.ask("memos-a.example.test", self.owner)
             self.assertEqual((response.status_code, response.headers.get("x-sbx-page")), (403, "waking"))
             shown = self.page("memos-a.example.test", self.owner)
             self.assertIn("Waking up", shown.text)
             self.assertEqual(self.ask("memos-a.example.test", self.owner, "/gate/status").json()["state"], "waking")
             release.set()
-            self.gate._waking[self.vm].join(5)
+            self.waking._waking[self.vm].join(5)
             with patch.object(self.gate, "_listens", return_value=False):
                 self.assertEqual(self.ask("memos-a.example.test", self.owner, "/gate/status").json()["line"],
                                  "Starting the app")
@@ -278,7 +278,7 @@ class Review(GateCase):
             self.assertEqual(self.ask("memos-a.example.test", self.owner, Accept="text/html").status_code, 200)
 
     def test_a_cookie_runtime_gets_the_apps_cookies_without_any_token_cookie_then_its_own(self):
-        self.fake.upstream_token_cookie = "_port_auth"
+        self.fake.upstream_token_at = self.runtime.TokenPlace("cookie", "_port_auth")
         self.fake.upstream_token = lambda sandbox_id, port, fetch=True: "tok"
         response = self.ask("memos-a.example.test", self.owner,
                             Cookie="a=1; _port_auth=evil; sbx_session=x; b=2; _port_auth=again")
@@ -300,44 +300,55 @@ class Nginx(unittest.TestCase):
     SCRIPT = (Path(__file__).parents[1] / "tls.sh").read_text()
 
     def test_refusals_and_upstream_errors_become_the_page_and_the_apps_own_errors_stay_its_own(self):
+        from sbx_control import preview_proxy
         sandbox = self.SCRIPT[self.SCRIPT.index("  location @sandbox {"):]
         sandbox = sandbox[:sandbox.index("\n  }\n")]
         self.assertIn("try_files /.sbx-no-such-file @sandbox;", self.SCRIPT)   # after auth_request
         self.assertNotIn("proxy_intercept_errors on", sandbox)   # an app's own 502 or 504 is the app's
         self.assertIn("error_page 502 504 = @unavailable;", sandbox)   # nginx's own: not reachable, timed out
         self.assertNotIn("error_page 401", sandbox)   # the app's own 401 and 403 pass
-        self.assertIn("rewrite ^ /gate/page? break;", self.SCRIPT)
-        self.assertIn("location = /.sbx/status {", self.SCRIPT)
+        self.assertIn("preview_proxy page-locations", self.SCRIPT)
+        pages = preview_proxy.page_locations(host="login.example.test", original_host="$host", preview_port='""',
+                                             sandbox_headers=True)
+        for location in ("location @denied {", "location @unavailable {", "location = /.sbx/status {"):
+            self.assertIn(location, pages)
+        self.assertIn("rewrite ^ /gate/page? break;", pages)
+        self.assertIn("proxy_set_header X-Sbx-Reason unavailable;", pages)
         self.assertIn("location ^~ /gate/ { return 404; }", self.SCRIPT)   # the public never reaches them
         self.assertIn(r"proxy_no_cache \$upstream_http_x_sbx_upstream_token \$upstream_http_x_sbx_wait;",
                       self.SCRIPT)
 
-    def test_a_cookie_runtimes_token_is_appended_to_the_apps_cookies_for_that_runtime_only(self):
-        from sbx_control import ip_previews, runtime
+    def test_every_upstream_gets_the_cookie_header_the_gate_wrote(self):
+        from sbx_control import ip_previews, preview_proxy, runtime
+        from sbx_control.runtime.base import TokenPlace
+        self.assertNotIn("sandbox_cookie", self.SCRIPT)   # no second way: nginx strips nothing itself
+        self.assertEqual(self.SCRIPT.count(r"auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;"), 2)
+        self.assertEqual(self.SCRIPT.count(r"proxy_set_header Cookie \$sbx_cookie;"), 2)   # sandboxes and services
+        self.assertIn(r"\$http_cookie|\$http_authorization", self.SCRIPT)   # the cached allow is the cookies'
         with patch.object(runtime, "ingresses", return_value={"embed": ("http://127.0.0.1:3002", ()),
                                                               "boat": ("https://sbx-ingress.on.boat.dev", ())}), \
-                patch.object(runtime, "upstream_token_headers", return_value={}), \
-                patch.object(runtime, "upstream_token_cookies", return_value={"boat": "_port_auth"}):
-            maps = ip_previews.runtime_upstreams()
-            self.assertIn("boat $sbx_ingress_upstream_cookie;", maps)   # the Cookie header the gate wrote
-            self.assertIn("default $sandbox_cookie;", maps)   # any other runtime: the app's cookies as they are
-            self.assertEqual(ip_previews.upstream_cookie(), "sbx_ingress_cookie")
-            self.assertIn("auth_request_set $sbx_ingress_upstream_cookie $upstream_http_x_sbx_upstream_cookie;",
-                          ip_previews.upstream_token_set())
-            self.assertEqual(ip_previews.upstream_token_send().strip(),
+                patch.object(runtime, "upstream_token_places", return_value={"boat": TokenPlace("cookie", "_port_auth")}):
+            self.assertNotIn("_cookie", preview_proxy.runtime_upstreams())
+            self.assertEqual(preview_proxy.upstream_token_set(), "")
+            self.assertEqual(preview_proxy.upstream_token_send().strip(),
                              "proxy_cookie_flags _port_auth httponly secure samesite=strict;")
             with patch.object(ip_previews, "port_range", return_value=(21000, 21000)):
                 ip = ip_previews.nginx("203.0.113.10", "bootstrap")
-        self.assertIn("proxy_set_header Cookie $ip_ingress_cookie;", ip)
+        self.assertIn("auth_request_set $ip_cookie $upstream_http_x_sbx_upstream_cookie;", ip)
+        self.assertIn("proxy_set_header Cookie $ip_cookie;", ip)
         self.assertIn("error_page 502 504 = @ip_unavailable;", ip)
         self.assertNotIn("proxy_intercept_errors on", ip)
         self.assertIn("try_files /.sbx-no-such-file @ip_sandbox;", ip)
         self.assertIn("location = /.sbx/status {", ip)
-        with patch.object(runtime, "ingresses", return_value={"embed": ("http://127.0.0.1:3002", ())}), \
-                patch.object(runtime, "upstream_token_headers", return_value={}), \
-                patch.object(runtime, "upstream_token_cookies", return_value={}):
-            self.assertEqual(ip_previews.upstream_cookie(), "sandbox_cookie")
-            self.assertNotIn("_port_auth", ip_previews.runtime_upstreams())
+        self.assertIn("location @ip_denied {", ip)
+
+    def test_the_gate_writes_the_cookie_header(self):
+        from sbx_control import preview_proxy
+        self.assertEqual(preview_proxy.upstream_cookie("a=1; sbx_session=x; b=2"), "a=1; b=2")
+        self.assertEqual(preview_proxy.upstream_cookie("a=1; _port_auth=evil; b=2", "_port_auth", "tok"),
+                         "a=1; b=2; _port_auth=tok")
+        self.assertEqual(preview_proxy.upstream_cookie("sbx_session=x", "_port_auth", "tok"), "_port_auth=tok")
+        self.assertEqual(preview_proxy.upstream_cookie("_port_auth=kept"), "_port_auth=kept")   # not a cookie runtime
 
 
 class PausedSinceListing(GateCase):
@@ -349,6 +360,6 @@ class PausedSinceListing(GateCase):
         op.advance("pausing")
         op.advance("workspace_ready", finish=True, sandbox_id=self.vm, runtime="paused")
         with patch.object(core, "attach", side_effect=lambda *a, **k: time.sleep(1)), \
-                patch.object(self.gate, "WAKE_WAIT_SECONDS", 0.05):
+                patch.object(self.waking, "WAKE_WAIT_SECONDS", 0.05):
             response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
         self.assertEqual(response.headers.get("x-sbx-page"), "waking")

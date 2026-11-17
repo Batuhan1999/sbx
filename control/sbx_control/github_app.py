@@ -350,7 +350,7 @@ def credential_helper(name: str, credential: str, pin_file: str) -> str:
     self-signed certificate (--dns none) is pinned by its key, as the
     template builds' downloads pin it (templates.pinned_key): read when it
     runs from pin_file, which the runtime layer carries and sbx writes again
-    when the certificate changes (sandboxes.redeliver_on_certificate_change)."""
+    when the certificate changes (tls_pin.redeliver)."""
     url = f"{sbx_settings.current().base_url}/api/sandbox/git-credential"
     return f"""#!/bin/sh
 # git credential helper: a fresh token for this sandbox's repo from sbx-control.

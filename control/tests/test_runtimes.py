@@ -303,7 +303,7 @@ class Previews(TwoRuntimes, Installation):
         self.assertIsNone(self.runtime.own_route("app.example.test", "", ""))
 
     def test_nginx_has_an_upstream_per_runtime_and_a_map_from_the_kind(self):
-        from sbx_control import ip_previews
+        from sbx_control import ip_previews, preview_proxy
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
         self.assertIn("upstream sbx_runtime_embed { server 127.0.0.1:3002; }", config)
         self.assertIn("upstream sbx_runtime_fake { server 127.0.0.1:3999; }", config)
@@ -313,14 +313,14 @@ class Previews(TwoRuntimes, Installation):
         self.assertIn("proxy_pass $ip_ingress;", config)
         for header in ("E2b-Sandbox-Id", "E2b-Sandbox-Port", "X-Fake-Sandbox"):
             self.assertIn(f'proxy_set_header {header} "";', config)
-        domain = ip_previews.runtime_upstreams()
+        domain = preview_proxy.runtime_upstreams()
         self.assertIn("map $sbx_runtime $sbx_ingress {", domain)
-        self.assertEqual(ip_previews.default_ingress(), "http://sbx_runtime_embed")
+        self.assertEqual(preview_proxy.default_ingress(), "http://sbx_runtime_embed")
 
     def test_one_runtime_keeps_one_upstream_to_its_ingress(self):
-        from sbx_control import ip_previews
+        from sbx_control import preview_proxy
         with patch.object(self.runtime, "enabled", return_value=["embed"]):
-            found = ip_previews.runtime_upstreams()
+            found = preview_proxy.runtime_upstreams()
         self.assertEqual(found.count("upstream sbx_runtime_"), 1)
         self.assertIn("upstream sbx_runtime_embed { server 127.0.0.1:3002; }", found)
         self.assertIn("default http://sbx_runtime_embed;", found)
@@ -668,9 +668,9 @@ class Review(TwoRuntimes, Installation):
         self.assertEqual(templates.build_log(templates.BASE), [])
 
     def test_an_ipv6_ingress_is_bracketed(self):
-        from sbx_control import ip_previews
+        from sbx_control import preview_proxy
         self.fake.ingress = "http://[::1]:3999"
-        self.assertIn("upstream sbx_runtime_fake { server [::1]:3999; }", ip_previews.runtime_upstreams())
+        self.assertIn("upstream sbx_runtime_fake { server [::1]:3999; }", preview_proxy.runtime_upstreams())
 
     def test_runtime_apply_checks_the_file_and_asks_for_nginx_and_a_restart(self):
         from sbx_control import admin
@@ -780,20 +780,20 @@ class CodeReview(TwoRuntimes, Installation):
                 core.find("elsewhere")                                      # may be on the fake
 
     def test_upstream_names_never_collide(self):
-        from sbx_control import ip_previews
-        self.assertEqual(ip_previews.upstream_name("embed"), "sbx_runtime_embed")
-        self.assertNotEqual(ip_previews.upstream_name("my-provider"), ip_previews.upstream_name("my_provider"))
+        from sbx_control import preview_proxy
+        self.assertEqual(preview_proxy.upstream_name("embed"), "sbx_runtime_embed")
+        self.assertNotEqual(preview_proxy.upstream_name("my-provider"), preview_proxy.upstream_name("my_provider"))
 
     def test_an_https_ingress_is_asked_by_the_sandbox_s_host_and_verified(self):
-        from sbx_control import ip_previews
-        self.assertEqual(ip_previews.upstream_tls(), "")    # http ingresses only: nothing added
+        from sbx_control import ip_previews, preview_proxy
+        self.assertEqual(preview_proxy.upstream_tls(), "")    # http ingresses only: nothing added
         self.fake.ingress = "https://sandboxes.provider.example"
-        found = ip_previews.runtime_upstreams()
+        found = preview_proxy.runtime_upstreams()
         self.assertIn("upstream sbx_runtime_fake { server sandboxes.provider.example:443; }", found)
-        tls = ip_previews.upstream_tls()
+        tls = preview_proxy.upstream_tls()
         # SNI is the Host nginx sends: the sandbox's own (<port>-<id>.<provider domain>).
         for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_target;", "proxy_ssl_verify on;",
-                     f"proxy_ssl_trusted_certificate {ip_previews.CA_BUNDLE};"):
+                     f"proxy_ssl_trusted_certificate {preview_proxy.CA_BUNDLE};"):
             self.assertIn(line, tls)
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
         self.assertIn("proxy_ssl_name $ip_upstream;", config)
