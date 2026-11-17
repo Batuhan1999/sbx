@@ -510,7 +510,11 @@ upgrade (`install.sh`) does both as well. Or let `sbx-admin` edit it:
   read from stdin, never the command line (`sbx-admin runtime add e2b-cloud <
   key-file`, or type it and press Ctrl-D). It checks the key with the
   provider first and changes nothing when the provider refuses it; given
-  again, it replaces the key. Embed is the installer's: it needs the host set
+  again, it replaces the key. It then starts the base and default template
+  builds on that runtime in a process of their own (a transient systemd
+  unit, `sbx-template-builds-<kind>`) and returns; `sbx-admin runtime
+  verify KIND` works once they are built, and says so while the base is
+  still building. Embed is the installer's: it needs the host set
   up.
 - `sbx-admin runtime remove KIND` disables one, refused while it has
   sandboxes (running or paused) or when it is the only one. A provider's

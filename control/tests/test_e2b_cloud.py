@@ -129,7 +129,40 @@ class RuntimeAdmin(Installation):
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.listed = []
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: self.listed))
+        from sbx_control import template_builds
+        self.real_start_detached = template_builds.start_detached   # never run for real: it starts builds
+        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+                                                     return_value="sbx-template-builds-e2b-cloud.service"))
         self.effects()
+
+    def test_add_starts_the_new_runtime_s_base_and_default_templates_now(self):
+        code, said = self.admin("add", "e2b-cloud", stdin="test-only-cloud-key")
+        self.assertEqual(code, 0, said)
+        self.builds.assert_called_once_with("e2b-cloud")
+        self.assertIn("building sbx-base and default on E2B Cloud now", said)
+        self.assertIn("`sbx-admin runtime verify e2b-cloud` works once they're built", said)
+        self.builds.reset_mock()
+        self.admin("default", "e2b-cloud")
+        self.builds.assert_not_called()                                 # only add starts builds
+
+    def test_builds_run_in_a_process_of_their_own(self):
+        import subprocess
+        from sbx_control import template_builds
+        self.assertIsNot(self.real_start_detached, template_builds.start_detached)   # setUp's stand-in
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
+                patch.object(subprocess, "Popen") as popen:
+            where = self.real_start_detached("e2b-cloud")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["systemd-run", "--no-block", "--collect", "--unit=sbx-template-builds-e2b-cloud"])
+        self.assertIn("-m sbx_control.template_builds base --runtime e2b-cloud --if-stale && ", command[-1])
+        self.assertIn("-m sbx_control.template_builds default --runtime e2b-cloud --if-stale", command[-1])
+        self.assertIn("sbx-template-builds-e2b-cloud", where)
+        popen.assert_not_called()
+        with patch.object(subprocess, "run", side_effect=FileNotFoundError("systemd-run")), \
+                patch.object(subprocess, "Popen") as popen:
+            where = self.real_start_detached("e2b-cloud")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])    # outlives the command
+        self.assertTrue(where.endswith("sbx-template-builds-e2b-cloud.log"))
 
     def admin(self, *argv, stdin=""):
         from sbx_control import admin
@@ -332,3 +365,32 @@ class CredentialHelper(Installation):
         with patch.object(templates, "pinned_key", return_value=""):
             script = github_app.credential_helper("box", "secret-credential")
         self.assertIn('curl -fsS -m 20 -H "Authorization: Bearer box:secret-credential"', script)
+
+
+class VerifyBeforeTheBaseIsBuilt(TwoRuntimes, Installation):
+    """runtime verify on a runtime whose base template is not built yet
+    says so, as its own state, instead of failing on NotBuilt."""
+
+    def verify(self):
+        from sbx_control import runtimes
+        said = []
+        self.assertFalse(runtimes.verify("fake", say=said.append))
+        self.assertEqual(self.fake.boxes, {})            # nothing was created
+        return "\n".join(said)
+
+    def test_a_base_that_is_building_is_reported_as_building(self):
+        import os
+        from sbx_control import template_builds, templates
+        template_builds._transition(templates.BASE, "building", "fake", started_at=template_builds._utc(),
+                                    pid=os.getppid())     # another live process: the build sbx-admin runtime add started
+        said = self.verify()
+        self.assertIn("the base template is building on Fake runtime; try again when it's built", said)
+        self.assertNotIn("NotBuilt", said)
+        self.assertTrue(said.endswith("not verified"))
+
+    def test_a_base_never_built_or_failed_says_what_to_do(self):
+        from sbx_control import template_builds, templates
+        self.assertIn("is not built on Fake runtime yet", self.verify())
+        self.assertIn(f"sbx-admin jobs run template@fake:{templates.BASE}", self.verify())
+        template_builds._transition(templates.BASE, "building", "fake", pid=None, error="out of disk")   # cut off: failed
+        self.assertIn("the base template's build failed on Fake runtime: out of disk", self.verify())

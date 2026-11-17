@@ -319,6 +319,23 @@ def verify(kind: str | None = None, say=print) -> bool:
     from . import gate, template_builds, templates
     kind = kind or runtime.default()
     say(f"verifying {runtime.title(kind)} ({kind})")
+    try:
+        template_builds.built(templates.BASE, kind)
+    except template_builds.NotBuilt:
+        # Not a failure of the runtime: there is nothing to start a sandbox from yet.
+        row = template_builds.state_row(templates.BASE, kind)
+        build = template_builds.status(templates.BASE, row, kind)
+        if build == "building":
+            say(f"  ..  the base template is building on {runtime.title(kind)}; try again when it's built "
+                f"(sbx-admin jobs shows its progress)")
+        elif build == "failed":
+            say(f"  NO  the base template's build failed on {runtime.title(kind)}: {(row or {}).get('error') or '?'}"
+                f"; build it again: sbx-admin jobs run template@{kind}:{templates.BASE}")
+        else:
+            say(f"  ..  the base template is not built on {runtime.title(kind)} yet; it builds by itself shortly, "
+                f"or start it now: sbx-admin jobs run template@{kind}:{templates.BASE}")
+        say("not verified")
+        return False
     made = None
     passed = True
 

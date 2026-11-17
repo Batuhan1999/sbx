@@ -367,6 +367,37 @@ def start(key: str, kind: str | None = None) -> bool:
     return True
 
 
+def start_detached(kind: str, keys=None) -> str:
+    """Build keys (default: the base, then the default template) on the
+    runtime of kind in a process of their own, as `python -m
+    sbx_control.template_builds KEY --runtime KIND --if-stale` one after
+    the other, so a short-lived command (sbx-admin runtime add) can start
+    them and return: a transient systemd unit where there is systemd, else
+    a detached process. Returns the unit's or process's name; its output
+    goes to the journal or to the state directory's log."""
+    import shlex
+    import subprocess
+    from . import paths
+    keys = keys or ["base", "default"]
+    steps = " && ".join(f"{shlex.quote(sys.executable)} -m sbx_control.template_builds {shlex.quote(key)} "
+                        f"--runtime {shlex.quote(kind)} --if-stale" for key in keys)
+    cwd = os.getcwd()
+    unit = f"sbx-template-builds-{templates.slug(kind)}"
+    try:
+        made = subprocess.run(["systemd-run", "--no-block", "--collect", f"--unit={unit}",
+                               f"--working-directory={cwd}", "sh", "-c", steps],
+                              capture_output=True, text=True, timeout=30)
+        if made.returncode == 0:
+            return f"{unit}.service (journalctl -u {unit})"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    log = paths.state_dir() / f"{unit}.log"
+    with open(log, "ab") as out:
+        subprocess.Popen(["sh", "-c", steps], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    return str(log)
+
+
 def _begin(key: str, kind: str | None = None):
     if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
         check_room(key, kind)

@@ -254,7 +254,25 @@ def do_runtime_change(a) -> int:
     change.confirm()
     print(change.said)
     _apply_runtimes()
+    if a.action == "add":
+        start_template_builds(a.kind)
     return 0
+
+
+def start_template_builds(kind: str) -> None:
+    """A runtime just added starts its base and default templates now, not
+    on the scheduler's next round; in a process of their own, so this
+    command returns."""
+    from . import runtime, template_builds, templates
+    title = runtime.title(kind)
+    try:
+        where = template_builds.start_detached(kind)
+    except Exception as error:
+        print(f"could not start the template builds on {title} ({error}); the scheduler starts them within "
+              f"minutes, or: sbx-admin jobs run template@{kind}:{templates.BASE}", file=sys.stderr)
+        return
+    print(f"building {templates.BASE} and {templates.DEFAULT} on {title} now (about 10 minutes the first time; "
+          f"{where}); `sbx-admin runtime verify {kind}` works once they're built")
 
 
 def do_runtime(a) -> int:
