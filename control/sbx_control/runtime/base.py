@@ -26,6 +26,7 @@ import dataclasses
 import datetime
 import pathlib
 import re
+import shlex
 import abc
 from typing import Any, Callable, ContextManager, Literal, Mapping, Protocol
 
@@ -40,19 +41,33 @@ class Failed(Exception):
     or not at all."""
 
 
+# A flag whose value is a secret: --password, --token, --api-key, --user, a header, curl's -u and -H.
+SECRET_FLAG = re.compile(r"--?[\w-]*(pass(word|wd)?|token|secret|key|auth\w*|user|header|cookie|credentials?)"
+                         r"|-[uH]", re.IGNORECASE)
+
+
 def command_name(command: str) -> str:
     """What a failed command was, for its message: the words of its first
     line up to 80 characters, leaving out every word with "=" in it (an
-    assignment: an env value, a key) and what follows a word ending in a
-    secret's flag. Never the command's values."""
-    words = []
-    for word in (command or "").strip().splitlines()[0].split() if (command or "").strip() else []:
-        if "=" in word:
-            continue
-        words.append(word)
-        if len(" ".join(words)) > 80:
-            words[-1] = "…"
-            break
+    assignment: an env value, a key, quoted or not), what follows a word
+    that is a secret's flag (SECRET_FLAG) and a quote the next lines close.
+    Never the command's values."""
+    first = (command or "").strip().splitlines()[0] if (command or "").strip() else ""
+    lexer = shlex.shlex(first, posix=True)
+    lexer.whitespace_split = True
+    words, value = [], False
+    try:
+        for word in lexer:
+            if value or "=" in word:
+                value = False
+                continue
+            value = bool(SECRET_FLAG.fullmatch(word))
+            words.append(word)
+            if len(" ".join(words)) > 80:
+                words[-1] = "…"
+                break
+    except ValueError:   # a quote the next lines close: what it holds is left out
+        pass
     return " ".join(words)
 
 

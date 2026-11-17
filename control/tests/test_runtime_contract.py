@@ -86,3 +86,15 @@ class EnvFile(unittest.TestCase):
                 self.assertEqual(oct(file.stat().st_mode & 0o777), "0o600")
         self.assertEqual(env_file.listed(None), ["embed"])
         self.assertEqual(env_file.listed(""), [])
+
+
+class CommandName(unittest.TestCase):
+    def test_a_failed_commands_name_leaves_its_values_out(self):
+        from sbx_control.runtime.base import CommandFailed, command_name
+        self.assertEqual(command_name("npm ci --prefer-offline\nnext line"), "npm ci --prefer-offline")
+        self.assertEqual(command_name("curl --user acct:hunter2 https://example.test"), "curl --user https://example.test")
+        self.assertEqual(command_name("curl -fsSL -H 'X-Token: hunter2' https://example.test"),
+                         "curl -fsSL -H https://example.test")
+        self.assertEqual(command_name("TOKEN='hunter2 more' false"), "false")
+        self.assertEqual(command_name("bash -c 'export K=hunter2\nrun'"), "bash -c")
+        self.assertNotIn("hunter2", str(CommandFailed(command="tool --api-key hunter2 go", exit_code=2)))
