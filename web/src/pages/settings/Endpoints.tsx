@@ -1,12 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 import { api } from '@/api/endpoints'
-import { keys, useEndpoints } from '@/api/queries'
+import { keys, useEndpoints, useRepos } from '@/api/queries'
 import type { AddEndpoint, Endpoint, EndpointCandidate, Endpoints as EndpointsData } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CopyButton } from '@/components/CopyCommand'
-import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { ErrorState } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
 import { Button, LinkButton } from '@/components/ui/button'
@@ -64,10 +64,17 @@ function EndpointState({ e }: { e: Endpoint }) {
   return <StateBadge tone="ok" label="Reachable" />
 }
 
+/** "a", "a and b", "a, b and c". */
+export function listText(items: string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
 function EndpointRow({ e }: { e: Endpoint }) {
   const qc = useQueryClient()
+  const [editing, setEditing] = useState(false)
   const used = e.used_by.length > 0
-  const repos = e.used_by.join(', ')
+  const internal = e.kind === 'internal'
+  const repos = e.repos ?? []
   return <li className="flex flex-wrap items-start gap-x-4 gap-y-2 px-4 py-3">
     <div className="min-w-0 flex-1 basis-64">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -78,12 +85,21 @@ function EndpointRow({ e }: { e: Endpoint }) {
         <EndpointState e={e} />
       </div>
       <p className="mt-0.5 text-[13px] text-muted">{endpointWhat(e)}</p>
-      <p className="mt-0.5 break-words text-[12px] text-muted">{used ? `Used by ${repos}` : 'No repository uses it yet'}</p>
-      {used && <p className="mt-0.5 text-[12px] text-muted">Can't stop exposing it while repositories use it.</p>}
+      {internal
+        ? <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-[12.5px]">
+          <p className="min-w-0 break-words text-muted">Repositories: <span className="text-ink">{repos.length ? repos.join(', ') : 'none'}</span></p>
+          {!editing && <button type="button" onClick={() => setEditing(true)} aria-label={`Edit repositories for ${e.address}`} className="rounded-sm text-accent underline-offset-2 hover:underline focus-visible:underline">Edit</button>}
+        </div>
+        : <>
+          <p className="mt-0.5 break-words text-[12.5px] text-muted">Reached by: <span className="text-ink">{repos.length ? repos.join(', ') : 'no repository yet'}</span></p>
+          <p className="text-[12px] text-faint">The repositories {e.server} is attached to; attaching it to a repository grants that repository access.</p>
+        </>}
+      {used && <p className="mt-0.5 break-words text-[12px] text-muted">Can't stop exposing it while {listText(e.used_by)} {e.used_by.length > 1 ? 'use' : 'uses'} it.</p>}
       {e.state === 'failed' && <p role="note" className="mt-1 break-words text-[12.5px] text-bad">{e.message || 'It could not be made reachable; see the server log.'}</p>}
+      {editing && <EditRepos e={e} onDone={() => setEditing(false)} />}
     </div>
     {used
-      ? <Button size="sm" variant="ghost" disabled title={`Used by ${repos}`}>Stop exposing</Button>
+      ? <Button size="sm" variant="ghost" disabled title={`Used by ${e.used_by.join(', ')}`}>Stop exposing</Button>
       : <ConfirmDialog title={`Stop exposing ${e.address}?`} confirm="Stop exposing"
         description="Provider sandboxes can no longer reach it at this address. Sandboxes on this server keep their access."
         note="You can make it reachable again later."
@@ -92,12 +108,67 @@ function EndpointRow({ e }: { e: Endpoint }) {
   </li>
 }
 
-type Pending = { body: AddEndpoint; address: string; what: string; title: string }
+const reposError = (repos: string[]) => (repos.length ? undefined : 'Choose at least one repository.')
 
-/** Two steps: choose a managed server (or name an internal host), then confirm, seeing the address it gets. */
+/** The installation's repositories as checkboxes. */
+function RepoPicker({ value, onChange, onBlur, error }: { value: string[]; onChange: (repos: string[]) => void; onBlur?: () => void; error?: string }) {
+  const repos = useRepos()
+  const id = useId()
+  const toggle = (repo: string, on: boolean) => onChange(on ? [...value, repo] : value.filter(r => r !== repo))
+  const names = [...new Set([...(repos.data ?? []).map(r => r.repo), ...value])].sort()
+  return <fieldset className="min-w-0" aria-describedby={`${id}-hint`} onBlur={onBlur}>
+    <legend className="mb-1 text-[12.5px] font-medium">Repositories</legend>
+    {repos.isPending ? <Spinner className="size-3.5" label="Loading repositories…" />
+      : repos.error && !names.length ? <ErrorState compact error={repos.error} retry={() => repos.refetch()} />
+      : names.length === 0 ? <p className="text-[13px] text-muted">No repository is connected yet.</p>
+      : <ul className="max-h-48 divide-y divide-line overflow-y-auto rounded-md border border-line">
+        {names.map(repo => <li key={repo}>
+          <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-[13px] hover:bg-hover">
+            <input type="checkbox" className="size-4 shrink-0 accent-[var(--accent)]" checked={value.includes(repo)} onChange={e => toggle(repo, e.target.checked)} />
+            <span className="min-w-0 break-all">{repo}</span>
+          </label>
+        </li>)}
+      </ul>}
+    <p id={`${id}-hint`} aria-live="polite" className={cn('mt-1 text-[12px]', error ? 'text-bad' : 'text-muted')}>{error || 'Only their sandboxes reach it.'}</p>
+  </fieldset>
+}
+
+/** An internal host's repositories, replaced as a whole. */
+function EditRepos({ e, onDone }: { e: Endpoint; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [repos, setRepos] = useState(e.repos ?? [])
+  const [tried, setTried] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  const invalid = reposError(repos)
+  const save = async () => {
+    setTried(true)
+    if (invalid) return
+    setBusy(true); setError(null)
+    try {
+      await api.endpoints.setRepos(e.name, repos)
+      await qc.invalidateQueries({ queryKey: keys.endpoints })
+      onDone()
+    } catch (x) { setError(x) } finally { setBusy(false) }
+  }
+  return <div className="mt-2 space-y-2 rounded-lg border border-line p-3">
+    <RepoPicker value={repos} onChange={setRepos} error={tried ? invalid : undefined} />
+    <ErrorState compact error={error} />
+    <div className="flex justify-end gap-2">
+      <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Cancel</Button>
+      <Button size="sm" variant="primary" busy={busy} onClick={save}>Save</Button>
+    </div>
+  </div>
+}
+
+type Pending = { body: AddEndpoint; address: string; what: string; title: string; repos?: string[] }
+type Draft = { name: string; target: string; repos: string[] }
+
+/** Two steps: choose a managed server (or name an internal host and its repositories), then confirm, seeing the address it gets. */
 function MakeReachable({ data, onClose }: { data: EndpointsData; onClose: () => void }) {
   const [choice, setChoice] = useState(data.candidates[0]?.server ?? INTERNAL)
   const [pending, setPending] = useState<Pending | null>(null)
+  const [draft, setDraft] = useState<Draft>({ name: '', target: '', repos: [] })
   const address = (name: string) => `${name}.${data.domain}`
   if (pending) return <Confirm pending={pending} onBack={() => setPending(null)} onDone={onClose} />
   const candidate = data.candidates.find(c => c.server === choice)
@@ -105,12 +176,13 @@ function MakeReachable({ data, onClose }: { data: EndpointsData; onClose: () => 
     <h3 className="font-semibold">Make reachable</h3>
     <Choices candidates={data.candidates} value={choice} onChange={setChoice} />
     {choice === INTERNAL
-      ? <InternalHost domain={data.domain} taken={data.endpoints.map(e => e.name)} onCancel={onClose}
-        onNext={(name, target) => setPending({ body: { name, target }, address: address(name), what: 'Internal host', title: 'this internal host' })} />
+      ? <InternalHost domain={data.domain} taken={data.endpoints.map(e => e.name)} draft={draft} onCancel={onClose}
+        onNext={d => { setDraft(d); setPending({ body: d, address: address(d.name), what: 'Internal host', title: 'this internal host', repos: d.repos }) }} />
       : <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
         <Button variant="primary" disabled={!candidate} onClick={() => candidate && setPending({
-          body: { server: candidate.server }, address: address(candidate.server), title: candidate.server, what: endpointWhat({ kind: 'managed-server', server: candidate.server, server_kind: candidate.kind }),
+          body: { server: candidate.server }, address: candidate.address || address(candidate.server), title: candidate.server,
+          what: endpointWhat({ kind: 'managed-server', server: candidate.server, server_kind: candidate.kind }),
         })}>Continue</Button>
       </div>}
   </div>
@@ -150,11 +222,13 @@ export function endpointTargetError(value: string): string | undefined {
   return m && port >= 1 && port <= 65535 ? undefined : 'Enter the host and its port as host:port.'
 }
 
-function InternalHost({ domain, taken, onCancel, onNext }: { domain: string; taken: string[]; onCancel: () => void; onNext: (name: string, target: string) => void }) {
+function InternalHost({ domain, taken, draft, onCancel, onNext }: { domain: string; taken: string[]; draft: Draft; onCancel: () => void; onNext: (d: Draft) => void }) {
   const form = useAppForm({
-    defaultValues: { name: '', target: '' },
-    onSubmit: ({ value }) => onNext(value.name, value.target.trim()),
+    defaultValues: draft,
+    // Repositories are checked here: a field validator on this array field did not run at submit.
+    onSubmit: ({ value }) => { if (!reposError(value.repos)) onNext({ ...value, target: value.target.trim() }) },
   })
+  const attempted = useStore(form.store, s => s.submissionAttempts > 0)
   return <AppForm form={form} className="space-y-3">
     <div className="grid gap-3 sm:grid-cols-2">
       <form.AppField name="name" validators={{ onChange: ({ value }) => endpointNameError(value, taken) }}>
@@ -166,6 +240,10 @@ function InternalHost({ domain, taken, onCancel, onNext }: { domain: string; tak
           help="As this server reaches it on its network." />}
       </form.AppField>
     </div>
+    <form.Field name="repos">
+      {field => <RepoPicker value={field.state.value} onChange={field.handleChange} onBlur={field.handleBlur}
+        error={attempted ? reposError(field.state.value) : undefined} />}
+    </form.Field>
     <div className="flex justify-end gap-2">
       <Button variant="ghost" onClick={onCancel}>Cancel</Button>
       <SubmitButton form={form}>Continue</SubmitButton>
@@ -199,6 +277,9 @@ function Confirm({ pending, onBack, onDone }: { pending: Pending; onBack: () => 
       <p className="mt-0.5 text-[12px] text-muted">{pending.what}</p>
     </div>
     <p className="text-[13px] text-muted">It becomes reachable from the internet at this address, but only by this installation's sandboxes: each has its own certificate. The service's own login still applies.</p>
+    <p className="break-words text-[13px] font-medium text-ink">{pending.repos
+      ? `Only sandboxes of ${listText(pending.repos)} reach it.`
+      : `Only sandboxes of repositories ${pending.title} is attached to reach it.`}</p>
     <ErrorState compact error={error} />
     <div className="flex justify-end gap-2">
       <Button variant="ghost" onClick={onBack} disabled={busy}>Back</Button>

@@ -31,6 +31,8 @@ export const api = {
   endpoints: {
     list: () => get<Endpoints>('/api/endpoints'),
     add: (body: AddEndpoint) => post<Endpoint>('/api/endpoints', body),
+    /** An internal host's repositories, replaced; refused (400) for a managed server's. */
+    setRepos: (name: string, repos: string[]) => put<Endpoint>(`/api/endpoints/${enc(name)}`, { repos }),
     remove: (name: string) => del<unknown>(`/api/endpoints/${enc(name)}`),
   },
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),

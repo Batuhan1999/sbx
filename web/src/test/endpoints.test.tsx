@@ -7,9 +7,12 @@ import { Runtimes } from '@/pages/settings/Runtimes'
 import { ME, renderApp, stubApi } from './render'
 
 const endpoint = (name: string, extra: Partial<Endpoint> = {}): Endpoint => ({
-  name, address: `${name}.example.com`, kind: 'managed-server', server: name, target: '172.29.50.10:5432', state: 'on', message: '', used_by: [], ...extra,
+  name, address: `${name}.example.com`, kind: 'managed-server', server: name, target: '172.29.50.10:5432', state: 'on', message: '', used_by: [], repos: [], ...extra,
 })
-const PG = endpoint('dev-pg', { server_kind: 'postgres', used_by: ['acme/shop'] })
+const PG = endpoint('dev-pg', { server_kind: 'postgres', used_by: ['acme/shop'], repos: ['acme/shop', 'acme/api'] })
+const BILLING = endpoint('billing', { kind: 'internal', server: '', target: '10.0.0.5:8080', repos: ['acme/shop'] })
+const repo = (name: string) => ({ repo: name, trust: 'trusted', configured: true, prebuilt: false, built_at: null, sandboxes: 0, state: { label: '', level: 'ok' } })
+const REPOS = { repos: [repo('acme/shop'), repo('acme/api'), repo('acme/docs')] }
 const TEMPORAL = endpoint('temporal', { server_kind: 'temporal' })
 const data = (extra: Partial<EndpointsData> = {}): EndpointsData => ({
   endpoints: [], candidates: [{ server: 'dev-pg', kind: 'postgres', target: '172.29.50.10:5432' }], domain: 'example.com', needed: true, ...extra,
@@ -36,19 +39,22 @@ describe('Settings → Reachable from provider sandboxes', () => {
   })
 
   it('lists each endpoint: its address, what it is, its state and who uses it, never a port', async () => {
-    stubApi({ 'GET /api/endpoints': data({ needed: false, endpoints: [PG, endpoint('billing', { kind: 'internal', server: '', target: '10.0.0.5:8080' })] }) })
+    stubApi({ 'GET /api/endpoints': data({ needed: false, endpoints: [PG, BILLING] }) })
     renderApp(<Endpoints />)
     const list = within(await section()).getByRole('list')
     const pg = within(list).getByText('dev-pg.example.com').closest('li')!
     expect(pg.textContent).toContain('dev-pg · Postgres')
     expect(within(pg).getByText('Reachable')).toBeTruthy()
-    expect(pg.textContent).toContain('Used by acme/shop')
+    expect(pg.textContent).toContain('Reached by: acme/shop, acme/api')
+    expect(pg.textContent).toContain('attaching it to a repository grants')
+    expect(within(pg).queryByRole('button', { name: /^Edit/ })).toBeNull()
     expect(within(pg).getByRole('button', { name: 'Copy dev-pg.example.com' })).toBeTruthy()
     expect((within(pg).getByRole('button', { name: 'Stop exposing' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(pg.textContent).toContain("Can't stop exposing it while repositories use it.")
+    expect(pg.textContent).toContain("Can't stop exposing it while acme/shop uses it.")
     const billing = within(list).getByText('billing.example.com').closest('li')!
     expect(billing.textContent).toContain('Internal host')
-    expect(billing.textContent).toContain('No repository uses it yet')
+    expect(billing.textContent).toContain('Repositories: acme/shop')
+    expect(within(billing).getByRole('button', { name: 'Edit repositories for billing.example.com' })).toBeTruthy()
     noPort()
   })
 
@@ -67,7 +73,7 @@ describe('Settings → Reachable from provider sandboxes', () => {
     let added = false
     const calls = stubApi({
       'POST /api/endpoints': () => { added = true; return { status: 202, body: applying } },
-      'GET /api/endpoints': () => (added ? after() : ok(data())),
+      'GET /api/endpoints': () => (added ? after() : ok(data({ candidates: [{ server: 'dev-pg', kind: 'postgres', target: '172.29.50.10:5432', address: 'dev-pg.db.example.com' }] }))),
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
@@ -75,7 +81,8 @@ describe('Settings → Reachable from provider sandboxes', () => {
     expect((screen.getByRole('radio', { name: /dev-pg/ }) as HTMLInputElement).checked).toBe(true)
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     const confirm = screen.getByRole('region', { name: 'Make dev-pg reachable?' })
-    expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('dev-pg.example.com')
+    expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('dev-pg.db.example.com')
+    expect(confirm.textContent).toContain('Only sandboxes of repositories dev-pg is attached to reach it.')
     expect(confirm.textContent).toContain('reachable from the internet')
     expect(confirm.textContent).toContain('only by this installation')
     expect(confirm.textContent).toContain('own certificate')
@@ -93,16 +100,20 @@ describe('Settings → Reachable from provider sandboxes', () => {
     const calls = stubApi({
       'POST /api/endpoints': (body: unknown) => ({ status: 202, body: endpoint('billing', { kind: 'internal', server: '', state: 'applying', ...(body as object) }) }),
       'GET /api/endpoints': data({ endpoints: [PG], candidates: [] }),
+      'GET /api/repos': REPOS,
     })
     renderApp(<Endpoints />)
     const user = userEvent.setup()
     await user.click(within(await section()).getByRole('button', { name: 'Make reachable' }))
     expect((screen.getByRole('radio', { name: /An internal host/ }) as HTMLInputElement).checked).toBe(true)
+    const picker = screen.getByRole('group', { name: 'Repositories' })
+    expect(await within(picker).findByRole('checkbox', { name: 'acme/docs' })).toBeTruthy()
     await user.type(screen.getByLabelText('Name'), 'Billing_API')
     await user.type(screen.getByLabelText('Host and port'), 'billing.internal')
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByText(/Use lowercase letters, digits and hyphens/)).toBeTruthy()
     expect(screen.getByText('Enter the host and its port as host:port.')).toBeTruthy()
+    expect(screen.getByText('Choose at least one repository.')).toBeTruthy()
     expect(calls.some(c => c.method === 'POST')).toBe(false)
     await new Promise(r => requestAnimationFrame(r)) // the form focuses the first invalid field
     await user.clear(screen.getByLabelText('Name'))
@@ -112,13 +123,49 @@ describe('Settings → Reachable from provider sandboxes', () => {
     await user.type(screen.getByLabelText('Name'), 'billing')
     expect(screen.getByText('billing.example.com')).toBeTruthy()
     await user.type(screen.getByLabelText('Host and port'), ':8080')
+    await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
+    await user.click(within(picker).getByRole('checkbox', { name: 'acme/api' }))
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     const confirm = screen.getByRole('region', { name: 'Make this internal host reachable?' })
     expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('billing.example.com')
+    expect(confirm.textContent).toContain('Only sandboxes of acme/shop and acme/api reach it.')
     noPort()
-    await user.click(within(confirm).getByRole('button', { name: 'Make reachable' }))
+    // Back keeps what was entered.
+    await user.click(within(confirm).getByRole('button', { name: 'Back' }))
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('billing')
+    expect((screen.getByRole('checkbox', { name: 'acme/api' }) as HTMLInputElement).checked).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Continue' }))
+    await user.click(within(screen.getByRole('region', { name: 'Make this internal host reachable?' })).getByRole('button', { name: 'Make reachable' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
-    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ name: 'billing', target: 'billing.internal:8080' })
+    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ name: 'billing', target: 'billing.internal:8080', repos: ['acme/shop', 'acme/api'] })
+  })
+
+  it('edits an internal host’s repositories, and shows a refusal', async () => {
+    let answer = { status: 200, body: {} as unknown }
+    const calls = stubApi({
+      'PUT /api/endpoints/billing': () => answer,
+      'GET /api/endpoints': data({ endpoints: [BILLING] }),
+      'GET /api/repos': REPOS,
+    })
+    renderApp(<Endpoints />)
+    const user = userEvent.setup()
+    const row = (await screen.findByText('billing.example.com')).closest('li')!
+    await user.click(within(row).getByRole('button', { name: 'Edit repositories for billing.example.com' }))
+    const picker = within(row).getByRole('group', { name: 'Repositories' })
+    expect((await within(picker).findByRole('checkbox', { name: 'acme/shop' }) as HTMLInputElement).checked).toBe(true)
+    await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
+    await user.click(within(row).getByRole('button', { name: 'Save' }))
+    expect(within(row).getByText('Choose at least one repository.')).toBeTruthy()
+    expect(calls.some(c => c.method === 'PUT')).toBe(false)
+    answer = { status: 400, body: { detail: 'acme/docs is not connected to this installation' } }
+    await user.click(within(picker).getByRole('checkbox', { name: 'acme/docs' }))
+    await user.click(within(row).getByRole('button', { name: 'Save' }))
+    expect((await within(row).findByRole('alert')).textContent).toContain('acme/docs is not connected')
+    answer = { status: 200, body: { ...BILLING, repos: ['acme/docs', 'acme/api'] } }
+    await user.click(within(picker).getByRole('checkbox', { name: 'acme/api' }))
+    await user.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(within(row).queryByRole('group', { name: 'Repositories' })).toBeNull())
+    expect(calls.filter(c => c.method === 'PUT').at(-1)).toMatchObject({ url: '/api/endpoints/billing', body: { repos: ['acme/docs', 'acme/api'] } })
   })
 
   it('shows a refusal in the confirm step', async () => {
