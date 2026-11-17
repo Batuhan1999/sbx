@@ -701,7 +701,8 @@ class InstallerWithoutARuntime(Installation):
                     if before is not None:
                         env.write_text(before)
                     device = directory if kvm else "/nonexistent-kvm"   # a path that exists stands for /dev/kvm
-                    script = ("set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
+                    script = (f"set -eu\nsrc={Path(__file__).parents[2]}\n"
+                              "mem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
                               "sign_in= domain=\nconfigured() { false; }\ndie() { echo \"FAILED: $*\"; exit 1; }\n"
                               + step.replace("/etc/sbx/runtime.env", str(env)).replace("/dev/kvm", device)
                               .replace("/dev/net/tun", directory if kvm else "/nonexistent-tun")

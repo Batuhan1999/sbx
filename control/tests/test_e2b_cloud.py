@@ -368,8 +368,9 @@ class InstallerEnv(Installation):
         from pathlib import Path
         from sbx_control import runtime
         script = (Path(__file__).parents[2] / "install.sh").read_text()
-        line = next(x for x in script.splitlines() if x.strip().startswith("installed=$(sed"))
-        command = line.strip().replace("/etc/sbx/runtime.env", '"$1"') + '; printf %s "$installed"'
+        line = next(x for x in script.splitlines() if x.strip().startswith("installed=$(python3"))
+        command = (f"src={Path(__file__).parents[2]}; " + line.strip().rstrip("| ").replace("/etc/sbx/runtime.env", '"$1"')
+                   + '; printf %s "$installed"')
         for text in ("SBX_RUNTIMES=embed,e2b-cloud\n", "  SBX_RUNTIMES = 'e2b-cloud'\n", "\tSBX_RUNTIMES=e2b-cloud\n"):
             with self.subTest(text=text):
                 self.file.write_text(text)
