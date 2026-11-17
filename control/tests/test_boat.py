@@ -246,7 +246,7 @@ class Backend(unittest.TestCase):
         self.assertTrue(any("export V=1\n" in e for e in envs))
         unit = next(c for c in commands if "sbx-start.service" in c)
         self.assertIn("base64 -d | sudo tee", unit)
-        self.assertTrue(any("systemctl enable --now sbx-start" in c for c in commands))
+        self.assertTrue(any("systemctl enable sbx-start && sudo systemctl restart sbx-start" in c for c in commands))
         persisted = [c for c in commands if "sudo tee /etc/sbx/template.sh" in c]
         text = base64.b64decode(persisted[-1].split("echo ")[1].split(" ")[0]).decode()
         self.assertIn("export TOOL_HOME=/opt/tool", text)

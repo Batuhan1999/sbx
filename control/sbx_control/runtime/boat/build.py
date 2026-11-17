@@ -207,7 +207,8 @@ class Builds:
     @staticmethod
     def _start_unit(handle: Handle, command: str, ready, log):
         """The start command as an enabled systemd unit (Boat starts enabled
-        units again on every resume), started now and waited for."""
+        units again on every resume), started now and waited for: restarted,
+        as a builder from a parent template runs the parent's already."""
         script = f"#!/bin/bash\n[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}\ncd \"${{SBX_TEMPLATE_WORKDIR:-$HOME}}\"\n" \
                  f"exec bash -c {shlex.quote(command)}\n"
         unit = ("[Unit]\nDescription=sbx start command\nAfter=network.target\n[Service]\nUser=user\n"
@@ -216,7 +217,7 @@ class Builds:
         for path, text in (("/etc/sbx/start.sh", script), (f"/etc/systemd/system/{START_UNIT}.service", unit)):
             encoded = base64.b64encode(text.encode()).decode()
             commands.run(f"echo {encoded} | base64 -d | sudo tee {path} >/dev/null", timeout=60)
-        commands.run(f"sudo systemctl daemon-reload && sudo systemctl enable --now {START_UNIT}", timeout=120)
+        commands.run(f"sudo systemctl daemon-reload && sudo systemctl enable {START_UNIT} && sudo systemctl restart {START_UNIT}", timeout=120)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             try:
