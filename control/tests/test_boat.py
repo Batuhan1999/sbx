@@ -270,6 +270,16 @@ class Backend(unittest.TestCase):
         shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/start.sh")], capture_output=True, text=True)
         self.assertEqual(shown.stdout, "started\n")   # exec would run cd alone, or nothing after its &&
 
+    def test_a_child_template_keeps_its_parents_env_and_workdir(self):
+        from sbx_control.runtime import TemplateSpec
+        self.fake.respond = lambda _, command: ("export BASE=ok\nexport SBX_TEMPLATE_WORKDIR=/srv/parent\n"
+                                                if "cat /etc/sbx/template.sh" in command else None)
+        self.backend.build_template(TemplateSpec().from_template("tpl").set_envs({"CHILD": "1"}).run_cmd("make"),
+                                    alias="c", cpu=2, memory_mb=4096, disk_mb=1024)
+        self.assertEqual(self.written("/etc/sbx/template.sh"),
+                         "export BASE=ok\nexport CHILD=1\nexport SBX_TEMPLATE_WORKDIR=/srv/parent\n")
+        self.assertIn("cd /srv/parent || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
+
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
         steps = dockerfile.dockerfile_steps(

@@ -168,10 +168,13 @@ class Builds:
                     log(f"Boat: could not delete builder {sandbox.id}: {error}")
 
     def _replay(self, handle: Handle, steps: list, log):
-        user, workdir, env = "user", HOME, {}
+        user, workdir, env, inherited = "user", HOME, {}, ""
         commands = handle.commands
         for what, value in steps:
-            if what in ("image", "template"):
+            if what == "template":
+                inherited, workdir = self._inherited(commands)
+                continue
+            if what == "image":
                 continue
             if what == "user":
                 user = value
@@ -186,18 +189,31 @@ class Builds:
                 commands.run(value, user=user, envs=env, cwd=workdir, timeout=0, on_output=lambda text: [
                     log(line) for line in text.splitlines() if line.strip()])
             elif what == "start":
-                self._persist(commands, env, workdir)
+                self._persist(commands, env, workdir, inherited)
                 command, ready = value
                 self._start_unit(handle, command, ready, log)
                 continue
             else:
                 raise ValueError(f"unknown template step {what}")
-            self._persist(commands, env, workdir)
+            self._persist(commands, env, workdir, inherited)
 
     @staticmethod
-    def _persist(commands, env: dict, workdir: str):
-        """The template's env and workdir as every later command and shell sees them."""
-        text = "".join(export_line(k, v) for k, v in env.items())
+    def _inherited(commands) -> tuple[str, str]:
+        """The parent template's env (its TEMPLATE_FILE but the workdir) and its workdir."""
+        text = commands.run(f"cat {TEMPLATE_FILE} 2>/dev/null || true", timeout=60).stdout
+        lines, workdir = [], HOME
+        for line in text.splitlines():
+            if line.startswith("export SBX_TEMPLATE_WORKDIR="):
+                workdir = shlex.split(line)[1].partition("=")[2] or HOME
+            elif line.strip():
+                lines.append(line + "\n")
+        return "".join(lines), workdir
+
+    @staticmethod
+    def _persist(commands, env: dict, workdir: str, inherited: str = ""):
+        """The template's env and workdir as every later command and shell
+        sees them: the parent's env (inherited) first, the template's own after it."""
+        text = inherited + "".join(export_line(k, v) for k, v in env.items())
         text += f"export SBX_TEMPLATE_WORKDIR={shlex.quote(workdir)}\n"
         encoded = base64.b64encode(text.encode()).decode()
         commands.run(f"sudo mkdir -p /etc/sbx && echo {encoded} | base64 -d | sudo tee {TEMPLATE_FILE} >/dev/null "
