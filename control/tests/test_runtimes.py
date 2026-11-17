@@ -85,7 +85,7 @@ class Registry(TwoRuntimes, Installation):
         try:
             self.assertEqual(self.runtime.default(), "fake")
             file.write_text(RUNTIME + "SBX_RUNTIMES=embed,nowhere\n")
-            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, fake"):
+            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, e2b-cloud, fake"):
                 self.runtime.enabled()
             file.write_text(RUNTIME)
             self.assertEqual(self.runtime.enabled(), ["embed"])   # missing: Embed alone, as before
@@ -690,21 +690,20 @@ class CodeReview(TwoRuntimes, Installation):
         self.assertEqual(ip_previews.upstream_name("embed"), "sbx_runtime_embed")
         self.assertNotEqual(ip_previews.upstream_name("my-provider"), ip_previews.upstream_name("my_provider"))
 
-    def test_an_https_ingress_is_reached_by_its_name_and_verified(self):
+    def test_an_https_ingress_is_asked_by_the_sandbox_s_host_and_verified(self):
         from sbx_control import ip_previews
         self.assertEqual(ip_previews.upstream_tls(), "")    # http ingresses only: nothing added
         self.fake.ingress = "https://sandboxes.provider.example"
         found = ip_previews.runtime_upstreams()
         self.assertIn("upstream sbx_runtime_fake { server sandboxes.provider.example:443; }", found)
-        self.assertIn("map $sbx_runtime $sbx_ingress_name {", found)
-        self.assertIn("  fake sandboxes.provider.example;", found)
         tls = ip_previews.upstream_tls()
-        for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_ingress_name;", "proxy_ssl_verify on;",
+        # SNI is the Host nginx sends: the sandbox's own (<port>-<id>.<provider domain>).
+        for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_target;", "proxy_ssl_verify on;",
                      f"proxy_ssl_trusted_certificate {ip_previews.CA_BUNDLE};"):
             self.assertIn(line, tls)
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
-        self.assertIn("proxy_ssl_name $ip_ingress_name;", config)
-        self.assertIn("map $ip_runtime $ip_ingress_name {", config)
+        self.assertIn("proxy_ssl_name $ip_upstream;", config)
+        self.assertIn("proxy_set_header Host $ip_upstream;", config)
 
     def test_a_sandbox_on_a_runtime_no_longer_enabled_is_unavailable(self):
         self.runtime._index["vm-elsewhere"] = "gone"

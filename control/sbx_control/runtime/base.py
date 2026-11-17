@@ -11,9 +11,9 @@ registry), so a backend keeps no process-global configuration: nothing it is
 configured with may be where another backend reads it. Its credentials come
 to configure() as its own keys of /etc/sbx/runtime.env (credential_keys, a
 name no other backend uses) and stay on the instance; it passes them to its
-SDK per call. Embed still puts its keys in the process environment, where
-the E2B SDK reads them, which is allowed only while it is the one E2B-based
-backend; the next E2B-based backend moves both to per-call options.
+SDK per call. The E2B-based backends (Embed, E2B Cloud) share one SDK, which
+would read E2B_* from the process environment: they never write it, each
+passes its own connection on every call (runtime.e2b).
 
 The contract has two parts. Every backend implements the compute part
 (Runtime: create, list, connect, templates, ...). The host part (systemd
@@ -245,7 +245,17 @@ class Runtime(Protocol):
         SystemExit when they are missing."""
 
     def upstream_host(self, port: int, sandbox_id: str) -> str:
-        """The Host nginx sends a sandbox port's requests to ingress with."""
+        """The Host nginx sends a sandbox port's requests to ingress with
+        (and, to an https ingress, the name it asks for: SNI)."""
+
+    # The request header a runtime that answers a sandbox's ports only with
+    # that sandbox's own token wants it in (E2B Cloud's traffic token); None
+    # for one that needs none. The gate hands nginx the token, nginx adds the
+    # header to that runtime's requests only; a browser never sees it.
+    upstream_token_header: str | None
+
+    def upstream_token(self, sandbox_id: str) -> str:
+        """The sandbox's token for upstream_token_header ("" when none)."""
 
     def own_route(self, host: str, sandbox_id: str, port: str):
         """For a request to the runtime's own host (Embed's dashboard): True
@@ -360,7 +370,10 @@ class HostSide:
         return None
 
     def apply_host(self, key: str) -> bool:
-        return False
+        """The installation's names changed (RUNTIME_ENV) are every runtime's
+        to take, with nothing to do here; any other key is not its."""
+        from ..settings import HostUnit
+        return key == HostUnit.RUNTIME_ENV
 
     def apply_network(self) -> dict:
         return {"status": "unchanged", "allowed_cidrs": []}

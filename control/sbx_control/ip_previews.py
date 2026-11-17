@@ -180,12 +180,14 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") 
     lines.append(f"  default {default_ingress()};")
     lines += [f"  {kind} {_upstream_url(kind, ingress)};" for kind, (ingress, _) in found.items()]
     lines.append("}")
-    if _https(found):
-        # An https ingress is verified by its own name (SNI), not the upstream block's.
-        names = {kind: urlsplit(ingress).hostname for kind, (ingress, _) in found.items()}
-        lines.append(f"map ${source} ${target}_name {{")
-        lines.append(f"  default {next(iter(names.values()))};")
-        lines += [f"  {kind} {name};" for kind, name in names.items()]
+    found_headers = runtime.upstream_token_headers()
+    headers = sorted(set(found_headers.values()))
+    if headers:
+        lines.append("# The sandbox's token, in the header its runtime wants, to that runtime only.")
+    for number, header in enumerate(headers, 1):
+        lines.append(f"map ${source} ${target}_token_{number} {{")
+        lines.append('  default "";')
+        lines += [f"  {kind} ${target}_token;" for kind, h in found_headers.items() if h == header]
         lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -194,15 +196,30 @@ def _https(found: dict) -> bool:
     return any(urlsplit(ingress).scheme == "https" for ingress, _ in found.values())
 
 
-def upstream_tls(target: str = "sbx_ingress", indent: str = "    ") -> str:
-    """The proxy location's lines for an https ingress: SNI with its own
-    name, and its certificate verified against the public CAs; "" while
-    every enabled runtime's ingress is plain http (Embed's, on this host)."""
+def upstream_tls(host: str = "sbx_target", indent: str = "    ") -> str:
+    """The proxy location's lines for an https ingress: SNI with the host
+    the request goes to (the sandbox's: $host, the Host nginx sends), and the
+    certificate verified for it against the public CAs; "" while every
+    enabled runtime's ingress is plain http (Embed's, on this host)."""
     if not _https(runtime.ingresses()):
         return ""
     return "".join(f"{indent}{line}\n" for line in (
-        "proxy_ssl_server_name on;", f"proxy_ssl_name ${target}_name;", "proxy_ssl_verify on;",
+        "proxy_ssl_server_name on;", f"proxy_ssl_name ${host};", "proxy_ssl_verify on;",
         "proxy_ssl_verify_depth 4;", f"proxy_ssl_trusted_certificate {CA_BUNDLE};"))
+
+
+def upstream_token(target: str = "sbx_ingress", indent: str = "    ") -> str:
+    """The proxy location's lines that take the sandbox's token from the
+    gate (X-Sbx-Upstream-Token) and send it in each declaring runtime's
+    header; the map (runtime_upstreams) leaves it empty, so unsent, for
+    any other runtime, and a browser's own value of that header never
+    passes. "" when no enabled runtime wants a token."""
+    headers = sorted(set(runtime.upstream_token_headers().values()))
+    if not headers:
+        return ""
+    lines = [f"auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;"]
+    lines += [f"proxy_set_header {header} ${target}_token_{number};" for number, header in enumerate(headers, 1)]
+    return "".join(f"{indent}{line}\n" for line in lines)
 
 
 def cleared_headers() -> list:
@@ -260,7 +277,7 @@ server {{
     error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
     proxy_pass $ip_ingress;
-{upstream_tls("ip_ingress")}    proxy_http_version 1.1;
+{upstream_tls("ip_upstream")}{upstream_token("ip_ingress")}    proxy_http_version 1.1;
     proxy_set_header Host $ip_upstream;
 {cleared}
     proxy_set_header X-Forwarded-Host {host(str(ip))}:$server_port;
@@ -296,8 +313,10 @@ if __name__ == '__main__':
         print(runtime_upstreams(), end='')
     elif sys.argv[1:] == ['upstream-tls']:
         print(upstream_tls(), end='')
+    elif sys.argv[1:] == ['upstream-token']:
+        print(upstream_token(), end='')
     elif sys.argv[1:] == ['default-ingress']:
         print(default_ingress())
     else:
         raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE | upstreams | '
-                         'upstream-tls | default-ingress')
+                         'upstream-tls | upstream-token | default-ingress')

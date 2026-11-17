@@ -11,11 +11,12 @@ PACKAGE = Path(__file__).parents[1] / "sbx_control"
 
 
 class Boundary(unittest.TestCase):
-    def test_only_the_embed_backend_imports_the_e2b_sdk(self):
-        backend = PACKAGE / "runtime" / "embed"
+    def test_only_the_e2b_based_backends_import_the_e2b_sdk(self):
+        # The shared adapter, Embed and E2B Cloud.
+        allowed = [PACKAGE / "runtime" / name for name in ("e2b", "embed", "e2b_cloud")]
         found = []
         for path in PACKAGE.rglob("*.py"):
-            if backend in path.parents:
+            if any(backend in path.parents for backend in allowed):
                 continue
             for node in ast.walk(ast.parse(path.read_text())):
                 names = ([a.name for a in node.names] if isinstance(node, ast.Import)
@@ -27,7 +28,8 @@ class Boundary(unittest.TestCase):
     def test_only_the_runtime_package_imports_a_backend(self):
         runtime = PACKAGE / "runtime"
         backends = [f"sbx_control.runtime.{p.name}" for p in runtime.iterdir() if (p / "__init__.py").exists()]
-        self.assertEqual(sorted(backends), ["sbx_control.runtime.embed", "sbx_control.runtime.fake"])
+        self.assertEqual(sorted(backends), ["sbx_control.runtime.e2b", "sbx_control.runtime.e2b_cloud",
+                                            "sbx_control.runtime.embed", "sbx_control.runtime.fake"])
         found = []
         for path in PACKAGE.rglob("*.py"):
             if runtime in path.parents:
@@ -334,6 +336,153 @@ class Limits(unittest.TestCase):
                 recipes.validate("owner/app", Path(folder))
             Path(folder, "sbx.yaml").write_text("resources:\n  cpu: 8\n")
             recipes.validate("owner/app", Path(folder))
+
+
+EMBED_KEYS = {"E2B_API_KEY": "test-only-embed", "E2B_API_URL": "http://127.0.0.1:3000",
+              "E2B_SANDBOX_URL": "http://127.0.0.1:3002"}
+CLOUD_KEYS = {"E2B_CLOUD_API_KEY": "test-only-cloud"}
+
+
+class SharedAdapter(unittest.TestCase):
+    """Embed and E2B Cloud share the SDK adapter (runtime.e2b) and each pass
+    their own connection on every call: nothing in the process environment."""
+
+    def setUp(self):
+        from sbx_control.runtime.e2b_cloud import Cloud
+        from sbx_control.runtime.embed import Embed
+        self.embed, self.cloud = Embed(), Cloud()
+
+    def test_configure_writes_nothing_into_the_process_environment(self):
+        import os
+        with patch.dict(os.environ, clear=True):
+            self.embed.configure(EMBED_KEYS)
+            self.cloud.configure(CLOUD_KEYS)
+            self.assertEqual({k: v for k, v in os.environ.items() if k.startswith("E2B")}, {})
+
+    def test_embed_keeps_its_keys_and_urls(self):
+        self.embed.configure(EMBED_KEYS)
+        self.assertEqual(self.embed.connection(), {"api_key": "test-only-embed", "api_url": "http://127.0.0.1:3000",
+                                                    "sandbox_url": "http://127.0.0.1:3002"})
+        self.embed.configure({"E2B_API_KEY": "test-only-embed", "E2B_HOST": "10.0.0.5"})
+        self.assertEqual(self.embed.connection(), {"api_key": "test-only-embed", "api_url": "http://10.0.0.5:3000",
+                                                    "sandbox_url": "http://sandbox.10.0.0.5:3002"})
+        with self.assertRaisesRegex(SystemExit, "E2B_API_KEY"):
+            self.embed.configure({})
+
+    def test_two_backends_in_one_process_each_call_with_their_own_connection(self):
+        from e2b import Sandbox
+        self.embed.configure(EMBED_KEYS)
+        self.cloud.configure(CLOUD_KEYS)
+        vm = SimpleNamespace(sandbox_id="vm", commands=None, files=None, traffic_access_token=None)
+        pages = Mock(has_next=False)
+        pages.next_items.return_value = []
+        with patch.object(Sandbox, "create", return_value=vm) as create, \
+                patch.object(Sandbox, "connect", return_value=vm) as connect, \
+                patch.object(Sandbox, "list", return_value=pages) as listing, \
+                patch.object(Sandbox, "pause") as pause, patch.object(Sandbox, "kill") as kill, \
+                patch.object(Sandbox, "set_timeout") as set_timeout:
+            for backend in (self.embed, self.cloud, self.embed):
+                backend.create("tpl", timeout=60)
+                backend.connect("vm")
+                backend.sandboxes()
+                backend.pause("vm")
+                backend.set_timeout("vm", 600)
+                backend.kill("vm")
+        for call in (create, connect, listing, pause, kill, set_timeout):
+            keys = [c.kwargs.get("api_key") for c in call.call_args_list]
+            self.assertEqual(keys, ["test-only-embed", "test-only-cloud", "test-only-embed"], call)
+        self.assertEqual(create.call_args_list[1].kwargs["api_url"], "https://api.e2b.app")
+        self.assertEqual(create.call_args_list[0].kwargs["api_url"], "http://127.0.0.1:3000")
+        self.assertNotIn("sandbox_url", create.call_args_list[1].kwargs)
+
+    def test_template_calls_carry_the_connection_too(self):
+        from e2b.api.client.api.templates import get_templates
+        from sbx_control import runtime
+        self.cloud.configure(CLOUD_KEYS)
+        seen = []
+        response = SimpleNamespace(status_code=200, parsed=[SimpleNamespace(aliases=["sbx-base"], build_status="ready")])
+        with patch.object(get_templates, "sync_detailed",
+                          side_effect=lambda client: (seen.append(client), response)[1]), \
+                patch("e2b.api.client_sync.get_api_client", side_effect=lambda config: config.api_key):
+            self.assertEqual(self.cloud.templates(), [("sbx-base", "ready")])
+        self.assertEqual(seen, ["test-only-cloud"])
+        with patch("e2b.Template") as template:
+            self.cloud.build_template(runtime.TemplateSpec().from_image("ubuntu"), alias="a", cpu=2, memory_mb=2048,
+                                      disk_mb=4096)
+        self.assertEqual(template.build.call_args.kwargs["api_key"], "test-only-cloud")
+
+
+class Cloud(unittest.TestCase):
+    """E2B Cloud: limits from its keys (the Hobby plan by default), what it
+    can do, previews through an https ingress with the sandbox's token."""
+
+    def setUp(self):
+        from sbx_control.runtime.e2b_cloud import Cloud
+        self.cloud = Cloud()
+        self.cloud.configure(CLOUD_KEYS)
+
+    def test_it_is_built_in_and_runs_elsewhere(self):
+        from sbx_control import runtime
+        self.assertIn("e2b-cloud", runtime.kinds())
+        backend = runtime.make("e2b-cloud")
+        self.assertEqual((backend.kind, backend.title, backend.host), ("e2b-cloud", "E2B Cloud", False))
+        self.assertEqual(backend.capabilities, runtime.Capabilities(snapshots=True, private_networks=False,
+                                                                    egress_rules=True))
+        self.assertEqual((backend.host_units(), backend.host_commands(None), backend.jobs()), ([], {}, []))
+        self.assertEqual(backend.capacity(4096), {"known": False})
+        self.assertTrue(backend.apply_host("runtime-env"))
+        self.assertEqual(backend.secret_key, "E2B_CLOUD_API_KEY")
+        self.assertNotIn("E2B_API_KEY", backend.credential_keys)   # never Embed's
+
+    def test_limits_default_to_the_hobby_plan_and_follow_the_keys(self):
+        self.assertEqual(self.cloud.limits().known(), {"timeout_seconds": 3600, "cpu": 8, "memory_mb": 8192,
+                                                       "disk_mb": 10240, "sandboxes": 20})
+        self.assertEqual(self.cloud.limits().keys["memory_mb"], "E2B_CLOUD_MAX_MEMORY_MB")
+        self.cloud.configure({**CLOUD_KEYS, "E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_SANDBOXES": "100"})
+        self.assertEqual((self.cloud.limits().timeout_seconds, self.cloud.limits().sandboxes), (86400, 100))
+        with self.assertRaisesRegex(SystemExit, "E2B_CLOUD_MAX_CPU=many"):
+            self.cloud.configure({**CLOUD_KEYS, "E2B_CLOUD_MAX_CPU": "many"})
+        with self.assertRaisesRegex(SystemExit, "E2B_CLOUD_API_KEY"):
+            self.cloud.configure({})
+
+    def test_previews_go_to_an_https_name_under_the_sandbox_wildcard(self):
+        self.assertEqual(self.cloud.ingress, "https://sbx-ingress.e2b.app")
+        self.assertEqual(self.cloud.upstream_host(3000, "abc"), "3000-abc.e2b.app")
+        self.cloud.configure({**CLOUD_KEYS, "E2B_CLOUD_DOMAIN": "sandboxes.example.test"})
+        self.assertEqual(self.cloud.upstream_host(3000, "abc"), "3000-abc.sandboxes.example.test")
+        self.assertEqual(self.cloud.connection()["api_url"], "https://api.sandboxes.example.test")
+        self.assertIsNone(self.cloud.own_route("anything", "", ""))
+
+    def test_the_traffic_token_is_kept_from_create_and_fetched_once_after_a_restart(self):
+        from e2b import Sandbox
+        made = SimpleNamespace(sandbox_id="vm1", commands=None, files=None, traffic_access_token="test-token-1")
+        with patch.object(Sandbox, "create", return_value=made):
+            self.cloud.create("tpl", timeout=600)
+        with patch.object(Sandbox, "connect") as connect:
+            self.assertEqual(self.cloud.upstream_token("vm1"), "test-token-1")
+        connect.assert_not_called()
+        again = SimpleNamespace(sandbox_id="vm2", commands=None, files=None, traffic_access_token="test-token-2")
+        with patch.object(Sandbox, "connect", return_value=again) as connect:   # unknown here: a restart
+            self.assertEqual(self.cloud.upstream_token("vm2"), "test-token-2")
+            self.assertEqual(self.cloud.upstream_token("vm2"), "test-token-2")
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(connect.call_args.kwargs["api_key"], "test-only-cloud")
+        self.assertNotIn("timeout", connect.call_args.kwargs)   # a running sandbox's timeout stays as it is
+        with patch.object(Sandbox, "kill", return_value=True):
+            self.cloud.kill("vm2")
+        with patch.object(Sandbox, "connect", side_effect=__import__("e2b").exceptions.SandboxNotFoundException("gone")):
+            from sbx_control import runtime
+            with self.assertRaises(runtime.NotRunning):
+                self.cloud.upstream_token("vm2")
+
+    def test_its_check_lists_the_templates_and_says_what_failed(self):
+        with patch.object(self.cloud, "templates", return_value=[("sbx-base", "ready")]):
+            self.assertTrue(all(c.ok for c in self.cloud.test()))
+        with patch.object(self.cloud, "templates", side_effect=RuntimeError("HTTP 401")):
+            check, = self.cloud.test()
+        self.assertFalse(check.ok)
+        self.assertIn("HTTP 401", check.detail)
+        self.assertIn("E2B_CLOUD_API_KEY", check.fix)
 
 
 if __name__ == "__main__":

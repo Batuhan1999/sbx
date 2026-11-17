@@ -29,7 +29,7 @@ __all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed
            "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
-BUILTIN = {"embed": "sbx_control.runtime.embed:Embed"}
+BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud"}
 ENABLED_KEY, DEFAULT_KEY = "SBX_RUNTIMES", "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
 FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
@@ -111,9 +111,15 @@ def get(kind: str | None = None) -> Runtime:
                      f"{', '.join(enabled())})")
     with _lock:
         if kind not in _backends:
-            module, _, name = _references()[kind].partition(":")
-            _backends[kind] = getattr(importlib.import_module(module), name)()
+            _backends[kind] = make(kind)
         return _backends[kind]
+
+
+def make(kind: str) -> Runtime:
+    """A new, unconfigured backend of kind, enabled or not (sbx-admin runtime
+    add checks one before enabling it); KeyError when no package provides it."""
+    module, _, name = _references()[kind].partition(":")
+    return getattr(importlib.import_module(module), name)()
 
 
 def backends() -> list[Runtime]:
@@ -297,6 +303,22 @@ def delete_snapshot(snapshot_id: str, kind: str | None = None) -> None:
 
 def upstream_host(port: int, sandbox_id: str) -> str:
     return of(sandbox_id).upstream_host(port, sandbox_id)
+
+
+def upstream_token(sandbox_id: str, kind: str | None = None) -> tuple[str, str] | None:
+    """(header, token) nginx adds to a request for the sandbox's port, for a
+    runtime that answers its sandboxes' ports only with their own token
+    (Runtime.upstream_token_header); None for any other. kind: the sandbox's
+    runtime, when the caller knows it."""
+    backend = get(kind) if kind else of(sandbox_id)
+    header = getattr(backend, "upstream_token_header", None)
+    return (header, backend.upstream_token(sandbox_id)) if header else None
+
+
+def upstream_token_headers() -> dict:
+    """kind -> the header each enabled runtime wants its sandboxes' token
+    in, for those that declare one (nginx's maps)."""
+    return {b.kind: b.upstream_token_header for b in backends() if getattr(b, "upstream_token_header", None)}
 
 
 def snapshot_usage(sandbox_id: str) -> dict:
