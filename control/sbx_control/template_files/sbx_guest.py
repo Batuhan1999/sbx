@@ -24,6 +24,7 @@ import re
 import secrets
 import select
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -322,6 +323,7 @@ def processes(args):
 HOST_KEYS = ("ed25519", "ecdsa", "rsa")
 SSH = Path("/etc/ssh")
 IDENTITY = Path("/etc/sbx-workspace-identity.json")
+KEPT_KEYS = Path("/etc/sbx-host-keys")   # root's copy: a runtime whose cold boot makes new host keys gets these back
 
 
 def key_permissions(directory):
@@ -386,7 +388,7 @@ def identity(workspace, ssh_port):
         previous = read_json(IDENTITY)
         if previous.get("workspace_id") == workspace and previous.get("phase") == "ready":
             if public.read_text().split()[:2] != previous.get("ed25519_public"):
-                raise GuestError("workspace SSH identity changed after initialization")
+                restore_host_keys(previous.get("ed25519_public"))
             key_permissions(SSH)
             return
         sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
@@ -421,14 +423,46 @@ def identity(workspace, ssh_port):
         finally:
             os.close(handle)
         expected = public.read_text().split()[:2]
-
-        def adopted():
-            scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", "ed25519", "127.0.0.1"],
-                                     capture_output=True, text=True, timeout=3)
-            return any(line.split()[1:3] == expected for line in scanned.stdout.splitlines() if not line.startswith("#"))
-        if not wait_until(adopted, 15):
+        if not wait_until(lambda: serves(expected), 15):
             raise GuestError("workspace SSH listener did not adopt its fresh identity")
+        keep_host_keys()
         write_json(IDENTITY, {"workspace_id": workspace, "phase": "ready", "ed25519_public": expected})
+
+
+def serves(expected):
+    """Whether sshd on this machine answers with the ed25519 key expected."""
+    scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", "ed25519", "127.0.0.1"],
+                             capture_output=True, text=True, timeout=3)
+    return any(line.split()[1:3] == expected for line in scanned.stdout.splitlines() if not line.startswith("#"))
+
+
+def keep_host_keys():
+    """A copy of the workspace's host keys only root reads, taken once sshd serves them."""
+    KEPT_KEYS.mkdir(mode=0o700, exist_ok=True)
+    KEPT_KEYS.chmod(0o700)
+    for kind in HOST_KEYS:
+        for name in (f"ssh_host_{kind}_key", f"ssh_host_{kind}_key.pub"):
+            shutil.copy2(SSH / name, KEPT_KEYS / f".{name}.new")
+            os.replace(KEPT_KEYS / f".{name}.new", KEPT_KEYS / name)
+    key_permissions(KEPT_KEYS)
+
+
+def restore_host_keys(recorded):
+    """A machine that booted with new host keys (a runtime whose resume is a
+    cold boot) gets the workspace's own back, so its identity and everyone's
+    known_hosts stay valid. Only keys matching the recorded identity are put
+    back; anything else is still refused."""
+    kept = KEPT_KEYS / "ssh_host_ed25519_key.pub"
+    if not recorded or not kept.exists() or kept.read_text().split()[:2] != recorded:
+        raise GuestError("workspace SSH identity changed after initialization")
+    for kind in HOST_KEYS:
+        for name in (f"ssh_host_{kind}_key", f"ssh_host_{kind}_key.pub"):
+            shutil.copy2(KEPT_KEYS / name, SSH / f".{name}.sbx")
+            os.replace(SSH / f".{name}.sbx", SSH / name)
+    key_permissions(SSH)
+    restart_listener()
+    if not wait_until(lambda: serves(recorded), 15):
+        raise GuestError("workspace SSH listener did not take its identity back")
 
 
 # swap: resize the swap file without changing the VM's allocation.

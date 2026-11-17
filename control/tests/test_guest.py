@@ -154,6 +154,36 @@ class IdentityTests(unittest.TestCase):
             for path in root.iterdir():
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644 if path.name.endswith(".pub") else 0o600)
 
+    def host_keys(self, folder: Path, tag: str):
+        folder.mkdir(exist_ok=True)
+        for kind in sbx_guest.HOST_KEYS:
+            (folder / f"ssh_host_{kind}_key").write_text(f"private {kind} {tag}\n")
+            (folder / f"ssh_host_{kind}_key.pub").write_text(f"ssh-{kind} {tag}-{kind} root@box\n")
+
+    def test_a_cold_boot_s_new_host_keys_give_way_to_the_workspace_s_own(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-guest-keys-")))
+        ssh, kept = root / "ssh", root / "kept"
+        restarted = []
+        with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", kept), \
+                patch.object(sbx_guest, "restart_listener", lambda: restarted.append(True)), \
+                patch.object(sbx_guest, "serves", lambda expected: expected == ["ssh-ed25519", "ours-ed25519"]):
+            self.host_keys(ssh, "ours")
+            sbx_guest.keep_host_keys()
+            self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o700)
+            self.host_keys(ssh, "boot")   # what the runtime's cold boot made
+            sbx_guest.restore_host_keys(["ssh-ed25519", "ours-ed25519"])
+            self.assertEqual((ssh / "ssh_host_rsa_key").read_text(), "private rsa ours\n")
+            self.assertEqual(stat.S_IMODE((ssh / "ssh_host_rsa_key").stat().st_mode), 0o600)
+            self.assertEqual(restarted, [True])
+            # Keys that are not the recorded identity are never put back.
+            self.host_keys(ssh, "boot")
+            with self.assertRaisesRegex(sbx_guest.GuestError, "identity changed after initialization"):
+                sbx_guest.restore_host_keys(["ssh-ed25519", "someone-else"])
+            shutil.rmtree(kept)
+            with self.assertRaisesRegex(sbx_guest.GuestError, "identity changed after initialization"):
+                sbx_guest.restore_host_keys(["ssh-ed25519", "ours-ed25519"])
+            self.assertEqual((ssh / "ssh_host_rsa_key").read_text(), "private rsa boot\n")
+
     def test_ssh_listener_is_systemd_s_or_the_standalone_sshd(self):
         """A fake / (its /proc/1/comm and /run/sshd.pid) and a fake systemctl."""
         for init, managed, standalone, expected in [("systemd", "123", "456", 123), ("systemd", "0", "456", 456),
