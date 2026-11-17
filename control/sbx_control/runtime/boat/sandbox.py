@@ -69,13 +69,13 @@ class _Commands:
         api = self._backend.api()
         if background or not timeout or timeout > SYNC_SECONDS:
             started = self._backend.call(lambda: api.command(self._id, CommandRequest(command=command, detached=True)),
-                                         sandbox_id=self._id).actual_instance
+                                         sandbox_id=self._id, replays=False).actual_instance
             if background:
                 return _Background(started.process_id)
             return self._wait(started.process_id, timeout, on_output, cmd)
         result = self._backend.call(lambda: api.command(self._id, CommandRequest(
             command=command, timeout_seconds=max(1, min(SYNC_SECONDS, int(-(-timeout // 1)))))),
-            sandbox_id=self._id).actual_instance
+            sandbox_id=self._id, replays=False).actual_instance
         if result.timed_out:
             raise Timeout(f"`{command_name(cmd)}` ran out of its {timeout} s in Boat sandbox {self._id}")
         return self._done(result.stdout or "", result.stderr or "", result.exit_code, cmd)

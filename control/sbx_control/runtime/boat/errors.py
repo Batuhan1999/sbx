@@ -56,10 +56,16 @@ def _message(error) -> str:
     return str(body.get("message") or (body.get("error") or {}).get("message") or getattr(error, "reason", "") or error)
 
 
-def _retryable(error) -> bool:
+def _retryable(error, replays: bool = True) -> bool:
+    """Whether Boat says to send the call again. A machine's failed call
+    (sandbox_direct_failed) is sent again when Boat says so, but a command
+    (replays False) only while the sandbox was restoring: else it may
+    have run."""
     details = ((_body(error).get("error") or {}).get("details") or {})
-    return (code(error) in ("sandbox_starting", "sandbox_resuming", "idempotency_in_progress")
-            or (code(error) == "sandbox_direct_failed" and (details.get("retryable") or _message(error) == "sandbox_restoring")))
+    if code(error) == "sandbox_direct_failed":
+        restoring = "sandbox_restoring" in (_message(error), details.get("message"))
+        return restoring or (replays and bool(details.get("retryable")))
+    return code(error) in ("sandbox_starting", "sandbox_resuming", "idempotency_in_progress")
 
 
 def refused(error, asked: dict | None = None) -> Failed | None:
@@ -95,11 +101,13 @@ def is_failure(error) -> bool:
     return type(error).__module__.split(".")[0] in ("boat_sdk", "urllib3")
 
 
-def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, retry_seconds: float = 180):
+def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, retry_seconds: float = 180,
+         replays: bool = True):
     """function's result; Boat's errors as sbx's: a sandbox that has no
     machine, or that Boat no longer has, as NotRunning, a limit as
     LimitRefused or NoRoom, anything else as BoatError. Answers Boat says to
-    retry (a sandbox still starting or restoring its disk) are retried."""
+    retry (a sandbox still starting or restoring its disk) are retried;
+    replays False for a command, which is not sent again once it may have run."""
     deadline = time.monotonic() + retry_seconds
     while True:
         try:
@@ -111,7 +119,7 @@ def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, 
                 if is_failure(error):
                     raise BoatError(f"Boat did not answer: {type(error).__name__}: {error}") from error
                 raise
-            if _retryable(error) and time.monotonic() < deadline:
+            if _retryable(error, replays) and time.monotonic() < deadline:
                 time.sleep(POLL_SECONDS)
                 continue
             found = refused(error, asked)

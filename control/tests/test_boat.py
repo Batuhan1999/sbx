@@ -364,6 +364,20 @@ class Backend(unittest.TestCase):
         with self.assertRaises(NotRunning):
             handle.commands.run("true")
 
+    def test_a_command_that_may_have_run_is_not_sent_again(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        path = f"/sandboxes/{handle.sandbox_id}/commands"
+        before = len(self.fake.calls)
+        self.fake.fail("POST", path, 502, "sandbox_direct_failed", details={"retryable": True, "message": "reset"})
+        with self.assertRaises(BoatError):
+            handle.commands.run("echo once >> log")
+        self.assertEqual(sum(m == "POST" and p == path for m, p, _, _ in self.fake.calls[before:]), 1)
+        self.fake.fail("GET", f"/sandboxes/{handle.sandbox_id}/files", 502, "sandbox_direct_failed",
+                       details={"retryable": True, "message": "reset"})
+        handle.files.write("/home/user/a", "x")
+        self.assertEqual(handle.files.read("/home/user/a"), "x")   # a file read gives the same again
+
     def test_saved_names_follow_boats_rules(self):
         name = self.boat_module.build.saved_name
         self.assertEqual(name("abcd1234--default-0f0f0f0f"), "abcd1234--default-0f0f0f0f")
