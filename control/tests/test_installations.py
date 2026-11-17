@@ -1,9 +1,7 @@
 """Two installations on one provider account: each sees, finds, prunes and
 deletes only its own sandboxes and templates. They share one hosted
 backend (the fake, as E2B Cloud's team would be shared) and differ only in
-their installation id. Sandboxes from before the id tag are this
-installation's when its own records know them by id."""
-import json
+their installation id."""
 from unittest.mock import patch
 
 from support import Installation
