@@ -15,7 +15,7 @@ import secrets
 
 from .. import contributions, paths, platform, runtime, sandbox_layers, settings, state
 from . import certs
-from .model import INTERNAL, LOCAL_PORTS, Refused, _lock, address, domain, env_name, join, permitted, split_target
+from .model import INTERNAL, LOCAL_PORTS, Refused, address, lock, domain, env_name, join, permitted, split_target
 from ..tls_front import PORT   # where sandboxes reach endpoints: the HTTPS port, shared by SNI
 from .access import HOSTPORT
 
@@ -159,7 +159,7 @@ def _issue(name: str, repo: str, kind: str | None, only=None) -> dict:
     """certs.issue_all for the endpoints (of only, when given) the repo may
     use now, chosen and signed under the endpoints' lock: a revoke's new CA
     never signs for the repo it revoked. {} when it may use none."""
-    with _lock():
+    with lock():
         names = [r.name for r in routes(kind, repo).rows if only is None or r.name in only]
         return certs.issue_all(name, repo, names) if names else {}
 
