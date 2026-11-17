@@ -169,7 +169,9 @@ class Builds:
                     log(f"Boat: could not delete builder {sandbox.id}: {error}")
 
     def _replay(self, handle: Handle, steps: list, log):
-        user, workdir, env, inherited = "user", HOME, {}, ""
+        # env: every ENV's pairs in order, a key set again kept where it was too, so a value
+        # that took it ($A) keeps what it was then, as in Docker.
+        user, workdir, env, inherited = "user", HOME, [], ""
         commands = handle.commands
         for what, value in steps:
             if what == "template":
@@ -187,10 +189,10 @@ class Builds:
                 commands.run(f"sudo mkdir -p {shlex.quote(workdir)} && sudo chown {shlex.quote(user)} "
                              f"{shlex.quote(workdir)} 2>/dev/null || true", timeout=60)
             elif what == "env":
-                env.update(value)
-            elif what == "run":
+                env += value.items()
+            elif what == "run":   # the env so far is in TEMPLATE_FILE, which every command reads
                 log(f"RUN {value[:200]}")
-                commands.run(value, user=user, envs=env, cwd=workdir, timeout=0, on_output=lambda text: [
+                commands.run(value, user=user, cwd=workdir, timeout=0, on_output=lambda text: [
                     log(line) for line in text.splitlines() if line.strip()])
             elif what == "start":
                 self._persist(commands, env, workdir, inherited)
@@ -214,10 +216,11 @@ class Builds:
         return "".join(lines), workdir
 
     @staticmethod
-    def _persist(commands, env: dict, workdir: str, inherited: str = ""):
-        """The template's env and workdir as every later command and shell
-        sees them: the parent's env (inherited) first, the template's own after it."""
-        text = inherited + "".join(export_line(k, v) for k, v in env.items())
+    def _persist(commands, env: list, workdir: str, inherited: str = ""):
+        """The template's env ((key, value) in order) and workdir as every
+        later command and shell sees them: the parent's env (inherited)
+        first, the template's own after it."""
+        text = inherited + "".join(export_line(k, v) for k, v in env)
         text += f"export SBX_TEMPLATE_WORKDIR={shlex.quote(workdir)}\n"
         encoded = base64.b64encode(text.encode()).decode()
         commands.run(f"sudo mkdir -p /etc/sbx && echo {encoded} | base64 -d | sudo tee {TEMPLATE_FILE} >/dev/null "

@@ -268,10 +268,10 @@ class Backend(unittest.TestCase):
         commands = [c for _, c, _ in self.fake.ran]
         apt = next(c for c in commands if "apt-get install" in c)
         self.assertIn("exec sudo -H -u root", apt)
-        self.assertTrue(any("echo $V" in c for c in commands))
-        envs = [v.decode() for p, v in self.fake.files[next(iter(self.fake.files))].items()
-                if p.startswith("/tmp/.sbx-env/")]
-        self.assertTrue(any("export V=1\n" in e for e in envs))
+        echo = next(i for i, c in enumerate(commands) if "echo $V" in c)
+        persisted = [c for c in commands[:echo] if "sudo tee /etc/sbx/template.sh" in c]
+        self.assertIn("export V=1\n", base64.b64decode(persisted[-1].split("echo ")[1].split(" ")[0]).decode())
+        self.assertIn(". /etc/sbx/template.sh", commands[echo])   # what the RUN reads its env from
         unit = next(c for c in commands if "sbx-start.service" in c)
         self.assertIn("base64 -d | sudo tee", unit)
         self.assertTrue(any("systemctl enable sbx-start && sudo systemctl restart sbx-start" in c for c in commands))
@@ -331,6 +331,16 @@ class Backend(unittest.TestCase):
                                     alias="r", cpu=2, memory_mb=4096, disk_mb=1024)
         self.assertIn("export SBX_TEMPLATE_WORKDIR=/opt/app/src\n", self.written("/etc/sbx/template.sh"))
         self.assertIn("cd /opt/app/src || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
+
+    def test_a_dockerfile_env_keeps_the_value_it_had_when_another_took_it(self):
+        import subprocess
+        from sbx_control.runtime import TemplateSpec
+        self.backend.build_template(TemplateSpec().from_template("tpl").dockerfile("ENV A=old\nENV B=$A\nENV A=new\n"
+                                                                                    "RUN make"),
+                                    alias="e", cpu=2, memory_mb=4096, disk_mb=1024)
+        shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/template.sh") + 'printf %s "$A $B"'],
+                               capture_output=True, text=True, check=True).stdout
+        self.assertEqual(shown, "new old")   # B is A as it was then, as Docker has it
 
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
