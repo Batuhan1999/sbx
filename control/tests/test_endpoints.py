@@ -418,6 +418,15 @@ class HostTests(Setup, Installation):
         self.assertNotIn("emerg", found["message"])
 
 
+    def test_an_apply_that_can_t_run_nginx_keeps_the_one_before(self):
+        (self.tls / "nginx/endpoints.stream").write_text("# before\n")
+        self.endpoints.add(server="dev_pg", by="test")
+        with self.fake_nginx(0), patch.object(self.nginx, "NGINX", str(self.tls / "missing")), patch("sys.stderr"):
+            self.assertEqual(self.endpoints.apply_host(), 1)
+        self.assertEqual((self.tls / "nginx/endpoints.stream").read_text(), "# before\n")
+        self.assertEqual(list((self.tls / "nginx").glob("endpoint-*-ca.pem")), [])
+        self.assertEqual(self.endpoints.one("dev-pg")["state"], "failed")
+
 class CertificateTests(Setup, Installation):
     def setUp(self):
         super().setUp()
