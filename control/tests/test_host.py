@@ -298,6 +298,15 @@ class HostTests(Installation):
         rollback = (out / "rollback.sh").read_text()
         self.assertIn(f"ln -sfn {(releases / 'old').resolve()} {self.current}.new", rollback)
         self.assertIn(f"install -m 600 {out / 'sbx.db'} {paths.database()}", rollback)
+        # runtime.env as the active release knew it: an upgrade may enable a runtime it can't load.
+        self.assertEqual((out / "runtime.env").read_text(), paths.runtime_env().read_text())
+        self.assertEqual((out / "runtime.env").stat().st_mode & 0o777, 0o600)
+        restore = f"install -m 600 {out / 'runtime.env'} {paths.runtime_env()}"
+        self.assertIn(restore, rollback)
+        before = paths.runtime_env().read_text()
+        paths.runtime_env().write_text(before + "SBX_RUNTIMES=embed,e2b-cloud\nE2B_CLOUD_API_KEY=test-only\n")
+        subprocess.check_call(["sh", "-c", restore])
+        self.assertEqual(paths.runtime_env().read_text(), before)
         subprocess.run(["sh", "-n", str(out / "rollback.sh")], check=True)
         # The release's effect paths come back on, whatever the upgrade disabled.
         self.assertTrue((out / "systemd/sbx-apply-tls.path").is_file())

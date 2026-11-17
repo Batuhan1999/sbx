@@ -85,7 +85,7 @@ class Registry(TwoRuntimes, Installation):
         try:
             self.assertEqual(self.runtime.default(), "fake")
             file.write_text(RUNTIME + "SBX_RUNTIMES=embed,nowhere\n")
-            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, fake"):
+            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, e2b-cloud, fake"):
                 self.runtime.enabled()
             file.write_text(RUNTIME)
             self.assertEqual(self.runtime.enabled(), ["embed"])   # missing: Embed alone, as before
@@ -252,9 +252,10 @@ class Templates(TwoRuntimes, Installation):
         self.assertEqual(self.builds.stale("fake"), [self.templates.DEFAULT])
         self.assertEqual(self.builds.stale("embed"), [self.templates.BASE, self.templates.DEFAULT])
         self.builds.build_now(self.templates.DEFAULT, "fake")
-        self.assertEqual(self.builds.template_for(None, "fake"), self.builds.plan(self.templates.DEFAULT).name)
+        named = self.runtime.template_name(self.builds.plan(self.templates.DEFAULT).name, "fake")   # a hosted runtime: prefixed
+        self.assertEqual(self.builds.template_for(None, "fake"), named)
         self.assertEqual(self.builds.remove(self.templates.DEFAULT, "fake")["deleted"],
-                         [self.builds.plan(self.templates.DEFAULT).name])
+                         [named])
         self.assertEqual(self.builds.state(self.templates.BASE, "fake")["status"], "built")   # the other key stays
 
     def test_a_repo_s_template_only_on_the_runtimes_its_sandboxes_use(self):
@@ -525,15 +526,107 @@ class Review(TwoRuntimes, Installation):
         file.write_text("# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=test-only\n"
                         "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=test-only-fake\n"
                         "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+        keys = []
+
+        def seal(value, key):
+            keys.append(key)
+            return f"sealed:{key.rpartition('/')[0]}"
         try:
-            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed:{key}"):
+            with patch.object(vault.secret_store, "seal", side_effect=seal):
                 self.assertEqual(vault.seal_runtime_file(), 1)
             self.assertEqual(file.read_text(),
                              "# written by hand\nSBX_RUNTIMES=embed,fake\nE2B_API_KEY=sealed:runtime/E2B_API_KEY\n"
                              "E2B_API_URL=http://127.0.0.1:59999\nFAKE_RUNTIME_TOKEN=sealed:runtime/FAKE_RUNTIME_TOKEN\n"
                              "UNKNOWN_SETTING=kept as it is\n\n# the end\n")
+            # A new value later (an upgrade's) goes under a key of its own: the
+            # reference the upgrade's backup of runtime.env holds still names the old one.
+            first = next(k for k in keys if k.startswith("runtime/E2B_API_KEY/"))
+            file.write_text(file.read_text().replace("E2B_API_KEY=sealed:runtime/E2B_API_KEY", "E2B_API_KEY=new"))
+            with patch.object(vault.secret_store, "seal", side_effect=seal), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed:")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v):
+                self.assertEqual(vault.seal_runtime_file(), 1)
+            self.assertNotEqual(keys[-1], first)
+            self.assertTrue(keys[-1].startswith("runtime/E2B_API_KEY/"))
         finally:
             file.write_text(before)
+
+    def test_resealing_keeps_the_object_of_now_and_the_one_before_only(self):
+        from sbx_control import vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        made, discarded = iter(range(1, 10)), []
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append):
+                for value in ("one", "two", "three", "four"):   # an upgrade writes a plain value each time
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        # The one runtime.env names (sealed-4) and the one the last upgrade's backup names (sealed-3) stay.
+        self.assertEqual(discarded, ["sealed-1", "sealed-2"])
+
+    def test_resealing_keeps_what_an_upgrade_backup_still_names(self):
+        from sbx_control import paths, vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        backup = paths.state_dir() / "upgrade-backups/20261117-000000"
+        backup.mkdir(parents=True)
+        self.addCleanup(__import__("shutil").rmtree, backup.parent)
+        made, discarded = iter(range(1, 10)), []
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append):
+                for value in ("one", "two", "three", "four"):
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+                    if value == "one":   # an upgrade backed runtime.env up now: it names sealed-1
+                        (backup / "runtime.env").write_text(file.read_text())
+                self.assertEqual(discarded, ["sealed-2"])     # sealed-1 stays while the backup names it
+                __import__("shutil").rmtree(backup)           # the backup is gone
+                file.write_text("SBX_RUNTIMES=embed,fake\nE2B_API_KEY=five\nE2B_API_URL=u\nFAKE_RUNTIME_TOKEN=sealed-0\n")
+                vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        self.assertEqual(discarded, ["sealed-2", "sealed-1", "sealed-3"])
+
+    def test_an_unreadable_backup_discards_nothing(self):
+        from pathlib import Path
+        from sbx_control import paths, vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        backup = paths.state_dir() / "upgrade-backups/20261117-000001"
+        backup.mkdir(parents=True)
+        self.addCleanup(__import__("shutil").rmtree, backup.parent)
+        (backup / "runtime.env").write_text("E2B_API_KEY=sealed-1\n")
+        made, discarded = iter(range(1, 10)), []
+        real_read = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path.parent == backup:
+                raise OSError("unreadable")
+            return real_read(path, *args, **kwargs)
+
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append), \
+                    patch.object(Path, "read_text", read_text):
+                for value in ("one", "two", "three", "four"):
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        self.assertEqual(discarded, [])   # a backup it could not read may name any of them
 
     def test_amp_caches_from_before_are_the_default_runtime_s_once(self):
         from sbx_control import state
@@ -690,21 +783,20 @@ class CodeReview(TwoRuntimes, Installation):
         self.assertEqual(ip_previews.upstream_name("embed"), "sbx_runtime_embed")
         self.assertNotEqual(ip_previews.upstream_name("my-provider"), ip_previews.upstream_name("my_provider"))
 
-    def test_an_https_ingress_is_reached_by_its_name_and_verified(self):
+    def test_an_https_ingress_is_asked_by_the_sandbox_s_host_and_verified(self):
         from sbx_control import ip_previews
         self.assertEqual(ip_previews.upstream_tls(), "")    # http ingresses only: nothing added
         self.fake.ingress = "https://sandboxes.provider.example"
         found = ip_previews.runtime_upstreams()
         self.assertIn("upstream sbx_runtime_fake { server sandboxes.provider.example:443; }", found)
-        self.assertIn("map $sbx_runtime $sbx_ingress_name {", found)
-        self.assertIn("  fake sandboxes.provider.example;", found)
         tls = ip_previews.upstream_tls()
-        for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_ingress_name;", "proxy_ssl_verify on;",
+        # SNI is the Host nginx sends: the sandbox's own (<port>-<id>.<provider domain>).
+        for line in ("proxy_ssl_server_name on;", "proxy_ssl_name $sbx_target;", "proxy_ssl_verify on;",
                      f"proxy_ssl_trusted_certificate {ip_previews.CA_BUNDLE};"):
             self.assertIn(line, tls)
         config = ip_previews.nginx("203.0.113.10", "bootstrap")
-        self.assertIn("proxy_ssl_name $ip_ingress_name;", config)
-        self.assertIn("map $ip_runtime $ip_ingress_name {", config)
+        self.assertIn("proxy_ssl_name $ip_upstream;", config)
+        self.assertIn("proxy_set_header Host $ip_upstream;", config)
 
     def test_a_sandbox_on_a_runtime_no_longer_enabled_is_unavailable(self):
         self.runtime._index["vm-elsewhere"] = "gone"

@@ -6,8 +6,12 @@ X-Original-Host. 200 lets it through, 401 sends a browser to the login, 403
 refuses; a 403 with X-Sbx-Gone means nothing is there, which nginx answers
 with 404. A 200 for a sandbox names the Host nginx sends it to the runtime
 with (X-Sbx-Upstream) and that runtime's kind (X-Sbx-Runtime), which nginx
-maps to the runtime's ingress. Answers come from memory: a page load makes hundreds. A request
-for a paused sandbox resumes it first."""
+maps to the runtime's ingress; for a runtime that answers a sandbox's ports
+only with its token (E2B Cloud), also the token (X-Sbx-Upstream-Token), which
+nginx adds in that runtime's header to that runtime's requests only. nginx
+keeps /gate itself from the public (tls.sh, control.inc): only its own
+subrequests reach it. Answers come from memory: a page load makes hundreds.
+A request for a paused sandbox resumes it first."""
 import threading
 import time
 
@@ -18,7 +22,7 @@ from . import addressing, auth, core, ip_previews, lifecycle, routing, runtime
 
 router = APIRouter()
 GONE = "X-Sbx-Gone"
-UPSTREAM, RUNTIME = "X-Sbx-Upstream", "X-Sbx-Runtime"
+UPSTREAM, RUNTIME, TOKEN = "X-Sbx-Upstream", "X-Sbx-Runtime", "X-Sbx-Upstream-Token"
 
 _owners: dict = {"fetched_at": 0.0, "by_id": {}, "state": {}, "app": {}, "info": {}}
 _last_access: dict = {}  # sandbox id -> time the gate last let a request through
@@ -74,13 +78,33 @@ def ensure_running(sandbox_id: str):
             _resumed_for_preview.add(sandbox_id)
 
 
-def route(port: int, sandbox_id: str) -> dict:
+def route(port: int, sandbox_id: str, *, preflight: bool = False) -> dict:
     """Where nginx sends a let-through request for a sandbox's port: the
-    Host its runtime routes on, and the runtime's kind (nginx's map picks its
-    ingress from it)."""
-    info = _owners["info"].get(sandbox_id)
-    kind = runtime.kind_of(info) if info is not None else runtime.of(sandbox_id).kind
-    return {UPSTREAM: addressing.upstream(port, sandbox_id), RUNTIME: kind}
+    Host its runtime routes on, the runtime's kind (nginx's map picks its
+    ingress from it) and, for a runtime that wants one, the sandbox's token.
+    A preflight wakes nothing: it takes only a token the runtime kept, and
+    without one it is refused like anything not routable (the browser's
+    real request resumes the sandbox and fetches it). A sandbox the runtime
+    no longer has is not found either (404)."""
+    try:
+        info = _owners["info"].get(sandbox_id)
+        kind = runtime.kind_of(info) if info is not None else runtime.of(sandbox_id).kind
+        found = {UPSTREAM: addressing.upstream(port, sandbox_id), RUNTIME: kind}
+        token = runtime.upstream_token(sandbox_id, kind, fetch=not preflight)
+    except runtime.NotRunning:
+        raise HTTPException(404) from None
+    except runtime.Failed as error:
+        # The runtime did not hand over the sandbox's token (it did not answer,
+        # or answered without one): refused like anything not routable now,
+        # never a 500. Its backend keeps the failure briefly, so an outage is
+        # not a call to the provider for every request.
+        print(f"gate: no upstream token for {sandbox_id}: {error}", flush=True)
+        raise HTTPException(404) from None
+    if token:
+        if not token[1]:
+            raise HTTPException(404)
+        found[TOKEN] = token[1]
+    return found
 
 
 @router.get("/gate")
@@ -167,7 +191,7 @@ def _gate(request: Request):
     if not preflight:
         ensure_running(sandbox_id)
     # nginx sends the request to the sandbox's runtime under the host it names (upstream).
-    headers = {"X-Sbx-User": email or '', **route(port, sandbox_id), "X-Sbx-Auth": kind}
+    headers = {"X-Sbx-User": email or '', **route(port, sandbox_id, preflight=preflight), "X-Sbx-Auth": kind}
     if ip_route:
         headers['X-Sbx-Cookies'] = ip_previews.app_cookies(request.headers.get('cookie', ''))
     return Response(status_code=200, headers=headers)

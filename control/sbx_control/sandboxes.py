@@ -364,6 +364,44 @@ def deliver_pending(sandbox: str):
         guard.release()
 
 
+DELIVERED_PIN = state.Setting("tls_pin_delivered")
+# While a new pin is not delivered to every sandbox yet: {"pin", "names"}
+# of those it was queued for (a listing that missed a runtime's).
+PIN_QUEUED = state.Setting("tls_pin_queued", encoded=True)
+PIN_PARTIAL = "partial"   # DELIVERED_PIN while a delivery is incomplete: equals no real pin
+
+
+def redeliver_on_certificate_change(names, complete: bool = True) -> bool:
+    """When this server's self-signed certificate's key changed (or the
+    sandboxes do not have it yet): their runtime layers again, so what calls
+    sbx from inside them (the git credential helper) pins the key of now.
+    names: the sandboxes listed. Running ones get it at this round's
+    deliveries, paused ones when they resume. A listing that missed a
+    runtime (complete False) queues those it has, once each, and the pin
+    counts as delivered only after a complete one. Whether it queued any."""
+    from . import templates
+    pin, delivered = templates.pinned_key(), DELIVERED_PIN.get()
+    if pin == delivered or (delivered is None and not pin):
+        if delivered is None:
+            DELIVERED_PIN.set(pin)
+        return False
+    queued = PIN_QUEUED.get() or {}
+    done = set(queued.get("names", [])) if queued.get("pin") == pin else set()
+    fresh = sorted({name for name in names if name} - done)
+    for name in fresh:
+        delivery.queue(name, [], restart=False)
+    if complete:
+        DELIVERED_PIN.set(pin)
+        PIN_QUEUED.delete()
+    else:
+        PIN_QUEUED.set({"pin": pin, "names": sorted(done | set(fresh))})
+        # Some sandboxes may hold this pin now: no pin counts as delivered
+        # until a complete round, so going back to the previous one queues
+        # them again.
+        DELIVERED_PIN.set(PIN_PARTIAL)
+    return bool(fresh)
+
+
 def deliver_waiting(running: set):
     """The keeper's round: the repo changes kept while the runtime did not
     answer, then what waits for each running sandbox."""

@@ -22,9 +22,18 @@ failed step before presenting it as done.
    prerequisite only the owner can fix. What the server needs depends on the
    [runtimes](reference.md#runtimes) it will run: Embed, the built-in runtime,
    runs sandboxes on the server itself and needs `/dev/kvm` and the memory and
-   disk the host requirements list. A server without `/dev/kvm` can still run
-   sbx once a provider's runtime is available, with sandboxes running at the
-   provider; that is coming, so today a server needs `/dev/kvm`. Download the latest release's archive
+   disk the host requirements list. A server without `/dev/kvm` (or too
+   small for Embed) runs them at E2B Cloud: ask the owner for an E2B API key
+   and a domain whose `D` and `*.D` point at the server (E2B's sandboxes call
+   it back at `login.D`), and let the owner type the key into the server
+   themselves (`read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY`), then
+   install with `sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D
+   --email E`. Expect sandboxes within the E2B plan's limits (Hobby: an hour
+   before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 GiB disk, 20 at once:
+   size the recipe within them) and no managed servers on the host's private
+   network. Without KVM and without a key the installer stops and says so.
+   A server with KVM can add E2B Cloud later (`sbx-admin runtime add
+   e2b-cloud`, the key on stdin). Download the latest release's archive
    (or the release the owner names), check its `.sha256` and run
    `sh install.sh` from the unpacked directory as root, as the
    [README](../README.md#install) shows; keep its progress visible. A git

@@ -17,6 +17,7 @@ from .base import Check, Field, Refused, Status
 FOLDER = contributions.folder("github")
 KEY = f"{FOLDER}/key"
 CREDENTIAL = f"{FOLDER}/credential"
+PIN = f"{FOLDER}/tls-pin"   # curl's options pinning a self-signed certificate (the credential helper's)
 # gh with the sandbox's short-lived App token (the credential helper's)
 # unless the caller gives one.
 GH = f"""#!/bin/sh
@@ -58,7 +59,9 @@ class GitHub(extensions.Connector):
                 env["GIT_SSH_COMMAND"] = f"ssh -i {KEY} -o IdentitiesOnly=yes"
             elif how == "app":
                 credential = github_app.sandbox_credential(target.name, platform.session_key())
-                files["credential"] = File(github_app.credential_helper(target.name, credential), 0o700)
+                files["credential"] = File(github_app.credential_helper(target.name, credential, PIN), 0o700)
+                from ..templates import pinned_key   # the certificate of now, written again when it changes
+                files["tls-pin"] = File(pinned_key())
                 git["credential.https://github.com.helper"] = CREDENTIAL
             runtime = RuntimeLayer(env=env, files=files, git_config=git)
         return Contribution("github", template=TEMPLATE, runtime=runtime, ready=Ready("gh --version"),

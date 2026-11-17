@@ -149,8 +149,8 @@ The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
 runs commands and writes files in them, builds their templates, and is the
 last hop of a preview. Like the secret store, it is an installation's choice,
 not an extension. An installation enables one or more runtimes, and each
-sandbox runs on exactly one of them, chosen when it is created. Today the
-only one shipped is E2B Embed on the host.
+sandbox runs on exactly one of them, chosen when it is created. Two are
+built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
 
 - `control/sbx_control/runtime/base.py` is the interface: the `Runtime` and
   `Handle` protocols, plain results (`Info`, whose `state` is `running` or
@@ -172,12 +172,34 @@ only one shipped is E2B Embed on the host.
   sandbox route through `of()`; calls that make something (`create`,
   `build_template`, `templates`, `limits`, `capacity`, ...) take `kind`, where
   `None` is the default; `sandboxes()` lists every enabled runtime and tags
-  each `Info`; the host's calls (`host_units`, `guard_host`, `apply_network`,
+  each `Info` (only this installation's sandboxes: `create` adds the
+  installation id, `state.installation_id()`, to the metadata as
+  `sbx_install`; a runtime with `host = False` may be shared by several
+  installations, so it is listed with that id as a metadata query, untagged
+  sandboxes counting only when sbx's records know their id, and its
+  templates and snapshots are named with the id's prefix, `template_name`;
+  core code lists through the registry, never a backend's `sandboxes()`); the host's calls (`host_units`, `guard_host`, `apply_network`,
   `readiness`, `test`, ...) run over the enabled runtimes. `configure` hands
   each backend only its own `credential_keys`.
-  `test_runtime.py` fails if any module outside `runtime/embed/` imports `e2b`,
-  or any module outside `runtime/` imports a backend (`sbx_control.runtime.embed`,
-  `sbx_control.runtime.fake`).
+  `test_runtime.py` fails if any module outside `runtime/e2b/`,
+  `runtime/embed/` and `runtime/e2b_cloud/` imports `e2b`, or any module
+  outside `runtime/` imports a backend package.
+- `control/sbx_control/runtime/e2b/` is the E2B SDK adapter the E2B-based
+  backends share: `Compute`, the compute part of the contract over the SDK
+  (create, connect, list, pause, snapshots, template builds and listings),
+  its handles and errors as the runtime's (`Handle`, `call`: a sandbox that
+  is not running as `NotRunning`), listings as `Info` (`as_info`) and a
+  `TemplateSpec` as an E2B `Template` (`template`). A backend sets its
+  connection once in `configure` (`connect_with(api_key=, api_url=,
+  sandbox_url=, domain=)`, ConnectionConfig's options) and every SDK call
+  passes it, so Embed and E2B Cloud run side by side with their own keys;
+  nothing writes `E2B_*` into the process environment (`test_runtime.py`
+  checks both).
+- `control/sbx_control/runtime/e2b_cloud/` is E2B Cloud: `Compute` with
+  `HostSide`'s no-op host part, its own keys (`E2B_CLOUD_*`), limits from
+  them, an https `ingress` under the sandboxes' wildcard, and the traffic
+  token (`upstream_token_header`, `upstream_token`): kept from create and
+  connect, fetched once with connect after a restart.
 - `control/sbx_control/runtime/fake/` is an in-memory backend for the test
   suite: `test_runtimes.py` runs an installation with Embed (mocked) and it
   side by side, and `sbx-admin runtime verify` passes against it.
@@ -189,8 +211,8 @@ only one shipped is E2B Embed on the host.
   beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
   templates the scheduler builds), `GET /api/runtimes`, and
   `sbx-admin runtime verify [KIND]`.
-- `control/sbx_control/runtime/embed/` is everything that knows Embed: the SDK
-  calls (`__init__.py`), room for sandboxes (`capacity.py`), how it enforces
+- `control/sbx_control/runtime/embed/` is everything that knows Embed: its
+  connection to the SDK adapter and its host side (`__init__.py`), room for sandboxes (`capacity.py`), how it enforces
   `hosted_services.allowed_cidrs` and limits its egress proxy (`network.py`,
   which `host-guard.sh` runs as `python -m sbx_control.runtime guard`), its
   storage (`storage.py`,
@@ -215,7 +237,14 @@ key): the base and default ones on every enabled runtime, a repo's own on the
 runtimes its sandboxes use. Previews pick the sandbox's runtime: the gate
 answers `X-Sbx-Runtime` beside `X-Sbx-Upstream`, and nginx (`tls.sh`,
 `ip_previews.nginx`) has one `upstream` per enabled runtime and a `map` from
-the kind to it (`ip_previews.runtime_upstreams`).
+the kind to it (`ip_previews.runtime_upstreams`). An https ingress gets the
+sandbox's own host as SNI (the Host nginx sends), verified against the
+public CAs (`upstream_tls`). A runtime that answers a sandbox's ports only
+with that sandbox's token declares `upstream_token_header`: the gate adds
+`X-Sbx-Upstream-Token`, and nginx sends it in that header through a `map`
+from the kind that is empty for every other runtime (`upstream_token`), so
+another runtime never gets it and a browser's own value never passes. nginx
+answers `/gate` itself with 404 on the public servers (`control.inc`).
 
 Two settings effects are the runtime's. `runtime-env` follows a domain
 change: `sbx-apply runtime-env` calls `apply_host`, and Embed writes the
@@ -223,8 +252,12 @@ domain into its `.env`. `runtime-network` follows a change to what sandboxes
 reach or to an extension's runtime layer. It has no path unit and stays
 pending until `sbx-admin network apply` calls `apply_network`.
 
-One place still assumes Embed: `install.sh` installs it, and writes
-`SBX_RUNTIMES=embed` on a fresh install.
+`install.sh` enables Embed where the host can run it and E2B Cloud with
+`E2B_CLOUD_API_KEY` in its environment; it writes `runtime.env` through
+`python -m sbx_control.runtime env` (values from the environment, kinds
+added to `SBX_RUNTIMES`, every other line kept). `sbx-admin runtime add`,
+`remove` and `default` change it later (`runtimes.add`, `remove`,
+`set_default`, through `vault.edit_runtime_file`).
 
 ### Adding a runtime
 
@@ -236,8 +269,10 @@ group `sbx.runtimes`: the name is the runtime's kind, the value `module:Class`.
 my-provider = "my_package:MyProvider"
 ```
 
-The built-in `{"embed": "sbx_control.runtime.embed:Embed"}` is registered the
-same way in `runtime/__init__.py`. A kind that `SBX_RUNTIMES` enables but no
+The built-in ones (`embed`: `sbx_control.runtime.embed:Embed`, `e2b-cloud`:
+`sbx_control.runtime.e2b_cloud:Cloud`) are registered the same way in
+`runtime/__init__.py` (`BUILTIN`). A backend over the E2B SDK builds on
+`runtime/e2b/` (`Compute`) rather than calling the SDK itself. A kind that `SBX_RUNTIMES` enables but no
 package provides fails at start with the kinds that exist.
 
 The contract has two parts. Every backend implements the compute part of
@@ -261,7 +296,10 @@ not have. Embed overrides it.
 
 Previews follow each sandbox's runtime: the gate returns its kind
 (`X-Sbx-Runtime`) next to `X-Sbx-Upstream`, and nginx has one `upstream` per
-enabled runtime.
+enabled runtime. A provider that gates its sandboxes' ports with a
+per-sandbox token sets `upstream_token_header` and implements
+`upstream_token(sandbox_id)`; nginx then sends the token to that runtime
+only.
 
 ### Embed's configuration
 

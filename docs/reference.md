@@ -397,10 +397,103 @@ listener or firewall rule.
 ## Runtimes
 
 A runtime is where sandboxes run: E2B Embed on this server, or a provider's
-service. An installation runs the runtimes it enables (a fresh install
-enables Embed alone), and each sandbox runs on exactly one of them, chosen when it is created and kept until it is
-deleted. Embed is built in; other runtimes are installed as packages
-([runtime backends](extensions.md#runtime-backends)).
+service. An installation runs the runtimes it enables, and each sandbox runs
+on exactly one of them, chosen when it is created and kept until it is
+deleted. Two are built in, `embed` and `e2b-cloud` (below); other runtimes
+are installed as packages ([runtime backends](extensions.md#runtime-backends)).
+
+A fresh install enables Embed where the server can run it (`/dev/kvm`,
+16 GiB of memory, 24 for the default budget, and 60 GiB of free disk), and
+E2B Cloud when `E2B_CLOUD_API_KEY` is in `install.sh`'s environment. A
+server that can run neither stops the installer with what to set. An
+upgrade keeps the runtimes the installation enables.
+
+### E2B Embed (`embed`)
+
+E2B's self-hosted stack on this server: Firecracker VMs in hugepage memory,
+templates and snapshots under `/var/lib/e2b`. `install.sh` sets it up and
+writes its keys (`E2B_API_KEY`, `E2B_API_URL`, `E2B_SANDBOX_URL`; optional
+`E2B_HOST`, `E2B_DOMAIN`). Its sandboxes reach the ranges this host opens to
+them (`private_networks`: managed servers, `network.internal_cidrs`), it
+applies each sandbox's `deny_out` and takes filesystem snapshots. Its limits
+are the host's: its cores and the hugepages per sandbox; how many run at once
+is the room left.
+
+### E2B Cloud (`e2b-cloud`)
+
+E2B's hosted sandboxes, through the same SDK as Embed. Nothing of them runs
+here: the server needs no KVM, about 2 GiB of memory and 10 GiB of disk for
+sbx-control, nginx and the secret store.
+
+| Key in `runtime.env` | Meaning |
+| --- | --- |
+| `E2B_CLOUD_API_KEY` | The API key from E2B's dashboard (a secret; sealed into the store once that is Infisical). Required. |
+| `E2B_CLOUD_DOMAIN` | E2B's domain; default `e2b.app`. |
+| `E2B_CLOUD_MAX_TIMEOUT` | Seconds a sandbox runs before its timeout pauses it; default 3600 (the Hobby plan's most). The keeper renews it while the sandbox is used. |
+| `E2B_CLOUD_MAX_CPU`, `E2B_CLOUD_MAX_MEMORY_MB`, `E2B_CLOUD_MAX_DISK_MB` | Per sandbox; default 8 vCPUs, 8192 MiB, 10240 MiB (Hobby). A recipe beyond them is refused, naming the key. |
+| `E2B_CLOUD_MAX_SANDBOXES` | Running at once; default 20. |
+
+Raise the limits to what your E2B plan allows, then `sbx-admin runtime
+apply`.
+
+What it needs:
+
+- **A domain reachable from the internet.** Its sandboxes call this
+  installation back at `login.<domain>` on 443: the template builds' repo
+  bundles, git credentials, catalog actions. The installer refuses E2B Cloud
+  without a domain; the setup's reachability check covers the rest. With
+  `--dns none` the certificate is self-signed: sbx's own calls from a
+  sandbox (bundles, git credentials) pin its key, anything else in a sandbox
+  that calls the server refuses it.
+- Previews go to `https://<port>-<sandbox id>.<E2B domain>` with that
+  sandbox's traffic token, which E2B returns only when a sandbox is created
+  or connected: sbx keeps it, and after sbx-control restarts fetches it once
+  by connecting (which resumes a paused sandbox, as a preview request would).
+  nginx adds it for E2B Cloud's sandboxes only; it never reaches the browser
+  or another runtime, and the gate's answers that carry it are not cached on
+  disk. sbx creates every E2B Cloud sandbox with private ports
+  (`allow_public_traffic` off, whatever the E2B project's default) and
+  deletes one that comes back without a token. A CORS preflight wakes
+  nothing: without a token sbx already holds, it is refused, and the
+  browser's real request resumes the sandbox.
+- nginx resolves the ingress name (`sbx-ingress.<E2B domain>`) when it loads
+  its configuration: a DNS failure then fails the reload (`nginx -t` says
+  which name), and an address E2B changes later is picked up at the next
+  reload (`sbx-admin runtime apply`, or any certificate renewal).
+
+Several installations may share one E2B key (one E2B team). Each keeps to
+its own: every installation has a random id, made once and kept in `sbx.db`
+(so backups and upgrades keep it; it is not a secret), and every sandbox sbx
+creates carries it in its metadata (`sbx_install`). On a runtime that does
+not run on this server, sbx lists sandboxes by that id (the provider
+filters), so it never sees, finds, counts, adopts or deletes another
+installation's, even one of the same name; and it names its templates and
+snapshots with the id's first 8 characters (`<id8>--sbx-base-<hash>`),
+listing and pruning only those. Sandboxes made before the id was added are
+this installation's when its records know them by id (taken once per
+runtime, at the first listing after the upgrade); any other untagged
+sandbox on the account is left alone. Templates built before are rebuilt
+under the new name at the scheduler's next round (each once, the base
+first: a template that starts from the base waits for it, and a create
+meanwhile answers that its template is building); the old ones
+are no longer pruned by sbx, so delete them in E2B's dashboard once
+nothing uses them. A template that disappears from the provider (another
+installation's prune, a manual delete) is rebuilt too: the scheduler
+checks each round, and a create that finds it gone answers "the KEY
+template is building ...; try again in a few minutes" (503) and starts the
+build. The status line counts this installation's running sandboxes; the
+plan's limit is the E2B team's, shared with the others. Embed runs one
+installation per server: its sandbox listing and template names are as
+before.
+
+What it does not support: managed servers and `network.internal_cidrs`.
+Its sandboxes do not reach this host's private network
+(`private_networks` is false), so a repository with managed servers
+attached is refused on it, naming the servers. It applies `deny_out`
+(`egress_rules`), so untrusted repos can run there, and takes filesystem
+snapshots.
+
+### Enabling runtimes
 
 The runtimes are set in `/etc/sbx/runtime.env` (root only, not in backups):
 
@@ -417,7 +510,24 @@ Nothing watches the file. sbx-control configures each runtime when it starts,
 and nginx has one upstream per enabled runtime, written by the TLS step. After
 editing `runtime.env`, run `sbx-admin runtime apply`: it checks the file (the
 same checks as at start), then regenerates nginx and restarts sbx-control. An
-upgrade (`install.sh`) does both as well.
+upgrade (`install.sh`) does both as well. Or let `sbx-admin` edit it:
+
+- `sbx-admin runtime add KIND` enables a provider's runtime with its API key,
+  read from stdin, never the command line (`sbx-admin runtime add e2b-cloud <
+  key-file`, or type it and press Ctrl-D). It checks the key with the
+  provider first and changes nothing when the provider refuses it; given
+  again, it replaces the key. It then starts the base and default template
+  builds on that runtime in a process of their own (a transient systemd
+  unit, `sbx-template-builds-<kind>`) and returns; `sbx-admin runtime
+  verify KIND` works once they are built, and says so while the base is
+  still building. Embed is the installer's: it needs the host set
+  up.
+- `sbx-admin runtime remove KIND` disables one, refused while it has
+  sandboxes (running or paused) or when it is the only one. A provider's
+  keys leave the file.
+- `sbx-admin runtime default KIND` sets `SBX_RUNTIME_DEFAULT`.
+
+Each then does what `runtime apply` does.
 
 A new sandbox's runtime is, in order: the one the request names
 (`sbx up NAME --runtime KIND`, or `runtime` in `POST /api/sandboxes`), the
@@ -644,7 +754,8 @@ building or has no room), with `Retry-After` when waiting helps.
 - The desktop CLI (`sbx`) runs on macOS only: it keeps its tokens in the
   Keychain and its installer refuses other systems. Elsewhere use the
   [HTTP API](#http-api) with a token from `sbx-admin token create`. The host must be Ubuntu
-  24.04 with KVM.
+  24.04; with KVM to run sandboxes on it (Embed), without to run them at E2B
+  Cloud.
 - Recreating the runtime with existing sandboxes is not supported; pausing them
   first does not make it supported.
 - Backups cover configuration and secrets, not VM snapshots, templates or hosted

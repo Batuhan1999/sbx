@@ -24,6 +24,7 @@ class Keeper(unittest.TestCase):
                     (keeper.sandboxes, "registered", lambda found: found),
                     (keeper.sandboxes, "record_transition", None),
                     (keeper.sandboxes, "prepare_waiting", None),
+                    (keeper.sandboxes, "redeliver_on_certificate_change", None),
                     (keeper.routing, "forget_except", None),
                     (keeper.routing, "detect_ports", None),
                     (keeper, "notice_stopped_app", None),

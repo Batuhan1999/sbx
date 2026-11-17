@@ -152,6 +152,148 @@ def _runtime(kind: str, is_default: bool) -> dict:
             "capabilities": dataclasses.asdict(backend.capabilities), "limits": limits, "status": status}
 
 
+# sbx-admin runtime add | remove | default: runtime.env's selection and keys
+
+
+@dataclasses.dataclass
+class Change:
+    """An edit of runtime.env, not yet confirmed: what it did (said), the
+    file as it was (before: None when there was none), the store references
+    it no longer uses (stale: discarded once the new configuration is
+    confirmed) and those it made (made: discarded when it is not).
+    sbx-admin confirms it with platform.connect (admin.do_runtime_change)."""
+    said: str
+    before: str | None
+    stale: list = dataclasses.field(default_factory=list)
+    made: list = dataclasses.field(default_factory=list)
+
+    def confirm(self) -> None:
+        from . import secret_store
+        for reference in self.stale:
+            secret_store.discard(reference)
+
+    def undo(self) -> None:
+        """runtime.env as it was, and the references it made gone."""
+        from . import paths, secret_store
+        file = paths.runtime_env()
+        if self.before is None:
+            file.unlink(missing_ok=True)
+        else:
+            temporary = file.with_suffix(".new")
+            temporary.touch(mode=0o600)
+            temporary.write_text(self.before)
+            temporary.replace(file)
+        for reference in self.made:
+            secret_store.discard(reference)
+
+
+def _file_now() -> str | None:
+    from . import paths
+    file = paths.runtime_env()
+    return file.read_text() if file.exists() else None
+
+
+def _references(values) -> list:
+    from . import secret_store
+    return [v for v in values if v and secret_store.is_reference(v)]
+
+
+def add(kind: str, secret: str) -> Change:
+    """Enable a runtime that runs elsewhere (a provider) with its secret
+    (Runtime.secret_key), or give an enabled one a new secret: checked first
+    (its configure, then its own checks against the provider), then written
+    into runtime.env, sealed into the store under a new reference once that
+    is Infisical; the old one goes only when the change is confirmed. A
+    runtime on this host is install.sh's (it sets up the host side)."""
+    from . import secret_store, vault
+    if kind not in runtime.kinds():
+        raise Refused(f"there is no runtime {kind}; the runtimes here are {', '.join(runtime.kinds())}")
+    backend = runtime.make(kind)
+    if getattr(backend, "host", False):
+        raise Refused(f"{backend.title} ({kind}) runs on this host: install.sh enables it where the host can run it")
+    if not secret:
+        raise Refused(f"the {backend.secret_key} for {backend.title} comes on stdin")
+    enabled = runtime.enabled()
+    try:
+        backend.configure({**vault.runtime(backend.credential_keys), backend.secret_key: secret})
+    except SystemExit as error:
+        raise Refused(str(error)) from None
+    failed = [c for c in backend.test() if not c.ok]
+    if failed:
+        raise Refused(f"{backend.title} did not take the key: "
+                      + "; ".join(f"{c.name}: {c.detail}" for c in failed) + "; nothing was changed")
+    change = Change("", _file_now(), stale=_references([vault._runtime_file((backend.secret_key,)).get(backend.secret_key)]))
+    value = secret
+    if vault.sealing():   # a new reference: the old one still serves until the change is confirmed
+        value = secret_store.seal(secret, key=f"runtime/{backend.secret_key}/{secrets.token_hex(6)}")
+        change.made.append(value)
+    values = {backend.secret_key: value}
+    if kind not in enabled:
+        values[runtime.ENABLED_KEY] = ",".join([*enabled, kind])
+    try:
+        vault.edit_runtime_file(values)
+        change.said = (f"{backend.title} ({kind}) {'has a new key' if kind in enabled else 'is enabled'}; the "
+                       f"runtimes: {', '.join(runtime.enabled())} (default {runtime.default()})")
+    except BaseException:
+        change.undo()
+        raise
+    return change
+
+
+def remove(kind: str) -> Change:
+    """Disable a runtime: refused while it has sandboxes (running or paused)
+    or when it is the only one. A provider's keys leave runtime.env (and,
+    once the change is confirmed, the store); a runtime on this host keeps
+    install.sh's. A default naming it goes, so the first that stays is the
+    default."""
+    from . import vault
+    enabled = runtime.enabled()
+    if kind not in enabled:
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(enabled)})")
+    if len(enabled) == 1:
+        raise Refused(f"{kind} is the only runtime enabled here; add another first (sbx-admin runtime add KIND)")
+    backend = runtime.get(kind)
+    try:
+        listed = runtime.complete(runtime.sandboxes(kind=kind))
+    except Exception as error:
+        raise Refused(f"{backend.title} did not say which sandboxes it holds ({type(error).__name__}: {error}); "
+                      "nothing was changed") from None
+    if listed:
+        names = ", ".join(sorted((i.metadata or {}).get("sbx") or i.sandbox_id for i in listed))
+        raise Refused(f"{len(listed)} sandbox{'es' if len(listed) > 1 else ''} run on {backend.title} ({names}): "
+                      "delete them first (sbx down NAME, or the web app)")
+    values: dict = {runtime.ENABLED_KEY: ",".join(k for k in enabled if k != kind)}
+    if runtime.configuration()[runtime.DEFAULT_KEY] == kind:
+        values[runtime.DEFAULT_KEY] = None
+    change = Change("", _file_now())
+    if not getattr(backend, "host", False):
+        change.stale = _references(vault._runtime_file(backend.credential_keys).values())
+        values.update(dict.fromkeys(backend.credential_keys))
+    try:
+        vault.edit_runtime_file(values)
+        change.said = (f"{backend.title} ({kind}) is disabled; the runtimes: {', '.join(runtime.enabled())} "
+                       f"(default {runtime.default()})")
+    except BaseException:
+        change.undo()
+        raise
+    return change
+
+
+def set_default(kind: str) -> Change:
+    """The runtime new sandboxes run on unless the request or the repo names another."""
+    from . import vault
+    if kind not in runtime.enabled():
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(runtime.enabled())})")
+    change = Change("", _file_now())
+    try:
+        vault.edit_runtime_file({runtime.DEFAULT_KEY: kind})
+    except BaseException:
+        change.undo()
+        raise
+    change.said = f"new sandboxes run on {runtime.title(kind)} ({kind}) unless the request or the repo names another"
+    return change
+
+
 # sbx-admin runtime verify
 
 VERIFY_PORT = 8765
@@ -159,9 +301,10 @@ VERIFY_FILE = "/tmp/sbx-verify"
 VERIFY_TIMEOUT = 600
 
 
-def _fetch(url: str, host: str) -> str:
-    """GET url with this Host, as nginx sends a preview's request to a runtime's ingress."""
-    request = urllib.request.Request(url, headers={"Host": host})
+def _fetch(url: str, host: str, headers: dict | None = None) -> str:
+    """GET url with this Host (and these headers: a sandbox's token), as nginx
+    sends a preview's request to a runtime's ingress."""
+    request = urllib.request.Request(url, headers={"Host": host, **(headers or {})})
     with urllib.request.urlopen(request, timeout=10) as response:
         return response.read().decode(errors="replace")
 
@@ -176,6 +319,23 @@ def verify(kind: str | None = None, say=print) -> bool:
     from . import gate, template_builds, templates
     kind = kind or runtime.default()
     say(f"verifying {runtime.title(kind)} ({kind})")
+    try:
+        template_builds.built(templates.BASE, kind)
+    except template_builds.NotBuilt:
+        # Not a failure of the runtime: there is nothing to start a sandbox from yet.
+        row = template_builds.state_row(templates.BASE, kind)
+        build = template_builds.status(templates.BASE, row, kind)
+        if build == "building":
+            say(f"  ..  the base template is building on {runtime.title(kind)}; try again when it's built "
+                f"(sbx-admin jobs shows its progress)")
+        elif build == "failed":
+            say(f"  NO  the base template's build failed on {runtime.title(kind)}: {(row or {}).get('error') or '?'}"
+                f"; build it again: sbx-admin jobs run template@{kind}:{templates.BASE}")
+        else:
+            say(f"  ..  the base template is not built on {runtime.title(kind)} yet; it builds by itself shortly, "
+                f"or start it now: sbx-admin jobs run template@{kind}:{templates.BASE}")
+        say("not verified")
+        return False
     made = None
     passed = True
 
@@ -248,10 +408,14 @@ def verify(kind: str | None = None, say=print) -> bool:
             if route.get("X-Sbx-Runtime") != kind:
                 raise AssertionError(f"the gate routes it to {route.get('X-Sbx-Runtime')!r}")
             ingress = runtime.get(kind).ingress
+            # An https ingress is asked by the sandbox's own host (SNI), as nginx does.
+            base = f"https://{route['X-Sbx-Upstream']}" if ingress.startswith("https://") else ingress
+            traffic = route.get(gate.TOKEN)
+            extra = {"headers": {runtime.get(kind).upstream_token_header: traffic}} if traffic else {}
             last = None
             for _ in range(20):
                 try:
-                    body = _fetch(f"{ingress}/{VERIFY_FILE.rsplit('/', 1)[1]}", route["X-Sbx-Upstream"])
+                    body = _fetch(f"{base}/{VERIFY_FILE.rsplit('/', 1)[1]}", route["X-Sbx-Upstream"], **extra)
                     if body.strip() == token:
                         return f"{route['X-Sbx-Upstream']} through {ingress}"
                     last = f"answered {body[:80]!r}"
@@ -265,7 +429,7 @@ def verify(kind: str | None = None, say=print) -> bool:
             nonlocal made
             runtime.kill(made)
             gone, made = made, None
-            if any(i.sandbox_id == gone for i in runtime.get(kind).sandboxes(None, [runtime.RUNNING])):
+            if any(i.sandbox_id == gone for i in runtime.sandboxes(None, [runtime.RUNNING], kind=kind)):
                 raise AssertionError("the runtime still lists it running")
             return gone
         before = passed

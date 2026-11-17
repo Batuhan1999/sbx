@@ -367,6 +367,12 @@ def upgrade_backup() -> pathlib.Path | None:
             except FileExistsError:   # another upgrade within the second
                 out = out.with_name(f"{out.name.partition('.')[0]}.{attempt}")
         _copy_database(paths.database(), out / "sbx.db")
+        # The runtimes and their keys as the active release knows them: the
+        # upgrade may enable one that release can't load (rollback.sh).
+        if paths.runtime_env().exists():
+            (out / "runtime.env").touch(mode=0o600)
+            shutil.copy2(paths.runtime_env(), out / "runtime.env")
+            (out / "runtime.env").chmod(0o600)
         units = out / "systemd"
         units.mkdir(mode=0o700)
         directory = systemd_dir()
@@ -415,12 +421,16 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
     moves = "".join(f"  [ ! -e {q(str(requests / new))} ] || mv -f {q(str(requests / new))} {q(str(requests / old))}\n"
                     for old, new in RENAMED_EFFECTS.items())
     renamed_back = f"if {older}; then\n{moves}fi\n"
+    saved_env = out / "runtime.env"
+    runtime_env = (f"install -m 600 {q(str(saved_env))} {q(str(paths.runtime_env()))}\n"
+                   if saved_env.exists() else "")
     return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
-            f"# active, its unit files and sbx.db. Sandboxes and the runtime are left as they are.\nset -eu\n"
+            f"# active, its unit files, sbx.db and runtime.env. Sandboxes and the runtime are left as they are.\n"
+            f"set -eu\n"
             f"systemctl stop {units} || true\n{switch}"
             f"cp -a {q(str(out / 'systemd'))}/. {q(str(systemd_dir()))}/\n{renamed_back}"
             f"rm -f {q(str(database))}-wal {q(str(database))}-shm\n"
-            f"install -m 600 {q(str(out / 'sbx.db'))} {q(str(database))}\n"
+            f"install -m 600 {q(str(out / 'sbx.db'))} {q(str(database))}\n{runtime_env}"
             f"systemctl daemon-reload\n"
             # The upgrade may have disabled the release's effect paths (remove_stale_effects).
             f"for unit in {q(str(out / 'systemd'))}/sbx-apply-*.path; do\n"

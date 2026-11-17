@@ -57,6 +57,13 @@ class NoRoom(Exception):
     """The host lacks the memory or disk a build needs now; nothing started."""
 
 
+class BaseNotReady(NoRoom):
+    """What the build starts from, the base template, is building (it waits:
+    the scheduler starts it once the base is built, holding no build slot
+    meanwhile) or its build failed on the plan of now (until the base is
+    built again or its plan changes); nothing started."""
+
+
 class Busy(RuntimeError):
     """The template is building; what was asked waits for the build to end."""
 
@@ -315,11 +322,55 @@ def template_for(repo: str | None, kind: str | None = None) -> str:
     raise NotBuilt(_building(key, row, kind))
 
 
+def _parent_current(kind: str | None = None) -> dict | None:
+    """The base template's row when what builds on it can start from it: built
+    as planned now, under the name planned now on this runtime (a name from
+    before installations were told apart is not); else None."""
+    with db() as conn:
+        base = _read(conn, templates.BASE, kind)
+    p = plan(templates.BASE)
+    if base and status(templates.BASE, base, kind) == "built" and base["built_template"] \
+            and base["built_fingerprint"] == p.fingerprint \
+            and base["built_template"] == runtime.template_name(p.name, _kind(kind)):
+        return base
+    return None
+
+
+def base_not_ready(key: str, kind: str | None = None) -> str:
+    """Why key's build can't start now because of the base it starts from:
+    the base is building (key waits, holding no build slot), or its build
+    failed on the plan of now (a final failure, _stuck: not built again from
+    every template that starts from it); "" when the base is no reason."""
+    if key == templates.BASE or _parent_current(kind) is not None:
+        return ""
+    with db() as conn:
+        row = _read(conn, templates.BASE, kind)
+    if (_kind(kind), templates.BASE) in _running or (row and status(templates.BASE, row, kind) == "building"):
+        return (f"the {templates.BASE} template it starts from is building{_on(kind)}; {key} builds once it is "
+                "built (the scheduler starts it; try again in a few minutes)")
+    if _stuck(templates.BASE, row, kind):
+        return (f"the {templates.BASE} template failed{_on(kind)}: {(row['error'] or '').strip()[-300:]}; fix it "
+                f"and build it again (sbx-admin template build {templates.BASE}), then {key} builds")
+    return ""
+
+
+def _stuck(key: str, row: dict | None, kind: str | None = None) -> bool:
+    """Whether key's last build failed on the plan of now, and building again
+    would fail the same way: not when what it starts from (the base) was not
+    current then or changed since; such a failure is retried once the base is."""
+    if not row or status(key, row, kind) != "failed" or row["fingerprint"] != plan(key).fingerprint:
+        return False
+    if key == templates.BASE:
+        return True
+    base = _parent_current(kind)
+    return bool(base) and (base["finished_at"] or "") <= (row["started_at"] or "")
+
+
 def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     """Start key's build unless it is running or failed on this plan; what a refused create says."""
     on = _on(kind)
     try:
-        failed = status(key, row, kind) == "failed" and row["fingerprint"] == plan(key).fingerprint
+        failed = _stuck(key, row, kind)
     except (recipes.RecipeError, OSError) as error:
         return f"the {key} template is not built{on} yet and cannot be planned: {error}"
     if failed:
@@ -331,6 +382,55 @@ def _building(key: str, row: dict | None, kind: str | None = None) -> str:
         except NoRoom as error:
             return f"the {key} template is not built{on} yet and cannot build now: {error}"
     return f"the {key} template is building{on}; try again in a few minutes"
+
+
+def _forget(template: str, kind: str) -> list:
+    """The keys whose built template on kind is template, which the runtime
+    no longer has: their rows forget it, so they are stale (stale()) and
+    build again under the name planned now."""
+    with db() as conn:
+        found = [row[0] for row in conn.execute(
+            "select repo from template_builds where runtime = ? and built_template = ?", (kind, template))]
+        conn.execute("update template_builds set built_template = null, built_fingerprint = null "
+                     "where runtime = ? and built_template = ?", (kind, template))
+    if found:
+        print(f"template {template}{_on(kind)} is gone from the runtime: {', '.join(found)} build again", flush=True)
+    return found
+
+
+def gone(template: str, kind: str | None = None) -> str | None:
+    """A create found no template of this name (runtime.TemplateGone): one
+    deleted behind sbx's back, as another installation's prune did on a
+    shared provider account. Its keys build again now (as a create that finds
+    none built starts them), and what the refused create says is returned;
+    None when no build of sbx's is named so (a snapshot, say)."""
+    kind = _kind(kind)
+    keys = _forget(template, kind)
+    said = []
+    for key in keys:   # every key that had it starts again (they can share a name); the first one's answer
+        with db() as conn:
+            row = _read(conn, key, kind)
+        said.append(_building(key, row, kind))
+    return said[0] if said else None
+
+
+def forget_missing(kind: str) -> list:
+    """The scheduler's check on a runtime several installations may share:
+    each built template the runtime no longer lists (or that was named
+    before installations were told apart, without this one's prefix) is
+    forgotten, so the round's stale builds make it again, once. The keys."""
+    if not runtime.shared(kind):
+        return []
+    with db() as conn:
+        rows = _rows(conn, kind)
+    present = {name for name, _ in runtime.templates(kind)}
+    found = []
+    for key, row in rows.items():
+        name = row["built_template"]
+        if name and name not in present and status(key, row, kind) != "building" \
+                and (kind, key) not in _running:
+            found += _forget(name, kind)
+    return found
 
 
 def size_of(template: str) -> int | None:
@@ -367,7 +467,46 @@ def start(key: str, kind: str | None = None) -> bool:
     return True
 
 
+def start_detached(kind: str, keys=None) -> tuple[str, bool]:
+    """Build keys (default: the base, then the default template) on the
+    runtime of kind in a process of their own, as `python -m
+    sbx_control.template_builds KEY --runtime KIND --if-stale` one after
+    the other, so a short-lived command (sbx-admin runtime add) can start
+    them and return: a transient systemd unit (one per runtime: while it
+    runs, another is not started), or a detached process on a host without
+    systemd. Returns (where to follow them, whether this call started them);
+    RuntimeError when systemd refused the unit."""
+    import shlex
+    import subprocess
+    from . import paths
+    keys = keys or ["base", "default"]
+    steps = " && ".join(f"{shlex.quote(sys.executable)} -m sbx_control.template_builds {shlex.quote(key)} "
+                        f"--runtime {shlex.quote(kind)} --if-stale" for key in keys)
+    cwd = os.getcwd()
+    unit = f"sbx-template-builds-{templates.slug(kind)}"
+    where = f"{unit}.service (journalctl -u {unit})"
+    try:
+        active = subprocess.run(["systemctl", "is-active", "--quiet", f"{unit}.service"], capture_output=True,
+                                timeout=10)
+        if active.returncode == 0:
+            return where, False
+        made = subprocess.run(["systemd-run", "--no-block", "--collect", f"--unit={unit}",
+                               f"--working-directory={cwd}", "sh", "-c", steps],
+                              capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:   # no systemd here at all
+        log = paths.state_dir() / f"{unit}.log"
+        with open(log, "ab") as out:
+            subprocess.Popen(["sh", "-c", steps], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+        return str(log), True
+    if made.returncode != 0:
+        raise RuntimeError(f"systemd-run did not start {unit}: {(made.stderr or made.stdout).strip()[-300:]}")
+    return where, True
+
+
 def _begin(key: str, kind: str | None = None):
+    if why := base_not_ready(key, kind):
+        raise BaseNotReady(why)
     if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
         check_room(key, kind)
     with _lock:
@@ -387,11 +526,14 @@ def _build(key: str, kind: str | None = None):
     try:
         try:
             platform_owned = key == templates.BASE or templates.is_default(key)
+            base_name = None
             if key != templates.BASE:
-                with db() as conn:
-                    base = _read(conn, templates.BASE, kind)
-                if not base or base["built_fingerprint"] != plan(templates.BASE).fingerprint:
+                # What it starts from first: the base as planned now, under
+                # the name planned now (not one from before installations
+                # were told apart). Building or failed: _begin refused already.
+                if _parent_current(kind) is None:
                     build_now(templates.BASE, kind)
+                base_name = built(templates.BASE, kind)
             git_dir = None
             if not platform_owned:
                 git_dir = recipes.mirror(key, extensions.git_access(key))
@@ -410,13 +552,13 @@ def _build(key: str, kind: str | None = None):
             print(f"template build {key}{_on(kind)}: {p.name}", flush=True)
             with Watch(key, p, kind) as watch:
                 try:
-                    templates.build(p, git_dir, kind=_kind(kind))
+                    templates.build(p, git_dir, kind=_kind(kind), base=base_name)
                 except Exception as error:
                     if watch.why():
                         raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
                     raise
             _transition(key, "built", kind, finished_at=_utc(), fingerprint=p.fingerprint,
-                        built_fingerprint=p.fingerprint, built_template=p.name, built_memory_mb=p.size["memory_mb"])
+                        built_fingerprint=p.fingerprint, built_template=runtime.template_name(p.name, _kind(kind)), built_memory_mb=p.size["memory_mb"])
         except BaseException as error:
             _transition(key, "failed", kind, finished_at=_utc(), error=str(error)[-2000:],
                         fingerprint=p and p.fingerprint)
@@ -557,9 +699,9 @@ def stale(kind: str | None = None) -> list:
         if (_kind(kind), key) in _running or (row and status(key, row, kind) == "building"):
             continue
         fingerprint = plan(key).fingerprint
-        if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
+        if _stuck(key, row, kind):
             continue
-        if not _current(row, fingerprint):
+        if not _current(row, fingerprint) or not _named_now(key, row, kind):
             out.append(key)
     return out
 
@@ -603,6 +745,13 @@ def _current(row: dict | None, fingerprint: str) -> bool:
     return bool(row) and bool(row["built_template"]) and row["built_fingerprint"] == fingerprint
 
 
+def _named_now(key: str, row: dict | None, kind: str | None = None) -> bool:
+    """Whether the template built last has the name planned now on the
+    runtime: not one from before installations were told apart (which builds
+    again, once, under its prefixed name)."""
+    return bool(row) and row["built_template"] == runtime.template_name(plan(key).name, _kind(kind))
+
+
 def mark_moved(repo: str):
     """The repo's default branch moved since its last build: rebuild at night."""
     with db() as conn:
@@ -636,6 +785,10 @@ def schedule(stop: threading.Event):
     while not stop.wait(CHECK_SECONDS):
         try:
             for kind in runtime.enabled():
+                try:
+                    forget_missing(kind)   # one listing; what is gone is stale below
+                except Exception as error:
+                    print(f"template check{_on(kind)}: {error!r}", flush=True)
                 for key in stale(kind):
                     if stop.is_set():
                         return
@@ -675,7 +828,7 @@ def main(argv=None) -> int:
     kind = args.runtime
     with db() as conn:
         row = _read(conn, key, kind)
-    if args.if_stale and _current(row, plan(key).fingerprint):
+    if args.if_stale and _current(row, plan(key).fingerprint) and _named_now(key, row, kind):
         print(f"CURRENT {row['built_template'] or key}", file=sys.stderr)
         return 0
     try:
