@@ -111,6 +111,12 @@ class Gate(GateCase):
         self.assertNotIn("sbx ls", shown.text)
         self.assertEqual(self.page("memos-x.example.test", self.owner, html=False).json()["error"], "missing")
 
+    def test_an_unavailable_service_host_is_a_starting_page(self):
+        from sbx_control import addressing
+        with patch.object(addressing, "service_hosts", return_value={"svc.example.test"}):
+            shown = self.page("svc.example.test", self.owner, **{"X-Sbx-Reason": "unavailable"})
+        self.assertEqual(shown.status_code, 503, shown.text)
+
     def test_a_deleted_sandbox_says_so(self):
         from sbx_control import lifecycle
         op = lifecycle.begin("memos-a", "delete")
