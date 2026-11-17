@@ -322,6 +322,16 @@ class Backend(unittest.TestCase):
         self.assertIn("export SBX_TEMPLATE_WORKDIR=/srv/app/web\n", self.written("/etc/sbx/template.sh"))
         self.assertIn("cd /srv/app/web || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
 
+    def test_a_dockerfile_relative_workdir_is_under_the_one_before(self):
+        from sbx_control.runtime import TemplateSpec
+        self.fake.respond = lambda _, command: next((w for w in ("/opt/app", "src") if f'printf %s "{w}"' in command),
+                                                    None)
+        self.backend.build_template(TemplateSpec().from_template("tpl").dockerfile("WORKDIR /opt/app\nWORKDIR src\n"
+                                                                                    "RUN make"),
+                                    alias="r", cpu=2, memory_mb=4096, disk_mb=1024)
+        self.assertIn("export SBX_TEMPLATE_WORKDIR=/opt/app/src\n", self.written("/etc/sbx/template.sh"))
+        self.assertIn("cd /opt/app/src || exit 1; make", next(c for _, c, _ in self.fake.ran if "make" in c))
+
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
         steps = dockerfile.dockerfile_steps(

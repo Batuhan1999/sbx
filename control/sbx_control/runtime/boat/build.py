@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import posixpath
 import re
 import shlex
 import time
@@ -179,8 +180,10 @@ class Builds:
             if what == "user":
                 user = value
             elif what == "workdir":
-                # A Dockerfile's (a ShellWord) as the path its $VAR give, with the env so far.
-                workdir = commands.run(f"printf %s {value}", timeout=60).stdout if isinstance(value, ShellWord) else value
+                # A Dockerfile's (a ShellWord) as the path its $VAR give, with the env so far; a
+                # relative one under the workdir before it, as Docker has it.
+                given = commands.run(f"printf %s {value}", timeout=60).stdout if isinstance(value, ShellWord) else value
+                workdir = posixpath.join(workdir, given)
                 commands.run(f"sudo mkdir -p {shlex.quote(workdir)} && sudo chown {shlex.quote(user)} "
                              f"{shlex.quote(workdir)} 2>/dev/null || true", timeout=60)
             elif what == "env":
