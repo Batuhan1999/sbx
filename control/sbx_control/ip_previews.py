@@ -172,10 +172,14 @@ def default_ingress() -> str:
 NO_INGRESS = "http://127.0.0.1:9"   # the discard port: nothing listens
 
 
-def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") -> str:
+def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress", cookie: str = "sandbox_cookie") -> str:
     """nginx: one upstream block per enabled runtime (its ingress) and a map
     from the kind the gate names (X-Sbx-Runtime, in $source) to it ($target);
-    anything else goes to the default runtime's."""
+    anything else goes to the default runtime's. For a runtime that wants
+    its sandboxes' token in a header, a map that sends it to that runtime
+    only; for one that wants it in a cookie, the request's cookies ($cookie,
+    the app's own) with the token appended, for that runtime only
+    ($<target>_cookie, upstream_cookie)."""
     found = runtime.ingresses()
     lines = ["# One upstream per enabled sandbox runtime; the gate names a sandbox's (X-Sbx-Runtime)."]
     for kind, (ingress, _) in found.items():
@@ -196,6 +200,25 @@ def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") 
         lines.append('  default "";')
         lines += [f"  {kind} ${target}_token;" for kind, h in found_headers.items() if h == header]
         lines.append("}")
+    cookies = runtime.upstream_token_cookies()
+    if cookies:
+        lines.append("# The sandbox's token as the cookie its runtime wants, after the app's own")
+        lines.append("# cookies (a browser's own cookie of that name dropped), to that runtime only.")
+    for number, name in enumerate(sorted(set(cookies.values())), 1):
+        kept, sep = f"{target}_cookie_kept_{number}", f"{target}_cookie_sep_{number}"
+        lines.append(f"map ${cookie} ${kept} {{")
+        lines.append(f'  "~^(?<before>.*?);\\s*{name}=[^;]*(?<after>.*)$" "$before$after";')
+        lines.append(f'  "~^{name}=[^;]*;?\\s*(?<after>.*)$" "$after";')
+        lines.append(f"  default ${cookie};")
+        lines.append("}")
+        lines.append(f'map ${kept} ${sep} {{ "" ""; default "${kept}; "; }}')
+    if cookies:
+        lines.append(f"map ${source} ${target}_cookie {{")
+        lines.append(f"  default ${cookie};")
+        numbers = {name: n for n, name in enumerate(sorted(set(cookies.values())), 1)}
+        lines += [f'  {kind} "${{{target}_cookie_sep_{numbers[name]}}}{name}=${{{target}_token}}";'
+                  for kind, name in cookies.items()]
+        lines.append("}")
     return "\n".join(lines) + "\n"
 
 
@@ -215,18 +238,37 @@ def upstream_tls(host: str = "sbx_target", indent: str = "    ") -> str:
         "proxy_ssl_verify_depth 4;", f"proxy_ssl_trusted_certificate {CA_BUNDLE};"))
 
 
-def upstream_token(target: str = "sbx_ingress", indent: str = "    ") -> str:
-    """The proxy location's lines that take the sandbox's token from the
-    gate (X-Sbx-Upstream-Token) and send it in each declaring runtime's
-    header; the map (runtime_upstreams) leaves it empty, so unsent, for
-    any other runtime, and a browser's own value of that header never
-    passes. "" when no enabled runtime wants a token."""
-    headers = sorted(set(runtime.upstream_token_headers().values()))
-    if not headers:
+def _wants_token() -> bool:
+    return bool(runtime.upstream_token_headers() or runtime.upstream_token_cookies())
+
+
+def upstream_token_set(target: str = "sbx_ingress", indent: str = "    ") -> str:
+    """The gated location's line that takes the sandbox's token from the gate
+    (X-Sbx-Upstream-Token); "" when no enabled runtime wants a token."""
+    if not _wants_token():
         return ""
-    lines = [f"auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;"]
-    lines += [f"proxy_set_header {header} ${target}_token_{number};" for number, header in enumerate(headers, 1)]
-    return "".join(f"{indent}{line}\n" for line in lines)
+    return f"{indent}auth_request_set ${target}_token $upstream_http_x_sbx_upstream_token;\n"
+
+
+def upstream_token_send(target: str = "sbx_ingress", indent: str = "    ") -> str:
+    """The proxy location's lines that send the token in each declaring
+    runtime's header; the map (runtime_upstreams) leaves it empty, so unsent,
+    for any other runtime, and a browser's own value of that header never
+    passes. A cookie runtime's token goes with the cookies (upstream_cookie)."""
+    headers = sorted(set(runtime.upstream_token_headers().values()))
+    return "".join(f"{indent}proxy_set_header {header} ${target}_token_{number};\n"
+                   for number, header in enumerate(headers, 1))
+
+
+def upstream_token(target: str = "sbx_ingress", indent: str = "    ") -> str:
+    """Both, for a location that takes the token and proxies itself."""
+    return upstream_token_set(target, indent) + upstream_token_send(target, indent)
+
+
+def upstream_cookie(target: str = "sbx_ingress", cookie: str = "sandbox_cookie") -> str:
+    """The variable (without $) the proxy sends as Cookie: the app's own
+    cookies, with the token appended for a runtime that wants it there."""
+    return f"{target}_cookie" if runtime.upstream_token_cookies() else cookie
 
 
 def cleared_headers() -> list:
@@ -241,10 +283,18 @@ def nginx(value, certificate):
     if certificate not in ('bootstrap', str(ip)):
         raise ValueError('Invalid IP certificate name')
     cleared = "\n".join(f'    proxy_set_header {name} "";' for name in cleared_headers())
+    page_headers = "".join(f"    {line}\n" for line in (
+        "proxy_method GET;", "proxy_pass_request_body off;", 'proxy_set_header Content-Length "";',
+        f"proxy_set_header Host {host(str(ip))};", "proxy_set_header X-Forwarded-Proto https;",
+        f"proxy_set_header X-Original-Host {host(str(ip))};", "proxy_set_header X-Original-Preview-Port $server_port;",
+        "proxy_set_header X-Original-URI $request_uri;", "proxy_set_header X-Original-Method $request_method;",
+        "proxy_set_header X-Original-Upgrade $http_upgrade;", "proxy_set_header Accept $http_accept;",
+        "proxy_set_header Cookie $http_cookie;", "proxy_set_header Authorization $http_authorization;",
+        'proxy_set_header Upgrade "";', 'proxy_set_header Connection "";', "proxy_intercept_errors off;"))
     first, last = port_range()
     listeners = '\n'.join(f'  listen {"[::]:" if ip.version == 6 else ""}{p} ssl;' for p in range(first, last + 1))
     return f'''# IP previews share the control plane's renewable IP certificate.
-{runtime_upstreams("ip_runtime", "ip_ingress")}map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
+{runtime_upstreams("ip_runtime", "ip_ingress", "ip_cookies")}map $ip_auth $ip_authorization {{ bearer ""; default $http_authorization; }}
 map $http_upgrade $ip_connection {{ default upgrade; '' close; }}
 server {{
 {listeners}
@@ -268,9 +318,22 @@ server {{
     proxy_set_header Authorization $http_authorization;
   }}
   location @ip_login {{ return 302 $ip_login; }}
+  # A page for what the gate refused and for what the runtime could not
+  # answer (gate.py, preview_pages), and the page's poll.
   location @ip_denied {{
-    if ($ip_gone) {{ return 404; }}
-    return 403;
+    rewrite ^ /gate/page? break;
+    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
+{page_headers}    proxy_set_header X-Sbx-Reason denied;
+  }}
+  location @ip_unavailable {{
+    rewrite ^ /gate/page? break;
+    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
+{page_headers}    proxy_set_header X-Sbx-Reason unavailable;
+  }}
+  location = /.sbx/status {{
+    rewrite ^ /gate/status? break;
+    proxy_pass http://127.0.0.1:{platform.CONTROL_PORT};
+{page_headers}    proxy_set_header X-Sbx-Reason "";
   }}
   location / {{
     set $ip_original_method $request_method;
@@ -281,16 +344,22 @@ server {{
     auth_request_set $ip_login $upstream_http_x_sbx_login;
     auth_request_set $ip_gone $upstream_http_x_sbx_gone;
     auth_request_set $ip_runtime $upstream_http_x_sbx_runtime;
-    error_page 401 = @ip_login;
+{upstream_token_set("ip_ingress")}    error_page 401 = @ip_login;
     error_page 403 = @ip_denied;
+    try_files /.sbx-no-such-file @ip_sandbox;
+  }}
+  location @ip_sandbox {{
     proxy_pass $ip_ingress;
-{upstream_tls("ip_upstream")}{upstream_token("ip_ingress")}    proxy_http_version 1.1;
+{upstream_tls("ip_upstream")}{upstream_token_send("ip_ingress")}    proxy_intercept_errors on;
+    error_page 502 504 = @ip_unavailable;
+    proxy_connect_timeout 15s;
+    proxy_http_version 1.1;
     proxy_set_header Host $ip_upstream;
 {cleared}
     proxy_set_header X-Forwarded-Host {host(str(ip))}:$server_port;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-For $remote_addr;
-    proxy_set_header Cookie $ip_cookies;
+    proxy_set_header Cookie ${upstream_cookie("ip_ingress", "ip_cookies")};
     proxy_set_header Authorization $ip_authorization;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $ip_connection;
@@ -322,8 +391,14 @@ if __name__ == '__main__':
         print(upstream_tls(), end='')
     elif sys.argv[1:] == ['upstream-token']:
         print(upstream_token(), end='')
+    elif sys.argv[1:] == ['upstream-token-set']:
+        print(upstream_token_set(), end='')
+    elif sys.argv[1:] == ['upstream-token-send']:
+        print(upstream_token_send(), end='')
+    elif sys.argv[1:] == ['upstream-cookie']:
+        print(upstream_cookie(), end='')
     elif sys.argv[1:] == ['default-ingress']:
         print(default_ingress())
     else:
         raise SystemExit('usage: python -m sbx_control.ip_previews nginx ADDRESS CERTIFICATE | upstreams | '
-                         'upstream-tls | upstream-token | default-ingress')
+                         'upstream-tls | upstream-token[-set|-send] | upstream-cookie | default-ingress')

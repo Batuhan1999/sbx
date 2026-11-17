@@ -137,7 +137,7 @@ class Compute:
         """What every SDK call of this backend passes."""
         return dict(self._connection)
 
-    def upstream_token(self, sandbox_id: str, *, fetch: bool = True) -> str:
+    def upstream_token(self, sandbox_id: str, port: int = 0, *, fetch: bool = True) -> str:
         return ""
 
     def _handle(self, sandbox) -> Handle:

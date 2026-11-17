@@ -334,7 +334,8 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
                 if c.ready:
                     t = t.run_cmd(c.ready.command)
             t = t.set_workdir(workdir)
-        t = t.set_start_cmd(platform.START, platform.NOVNC_PORT)
+        own_desktop = runtime.desktop(kind) == "sbx"   # a runtime with its own desktop keeps its ports
+        t = t.set_start_cmd(platform.start(own_desktop), platform.ready_port(own_desktop))
         hidden = [token for token, _ in served]
         try:
             return runtime.build_template(t, alias=runtime.template_name(p.name, kind), cpu=p.size["cpu"], memory_mb=p.size["memory_mb"],

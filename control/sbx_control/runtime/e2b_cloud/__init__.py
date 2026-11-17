@@ -236,8 +236,8 @@ class Cloud(Compute, HostSide):
                          "(private sandbox URLs) and the SDK version.")
         return handle
 
-    def upstream_token(self, sandbox_id, *, fetch=True):
-        """The sandbox's traffic token: as create or connect returned it,
+    def upstream_token(self, sandbox_id, port=0, *, fetch=True):
+        """The sandbox's traffic token (one for all its ports): as create or connect returned it,
         else (after a restart, with fetch) from one connect, which resumes a
         paused sandbox and leaves a running one's timeout as it is; one
         fetch per sandbox at a time. "" without fetch when none is kept;

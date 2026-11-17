@@ -610,7 +610,7 @@ def set_default(kind: str) -> Change:
 # sbx-admin runtime verify
 
 VERIFY_PORT = 8765
-VERIFY_FILE = "/tmp/sbx-verify"
+VERIFY_FILE = "/home/user/.sbx-verify"   # what every runtime's pause keeps (Boat's stop drops /tmp)
 VERIFY_TIMEOUT = 600
 
 
@@ -715,7 +715,7 @@ def verify(kind: str | None = None, say=print) -> bool:
         step("resume", resume)
 
         def preview():
-            handle.commands.run(f"cd /tmp && python3 -m http.server {VERIFY_PORT} --bind 0.0.0.0 >/dev/null 2>&1",
+            handle.commands.run(f"cd {VERIFY_FILE.rsplit('/', 1)[0]} && python3 -m http.server {VERIFY_PORT} --bind 0.0.0.0 >/dev/null 2>&1",
                                 background=True, timeout=0).disconnect()
             route = gate.route(VERIFY_PORT, made)
             if route.get("X-Sbx-Runtime") != kind:
@@ -724,7 +724,10 @@ def verify(kind: str | None = None, say=print) -> bool:
             # An https ingress is asked by the sandbox's own host (SNI), as nginx does.
             base = f"https://{route['X-Sbx-Upstream']}" if ingress.startswith("https://") else ingress
             traffic = route.get(gate.TOKEN)
-            extra = {"headers": {runtime.get(kind).upstream_token_header: traffic}} if traffic else {}
+            backend = runtime.get(kind)
+            cookie = getattr(backend, "upstream_token_cookie", None)
+            extra = ({} if not traffic else {"headers": {"Cookie": f"{cookie}={traffic}"}} if cookie
+                     else {"headers": {backend.upstream_token_header: traffic}})
             last = None
             for _ in range(20):
                 try:

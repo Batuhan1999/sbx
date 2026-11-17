@@ -297,8 +297,10 @@ class WorkspaceTests(Server):
             self.assertEqual(response.headers['x-sbx-auth'], 'bearer')
             resume.assert_called_once()
         ip_previews.remove('ip-gate-fixture')
-        response = self.client.get('/gate', headers=headers)
-        self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
+        response = self.client.get('/gate', headers=headers)   # signed out: the login, whatever is there
+        self.assertEqual(response.status_code, 401)
+        response = self.client.get('/gate', headers={**headers, 'Authorization': f'Bearer {owner}'})
+        self.assertEqual((response.status_code, response.headers.get('x-sbx-page')), (403, 'missing'))
 
     def test_a_deleted_sandbox_s_preview_is_gone(self):
         from sbx_control import auth, core, lifecycle, recipes
@@ -320,7 +322,7 @@ class WorkspaceTests(Server):
                     patch('sbx_control.catalog.resources.delete_all', return_value=[]):
                 core.delete('gone-fixture')
             response = self.client.get('/gate', headers=headers)  # the runtime still lists the VM
-        self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
+        self.assertEqual((response.status_code, response.headers.get('x-sbx-page')), (403, 'deleted'))
 
     def test_preview_origin_cannot_mutate_the_control_plane_using_its_shared_host_cookie(self):
         from sbx_control import sandboxes

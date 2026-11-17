@@ -500,7 +500,7 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
     try:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=sbx.sandbox_id, runtime="running")
-        ensure_started(sbx)
+        ensure_started(sbx, kind)
         initialize_ssh_identity(sbx)
         host_key = write_runtime(sbx, name, envs, layer, public_keys, hidden)
     except Exception:
@@ -511,18 +511,21 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
             "repo": a.workdir, "ssh_url": addressing.ssh_url(slug, a, sbx.sandbox_id), "urls": addressing.urls(slug, a)}
 
 
-def ensure_started(sbx):
-    """The start contract (platform.START) running: a VM booted from its disk
-    or from a filesystem snapshot comes up without its saved processes."""
-    if sbx.commands.run(platform.STARTED, user="user", timeout=15).stdout.strip() == "ready":
+def ensure_started(sbx, kind: str | None = None):
+    """The start contract (platform.start) running: a VM booted from its disk
+    or from a filesystem snapshot comes up without its saved processes. sbx's
+    desktop is part of it only on a runtime without its own (runtime.desktop)."""
+    own_desktop = runtime.desktop(kind) == "sbx"
+    if sbx.commands.run(platform.started(own_desktop), user="user", timeout=15).stdout.strip() == "ready":
         return
-    sbx.commands.run("DISPLAY=:0 xset q >/dev/null 2>&1 || rm -f /tmp/.X0-lock /tmp/.X11-unix/X0",
-                     user="user", timeout=15)
-    handle = sbx.commands.run(platform.START, user="user", background=True, timeout=0)
+    if own_desktop:
+        sbx.commands.run("DISPLAY=:0 xset q >/dev/null 2>&1 || rm -f /tmp/.X0-lock /tmp/.X11-unix/X0",
+                         user="user", timeout=15)
+    handle = sbx.commands.run(platform.start(own_desktop), user="user", background=True, timeout=0)
     handle.disconnect()
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if sbx.commands.run(platform.STARTED, user="user", timeout=15).stdout.strip() == "ready":
+        if sbx.commands.run(platform.started(own_desktop), user="user", timeout=15).stdout.strip() == "ready":
             return
         time.sleep(0.25)
     raise SandboxError("the cold-booted template's SSH/desktop transport did not start")
@@ -642,9 +645,16 @@ def restore_runtime(sbx, info) -> bool:
     key and git credential back from what sbx-control keeps. True when it
     had to, or the recipe requests an app restart after resume."""
     meta = info.metadata if isinstance(info.metadata, dict) else {}
+    try:
+        kind = runtime.kind_of(info)
+    except Exception:   # not found by any runtime now: the default's rules
+        kind = None
     if runtime_state(info) == "paused":
         extensions.on_resume(sbx, info)
-    if sbx.commands.run(f"test -f {RUN}/env && echo ok || true", timeout=30).stdout.strip() == "ok":
+    # A runtime whose every resume is a cold boot (runtime.cold_resume) comes
+    # back with nothing running: everything below, and the app restarted.
+    cold = runtime_state(info) != "running" and runtime.cold_resume(kind)
+    if not cold and sbx.commands.run(f"test -f {RUN}/env && echo ok || true", timeout=30).stdout.strip() == "ok":
         paused = runtime_state(info) == "paused"
         name = meta.get("sbx")
         pending = delivery.pending(name) if isinstance(name, str) and name else None
@@ -657,14 +667,15 @@ def restore_runtime(sbx, info) -> bool:
                 return False
         return paused and app_of(info).resume_mode == "restart"
     # Booted from its disk, or an allocation whose creation failed part way.
-    ensure_started(sbx)
+    ensure_started(sbx, kind)
     initialize_ssh_identity(sbx)
     name = (info.metadata or {})["sbx"]
     envs, hidden, layer = runtime_values(info)
     write_runtime(sbx, name, envs, layer, hidden=hidden)
-    state.event(name, "runtime restored", "its tmpfs was empty (likely: booted from its disk, as the host had "
-                                          "no room for its pause snapshot), so its env and credentials were gone",
-                internal=True)
+    state.event(name, "runtime restored",
+                "every resume on this runtime is a cold boot: env, credentials and processes put back" if cold else
+                "its tmpfs was empty (likely: booted from its disk, as the host had no room for its pause snapshot), "
+                "so its env and credentials were gone", internal=True)
     return True
 
 

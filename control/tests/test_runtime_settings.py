@@ -102,7 +102,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn(KEY, response.text)
         found = {r["kind"]: r for r in response.json()}
-        self.assertEqual(set(found), {"embed", "e2b-cloud", "fake"})
+        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "fake"})
         embed, cloud, fake = found["embed"], found["e2b-cloud"], found["fake"]
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
@@ -110,6 +110,10 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(embed["settings"], [])                          # install.sh's keys, never a form
         self.assertEqual((cloud["enabled"], cloud["can_run"], cloud["not_editable"]), (False, True, ""))
         self.assertEqual([p["name"] for p in cloud["presets"]], ["hobby", "pro"])
+        boat = found["boat"]   # the same form machinery: its keys, plans and limits, nothing Boat-specific in core
+        self.assertEqual((boat["enabled"], boat["can_run"], boat["title"]), (False, True, "Boat"))
+        self.assertEqual([p["name"] for p in boat["presets"]], ["20", "100", "500", "2000"])
+        self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
         self.assertEqual((fake["sandboxes"], fake["removable"]), ([], ""))

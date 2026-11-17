@@ -30,6 +30,9 @@ import re
 from typing import Any, Callable, ContextManager, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
+# A sandbox the runtime lists but that failed (Boat's error state): not
+# running, not paused; resuming may bring it back, else it is deleted.
+FAILED = "failed"
 
 
 class Failed(Exception):
@@ -76,7 +79,7 @@ class Info:
     """A sandbox as the runtime lists it."""
     sandbox_id: str
     metadata: dict
-    state: str                                 # RUNNING or PAUSED
+    state: str                                 # RUNNING or PAUSED (FAILED where the runtime has it)
     template_id: str = ""
     started_at: datetime.datetime | None = None
     end_at: datetime.datetime | None = None    # when it pauses (running) or paused (paused)
@@ -335,17 +338,37 @@ class Runtime(Protocol):
         """The Host nginx sends a sandbox port's requests to ingress with
         (and, to an https ingress, the name it asks for: SNI)."""
 
-    # The request header a runtime that answers a sandbox's ports only with
-    # that sandbox's own token wants it in (E2B Cloud's traffic token); None
-    # for one that needs none. The gate hands nginx the token, nginx adds the
-    # header to that runtime's requests only; a browser never sees it.
+    # Where a runtime that answers a sandbox's ports only with a token wants
+    # it: a request header (upstream_token_header, E2B Cloud's traffic
+    # token) or a cookie (upstream_token_cookie, Boat's per-port token);
+    # None for what it does not use. The gate hands nginx the token, nginx
+    # adds the header, or appends the cookie to the app's own, on that
+    # runtime's requests only; a browser never sees it.
     upstream_token_header: str | None
+    upstream_token_cookie: str | None
 
-    def upstream_token(self, sandbox_id: str, *, fetch: bool = True) -> str:
-        """The sandbox's token for upstream_token_header. Without fetch only
-        one the backend kept ("" when none: asking the provider may wake the
-        sandbox); with fetch it asks, raising (Failed, NotRunning) rather
-        than answering without one."""
+    def upstream_token(self, sandbox_id: str, port: int, *, fetch: bool = True) -> str:
+        """The sandbox's token for its port (a runtime with one token per
+        sandbox ignores port). Without fetch only one the backend kept (""
+        when none: asking the provider may wake the sandbox or expose the
+        port); with fetch it asks, raising (Failed, NotRunning) rather than
+        answering without one."""
+
+    # Which desktop a sandbox has: "sbx" (sbx's own noVNC on
+    # platform.NOVNC_PORT, which the templates' start command runs and the
+    # desktop preview proxies to) or "provider" (the provider's own, which
+    # desktop_url opens; sbx starts none of its own there).
+    desktop: str
+
+    def desktop_url(self, sandbox_id: str) -> str:
+        """For a "provider" desktop: a fresh URL that opens the sandbox's
+        desktop (it may carry a short-lived token). Optional otherwise."""
+
+    # Every resume boots the VM afresh (a provider without memory
+    # snapshots): its tmpfs is empty and nothing of what ran is running, so
+    # sbx re-ships what lives in platform.RUN and restarts the recipe's
+    # processes on every resume, whatever lifecycle.resume says.
+    cold_resume: bool
 
     def own_route(self, host: str, sandbox_id: str, port: str):
         """For a request to the runtime's own host (Embed's dashboard): True
@@ -445,8 +468,12 @@ class Runtime(Protocol):
 class HostSide:
     """The host part of the contract, as nothing: what a runtime that does
     not run on this host (a hosted provider) inherits. A runtime on this host
-    (Embed) overrides what it has."""
+    (Embed) overrides what it has. It also holds the defaults of the compute
+    part's optional properties (desktop, cold_resume, the token's place)."""
     host = False
+    desktop = "sbx"
+    cold_resume = False
+    upstream_token_cookie: str | None = None
     settings: tuple = ()
     presets: tuple = ()
 

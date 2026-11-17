@@ -85,7 +85,7 @@ class Registry(TwoRuntimes, Installation):
         try:
             self.assertEqual(self.runtime.default(), "fake")
             file.write_text(RUNTIME + "SBX_RUNTIMES=embed,nowhere\n")
-            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, e2b-cloud, fake"):
+            with self.assertRaisesRegex(SystemExit, "nowhere, which no installed package provides.*embed, e2b-cloud, boat, fake"):
                 self.runtime.enabled()
             file.write_text(RUNTIME)
             self.assertEqual(self.runtime.enabled(), ["embed"])   # missing: Embed alone, as before

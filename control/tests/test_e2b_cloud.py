@@ -18,7 +18,7 @@ def with_token(fake):
     fake.kept = set()       # the sandboxes whose token it holds (else: fetched, which may wake one)
     fake.fetched = []
 
-    def upstream_token(sandbox_id, *, fetch=True):
+    def upstream_token(sandbox_id, port=0, *, fetch=True):
         if sandbox_id not in fake.kept:
             if not fetch:
                 return ""
@@ -79,7 +79,8 @@ class TrafficToken(TwoRuntimes, Server):
             response = self.client.get("/gate", headers={"X-Original-Host": f"3000-{self.at_provider}.example.test",
                                                          "X-Original-Method": "GET",
                                                          "Authorization": f"Bearer {self.token_for_admin()}"})
-        self.assertEqual((response.status_code, response.headers.get("x-sbx-gone")), (403, "1"))   # nginx: 404
+        # Not a 500, and not a bare error either: nginx shows the starting page until a token comes.
+        self.assertEqual((response.status_code, response.headers.get("x-sbx-page")), (403, "starting"))
 
     def token_for_admin(self):
         from sbx_control import auth
@@ -121,7 +122,7 @@ class TrafficToken(TwoRuntimes, Server):
         gate_inc = script[script.index('cat > "$dir/nginx/gate.inc"'):]
         gate_inc = gate_inc[:gate_inc.index("\nNGINX\n")]
         self.assertIn("proxy_cache gate;", gate_inc)
-        self.assertIn(r"proxy_no_cache \$upstream_http_x_sbx_upstream_token;", gate_inc)
+        self.assertIn(r"proxy_no_cache \$upstream_http_x_sbx_upstream_token \$upstream_http_x_sbx_wait;", gate_inc)
 
 
 class RuntimeAdmin(Installation):

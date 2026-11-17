@@ -25,16 +25,17 @@ import importlib.metadata
 import shlex
 import threading
 
-from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info, Limits,
+from .base import (FAILED, PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info, Limits,
                    LimitRefused, NoRoom, NotRunning, Preset, Runtime, RuntimeLayer, SettingField, Snapshot,
                    TemplateGone, TemplateSpec, Timeout)
 
-__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "HostSide", "Info",
+__all__ = ["FAILED", "PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "HostSide", "Info",
            "Limits", "LimitRefused", "NoRoom", "NotRunning", "Preset", "Runtime", "RuntimeLayer", "SettingField",
            "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
-BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud"}
+BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud",
+           "boat": "sbx_control.runtime.boat:Boat"}
 ENABLED_KEY, DEFAULT_KEY = "SBX_RUNTIMES", "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
 FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
@@ -460,21 +461,45 @@ def upstream_host(port: int, sandbox_id: str) -> str:
     return of(sandbox_id).upstream_host(port, sandbox_id)
 
 
-def upstream_token(sandbox_id: str, kind: str | None = None, *, fetch: bool = True) -> tuple[str, str] | None:
-    """(header, token) nginx adds to a request for the sandbox's port, for a
-    runtime that answers its sandboxes' ports only with their own token
-    (Runtime.upstream_token_header); None for any other. kind: the sandbox's
+def upstream_token(sandbox_id: str, port: int, kind: str | None = None, *,
+                   fetch: bool = True) -> tuple[str, str] | None:
+    """(where, token) nginx adds to a request for the sandbox's port, for a
+    runtime that answers its sandboxes' ports only with a token: where is
+    its header (Runtime.upstream_token_header) or its cookie
+    (upstream_token_cookie); None for any other runtime. kind: the sandbox's
     runtime, when the caller knows it. Without fetch the token is only one
     the backend kept ("" when none)."""
     backend = get(kind) if kind else of(sandbox_id)
-    header = getattr(backend, "upstream_token_header", None)
-    return (header, backend.upstream_token(sandbox_id, fetch=fetch)) if header else None
+    where = getattr(backend, "upstream_token_header", None) or getattr(backend, "upstream_token_cookie", None)
+    return (where, backend.upstream_token(sandbox_id, port, fetch=fetch)) if where else None
 
 
 def upstream_token_headers() -> dict:
     """kind -> the header each enabled runtime wants its sandboxes' token
     in, for those that declare one (nginx's maps)."""
     return {b.kind: b.upstream_token_header for b in backends() if getattr(b, "upstream_token_header", None)}
+
+
+def upstream_token_cookies() -> dict:
+    """kind -> the cookie each enabled runtime wants its sandboxes' token
+    in, appended to the app's own cookies, for those that declare one."""
+    return {b.kind: b.upstream_token_cookie for b in backends() if getattr(b, "upstream_token_cookie", None)}
+
+
+def desktop(kind: str | None = None) -> str:
+    """Which desktop the runtime's sandboxes have: "sbx" (sbx's noVNC) or
+    "provider" (its own, opened through desktop_url)."""
+    return getattr(get(kind), "desktop", "sbx")
+
+
+def desktop_url(sandbox_id: str) -> str:
+    """A fresh URL of the sandbox's desktop on a runtime with its own."""
+    return of(sandbox_id).desktop_url(sandbox_id)
+
+
+def cold_resume(kind: str | None = None) -> bool:
+    """Whether every resume on the runtime boots the sandbox afresh (Runtime.cold_resume)."""
+    return bool(getattr(get(kind), "cold_resume", False))
 
 
 def snapshot_usage(sandbox_id: str) -> dict:

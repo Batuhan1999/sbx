@@ -28,8 +28,9 @@ class Boundary(unittest.TestCase):
     def test_only_the_runtime_package_imports_a_backend(self):
         runtime = PACKAGE / "runtime"
         backends = [f"sbx_control.runtime.{p.name}" for p in runtime.iterdir() if (p / "__init__.py").exists()]
-        self.assertEqual(sorted(backends), ["sbx_control.runtime.e2b", "sbx_control.runtime.e2b_cloud",
-                                            "sbx_control.runtime.embed", "sbx_control.runtime.fake"])
+        self.assertEqual(sorted(backends), ["sbx_control.runtime.boat", "sbx_control.runtime.e2b",
+                                            "sbx_control.runtime.e2b_cloud", "sbx_control.runtime.embed",
+                                            "sbx_control.runtime.fake"])
         found = []
         for path in PACKAGE.rglob("*.py"):
             if runtime in path.parents:
