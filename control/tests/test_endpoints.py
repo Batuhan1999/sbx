@@ -283,6 +283,26 @@ class ApiTests(Setup, Server):
             stored = conn.execute("select digest from endpoint_credentials").fetchone()[0]
         self.assertNotIn(new, stored)   # only its digest is kept
 
+    def test_a_push_that_a_revoke_overtakes_ends_with_certificates_from_the_new_ca(self):
+        from cryptography import x509
+        from sbx_control.endpoints import sandbox
+        self.sandbox_found()
+        self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app", "other/repo"], by="test")
+        self.register("box")
+        bundle, written = f"{sandbox.RENEWED}/.push/temporal.bundle.pem", []
+
+        def write(path, text, **kw):   # the revoke lands while the push writes what the old CA signed
+            if path == bundle and not written:
+                self.endpoints.revoke("temporal", "other/repo")
+            if path == bundle:
+                written.append(text)
+        vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout="")),
+                             files=SimpleNamespace(write=write))
+        with patch.object(self.model, "deliver"):
+            self.assertTrue(sandbox.push(vm, self.info("box")))
+        ca = x509.load_pem_x509_certificate(self.model.find("temporal").ca_cert.encode())
+        x509.load_pem_x509_certificate(written[-1].encode()).verify_directly_issued_by(ca)   # still owner/app's
+
     def test_a_name_made_again_between_a_renewal_s_check_and_its_issue_gives_it_nothing(self):
         from sbx_control import endpoints
         repos = self.sandbox_found()
