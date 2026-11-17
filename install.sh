@@ -161,7 +161,8 @@ check_report() {
   [ "$mem_mib" -ge 1800 ] || small="2 GiB of memory at least, this has $mem_mib MiB"
   [ -n "$small" ] || [ "$disk_gib" -ge 10 ] || small="10 GiB of free disk at least, this has $disk_gib GiB"
   for provider in "e2b-cloud:an E2B API key" "boat:a Boat API key (a paid plan: the trial saves no templates)"; do
-    if [ -n "$small" ]; then printf '  %-10s no: %s\n' "${provider%%:*}" "$small"
+    if enables "${provider%%:*}"; then printf '  %-10s yes: enabled\n' "${provider%%:*}"
+    elif [ -n "$small" ]; then printf '  %-10s no: %s\n' "${provider%%:*}" "$small"
     else printf '  %-10s yes: needs %s and a domain pointing here\n' "${provider%%:*}" "${provider#*:}"
     fi
   done

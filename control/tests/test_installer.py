@@ -351,6 +351,12 @@ class InstallCheckTests(unittest.TestCase):
         self.assertIn('e2b-cloud  yes', result.stdout)
         self.assertIn('verdict:    the upgrade refuses: this installation enables embed', result.stdout)
 
+    def test_an_enabled_provider_is_said_to_be_enabled_not_to_need_a_key(self):
+        result = self.check(kvm=False, vmx=False, virt='kvm', installed='e2b-cloud')
+        self.assertIn('e2b-cloud  yes: enabled', result.stdout)
+        self.assertNotIn('needs an E2B API key', result.stdout)
+        self.assertIn('boat       yes: needs a Boat API key', result.stdout)
+
     def inventory(self, *, uid, reader=True):
         """install.sh's read of the installed runtimes, as --check runs it, against a root-only runtime.env."""
         text = INSTALL.read_text()
