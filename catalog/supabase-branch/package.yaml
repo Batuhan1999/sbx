@@ -1,0 +1,36 @@
+kind: provision
+name: supabase-branch
+title: Supabase branch
+logo: logo.svg
+description: >
+  A Supabase preview branch of your project per sandbox, with its own Postgres
+  database, API URL and keys, deleted with the sandbox. Supabase sets it up as
+  any preview branch, running the project's migrations, and copies the
+  project's data only when you ask. Each branch is billed as its own compute
+  while it exists; creating one takes a few minutes.
+docs: https://supabase.com/docs/guides/deployment/branching
+requires:
+  project: { kind: supabase-project, expose: { access_token: SUPABASE_ACCESS_TOKEN, project: SUPABASE_PROJECT } }
+inputs:
+  with_data:
+    label: Copy data
+    default: 'false'
+    help: Copy the project's data into each branch, not only its schema. Supabase allows this on some plans only.
+outputs:
+  url: { sensitive: true }
+  host: {}
+  port: {}
+  user: {}
+  password: { sensitive: true }
+  database: {}
+  api_url: {}
+  anon_key: { sensitive: true }
+  service_role_key: { sensitive: true }
+  ref: {}
+runs: { create: provider.py, delete: provider.py, list: provider.py }
+timeout: 12m
+env:
+  DATABASE_URL: ${outputs.url}
+  SUPABASE_URL: ${outputs.api_url}
+  SUPABASE_ANON_KEY: ${outputs.anon_key}
+  SUPABASE_SERVICE_ROLE_KEY: ${outputs.service_role_key}

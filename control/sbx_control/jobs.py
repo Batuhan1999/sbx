@@ -122,7 +122,10 @@ def defined() -> tuple:
     return (*JOBS, *runtime.jobs())
 
 
-def run_now(job_id: str) -> str:
+def run_now(job_id: str, *, detached: bool = False) -> str:
+    """Start a job now. detached (sbx-admin jobs run, a command that returns
+    at once): a template build runs in a process of its own (template_builds.
+    start_detached), not in this one, which would end it when it returns."""
     if job_id in {job.id for job in defined() if job.kind == "timer"}:
         try:
             subprocess.run(["systemctl", "start", "--no-block", f"{job_id}.service"], check=True, capture_output=True, timeout=10)
@@ -139,6 +142,14 @@ def run_now(job_id: str) -> str:
             raise RuntimeError(f"no runtime {kind} is enabled here")
         if not (repo == templates.BASE or templates.is_default(repo) or settings.trust(repo)):
             raise RuntimeError(f"{repo} is not served here")
+        if detached:
+            kind = kind or runtime.default()
+            if why := template_builds.base_not_ready(repo, kind):
+                raise RuntimeError(why)
+            where, started = template_builds.start_detached(kind, [["key", repo]], if_stale=False)
+            if not started:
+                raise RuntimeError(f"a template build runs on {kind} already; follow it: {where}, then run this again")
+            return f"building {repo} on {kind} in {where}; sbx-admin jobs shows its status"
         try:
             started = template_builds.start(repo, kind)
         except template_builds.NoRoom as error:

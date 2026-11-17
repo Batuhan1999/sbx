@@ -20,7 +20,8 @@ class Installation(unittest.TestCase):
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
              "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
-             "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials")
+             "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials", "users",
+             "user_links")
 
     @classmethod
     def setUpClass(cls):
@@ -47,7 +48,8 @@ class Installation(unittest.TestCase):
 
     def setUp(self):
         from unittest.mock import patch
-        from sbx_control import recipes, settings, state
+        from sbx_control import recipes, settings, state, users
+        users.forget()
         # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
         self.remote_head = recipes.remote_head
         self.enterContext(patch.object(recipes, "remote_head", return_value=None))

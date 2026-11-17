@@ -1,15 +1,13 @@
-"""How people sign in: the operator's OIDC provider, one shared password, or
-no login at all (a private network). The shared password admits the admins
-and allowed_emails, and whoever holds it can sign in as any of them: teams
-use OIDC. app.py reads this per request, so a change takes effect without a
-restart."""
+"""How people sign in: the operator's OIDC provider, each person's own
+password (users.py), or no login at all (a private network). app.py reads
+this per request, so a change takes effect without a restart."""
 from __future__ import annotations
 
 import json
 import secrets as pysecrets
 import urllib.request
 
-from .. import settings, vault
+from .. import settings, users, vault
 from .base import Check, Connection, Field, Refused, Status
 
 
@@ -19,9 +17,10 @@ def ready() -> bool:
     values or the password are there, or no sign-in is wanted."""
     s = settings.current().sign_in
     if s.method == "oidc":
-        return bool(s.oidc_issuer and s.oidc_client_id and vault.facts(vault.OIDC_CLIENT_SECRET).set)
+        return bool(s.oidc_issuer and s.oidc_client_id and vault.facts(vault.OIDC_CLIENT_SECRET).set
+                    and _someone_admitted(s.allowed_emails))
     if s.method == "password":
-        return vault.facts(vault.LOGIN_PASSWORD).set
+        return users.admin_has_password()
     return True
 
 
@@ -33,29 +32,27 @@ class SignIn(Connection):
     def status(self) -> Status:
         s = settings.current().sign_in
         oidc_secret = vault.facts(vault.OIDC_CLIENT_SECRET)
-        password = vault.facts(vault.LOGIN_PASSWORD)
         n = len(s.allowed_emails)
         listed = "anyone" if "*" in s.allowed_emails else f"{n} email pattern{'s' if n != 1 else ''}"
         if s.method == "oidc":
             ok = ready()
-            state = "connected" if ok and n else "attention"
-            summary = (f"OIDC · {_issuer_name(s.oidc_issuer)} · " + (listed if n else "nobody yet: name who may sign in")
+            state = "connected" if ok else "attention"
+            summary = (f"OIDC · {_issuer_name(s.oidc_issuer)} · " + (listed + " and the people added" if n else "the people added")
                        if ok else "OIDC · issuer, client id or secret missing")
         elif s.method == "password":
             state = "connected" if ready() else "attention"
-            summary = (f"one shared password · the admins{' and ' + listed if n else ''}"
-                       if password.set else "password · none set yet")
+            people = users.password_count()
+            summary = (f"passwords · {people} {'person has' if people == 1 else 'people have'} one"
+                       if people else "passwords · nobody has one yet")
         else:
             state, summary = "attention", "none · everyone who reaches this host is an admin"
         fields = (Field("method", "Method", value=s.method, help="oidc, password or none"),
                   Field("oidc_issuer", "OIDC issuer", value=s.oidc_issuer),
                   Field("oidc_client_id", "OIDC client id", value=s.oidc_client_id),
                   Field("oidc_client_secret", "OIDC client secret", secret=True, set=oidc_secret.set),
-                  Field("password", "Shared password", secret=True, set=password.set,
-                        help="leave empty to have one generated"),
                   Field("allowed_emails", "Who may sign in", value=", ".join(s.allowed_emails),
-                        help="patterns such as *@example.com, comma separated; * for anyone the provider admits. "
-                             "With the password: who may sign in besides the admins"))
+                        help="OIDC: patterns such as *@example.com, comma separated; * for anyone the provider "
+                             "admits. The people added under Settings → People may sign in too"))
         facts = {"method": s.method, "redirect_uri": f"{settings.current().base_url}/auth/callback"}
         return Status(self.kind, self.title, state, summary, facts, fields, ("connect", "test"))
 
@@ -78,10 +75,14 @@ class SignIn(Connection):
             has_secret = bool(v.get("oidc_client_secret")) or vault.facts(vault.OIDC_CLIENT_SECRET).set
             checks.append(Check("client id and secret", bool(v.get("oidc_client_id") or s.oidc_client_id) and has_secret,
                                 "set" if has_secret else "missing", f"register {settings.current().base_url}/auth/callback at the provider"))
+            someone = _someone_admitted(_emails(v.get("allowed_emails"), s.allowed_emails))
+            checks.append(Check("who may sign in", someone, "an admin, a person or an email pattern" if someone else "nobody",
+                                "name an admin, add a person, or give allowed_emails such as *@example.com"))
             return checks
         if method == "password":
-            has = bool(v.get("password")) or vault.facts(vault.LOGIN_PASSWORD).set
-            return [Check("password", has, "set" if has else "none yet", "one is generated on connect")]
+            has = users.admin_has_password()
+            return [Check("an admin with a password", has, "yes" if has else "no admin has one yet",
+                          "give an admin a password first: Settings → People, or sbx-admin user link EMAIL")]
         return [Check("open access", True, "no sign-in: everyone is an admin", "use oidc or password on a reachable host")]
 
     def connect(self, values: dict, *, by: str) -> Status:
@@ -97,34 +98,36 @@ class SignIn(Connection):
         if model.refusal():  # settings.update refuses it too; before any secret is stored
             raise Refused(model.refusal())
         new = model.model_dump()
-        generated = ""
-        if method == "password" and not values.get("password") and not vault.facts(vault.LOGIN_PASSWORD).set:
-            generated = pysecrets.token_urlsafe(18)
-        checks = self.test({**values, **new, **({"password": generated} if generated else {})})
+        checks = self.test({**values, **new})
         if not all(c.ok for c in checks):
             raise Refused("not connected: a check failed", checks)
         if values.get("oidc_client_secret"):
             vault.put(vault.OIDC_CLIENT_SECRET, values["oidc_client_secret"].strip(), by=by)
-        if values.get("password") or generated:
-            vault.put(vault.LOGIN_PASSWORD, values.get("password") or generated, by=by)
         settings.update("sign_in", new, by=by)
-        status = self.status()
-        if generated:  # shown once, to whoever connected
-            return Status(status.kind, status.title, status.state, status.summary,
-                          {**status.facts, "generated_password": generated}, status.fields, status.actions)
-        return status
+        return self.status()
 
 
-def use_password(password: str = "", *, by: str) -> Status:
-    """Password sign-in as a first install sets it, through install.sh
-    (`sbx-admin sign-in password`) or the setup wizard alike: one shared
-    password (given, kept, or generated and shown once in the status' facts)
-    that admits the admins and allowed_emails only. Refused while there is
+def use_password(*, by: str) -> dict:
+    """Password sign-in as a first install sets it (install.sh: `sbx-admin
+    sign-in password`): every admin without a password gets a generated one,
+    returned here ({email: password}) and shown once. Refused while there is
     no admin: nobody could sign in."""
-    if not settings.current().admins:
-        raise Refused("name an admin first (install.sh --admin EMAIL): password sign-in admits only "
-                      "the admins and allowed_emails")
-    return SignIn().connect({"method": "password", **({"password": password} if password else {})}, by=by)
+    admins = sorted(settings.current().admins)
+    if not admins:
+        raise Refused("name an admin first (install.sh --admin EMAIL)")
+    generated = {}
+    for email in admins:
+        found = users.get(email)
+        if not (found and found["password"]):
+            generated[email] = pysecrets.token_urlsafe(18)
+            users.set_password(email, generated[email], by=by)
+    settings.update("sign_in", {**settings.current().sign_in.model_dump(), "method": "password"}, by=by)
+    return generated
+
+
+def _someone_admitted(patterns) -> bool:
+    """Whether OIDC would let anyone in: an admin, a person added, or an email pattern."""
+    return bool(settings.current().admins or patterns or users.ls())
 
 
 def _emails(given, before) -> tuple:

@@ -3,10 +3,14 @@ import { Button } from './ui/button'
 import { Dialog } from './ui/dialog'
 import { ErrorState } from './states'
 
-export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger', note = 'This cannot be undone.' }: {
-  trigger: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'; note?: ReactNode
+/** Opens from trigger, or controlled with open and onOpenChange (from a menu item). */
+export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger', note = 'This cannot be undone.', open: controlled, onOpenChange }: {
+  trigger?: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'; note?: ReactNode
+  open?: boolean; onOpenChange?: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [own, setOwn] = useState(false)
+  const open = controlled ?? own
+  const setOpen = (o: boolean) => { setOwn(o); onOpenChange?.(o) }
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   return <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) setError(null) }} trigger={trigger} title={title} description={description}

@@ -82,7 +82,7 @@ describe('Updates page', () => {
     expect(screen.getByRole('button', { name: 'Update to v0.2.0' })).toHaveProperty('disabled', false)
     await userEvent.click(screen.getByRole('button', { name: 'Check now' }))
     expect(await screen.findByRole('button', { name: 'Update to v0.3.0' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('checkbox', { name: /read the breaking changes/ })).toHaveProperty('checked', false)
+    expect(screen.getByRole('checkbox', { name: /read the breaking changes/ }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('says why an upgrade failed, and how to go back while the new release runs', async () => {

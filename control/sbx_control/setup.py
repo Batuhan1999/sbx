@@ -10,7 +10,7 @@ import pathlib
 import secrets
 import sqlite3
 
-from . import paths, runtime, settings, vault
+from . import paths, runtime, settings, users, vault
 from .state import Setting
 
 COMPLETE = Setting("setup_complete")
@@ -55,14 +55,14 @@ def mark_complete(by: str):
 def reset(sign_in: bool = False, by: str = "sbx-admin"):
     """Back to 'being set up': the gate closes, a new link opens the wizard.
     The domain, its certificate and the connections stay; with sign_in the
-    sign-in (back to a password, none set, nobody else listed) and the admins
+    sign-in (back to passwords, nobody listed), the people and the admins
     are cleared too, so the wizard names the admin again."""
     COMPLETE.delete()
     if sign_in:
         s = settings.current()
         settings.update("sign_in", {"method": "password"}, by=by)
         settings.update("access", {**s.access.model_dump(), "admins": []}, by=by)
-        vault.delete(vault.LOGIN_PASSWORD, by=by)
+        users.clear(by=by)
         vault.delete(vault.OIDC_CLIENT_SECRET, by=by)
     return mint_token()
 

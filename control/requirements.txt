@@ -8,6 +8,7 @@ itsdangerous>=2.2
 e2b>=2.63
 pyyaml>=6
 cryptography>=42
+pwdlib[argon2]>=0.4  # people's password hashes (users.py)
 pyjwt>=2.8
 boto3>=1.35
 websockets>=15

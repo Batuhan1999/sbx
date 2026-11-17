@@ -651,6 +651,11 @@ class SetupWithoutABrowser(Server):
         wrong = fresh.post("/api/setup/complete", headers=self.headers,
                            json={"email": "operator@example.com", "password": "not-the-password"})
         self.assertEqual(wrong.status_code, 403)
+        from sbx_control import users
+        users.set_password("dev@example.com", "test-only-password-456", by="test")   # a person, not an admin
+        not_admin = fresh.post("/api/setup/complete", headers=self.headers,
+                               json={"email": "dev@example.com", "password": "test-only-password-456"})
+        self.assertEqual(not_admin.status_code, 403)
         self.assertEqual(fresh.post("/api/setup/complete", headers=self.headers).status_code, 400)   # nobody signed in
         done = fresh.post("/api/setup/complete", headers=self.headers,
                           json={"email": "Operator@example.com", "password": "test-only-password-123"})
@@ -705,3 +710,25 @@ class InstallerWithoutARuntime(Installation):
                     self.assertIn(expected, result.stdout + result.stderr)
         # The none path writes runtime.env only where there is none.
         self.assertIn('if [ -n "$none" ] && [ -z "$has_env" ]; then', text)
+
+
+class DoctorWithSealedKeys(Installation):
+    """sbx-admin doctor reads a runtime's key as its backend does: a reference into the store, unsealed."""
+    RUNTIME_ENV = "SBX_RUNTIMES=e2b-cloud\nE2B_CLOUD_API_KEY=placeholder\n"
+
+    def test_a_sealed_key_reads_as_set(self):
+        from sbx_control import admin, connections, runtime, secret_store
+        from sbx_control.runtime.e2b_cloud import Cloud
+        reference = secret_store.seal("e2b_test_only_key", key="runtime/E2B_CLOUD_API_KEY/test")
+        (self.root / "etc/runtime.env").write_text(f"SBX_RUNTIMES=e2b-cloud\nE2B_CLOUD_API_KEY={reference}\n")
+        self.enterContext(patch.dict(runtime._backends, clear=True))   # a fresh process: nothing configured yet
+        self.enterContext(patch.object(Cloud, "sandboxes", return_value=[]))
+        self.enterContext(patch.object(connections, "status_all",
+                                       side_effect=lambda: [connections.get("runtime").status()]))
+        self.enterContext(patch.object(connections.get("runtime"), "test", return_value=[]))
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.do_doctor(), 0, out.getvalue())
+        self.assertIn("connected · E2B Cloud · 0 running here", out.getvalue())
+        self.assertNotIn("no E2B_CLOUD_API_KEY", out.getvalue())
+        self.assertNotIn("e2b_test_only_key", out.getvalue())

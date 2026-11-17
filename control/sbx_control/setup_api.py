@@ -2,14 +2,13 @@
 is complete the one-time token (`Authorization: Setup <token>`, from the
 link install.sh printed) stands in for an admin here and on
 /api/connections; afterwards admins only, as everywhere."""
-import re
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, SecretStr
 
-from . import auth, settings, setup
+from . import auth, settings, setup, users
 from .connections import sign_in
 
 router = APIRouter()
@@ -104,22 +103,21 @@ def api_setup_admin(body: Admin, request: Request, who: str = Depends(setup_or_a
             raise HTTPException(409, "Admin access is already configured. Sign in to finish setup.")
         if not setup.address_ready():
             raise HTTPException(400, "Finish choosing the server address first.")
-        email = body.email.strip().lower()
-        password = body.password.get_secret_value()
-        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-            raise HTTPException(400, "Enter a valid email address.")
-        if len(password) < 8 or len(password) > 1024:
-            raise HTTPException(400, "Use a password between 8 and 1024 characters.")
+        try:
+            email = users.valid_email(body.email)
+            generation = users.set_password(email, body.password.get_secret_value(), by=f"setup ({email})")
+        except users.Refused as error:
+            raise HTTPException(400, str(error))
         admins = list(dict.fromkeys([*(a.lower() for a in s.access.admins), email]))
         settings.update("access", {**s.access.model_dump(), "admins": admins}, by=f"setup ({email})")
-        sign_in.use_password(password, by=f"setup ({email})")
-        request.session.clear()
-        request.session.update(email=email, name=email)
+        settings.update("sign_in", {**s.sign_in.model_dump(), "method": "password"}, by=f"setup ({email})")
+        auth.start_session(request, email, generation)
         return setup.state(email, request.url.hostname or "")
 
 
 class Finish(BaseModel):
-    """An admin's sign-in, for a client without a browser session (sbx setup finish --admin)."""
+    """An admin's sign-in with their own password, for a client without a
+    browser session (sbx setup finish --admin)."""
     email: str
     password: SecretStr
 
@@ -129,7 +127,8 @@ def api_setup_complete(request: Request, body: Finish | None = None, who: str = 
     email = _email(request, who)
     if not email and body is not None:
         given = body.email.strip().lower()
-        if not (auth.password_admits(given, body.password.get_secret_value()) and given in settings.current().admins):
+        checked = users.check_password(given, body.password.get_secret_value())   # the admin's own password
+        if checked is None or settings.current().sign_in.method != "password" or given not in settings.current().admins:
             raise HTTPException(403, "The email or password is incorrect.")
         email = given
     s = setup.state(email, request.url.hostname or "")

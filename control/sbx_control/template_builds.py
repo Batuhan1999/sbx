@@ -467,21 +467,25 @@ def start(key: str, kind: str | None = None) -> bool:
     return True
 
 
-def start_detached(kind: str, keys=None) -> tuple[str, bool]:
+def start_detached(kind: str, keys=None, *, if_stale: bool = True) -> tuple[str, bool]:
     """Build keys (default: the base, then the default template) on the
     runtime of kind in a process of their own, as `python -m
     sbx_control.template_builds KEY --runtime KIND --if-stale` one after
-    the other, so a short-lived command (sbx-admin runtime add) can start
-    them and return: a transient systemd unit (one per runtime: while it
-    runs, another is not started), or a detached process on a host without
-    systemd. Returns (where to follow them, whether this call started them);
+    the other, so a short-lived command (sbx-admin runtime add, sbx-admin
+    jobs run) can start them and return: a transient systemd unit (one per
+    runtime: while it runs, another is not started), or a detached process
+    on a host without systemd. A key may be the command's arguments as a
+    list (["key", "owner/app"]); if_stale False builds even a current one.
+    Returns (where to follow them, whether this call started them);
     RuntimeError when systemd refused the unit."""
     import shlex
     import subprocess
     from . import paths
     keys = keys or ["base", "default"]
-    steps = " && ".join(f"{shlex.quote(sys.executable)} -m sbx_control.template_builds {shlex.quote(key)} "
-                        f"--runtime {shlex.quote(kind)} --if-stale" for key in keys)
+    stale = " --if-stale" if if_stale else ""
+    steps = " && ".join(f"{shlex.quote(sys.executable)} -m sbx_control.template_builds "
+                        f"{shlex.join(key if isinstance(key, (list, tuple)) else [key])} "
+                        f"--runtime {shlex.quote(kind)}{stale}" for key in keys)
     cwd = os.getcwd()
     unit = f"sbx-template-builds-{templates.slug(kind)}"
     where = f"{unit}.service (journalctl -u {unit})"
@@ -810,9 +814,11 @@ def main(argv=None) -> int:
     from . import platform
     from .state import migrate
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("which", choices=["base", "default", "app", "summary"],
-                        help="summary: what an upgrade rebuilds, in one line")
-    parser.add_argument("repo", nargs="?", help="app: owner/repo; default: a repo whose size to build it at")
+    parser.add_argument("which", choices=["base", "default", "app", "key", "summary"],
+                        help="summary: what an upgrade rebuilds, in one line; key: the template of that key "
+                             "(sbx-base, default:<size>, owner/repo), as sbx-admin jobs run names it")
+    parser.add_argument("repo", nargs="?", help="app: owner/repo; default: a repo whose size to build it at; "
+                                                "key: the key")
     parser.add_argument("--if-stale", action="store_true", help="only when the built template is not the one planned now")
     parser.add_argument("--runtime", help="the runtime to build on (default: the installation's default)")
     args = parser.parse_args(argv)
@@ -829,6 +835,8 @@ def main(argv=None) -> int:
         return 0
     key = {"base": templates.BASE, "default": default_for((args.repo or "").lower() or None)}.get(args.which) \
         or (args.repo or "").lower()
+    if args.which == "key" and not (key == templates.BASE or templates.is_default(key) or settings.trust(key)):
+        raise SystemExit(f"{key} is no template key here: sbx-base, default:<size> or a repo this installation serves")
     if args.which == "app" and not settings.trust(key):
         raise SystemExit(f"app needs one of the repos this installation serves: {', '.join(settings.current().repos)}")
     kind = args.runtime

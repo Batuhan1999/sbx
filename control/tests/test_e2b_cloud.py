@@ -515,3 +515,40 @@ class VerifyBeforeTheBaseIsBuilt(TwoRuntimes, Installation):
         self.assertIn(f"sbx-admin jobs run template@fake:{templates.BASE}", self.verify())
         template_builds._transition(templates.BASE, "building", "fake", pid=None, error="out of disk")   # cut off: failed
         self.assertIn("the base template's build failed on Fake runtime: out of disk", self.verify())
+
+
+class JobsRunDetached(TwoRuntimes, Installation):
+    """sbx-admin jobs run template@KIND:KEY starts the build in a process of its own: the command returns at
+    once, and the build goes on without it (it would end with an in-process thread, leaving a building row)."""
+
+    def jobs_run(self, job):
+        from sbx_control import admin
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            code = admin.main(["jobs", "run", job])
+        return code, out.getvalue()
+
+    def test_the_build_runs_detached_and_says_where_to_follow_it(self):
+        from sbx_control import template_builds, templates
+        unit = "sbx-template-builds-fake.service (journalctl -u sbx-template-builds-fake)"
+        with patch.object(template_builds, "start_detached", return_value=(unit, True)) as detached, \
+                patch.object(template_builds, "start") as in_process, \
+                patch.object(template_builds, "base_not_ready", return_value=""):
+            code, said = self.jobs_run(f"template@fake:{templates.BASE}")
+            self.assertEqual(code, 0, said)
+            detached.assert_called_once_with("fake", [["key", templates.BASE]], if_stale=False)
+            in_process.assert_not_called()
+            self.assertIn(f"building {templates.BASE} on fake in {unit}", said)
+            detached.return_value = (unit, False)   # one runs there already: say so, non-zero
+            code, said = self.jobs_run(f"template@fake:{templates.BASE}")
+            self.assertEqual(code, 1)
+            self.assertIn(f"a template build runs on fake already; follow it: {unit}", said)
+
+    def test_the_detached_command_builds_that_key_even_when_current(self):
+        import subprocess
+        from sbx_control import template_builds
+        done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
+        with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run:
+            template_builds.start_detached("fake", [["key", "owner/app"]], if_stale=False)
+        self.assertIn("-m sbx_control.template_builds key owner/app --runtime fake", run.call_args.args[0][-1])
+        self.assertNotIn("--if-stale", run.call_args.args[0][-1])

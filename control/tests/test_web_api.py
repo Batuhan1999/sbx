@@ -127,21 +127,14 @@ class WebApiTests(Server):
         refused = self.client.post("/api/connections/github/manifest", json={"return_to": "https://elsewhere.example"})
         self.assertEqual(refused.status_code, 400)
 
-    def test_the_page_lets_in_only_its_own_inline_style(self):
-        import re
+    def test_the_page_runs_only_its_own_scripts(self):
         from sbx_control import spa
         page = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (page / "index.html").write_text("<!doctype html><html><head><title>sbx</title></head><body></body></html>")
         self.enterContext(patch.object(spa, "DIST", page))
-        nonces = []
-        for _ in range(2):
-            response = self.client.get("/app/sandboxes")
-            policy = response.headers["content-security-policy"]
-            nonce = re.search(r"style-src 'self' 'nonce-([A-Za-z0-9_-]+)';", policy)[1]
-            self.assertIn(f'<meta name="csp-nonce" content="{nonce}" />', response.text)
-            self.assertIn("script-src 'self';", policy)
-            nonces.append(nonce)
-        self.assertNotEqual(*nonces)
+        policy = self.client.get("/app/sandboxes").headers["content-security-policy"]
+        self.assertIn("script-src 'self';", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
 
     def test_the_setup_link_and_the_root_land_in_the_app(self):
         for path, target in (("/", "/app/repos"), ("/setup", "/app/setup")):
