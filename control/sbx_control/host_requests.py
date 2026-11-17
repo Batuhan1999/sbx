@@ -87,13 +87,18 @@ def applying(key: str) -> bool:
     return False
 
 
-def stuck(key: str) -> bool:
-    """The single pick-up rule: asked PICKUP_SECONDS ago, and nothing took it."""
+def overdue(key: str) -> bool:
+    """The request there now was asked PICKUP_SECONDS ago (held lock(key): nothing is taking it)."""
     try:
         age = time.time() - request_file(key).stat().st_mtime
     except OSError:
         return False
-    return age > PICKUP_SECONDS and not applying(key)
+    return age > PICKUP_SECONDS
+
+
+def stuck(key: str) -> bool:
+    """The single pick-up rule: asked PICKUP_SECONDS ago, and nothing took it."""
+    return overdue(key) and not applying(key)
 
 
 def take(key: str) -> str | None:

@@ -56,9 +56,12 @@ def _view(state: str, record: dict, restarting: bool = False) -> dict:
 
 def _give_up() -> None:
     """A request the root side never took (host_requests.stuck): it goes, with
-    the store references it carried, and the change failed."""
+    the store references it carried, and the change failed. Checked again
+    under the lock: one queued since the first look is not this one."""
     try:
         with host_requests.lock(KEY, blocking=False):
+            if not host_requests.overdue(KEY):
+                return
             payload = host_requests.take(KEY)
             if payload is None:
                 return

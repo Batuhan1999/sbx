@@ -359,6 +359,13 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.store, {})
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)   # unblocked
 
+    def test_a_request_queued_after_the_stuck_look_is_kept(self):
+        from sbx_control import host_requests
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        with patch.object(host_requests, "stuck", return_value=True):   # the old one, seen before this was queued
+            self.assertEqual(self.call("GET", "/api/runtimes/change").json()["state"], "queued")
+        self.assertTrue(self.request_file.exists())
+
     def test_the_cli_takes_the_same_lock(self):
         from sbx_control import admin, host_requests
         taken = []
