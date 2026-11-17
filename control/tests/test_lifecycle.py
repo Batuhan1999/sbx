@@ -822,11 +822,12 @@ class LifecycleTests(Installation):
             recipe = self.recipes.App("owner/repo", recipe_dir, {"workdir": str(root)})
             def run(_sandbox, command, **kwargs):
                 return subprocess.run(["bash", "-ec", command], check=True, capture_output=True, text=True)
-            with patch.object(self.core, "SETUP_LOCK", str(root / "setup.lock")), \
+            from sbx_control import sandbox_runtime
+            with patch.object(sandbox_runtime, "SETUP_LOCK", str(root / "setup.lock")), \
                     patch.object(self.core, "run_in", side_effect=run):
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     first = pool.submit(self.core.app_script, Mock(), "setup", recipe, operation=Mock())
-                    deadline = time.monotonic() + 30   # a hang, not a slow CI runner
+                    deadline = time.monotonic() + 5
                     while not (root / "started").exists():
                         self.assertLess(time.monotonic(), deadline)
                         time.sleep(.01)
