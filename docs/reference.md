@@ -496,7 +496,7 @@ listener or firewall rule.
 A runtime is where sandboxes run: E2B Embed on this server, or a provider's
 service. An installation runs the runtimes it enables, and each sandbox runs
 on exactly one of them, chosen when it is created and kept until it is
-deleted. Two are built in, `embed` and `e2b-cloud` (below); other runtimes
+deleted. Three are built in, `embed`, `e2b-cloud` and `boat` (below); other runtimes
 are installed as packages ([runtime backends](extensions.md#runtime-backends)).
 
 A fresh install enables Embed where the server can run it (`/dev/kvm`,
@@ -613,6 +613,68 @@ repository that uses one without an endpoint is refused on it, naming the
 command that adds it. It applies `deny_out`
 (`egress_rules`), so untrusted repos can run there, and takes filesystem
 snapshots.
+
+### Boat (`boat`)
+
+[Boat](https://docs.boat.dev)'s hosted Ubuntu 24.04 sandboxes, through
+Boat's Python SDK (`boat-sdk`). Like E2B Cloud, nothing of them runs here,
+and they need a domain reachable from the internet.
+
+| Key in `runtime.env` | Meaning |
+| --- | --- |
+| `BOAT_API_KEY` | An API key from Boat's dashboard (`boat_...`, a secret). Required. |
+| `BOAT_API_URL` | Boat's API; default `https://boat.dev/api/v1`. Changing it needs the key typed again. |
+| `BOAT_ORG` | Bill an organization's wallet instead of yours (its id or name). |
+| `BOAT_MAX_TIMEOUT` | Seconds a sandbox runs before Boat stops it; default 30 days. The keeper renews it while the sandbox is used. |
+| `BOAT_MAX_CPU`, `BOAT_MAX_MEMORY_MB`, `BOAT_MAX_DISK_MB` | Per sandbox; default 8 vCPUs, 16384 MiB, 113664 MiB (the $20 plan's `large`). |
+| `BOAT_MAX_SANDBOXES` | Running at once; default 100 ($20 plan). |
+
+The web app offers Boat's paid plans as presets, from Boat's
+[pricing](https://docs.boat.dev/pricing.md), [limits](https://docs.boat.dev/limits.md)
+and [machines](https://docs.boat.dev/machines.md) as read on 2026-11-17:
+$20 (up to `large`: 8 vCPUs, 16 GB, 111 GB; 100 at once), $100 (`xlarge`:
+16 vCPUs, 32 GB, 251 GB; 300), $500 (1,000) and $2000 (2,000), each with
+30-day auto-stop. Not the free trial: it can't save snapshots, which sbx's
+templates are, so the $20 plan is the least sbx runs on. A sandbox gets the
+smallest machine its size fits: `small` (2 vCPUs, 4 GB, 51 GB), `default`
+(4, 8, 51), `large` (8, 16, 111) or `xlarge` (16, 32, 251). Boat's refusals
+(sandboxes at once, starts per minute, a size the plan lacks, billing, the
+trial) are said with what to change and shown on the runtime's row; its
+"out of capacity" asks to try again. The status warns while the account is
+on the trial and when the API key expires within 14 days.
+
+How sbx runs on it:
+
+- **Templates are saved snapshots.** A build replays the template's steps
+  in a builder sandbox (from the parent template's saved snapshot, or Boat's
+  own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused), saves it
+  under the template's name and deletes the builder. A Dockerfile's `RUN`,
+  `ENV`, `WORKDIR`, `USER` and `ARG` replay; `COPY` and `ADD` are refused
+  (fetch the file in a `RUN`). The start command becomes an enabled systemd
+  unit, which Boat starts again on every resume.
+- **Pause is Boat's stop, and every resume a cold boot.** Boat keeps the
+  disk, not the memory: on resume sbx puts back what lives in `/run/sbx`
+  (env, keys, the guest helper, endpoint certificates) and restarts the
+  recipe's processes, whatever `lifecycle.resume` says. A sandbox stopped
+  for more than 14 days may have lost its disk (Boat's retention); its
+  template starts a new one.
+- **Previews** go to `https://<subdomain>-<port>.on.boat.dev`. Each port
+  answers only with its own token: the first request for a port exposes it
+  (private, never public; through Boat's relay when the app listens on
+  loopback only), sbx keeps the token until the sandbox stops, and nginx
+  appends it to the request's cookies as `_port_auth`, after the app's own,
+  for Boat's sandboxes only (a browser's own `_port_auth` is dropped). Boat
+  reserves ports 22, 6080, 8090, 8911 and 47984-48010: never previews.
+- **The desktop** is Boat's own: the `-desktop` preview opens a fresh
+  Boat desktop URL (valid 10 minutes to open). sbx starts no noVNC there.
+- Sandboxes are created with none of the Boat account's secrets (`noEnv`)
+  and labelled with the installation (`sbx_install`) and their template
+  (`sbx_template`); sbx lists by label, so installations sharing a key keep
+  to their own. Boat keeps at most 20 labels and 100 env variables (64 KB)
+  per sandbox.
+- No per-sandbox egress rules (`egress_rules` false): untrusted public repos
+  are refused while Boat is enabled. No route to this host's network
+  (`private_networks` false): managed servers through [endpoints](#endpoints).
 
 ### Enabling runtimes
 
@@ -859,11 +921,39 @@ Keep the range clear of other listeners; shrinking it cannot drop assigned URLs.
 
 In both modes the gateway checks the sign-in and the preview's `access`, keeps
 HTTP streaming and WebSockets, and strips sbx's login cookie and API token
-before proxying. A host that names no sandbox, a deleted one or a port it does
-not expose answers 404; an owner-only preview answers 403 to anyone else. It does not rewrite the app: use `${SBX_URL_*}` for origins and
+before proxying. It does not rewrite the app: use `${SBX_URL_*}` for origins and
 callbacks. Browser cookies are per host, not per port, so on an IP-only server
 give the app a cookie prefix with `${SBX_NAME}` to keep simultaneous sandboxes'
 logins apart; `sbx_session` is reserved.
+
+### When the app can't answer
+
+A preview link always shows a page, never a bare error. Signed out, every
+preview host goes to the login (also for names that don't exist), then back
+to the link. Signed in, whatever keeps the app from answering is one small
+page, light or dark as the browser prefers:
+
+| State | Page | Status for non-HTML |
+| --- | --- | --- |
+| Being created, setting up, restarting, the app starting | "Starting memos-a…" and the step (Creating the sandbox, Running setup, Starting the app) | 503, `Retry-After: 2` |
+| Paused or stopped | "Starting memos-a…", Waking up: the first request starts the resume | 503, `Retry-After: 2` |
+| Nothing listens on the port | "Nothing is listening on port N in memos-a" | 503, `Retry-After: 2` |
+| The app's processes exited | "memos-a's app stopped", Restart for its owner | 502 |
+| The sandbox failed | "memos-a failed", what happened and Restart or delete | 502 |
+| Deleted | "memos-a was deleted" | 404 |
+| No such name | "No sandbox named memos-x" | 404 |
+| Someone else's owner-only preview | "You don't have access" | 403 |
+
+A waiting page polls `/.sbx/status` on the preview host (sbx's state, not
+the app), backing off to every 5 seconds with no time cap. Once the app's
+port answers it says Ready and replaces itself with the exact URL asked for
+(path, query and hash; Back does not return to it). A request that waits
+for a resume waits up to 2.5 seconds, then gets the page: nginx never hangs
+on it. An upstream 502 or 504 (the app not listening yet) is the page too;
+the app's own 401, 403 and other errors reach the browser as they are. A
+non-HTML request (XHR, websocket, API client) gets the status and a JSON
+body (`{"error": "<state>", ...}`), never the page. `/.sbx/status` is the
+one path sbx reserves on preview hosts.
 
 Declared preview URLs survive restart and pause and are released on delete.
 Ports the platform detects without a declaration are reclaimed after five

@@ -142,8 +142,34 @@ servers and internal hosts through endpoints (`endpoints.py`;
    /api/endpoints/NAME` (admins), `POST /api/sandbox/endpoint-certs` (a
    sandbox); `sbx endpoints [ls | add | rm | grant | revoke]`.
 
+## Phase 5: Boat, and a page for every preview
+
+1. **Boat is a third built-in backend** (`runtime/boat/`, kind `boat`) over
+   Boat's official SDK, which nothing else imports. Templates are saved
+   snapshots built by replaying the `TemplateSpec` in a builder sandbox;
+   pause is Boat's stop; sandboxes carry labels for the installation and the
+   template. Capabilities: snapshots, no private networks, no egress rules
+   (untrusted public repos are refused while it is enabled).
+2. **What differs is a property, not core special-casing.** A preview token
+   per port in a cookie (`upstream_token_cookie`,
+   `upstream_token(sandbox_id, port)`; E2B Cloud ignores the port), the
+   provider's own desktop (`desktop = "provider"`, `desktop_url`; sbx's noVNC
+   only where `desktop` is `"sbx"`), and a cold boot on every resume
+   (`cold_resume`: sbx re-ships `/run/sbx` and restarts the processes).
+3. **Previews never end in a bare error.** On every runtime, signed out is
+   the login for any host; signed in, every state the app can't answer in
+   (starting, waking, its step, the app stopped, failed, deleted, no such
+   name, no access, nothing on the port) is one page, polling sbx's state
+   with no time cap and handing over to the exact URL once the app's port
+   answers. nginx sends the gate's refusals and an upstream's 502 or 504 to
+   it; non-HTML requests get the status with `Retry-After`. The gate starts a
+   resume and answers within 2.5 seconds instead of holding nginx.
+4. **Tested against a fake Boat API behind the real SDK**; a live run with a
+   Boat account ($20 plan or more: the trial saves no snapshots) is still to
+   do.
+
 ## Out of phase 1
 
 The E2B Cloud backend (phase 2), adding runtimes from the web app and their
 settings forms (phase 3), shared services over TLS subdomains (phase 4), the
-boat.dev backend (phase 5).
+boat.dev backend (phase 5, above).

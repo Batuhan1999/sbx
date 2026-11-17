@@ -149,12 +149,13 @@ The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
 runs commands and writes files in them, builds their templates, and is the
 last hop of a preview. Like the secret store, it is an installation's choice,
 not an extension. An installation enables one or more runtimes, and each
-sandbox runs on exactly one of them, chosen when it is created. Two are
-built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
+sandbox runs on exactly one of them, chosen when it is created. Three are
+built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
 
 - `control/sbx_control/runtime/base.py` is the interface: the `Runtime` and
   `Handle` protocols, plain results (`Info`, whose `state` is `running` or
-  `paused` and whose `runtime` is its runtime's kind), the errors (`Failed`,
+  `paused`, or `failed` where the runtime has it, and whose `runtime` is its
+  runtime's kind), the errors (`Failed`,
   `CommandFailed`, `Timeout`, `Busy`, `NoRoom`, `NotRunning`), `Capabilities`,
   `Limits` and `TemplateSpec`. The contract has two parts: every backend
   implements the compute part, and `HostSide` gives the host part (units,
@@ -184,7 +185,17 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   each backend only its own `credential_keys`.
   `test_runtime.py` fails if any module outside `runtime/e2b/`,
   `runtime/embed/` and `runtime/e2b_cloud/` imports `e2b`, or any module
-  outside `runtime/` imports a backend package.
+  outside `runtime/` imports a backend package (so only `runtime/boat/`
+  imports `boat_sdk`).
+- Properties a backend declares instead of the core knowing it by name:
+  where its sandboxes' preview token goes (`upstream_token_header`, a header,
+  or `upstream_token_cookie`, a cookie appended to the app's own;
+  `upstream_token(sandbox_id, port)`, per port where the provider has one
+  per port), which desktop its sandboxes have (`desktop`: `"sbx"`, sbx's
+  noVNC that `platform.start` runs, or `"provider"`, its own, opened through
+  `desktop_url`), and whether every resume is a cold boot (`cold_resume`:
+  `core.restore_runtime` then re-ships `/run/sbx` and restarts the app).
+  `HostSide` holds their defaults.
 - `control/sbx_control/runtime/e2b/` is the E2B SDK adapter the E2B-based
   backends share: `Compute`, the compute part of the contract over the SDK
   (create, connect, list, pause, snapshots, template builds and listings),
@@ -201,6 +212,18 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   them, an https `ingress` under the sandboxes' wildcard, and the traffic
   token (`upstream_token_header`, `upstream_token`): kept from create and
   connect, fetched once with connect after a restart.
+- `control/sbx_control/runtime/boat/` is Boat, over `boat-sdk`: `Boat` with
+  `HostSide`'s no-op host part, its keys (`BOAT_*`), plans and limits,
+  commands through Boat's API (env, user and workdir as a shell prefix; long
+  ones detached and polled), files (base64; signed URLs past 5 MiB; outside
+  `/home/user` and `/tmp` staged and moved), templates as saved snapshots
+  (`build_template` replays a `TemplateSpec` in a builder sandbox;
+  `dockerfile_steps` reads a Dockerfile's `RUN`, `ENV`, `WORKDIR`, `USER`,
+  `ARG`), pause as Boat's stop, a port exposed on its first preview request
+  (`upstream_token`), Boat's desktop, and its errors as sbx's (`call`,
+  `refused`). `tests/fake_boat.py` is a fake Boat API that stands in for the
+  SDK's HTTP client, so `test_boat.py` runs the real SDK's requests and
+  models.
 - `control/sbx_control/runtime/fake/` is an in-memory backend for the test
   suite: `test_runtimes.py` runs an installation with Embed (mocked) and it
   side by side, and `sbx-admin runtime verify` passes against it.
@@ -228,6 +251,18 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   The forwarder itself is `sbx_guest.py forward`, standard library only.
   `test_endpoints.py` covers them, the forwarder against local TLS servers
   that each verify their own endpoint's CA.
+- `control/sbx_control/gate.py` and `preview_pages.py`: the gate decides
+  for every preview request (`_decide`: let through, login, a page or
+  nothing), resumes a paused sandbox without blocking nginx (`wake`), and
+  serves the page (`/gate/page`) and its poll (`/gate/status`, the preview
+  host's `/.sbx/status`) for every state a sandbox's app can't answer in.
+  nginx (`tls.sh`, `ip_previews.nginx`) passes the gate in `location /`,
+  proxies from `@sandbox` (reached by `try_files`, after `auth_request`) so
+  an upstream's 502 or 504 becomes the page while the app's own errors pass,
+  and sends refusals to `@denied`. `test_preview_pages.py` covers each state.
+  To try nginx itself, render `default.conf`, `gate.inc` and
+  `gate-page.inc` from `tls.sh`'s heredocs and run them in `nginx:1.29-alpine`
+  against a stand-in gate and ingress.
 - `control/sbx_control/runtime_changes.py` queues a change from the web app
   for the root side (`/run/sbx/apply/runtime-change`, a secret only as a
   store reference), applies it as root (`sbx-admin runtime apply-pending`,
