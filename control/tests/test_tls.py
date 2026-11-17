@@ -80,12 +80,13 @@ import shlex
 if sys.argv[1:2] == ['-c'] and 'host.CURRENT' in sys.argv[2]:
     print(os.getcwd())
     raise SystemExit(0)
-if sys.argv[1:3] == ['-m', 'sbx_control.endpoints']:
-    from sbx_control import endpoints
-    if sys.argv[3] == 'nginx':   # the records' part needs sbx.db: the stream front alone here
-        (Path(sys.argv[4]) / endpoints.STREAM_FILE).write_text(endpoints.stream_config([], ''))
-    else:
-        sys.stdout.write(endpoints.MAIN_CONF if sys.argv[3] == 'main-conf' else endpoints.HTTPS_BACKEND + ' ssl proxy_protocol')
+if sys.argv[1:3] == ['-m', 'sbx_control.endpoints']:   # the records' part needs sbx.db: the stream front alone here
+    from sbx_control.endpoints import nginx
+    (Path(sys.argv[4]) / nginx.STREAM_FILE).write_text(nginx.stream_config([], ''))
+    raise SystemExit(0)
+if sys.argv[1:3] == ['-m', 'sbx_control.tls_front']:
+    from sbx_control import tls_front
+    sys.stdout.write(tls_front.MAIN_CONF if sys.argv[3] == 'main-conf' else tls_front.HTTPS_LISTEN)
     raise SystemExit(0)
 if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     from sbx_control.ip_previews import nginx

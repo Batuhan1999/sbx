@@ -132,10 +132,7 @@ def attached_to(repo: str) -> list[str]:
 def target(name: str) -> str | None:
     """The managed server's address and port on its private network (what an
     endpoint routes to), or None for no managed server of that name."""
-    try:
-        found = _record(name)
-    except sqlite3.OperationalError:
-        return None
+    found = _record(name)
     if not found or not found[1].get("address"):
         return None
     return f"{found[1]['address']}:{DRIVERS[found[0].kind]['port']}"
@@ -243,9 +240,8 @@ def up(name, kind, *, data_root=None, storage_gb=None):
     if settings.current().access.public_repos:
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
-    from . import runtime
-    if not any(runtime.capabilities(kind).private_networks for kind in runtime.enabled()) \
-            and not settings.current().domain.name:
+    from . import reach, runtime
+    if not reach.private_reachable():
         titles = ", ".join(runtime.title(kind) for kind in runtime.enabled())
         raise ValueError(f"sandboxes on {titles} can't reach this host's private network, so a managed "
                          "server here would be out of their reach until it has an endpoint, which needs a domain: "

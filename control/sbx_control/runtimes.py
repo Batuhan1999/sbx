@@ -130,14 +130,8 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
     title = runtime.title(kind)
     if repo and not runtime.capabilities(kind).private_networks:
         from . import endpoints
-        lacking = endpoints.missing(repo)
-        if lacking:
-            first = "" if endpoints.domain() else " (endpoints need a domain: connect one first)"
-            raise Refused(f"{title} ({kind}) can't run {repo}'s sandboxes yet: they reach this host's private "
-                          f"network (private_networks) only through endpoints, and "
-                          f"{', '.join(what for what, _ in lacking)} {'has' if len(lacking) == 1 else 'have'} "
-                          f"none; an admin adds {'it' if len(lacking) == 1 else 'them'}: "
-                          f"{'; '.join(command for _, command in lacking)}{first}, or choose another runtime")
+        if why := endpoints.refusal(repo, f"{title} ({kind})"):
+            raise Refused(why)
     if size and (why := runtime.beyond_limits(size, kind)):
         raise Refused(f"{title} ({kind}) can't run it: {why}")
     if repo:

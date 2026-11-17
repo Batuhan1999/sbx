@@ -237,20 +237,26 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   `/api/runtimes/available`, adding, changing and removing one (`add`,
   `remove`, `set_default`; `prepare` checks a change from the web app
   without writing), and `sbx-admin runtime verify [KIND]`.
-- `control/sbx_control/endpoints.py` gives sandboxes on runtimes without
-  `private_networks` this host's private services: the endpoint records and
-  `/api/endpoints` (`endpoints_api.py`), who may use each (`permitted`: a
-  managed server's attached repos, an internal host's grants), a CA per
-  endpoint and the sandboxes' 24-hour client certificates (written with the
-  runtime, pushed on resume, pulled by the forwarder through
-  `/api/sandbox/endpoint-certs`), nginx's stream servers and their root-side
-  apply (`sbx-apply endpoints`), `Routes` (a sandbox's values with the
-  targets of the endpoints it may use replaced by the forwarder's loopback
-  address; `core` applies it to the services' outputs and the env, and
-  writes the forwarder's files with the runtime), and the gate (`missing`).
-  The forwarder itself is `sbx_guest.py forward`, standard library only.
+- `control/sbx_control/endpoints/` gives sandboxes on runtimes without
+  `private_networks` this host's private services: `model` (the records,
+  grants and an admin's changes; `/api/endpoints` is `endpoints_api.py`),
+  `access` (what a repo needs and may not use: the gate's `refusal`, the
+  recipe env's `advice`), `certs` (a CA per endpoint, the sandboxes'
+  24-hour client certificates, the forwarder's credential), `sandbox`
+  (`Routes`: a sandbox's values with the targets of the endpoints it may
+  use replaced by the forwarder's loopback address; the forwarder's config
+  and certificates), `nginx` (the stream servers and their root-side apply,
+  `sbx-apply endpoints`) and `status` (what the API and doctor say). The
+  forwarder itself is `sbx_guest.py forward`, standard library only.
   `test_endpoints.py` covers them, the forwarder against local TLS servers
   that each verify their own endpoint's CA.
+- `control/sbx_control/sandbox_layers.py`: features that take part in every
+  sandbox's runtime write and lifecycle without `core` or the keeper naming
+  them (`SandboxLayer`: `outputs`, `values`, `contribution`, `after_write`,
+  `on_resume`, `tick`, `round`, `ports`); endpoints is the first.
+  `sandbox_runtime.py` is core's runtime half: the guest helper, the start
+  contract, writing the runtime (and calling the layers after it), putting
+  it back after a cold boot, and the recipe's scripts.
 - `control/sbx_control/gate.py` and `preview_pages.py`: the gate decides
   for every preview request (`_decide`: let through, login, a page or
   nothing), resumes a paused sandbox without blocking nginx (`wake`), and

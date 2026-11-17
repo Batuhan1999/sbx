@@ -67,7 +67,7 @@ class WorkspaceTests(Server):
                 run.assert_not_called()
 
     def test_operator_recipe_scripts_override_the_checkout_but_imported_recipes_allow_branch_scripts(self):
-        from sbx_control import core, recipes
+        from sbx_control import core, recipes, sandbox_runtime
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             installed, checkout = root / 'installed', root / 'checkout'
@@ -81,7 +81,7 @@ class WorkspaceTests(Server):
                 return subprocess.run(['/bin/bash', '-c', command], capture_output=True, text=True, check=True)
             operator_root = root / 'operator'
             with patch('sbx_control.paths.apps', return_value=operator_root), \
-                    patch.object(core, 'APP_SCRIPTS', str(installed)), patch.object(core, 'run_in', side_effect=run):
+                    patch.object(sandbox_runtime, 'APP_SCRIPTS', str(installed)), patch.object(core, 'run_in', side_effect=run):
                 for source, expected in ((operator_root / 'owner/app/.sbx', 'installed'),
                                          (root / 'imported/owner/app/.sbx', 'checkout')):
                     with self.subTest(source=source):

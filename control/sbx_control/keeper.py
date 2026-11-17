@@ -6,7 +6,8 @@ import shlex
 import threading
 import time
 
-from . import core, delivery, endpoints, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandboxes, settings, state, views
+from . import (core, extensions, gate, github_app, lifecycle, platform, routing, runtime, sandbox_layers, sandboxes,
+               settings, state, views)
 
 INTERVAL_SECONDS = 60
 RECONCILE_SECONDS = 600
@@ -125,12 +126,7 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     notice_stopped_app(info)
     if settings.current().sandboxes.detected_previews != "off":
         routing.detect_ports(info.sandbox_id, core.app_of(info))
-    try:
-        keep_forwarder(info)
-    except runtime.NotRunning:
-        raise
-    except Exception as error:   # the next round tries again
-        print(f"keeper: endpoints forwarder of {(info.metadata or {}).get('sbx')}: {error!r}", flush=True)
+    sandbox_layers.tick(info)
     if (info.metadata or {}).get("sbx") in held:
         keep_awake(info)
         return True
@@ -143,34 +139,6 @@ def look_at(info, held=frozenset(), may_delete: bool = True) -> bool:
     if use.accessed_within(core.TIMEOUT_SECONDS) or use.probe.ssh or use.probe.agents or use.probe.busy:
         keep_awake(info)
     return True
-
-
-_unbound_said: dict = {}   # sandbox -> the {name: port} its forwarder last couldn't listen on, said once
-
-
-def keep_forwarder(info):
-    """A running sandbox with endpoints: its forwarder running (started again
-    when it died), and a port it can't listen on said once as an event."""
-    name = (info.metadata or {}).get("sbx")
-    if not name or name not in endpoints.holders():
-        return
-    status = core.ensure_forwarder(runtime.connect(info.sandbox_id))
-    unbound = status.get("unbound") or {}
-    if unbound and unbound != _unbound_said.get(name):
-        state.event(name, "endpoint port taken", ", ".join(
-            f"{endpoint} can't listen on 127.0.0.1:{port}: something else there does; stop it, or the next "
-            "env delivery or restart places the endpoint on a free port" for endpoint, port in sorted(unbound.items())))
-    _unbound_said[name] = unbound
-
-
-def renew_certificates():
-    """Queue a runtime write (no app restart) for each sandbox whose endpoint
-    certificate runs out within endpoints.RENEW_HOURS: the write issues a new one."""
-    names = endpoints.due()
-    waiting = delivery.waiting() if names else set()
-    for name in names:
-        if name not in waiting:
-            delivery.queue(name, [], restart=False)
 
 
 def look_once():
@@ -194,10 +162,7 @@ def look_once():
         sandboxes.redeliver_on_certificate_change(((i.metadata or {}).get("sbx") for i in infos), complete)
     except Exception as error:   # the round's other work goes on; tried again next round
         print(f"keeper: certificate pin delivery: {error!r}", flush=True)
-    try:   # endpoint certificates that run out soon: written again (running now, paused when they resume)
-        renew_certificates()
-    except Exception as error:
-        print(f"keeper: endpoint certificates: {error!r}", flush=True)
+    sandbox_layers.round(infos, running)
     sandboxes.deliver_waiting(running)
     sandboxes.prepare_waiting({(i.metadata or {}).get("sbx") for i in infos})
 

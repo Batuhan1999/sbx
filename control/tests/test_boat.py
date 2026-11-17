@@ -437,9 +437,11 @@ class Installed(Installation):
         self.backend.pause(handle.sandbox_id)
         info = self.runtime.info(handle.sandbox_id)
         sbx = self.backend.connect(handle.sandbox_id)
-        with patch.object(core, "ensure_started") as started, patch.object(core, "initialize_ssh_identity"), \
-                patch.object(core, "runtime_values", return_value=({}, set(), SimpleNamespace())), \
-                patch.object(core, "write_runtime") as written, patch.object(core.extensions, "on_resume"):
+        from sbx_control import sandbox_runtime
+        with patch.object(sandbox_runtime, "ensure_started") as started, \
+                patch.object(sandbox_runtime, "initialize_ssh_identity"), \
+                patch.object(sandbox_runtime, "runtime_values", return_value=({}, set(), SimpleNamespace())), \
+                patch.object(sandbox_runtime, "write_runtime") as written, patch.object(core.extensions, "on_resume"):
             self.assertTrue(core.restore_runtime(sbx, info))   # True: the app restarts
         started.assert_called_once_with(sbx, "boat")
         written.assert_called_once()

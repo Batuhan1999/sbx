@@ -202,7 +202,8 @@ function Choices({ candidates, value, onChange }: { candidates: EndpointCandidat
 }
 
 const DNS_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
-const HOST_PORT = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?):(\d{1,5})$/
+/** An IP address and a port, as the server takes them: 10.0.0.5:7233 or [fd00::5]:7233 (no host names). */
+const HOST_PORT = /^(\[[0-9A-Fa-f:.]+\]|(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)):(\d{1,5})$/
 
 export function endpointNameError(value: string, taken: string[] = []): string | undefined {
   if (!value) return 'Enter a name.'
@@ -213,8 +214,8 @@ export function endpointNameError(value: string, taken: string[] = []): string |
 
 export function endpointTargetError(value: string): string | undefined {
   const m = HOST_PORT.exec(value.trim())
-  const port = m ? Number(m[3]) : 0
-  return m && port >= 1 && port <= 65535 ? undefined : 'Enter it as host:port.'
+  const port = m ? Number(m[2]) : 0
+  return m && port >= 1 && port <= 65535 ? undefined : 'Enter an IP address and port, such as 10.0.0.5:7233.'
 }
 
 function InternalHost({ domain, taken, draft, onCancel, onNext }: { domain: string; taken: string[]; draft: Draft; onCancel: () => void; onNext: (d: Draft) => void }) {
@@ -231,7 +232,7 @@ function InternalHost({ domain, taken, draft, onCancel, onNext }: { domain: stri
           help={<span className="mono break-all">{field.state.value || 'name'}.{domain}</span>} />}
       </form.AppField>
       <form.AppField name="target" validators={{ onChange: ({ value }) => endpointTargetError(value) }}>
-        {field => <field.TextField label="Host and port" autoComplete="off" spellCheck={false} placeholder="host:port" />}
+        {field => <field.TextField label="IP address and port" autoComplete="off" spellCheck={false} placeholder="10.0.0.5:7233" />}
       </form.AppField>
     </div>
     <form.Field name="repos">

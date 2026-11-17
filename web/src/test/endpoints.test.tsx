@@ -98,7 +98,7 @@ describe('Settings → Shared servers', () => {
     expect(calls.filter(c => c.method === 'GET').length).toBeGreaterThanOrEqual(3)
   }, 8000)
 
-  it('shares an internal host with chosen repositories, checking its name and host:port first', async () => {
+  it('shares an internal host with chosen repositories, checking its name and IP address and port first', async () => {
     const calls = stubApi({
       'POST /api/endpoints': (body: unknown) => ({ status: 202, body: endpoint('billing', { kind: 'internal', server: '', state: 'applying', ...(body as object) }) }),
       'GET /api/endpoints': data({ endpoints: [PG], candidates: [] }),
@@ -111,10 +111,10 @@ describe('Settings → Shared servers', () => {
     const picker = screen.getByRole('group', { name: 'Repositories' })
     expect(await within(picker).findByRole('checkbox', { name: 'acme/docs' })).toBeTruthy()
     await user.type(screen.getByLabelText('Name'), 'Billing_API')
-    await user.type(screen.getByLabelText('Host and port'), 'billing.internal')
+    await user.type(screen.getByLabelText('IP address and port'), 'billing.internal:8080') // a host name: refused, as the server does
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByText('Use lowercase letters, digits and hyphens.')).toBeTruthy()
-    expect(screen.getByText('Enter it as host:port.')).toBeTruthy()
+    expect(screen.getByText('Enter an IP address and port, such as 10.0.0.5:7233.')).toBeTruthy()
     expect(screen.getByText('Choose at least one repository.')).toBeTruthy()
     expect(calls.some(c => c.method === 'POST')).toBe(false)
     await new Promise(r => requestAnimationFrame(r)) // the form focuses the first invalid field
@@ -124,7 +124,8 @@ describe('Settings → Shared servers', () => {
     await user.clear(screen.getByLabelText('Name'))
     await user.type(screen.getByLabelText('Name'), 'billing')
     expect(screen.getByText('billing.example.com')).toBeTruthy()
-    await user.type(screen.getByLabelText('Host and port'), ':8080')
+    await user.clear(screen.getByLabelText('IP address and port'))
+    await user.type(screen.getByLabelText('IP address and port'), '10.0.0.40:8080')
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/api' }))
     await user.click(screen.getByRole('button', { name: 'Continue' }))
@@ -139,7 +140,7 @@ describe('Settings → Shared servers', () => {
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     await user.click(within(screen.getByRole('region', { name: 'Share billing?' })).getByRole('button', { name: 'Share' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
-    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ name: 'billing', target: 'billing.internal:8080', repos: ['acme/shop', 'acme/api'] })
+    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ name: 'billing', target: '10.0.0.40:8080', repos: ['acme/shop', 'acme/api'] })
   })
 
   it('edits an internal host’s repositories, and shows a refusal', async () => {
