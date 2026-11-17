@@ -155,14 +155,20 @@ export type SandboxRuntime = {
   status: { state: ConnectionState | string; summary: string }
   /** The last limit its provider refused, until its settings change. */
   limit_hit?: LimitHit | null
+  /** The plan its limits match ("custom": none), for a runtime with plans; null otherwise. */
+  plan?: RuntimePlan | null
 }
+export type RuntimePlan = { name: string; title: string }
 /** default is "" and runtimes empty until a runtime is set up. */
 export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
-export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean }
-export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string }
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean
+  /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
+  min?: number | null; max?: number | null; step?: number | null; unit?: string }
+/** adjustable: keys the plan does not fix (no published number), set from values; note says why. */
+export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string; adjustable?: string[]; note?: string }
 /** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
 export type AvailableRuntime = {
   kind: string
@@ -186,6 +192,8 @@ export type AvailableRuntime = {
   /** Why it can't be removed ("" when it can). */
   removable: string
   limit_hit: LimitHit | null
+  /** An enabled one's plan now, as GET /api/runtimes says it. */
+  plan?: RuntimePlan | null
 }
 export type RuntimeChangeState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
 /** restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */

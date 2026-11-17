@@ -32,33 +32,46 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 LIMITS = {"timeout_seconds": ("E2B_CLOUD_MAX_TIMEOUT", 3600), "cpu": ("E2B_CLOUD_MAX_CPU", 8),
           "memory_mb": ("E2B_CLOUD_MAX_MEMORY_MB", 8192), "disk_mb": ("E2B_CLOUD_MAX_DISK_MB", 10240),
           "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 20)}
-LIMIT_LABELS = {"timeout_seconds": ("Longest run (seconds)", "How long a sandbox runs before E2B pauses it; "
-                                    "sbx renews it while the sandbox is used."),
-                "cpu": ("vCPUs per sandbox", ""), "memory_mb": ("Memory per sandbox (MiB)", ""),
-                "disk_mb": ("Disk per sandbox (MiB)", ""), "sandboxes": ("Sandboxes at once", "Per E2B team.")}
+# How each limit is shown and set in the web app: its label, unit and the
+# range its slider covers. Timeout, disk and sandboxes at once go up to what
+# E2B's plans publish (PRESETS: 24 h, 20 GiB, 100; the timeout no shorter
+# than base.MIN_TIMEOUT_SECONDS). vCPUs and memory start at E2B's 1 vCPU and
+# 1 GiB; Pro allows "8+" without a published number, so their range ends at
+# 32 vCPUs and 64 GiB, which is sbx's bound, not E2B's: a value E2B refuses
+# is said as E2B says it.
+LIMIT_FORM = {"timeout_seconds": ("Longest run", "seconds", 300, 86400, 300),
+              "cpu": ("vCPUs", "", 1, 32, 1),
+              "memory_mb": ("Memory", "MiB", 1024, 65536, 1024),
+              "disk_mb": ("Disk", "MiB", 1024, 20480, 1024),
+              "sandboxes": ("Sandboxes at once", "", 1, 100, 1)}
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
     SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True,
-                 help="E2B's domain; leave empty for E2B Cloud (e2b.app). Changing it needs the API key again."),
-    *(SettingField(key, LIMIT_LABELS[field][0], default=str(default), help=LIMIT_LABELS[field][1], kind="int",
-                   limit=field) for field, (key, default) in LIMITS.items()),
+                 help="E2B's domain, for a self-hosted E2B; empty is E2B Cloud (e2b.app)."),
+    *(SettingField(key, LIMIT_FORM[field][0], default=str(default), kind="int", limit=field, unit=LIMIT_FORM[field][1],
+                   min=LIMIT_FORM[field][2], max=LIMIT_FORM[field][3], step=LIMIT_FORM[field][4])
+      for field, (key, default) in LIMITS.items()),
 )
-# E2B's plans as limits, from https://e2b.dev/pricing (read 2026-11-17).
-# Hobby: "Up to 1 hour per sandbox session", "Up to 10 concurrently running
-# sandboxes", "Up to 8 vCPUs per sandbox", "10 GiB of sandbox disk"; RAM
-# per the page's "1 to 8 GiB of RAM". Pro: "Up to 24 hours per sandbox
-# session", "Up to 100 concurrently running sandboxes", "20 GiB of sandbox
-# disk", "Custom sandbox CPU and RAM" within the page's 1 to 8 vCPUs and
-# 1 to 8 GiB. LIMITS' defaults stay as they were (20 at once), so an
-# installation that never chose a plan behaves as before.
-_PLAN_SOURCE = "https://e2b.dev/pricing (2026-11-17)"
+# E2B's plans as limits, from https://e2b.dev/pricing and
+# https://e2b.dev/docs/sandbox-template/customize-cpu-ram (both read
+# 2026-11-17). Hobby: "Up to 1 hour per sandbox session", "Up to 10
+# concurrently running sandboxes", "10 GiB of sandbox disk", and "Max vCPUs
+# per build: 8 on Hobby", RAM "8 GiB on Hobby": fixed. Pro: "Up to 24 hours
+# per sandbox session", "Up to 100 concurrently running sandboxes", "20 GiB
+# of sandbox disk" are fixed; its vCPUs and RAM are "8+" ("Custom sandbox CPU
+# and RAM"), no published number, so they stay adjustable from 8 and 8 GiB.
+# LIMITS' defaults stay as they were (20 at once), so an installation that
+# never chose a plan behaves as before.
+_PLAN_SOURCE = "https://e2b.dev/pricing"
 PRESETS = (
     Preset("hobby", "Hobby", {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8",
                               "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "10240",
                               "E2B_CLOUD_MAX_SANDBOXES": "10"}, _PLAN_SOURCE),
     Preset("pro", "Pro", {"E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_CPU": "8",
                           "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "20480",
-                          "E2B_CLOUD_MAX_SANDBOXES": "100"}, _PLAN_SOURCE),
+                          "E2B_CLOUD_MAX_SANDBOXES": "100"}, _PLAN_SOURCE,
+           adjustable=("E2B_CLOUD_MAX_CPU", "E2B_CLOUD_MAX_MEMORY_MB"),
+           note="Pro allows more than 8 vCPUs and 8 GB if E2B raised it for your team; E2B says so when it doesn't."),
 )
 FETCH_RETRY_SECONDS = 15   # a failed token fetch answers from memory this long (an outage)
 INGRESS_NAME = "sbx-ingress"   # any name under the sandboxes' wildcard: the apex resolves elsewhere

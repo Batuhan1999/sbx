@@ -166,6 +166,12 @@ class SettingField:
     optional: bool = False     # may stay empty (its default applies)
     limit: str = ""            # the Limits field it sets, for an int limit
     rekey: bool = False
+    # An int's range and step (the web app's slider; values outside are
+    # refused), and its unit: "seconds", "MiB" or "" (a count).
+    min: int | None = None
+    max: int | None = None
+    step: int | None = None
+    unit: str = ""
 
     def view(self) -> dict:
         return dataclasses.asdict(self)
@@ -174,14 +180,23 @@ class SettingField:
 @dataclasses.dataclass(frozen=True)
 class Preset:
     """A provider plan's limits, as values of the backend's settings by key;
-    source says where they come from."""
+    source says where they come from. adjustable: the keys the plan does not
+    fix (the provider publishes no number), set by the admin starting from
+    values; note says why."""
     name: str
     title: str
     values: Mapping[str, str]
     source: str = ""
+    adjustable: tuple = ()
+    note: str = ""
+
+    def matches(self, effective: Mapping[str, str]) -> bool:
+        """Whether settings with these effective values are this plan: its fixed values alike."""
+        return all(effective.get(key) == value for key, value in self.values.items() if key not in self.adjustable)
 
     def view(self) -> dict:
-        return {"name": self.name, "title": self.title, "values": dict(self.values), "source": self.source}
+        return {"name": self.name, "title": self.title, "values": dict(self.values), "source": self.source,
+                "adjustable": list(self.adjustable), "note": self.note}
 
 
 class LimitRefused(Failed):

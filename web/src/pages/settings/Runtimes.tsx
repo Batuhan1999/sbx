@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/st
 import { StateBadge } from '@/components/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Badge, Panel } from '@/components/ui/primitives'
-import { limitsText } from '@/lib/format'
+import { limitsText, planSummary } from '@/lib/format'
 import type { Tone } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { CONNECTION_STATE } from '../extensions/ConnectionCard'
@@ -94,7 +94,10 @@ export function RuntimeList({ runtimes, className, children }: { runtimes: Sandb
 
 function RuntimeRow({ r, children }: { r: SandboxRuntime; children?: ReactNode }) {
   const state = CONNECTION_STATE[r.status.state as ConnectionState] ?? { label: r.status.state, tone: 'idle' as Tone }
-  const limits = limitsText(r.limits)
+  // A runtime with plans names its plan and the limits in one short line; another, its limits in full.
+  const limits = r.plan
+    ? [r.plan.name === 'custom' ? 'Custom limits' : `${r.plan.title} plan`, planSummary(r.limits)].filter(Boolean).join(' · ')
+    : limitsText(r.limits)
   return <li className="px-4 py-3">
     <div className="flex flex-wrap items-center gap-2">
       <h3 className="font-semibold">{r.title}</h3>

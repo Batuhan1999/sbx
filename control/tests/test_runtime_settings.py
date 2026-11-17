@@ -365,6 +365,30 @@ class Web(TwoRuntimes, Server):
             self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
         self.assertEqual(taken, [1])
 
+    def test_limits_are_held_to_their_range_and_the_plan_is_named(self):
+        from sbx_control import runtimes
+        from sbx_control.runtime.e2b_cloud import PRESETS
+        too_big = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+            "E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_MAX_CPU": "64"}})
+        self.assertEqual(too_big.status_code, 400)
+        self.assertIn("vCPUs (E2B_CLOUD_MAX_CPU) is from 1 to 32", too_big.json()["detail"])
+        pro = {**PRESETS[1].values, "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
+        self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+            "E2B_CLOUD_API_KEY": KEY, **pro}}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        listed = {r["kind"]: r for r in runtimes.describe()["runtimes"]}
+        self.assertEqual(listed["e2b-cloud"]["plan"], {"name": "pro", "title": "Pro"})
+        self.assertIsNone(listed["fake"]["plan"])                        # no plans: no plan named
+        available = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
+        self.assertEqual(available["e2b-cloud"]["plan"]["name"], "pro")
+        run = next(s for s in available["e2b-cloud"]["settings"] if s["key"] == "E2B_CLOUD_MAX_TIMEOUT")
+        self.assertEqual((run["min"], run["max"], run["step"], run["unit"]), (300, 86400, 300, "seconds"))
+        self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {
+            "E2B_CLOUD_MAX_SANDBOXES": "50"}}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        listed = {r["kind"]: r for r in runtimes.describe()["runtimes"]}
+        self.assertEqual(listed["e2b-cloud"]["plan"], {"name": "custom", "title": "Custom limits"})
+
     def test_a_change_that_stopped_part_way_is_failed_not_waited_for(self):
         from sbx_control import runtime_changes
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)

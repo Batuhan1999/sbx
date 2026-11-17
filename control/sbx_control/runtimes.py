@@ -166,7 +166,24 @@ def _runtime(kind: str, is_default: bool) -> dict:
         limits = {}
     return {"kind": kind, "title": backend.title, "default": is_default, "host": bool(getattr(backend, "host", False)),
             "capabilities": dataclasses.asdict(backend.capabilities), "limits": limits, "status": status,
-            "limit_hit": runtime.limit_hit(kind)}
+            "limit_hit": runtime.limit_hit(kind), "plan": plan_of(backend)}
+
+
+def plan_of(backend, raw: dict | None = None) -> dict | None:
+    """The backend's preset its limits match now ({name, title}), {name:
+    "custom", title: "Custom limits"} when none does; None for a backend
+    without presets. raw: runtime.env's values (read when not given)."""
+    presets = getattr(backend, "presets", ())
+    if not presets:
+        return None
+    from . import vault
+    found = fields(backend)
+    raw = vault._runtime_file(tuple(found)) if raw is None else raw
+    effective = {key: raw.get(key) or field.default for key, field in found.items()}
+    for preset in presets:
+        if preset.matches(effective):
+            return {"name": preset.name, "title": preset.title}
+    return {"name": "custom", "title": "Custom limits"}
 
 
 def fields(backend) -> dict:
@@ -210,6 +227,7 @@ def available() -> list:
                                   else "" if sealing else LOCAL_STORE.replace("KIND", kind)),
                  "settings": [f.view() for f in found.values()],
                  "presets": [p.view() for p in getattr(backend, "presets", ())],
+                 "plan": plan_of(backend, raw) if on else None,
                  "values": {k: raw.get(k, "") for k, f in found.items() if not f.secret},
                  "secrets_set": [k for k, f in found.items() if f.secret and raw.get(k)],
                  "facts": {k: facts[k] for k in ("kvm", "memory_gb", "disk_free_gb") if k in facts} if host else {},
@@ -320,6 +338,10 @@ def _changes(backend, values: dict, current: dict) -> dict:
             continue
         if field.kind == "int" and not (value.isdigit() and int(value) >= 1):
             raise Refused(f"{field.label} ({key}) is a whole number, at least 1, not {value!r}")
+        if field.kind == "int" and ((field.min is not None and int(value) < field.min)
+                                    or (field.max is not None and int(value) > field.max)):
+            raise Refused(f"{field.label} ({key}) is from {field.min} to {field.max}"
+                          f"{' ' + field.unit if field.unit else ''}, not {value}")
         if field.kind == "hostname":
             value = value.lower().rstrip(".")
             if not HOSTNAME.fullmatch(value):

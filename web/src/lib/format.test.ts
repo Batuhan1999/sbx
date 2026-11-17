@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { ago, limitsText, parseTime, portsHint } from './format'
+import { ago, limitsText, parseTime, planSummary, portsHint, runLength } from './format'
+
+describe('a plan in one line', () => {
+  it('says each limit in people’s units', () => {
+    expect(planSummary({ timeout_seconds: 3600, cpu: 8, memory_mb: 8192, disk_mb: 10240, sandboxes: 10 }))
+      .toBe('1 h runs · 8 vCPU · 8 GB RAM · 10 GB disk · 10 at once')
+    expect(planSummary({ memory_mb: 512 })).toBe('0.5 GB RAM')
+    expect(runLength(5400)).toBe('1 h 30 min')
+    expect(runLength(300)).toBe('5 min')
+    expect(planSummary({})).toBe('')
+  })
+})
 
 describe('server times', () => {
   it('reads SQLite timestamps as UTC and ISO times as given', () => {

@@ -67,3 +67,26 @@ function duration(seconds: number): string {
   if (seconds % 60 === 0) return plural(seconds / 60, 'minute')
   return plural(seconds, 'second')
 }
+
+/** A run's length, short: "1 h", "1 h 30 min", "45 min". */
+export function runLength(seconds: number): string {
+  const h = Math.floor(seconds / 3_600), m = Math.round((seconds % 3_600) / 60)
+  return [h && `${h} h`, m && `${m} min`].filter(Boolean).join(' ') || `${seconds} s`
+}
+
+/** MiB as GB, short: 8192 → "8 GB", 512 → "0.5 GB". */
+export function gigabytes(mb: number): string {
+  return `${+(mb / 1024).toFixed(2)} GB`
+}
+
+type Limits = { timeout_seconds?: number; cpu?: number; memory_mb?: number; disk_mb?: number; sandboxes?: number }
+/** A plan's limits in one line: "1 h runs · 8 vCPU · 8 GB RAM · 10 GB disk · 10 at once"; "" when it states none. */
+export function planSummary(limits: Limits = {}): string {
+  return [
+    limits.timeout_seconds != null && `${runLength(limits.timeout_seconds)} runs`,
+    limits.cpu != null && `${limits.cpu} vCPU`,
+    limits.memory_mb != null && `${gigabytes(limits.memory_mb)} RAM`,
+    limits.disk_mb != null && `${gigabytes(limits.disk_mb)} disk`,
+    limits.sandboxes != null && `${limits.sandboxes} at once`,
+  ].filter(Boolean).join(' · ')
+}
