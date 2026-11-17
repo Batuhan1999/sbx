@@ -97,7 +97,7 @@ def _resume_in_background(sandbox_id: str):
         print(f"gate: resuming {sandbox_id} for a preview failed: {error!r}", flush=True)
 
 
-def wake(sandbox_id: str, wait: float = WAKE_WAIT_SECONDS) -> bool:
+def wake(sandbox_id: str, wait: float | None = None) -> bool:
     """Start resuming a paused sandbox (once; Embed's client-proxy does not
     resume on traffic) and wait up to wait seconds: True when it runs now,
     False while it is still waking (the starting page answers meanwhile)."""
@@ -113,7 +113,7 @@ def wake(sandbox_id: str, wait: float = WAKE_WAIT_SECONDS) -> bool:
         thread = _waking[sandbox_id] = threading.Thread(target=_resume_in_background, args=(sandbox_id,),
                                                         daemon=True, name=f"wake-{sandbox_id}")
         thread.start()
-    thread.join(wait)
+    thread.join(WAKE_WAIT_SECONDS if wait is None else wait)
     return not thread.is_alive() and sandbox_id not in _wake_errors
 
 
@@ -202,7 +202,7 @@ def _what_failed(record: dict) -> str:
 
 
 def _open_in_sbx(name: str, label: str = "Open in sbx") -> tuple:
-    return (label, f"{settings.current().base_url}/sandboxes/{name}")
+    return (label, f"{settings.current().base_url}/app/sandboxes/{name}")
 
 
 def _record_page(name: str, record: dict | None, owner_email: str | None, email: str) -> Page | None:
@@ -353,6 +353,11 @@ def _decide(request: Request, *, status: bool = False) -> Outcome:
         if page is not None:
             return Outcome("page", page=page)
         state = _owners["state"].get(sandbox_id)
+        if state == "running" and record and record.get("runtime") == "paused":
+            # sbx paused it since the last listing: look again, so it is woken
+            # here (the page) rather than by whatever connects to it next.
+            sandbox_owner(sandbox_id, fresh=True)
+            state = _owners["state"].get(sandbox_id)
         if state == runtime.FAILED:
             return Outcome("page", page=Page("failed", name, detail="Its runtime reports an error. Restart or "
                                              "delete it in sbx.", action=_open_in_sbx(name) if owner == email else ()))
@@ -455,6 +460,11 @@ def _login() -> str:
     return f"{settings.current().base_url}/auth/login"
 
 
+def _home() -> str:
+    """The web app's sandboxes page, on the login host."""
+    return f"{settings.current().base_url}/app/sandboxes"
+
+
 def _shown(page: Page, request: Request) -> Page:
     """Names only for a signed-in visitor; anyone else sees the neutral page."""
     return page if _signed_in(request) else page.neutral()
@@ -489,11 +499,12 @@ def gate_page(request: Request):
     if page.state == "ready":
         if preview_pages.wants_html(method, request.headers.get("accept", "")):
             return HTMLResponse(preview_pages.render(Page("starting", page.name, step="Opening the app"),
-                                                     reason=reason, login=_login()), status_code=503,
+                                                     reason=reason, login=_login(), home=_home()), status_code=503,
                                 headers=preview_pages.headers(Page("starting")))
         return JSONResponse({"state": "ready"}, status_code=503, headers=preview_pages.headers(Page("starting")))
     if preview_pages.wants_html(method, request.headers.get("accept", ""), request.headers.get("x-original-upgrade", "")):
-        return HTMLResponse(preview_pages.render(page, reason=reason, login=_login()), status_code=page.status,
+        return HTMLResponse(preview_pages.render(page, reason=reason, login=_login(), home=_home()),
+                            status_code=page.status,
                             headers=preview_pages.headers(page))
     return Response(preview_pages.plain(page), status_code=page.status, media_type="application/json",
                     headers=preview_pages.headers(page))

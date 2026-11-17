@@ -35,6 +35,8 @@ class Template(unittest.TestCase):
         self.assertIn('"/.sbx/status"', text)
         self.assertIn("Math.min(wait * 1.5, 5000)", text)          # backs off, no cap on how long
         self.assertNotIn("http-equiv", text)                       # no meta refresh
+        self.assertIn('<span class="mark" aria-hidden="true">sb</span>', text)   # the sbx mark above the title
+        self.assertIn("text-align: center", text)
         done = render(Page("deleted", "memos-a"))
         self.assertIn('aria-busy="false"', done)
 
@@ -104,6 +106,9 @@ class Gate(GateCase):
         shown = self.page("memos-x.example.test", self.owner)
         self.assertEqual(shown.status_code, 404)
         self.assertIn("No sandbox named memos-x", shown.text)
+        self.assertIn(">Open sbx<", shown.text)                 # to the web app's sandboxes page
+        self.assertIn("/app/sandboxes\"", shown.text)
+        self.assertNotIn("sbx ls", shown.text)
         self.assertEqual(self.page("memos-x.example.test", self.owner, html=False).json()["error"], "missing")
 
     def test_a_deleted_sandbox_says_so(self):
@@ -186,7 +191,7 @@ class Gate(GateCase):
         shown = self.page("memos-a.example.test", self.owner)
         self.assertEqual(shown.status_code, 502)
         self.assertIn("memos-a&#x27;s app stopped", shown.text)
-        self.assertIn("/sandboxes/memos-a", shown.text)
+        self.assertIn("/app/sandboxes/memos-a", shown.text)
         self.assertIn(">Restart<", shown.text)
         self.assertNotIn(">Restart<", self.page("memos-a.example.test", self.other).text)
 
@@ -333,3 +338,17 @@ class Nginx(unittest.TestCase):
                 patch.object(runtime, "upstream_token_cookies", return_value={}):
             self.assertEqual(ip_previews.upstream_cookie(), "sandbox_cookie")
             self.assertNotIn("_port_auth", ip_previews.runtime_upstreams())
+
+
+class PausedSinceListing(GateCase):
+    def test_a_sandbox_paused_since_the_last_listing_gets_the_page_not_a_silent_wake(self):
+        import time
+        from sbx_control import core, lifecycle
+        self.runtime.pause(self.vm)                     # the gate's listing still says running
+        op = lifecycle.begin("memos-a", "pause")
+        op.advance("pausing")
+        op.advance("workspace_ready", finish=True, sandbox_id=self.vm, runtime="paused")
+        with patch.object(core, "attach", side_effect=lambda *a, **k: time.sleep(1)), \
+                patch.object(self.gate, "WAKE_WAIT_SECONDS", 0.05):
+            response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+        self.assertEqual(response.headers.get("x-sbx-page"), "waking")

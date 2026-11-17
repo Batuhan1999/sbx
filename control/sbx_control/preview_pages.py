@@ -70,7 +70,7 @@ class Page:
             "app_stopped": self.detail or "Restart it to open this page again.",
             "failed": self.detail or "Restart or delete it in sbx.",
             "deleted": "Create it again to open this page.",
-            "missing": "Check the link, or list your sandboxes with sbx ls.",
+            "missing": "Check the link.",
             "forbidden": "Only its owner can open this preview.",
         }[self.state]
 
@@ -98,13 +98,16 @@ def plain(page: Page) -> str:
     return json.dumps({"error": page.state, "title": page.title(), "detail": page.line()})
 
 
-def render(page: Page, *, reason: str = "denied", login: str = "") -> str:
+def render(page: Page, *, reason: str = "denied", login: str = "", home: str = "") -> str:
     """The page, light or dark as the browser prefers. reason: why nginx
     sent the request here ("unavailable": nginx could not reach the app, so a
     handover that meets it again is counted and stopped); login: where a poll
-    answered 401 sends the browser (with next= this page's URL)."""
-    action = (f'<a class="action" href="{html.escape(page.action[1])}">{html.escape(page.action[0])}</a>'
-              if page.action else "")
+    answered 401 sends the browser (with next= this page's URL); home: the
+    web app's sandboxes page, linked from a page about a sandbox that isn't
+    there (Open sbx)."""
+    shown = page.action or (("Open sbx", home) if home and page.state in ("missing", "deleted") else ())
+    action = (f'<a class="action" href="{html.escape(shown[1])}">{html.escape(shown[0])}</a>'
+              if shown else "")
     data = json.dumps({"waiting": page.waiting, "status": STATUS_PATH, "reason": reason,
                        "port": page.port, "login": login}).replace("<", "\\u003c")
     return TEMPLATE.format(title=html.escape(page.title()), line=html.escape(page.line()), action=action,
@@ -131,7 +134,11 @@ html, body {{ height: 100%; margin: 0; }}
 body {{ background: var(--bg); color: var(--ink); display: grid; place-items: center; padding: 16px;
   font: 14px/1.5 "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased; }}
-main {{ width: min(360px, 100%); transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }}
+main {{ width: min(360px, 100%); text-align: center; display: flex; flex-direction: column; align-items: center;
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }}
+.mark {{ display: grid; place-items: center; width: 24px; height: 24px; margin-bottom: 14px; border-radius: 6px;
+  background: var(--ink); color: var(--bg); font-size: 11px; font-weight: 700; letter-spacing: -0.02em; }}
+.bar {{ align-self: stretch; }}
 @starting-style {{ main {{ opacity: 0; transform: translateY(4px); }} }}
 main.leaving {{ opacity: 0; transform: translateY(-4px); }}
 h1 {{ font-size: 15px; font-weight: 550; margin: 0 0 4px; letter-spacing: -0.005em; overflow-wrap: anywhere; }}
@@ -154,6 +161,7 @@ main.ready .bar::after {{ animation: none; width: 100%; background: var(--ok); t
 </head>
 <body>
 <main aria-busy="{busy}" aria-live="polite" data-state="{state}">
+<span class="mark" aria-hidden="true">sb</span>
 <h1 id="title">{title}</h1>
 <p id="line">{line}</p>
 <div class="bar" role="progressbar" aria-label="{title}"></div>
