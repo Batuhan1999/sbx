@@ -1,6 +1,8 @@
 """Several sandbox runtimes, as the core sees them: which one a new
 sandbox runs on (choose), a repo's own choice (setting), the runtimes a
-repo's sandboxes use (used_by), what the API says about them (describe), and
+repo's sandboxes use (used_by), what the API says about them (describe,
+available), adding, changing and removing one (add, remove, set_default,
+and prepare: a change from the web app checked before it is queued), and
 `sbx-admin runtime verify`, which takes one through a sandbox's whole life.
 
 The registry itself (which are enabled, the default, the backends) is
@@ -32,6 +34,17 @@ REQUEST_HOURS = 24
 class Refused(SandboxError):
     """The runtime asked for can't run the sandbox, or is no runtime here;
     the message says why (the API answers 400)."""
+
+
+class Conflict(Refused):
+    """Refused for what the installation holds now: the runtime has
+    sandboxes, is the last one, is enabled already, or the secret store is
+    still the local one (the API answers 409)."""
+
+
+LOCAL_STORE = ("this installation's secret store is still the local one, and a runtime's keys from the web app go "
+               "only to the managed store (Infisical): set up the secret store first (sbx-admin store enable), or "
+               "on the server: sbx-admin runtime add KIND (the key on stdin)")
 
 
 # A repo's own runtime
@@ -104,6 +117,8 @@ def choose(repo: str | None, requested: str | None = None, size: dict | None = N
         raise Refused(f"{repo}'s runtime setting is {chosen}, which is not enabled on this installation (enabled: "
                       f"{', '.join(runtime.enabled())}); change it on the repository's page or with "
                       f"PUT /api/repos/{repo}/runtime, or name a runtime in the request")
+    if not runtime.enabled():
+        raise Refused(runtime.NO_RUNTIME)
     kind = requested or of_repo(repo)
     if kind not in runtime.enabled():
         if kind in runtime.kinds():
@@ -149,7 +164,75 @@ def _runtime(kind: str, is_default: bool) -> dict:
     except Exception:
         limits = {}
     return {"kind": kind, "title": backend.title, "default": is_default, "host": bool(getattr(backend, "host", False)),
-            "capabilities": dataclasses.asdict(backend.capabilities), "limits": limits, "status": status}
+            "capabilities": dataclasses.asdict(backend.capabilities), "limits": limits, "status": status,
+            "limit_hit": runtime.limit_hit(kind)}
+
+
+def fields(backend) -> dict:
+    """The backend's settings by key (Runtime.settings); one that declares
+    none has its secret_key as its only one."""
+    found = {f.key: f for f in getattr(backend, "settings", ())}
+    secret = getattr(backend, "secret_key", "")
+    if secret and secret not in found:
+        found = {secret: runtime.SettingField(secret, secret, secret=True), **found}
+    return found
+
+
+def available() -> list:
+    """GET /api/runtimes/available: every runtime an installed package
+    provides, enabled or not: whether this host can run it (can_run, why_not),
+    its settings form (settings, presets), its non-secret values now and
+    which secrets are set (never a secret's value), and for an enabled one
+    the sandboxes on it and why it can't be removed ("" when it can)."""
+    from . import setup, vault
+    facts = setup.host_facts()
+    kinds_now, first = runtime.enabled(), runtime.default()
+    out = []
+    for kind in runtime.kinds():
+        on = kind in kinds_now
+        try:
+            backend = runtime.get(kind) if on else runtime.make(kind)
+        except Exception as error:   # a package that does not load: not offered
+            print(f"runtime {kind}: not offered: {error!r}", flush=True)
+            continue
+        found = fields(backend)
+        raw = vault._runtime_file(tuple(found)) if on else {}
+        host = bool(getattr(backend, "host", False))
+        why_not = backend.can_run(facts) if callable(getattr(backend, "can_run", None)) else ""
+        entry = {"kind": kind, "title": backend.title, "host": host, "enabled": on, "default": kind == first,
+                 "can_run": not why_not, "why_not": why_not, "managed_by": "install.sh" if host else "",
+                 "settings": [f.view() for f in found.values()],
+                 "presets": [p.view() for p in getattr(backend, "presets", ())],
+                 "values": {k: raw.get(k, "") for k, f in found.items() if not f.secret},
+                 "secrets_set": [k for k, f in found.items() if f.secret and raw.get(k)],
+                 "facts": {k: facts[k] for k in ("kvm", "memory_gb", "disk_free_gb") if k in facts} if host else {},
+                 "sandboxes": [], "removable": "", "limit_hit": runtime.limit_hit(kind) if on else None}
+        if on:
+            try:
+                entry["sandboxes"] = _sandbox_names(kind)
+            except Exception as error:
+                entry["sandboxes"] = None
+                entry["removable"] = f"{backend.title} did not say which sandboxes it holds ({type(error).__name__})"
+            entry["removable"] = entry["removable"] or _why_not_removable(kind, entry["sandboxes"] or [])
+        out.append(entry)
+    return out
+
+
+def _sandbox_names(kind: str) -> list:
+    listed = runtime.complete(runtime.sandboxes(kind=kind))
+    return sorted((i.metadata or {}).get("sbx") or i.sandbox_id for i in listed)
+
+
+def _why_not_removable(kind: str, names: list) -> str:
+    backend = runtime.get(kind)
+    if getattr(backend, "host", False):
+        return f"{backend.title} is set up by install.sh on this server"
+    if len(runtime.enabled()) == 1:
+        return f"{backend.title} is the only runtime here; add another first"
+    if names:
+        return (f"{len(names)} sandbox{'es' if len(names) > 1 else ''} run on {backend.title} ({', '.join(names)}): "
+                "delete them first")
+    return ""
 
 
 # sbx-admin runtime add | remove | default: runtime.env's selection and keys
@@ -198,60 +281,151 @@ def _references(values) -> list:
     return [v for v in values if v and secret_store.is_reference(v)]
 
 
-def add(kind: str, secret: str) -> Change:
-    """Enable a runtime that runs elsewhere (a provider) with its secret
-    (Runtime.secret_key), or give an enabled one a new secret: checked first
-    (its configure, then its own checks against the provider), then written
-    into runtime.env, sealed into the store under a new reference once that
-    is Infisical; the old one goes only when the change is confirmed. A
-    runtime on this host is install.sh's (it sets up the host side)."""
-    from . import secret_store, vault
+def _settable(kind: str):
+    """A new backend of kind that an admin may add or change: a provider's,
+    not one on this host (install.sh's)."""
     if kind not in runtime.kinds():
         raise Refused(f"there is no runtime {kind}; the runtimes here are {', '.join(runtime.kinds())}")
     backend = runtime.make(kind)
     if getattr(backend, "host", False):
         raise Refused(f"{backend.title} ({kind}) runs on this host: install.sh enables it where the host can run it")
-    if not secret:
-        raise Refused(f"the {backend.secret_key} for {backend.title} comes on stdin")
-    enabled = runtime.enabled()
+    return backend
+
+
+def _changes(backend, values: dict, current: dict) -> dict:
+    """What values change, checked against the backend's settings: key ->
+    the new text, None to remove it (back to its default). A secret left
+    empty keeps its value; an int is a whole number, at least 1."""
+    found = fields(backend)
+    out = {}
+    for key, value in (values or {}).items():
+        field = found.get(key)
+        if field is None:
+            raise Refused(f"{backend.title} has no setting {key}; its settings: {', '.join(found)}")
+        value = "" if value is None else str(value).strip()
+        if field.secret:
+            if value:
+                out[key] = value
+            continue
+        if not value:
+            if current.get(key):
+                out[key] = None
+            continue
+        if field.kind == "int" and not (value.isdigit() and int(value) >= 1):
+            raise Refused(f"{field.label} ({key}) is a whole number, at least 1, not {value!r}")
+        if value != current.get(key):
+            out[key] = value
+    return out
+
+
+def _check(backend, kind: str, merged: dict) -> None:
+    """The backend configured with merged and its own checks against the
+    provider: Refused, naming what failed, else nothing."""
+    from . import secret_store
+    secret = getattr(backend, "secret_key", "")
+    if secret and not merged.get(secret):
+        label = fields(backend)[secret].label
+        raise Refused(f"{backend.title} needs its {label} ({secret}); on the server it comes on stdin "
+                      f"(sbx-admin runtime add {kind})")
+    plain = {k: secret_store.unseal(v) if secret_store.is_reference(v) else v for k, v in merged.items()}
     try:
-        backend.configure({**vault.runtime(backend.credential_keys), backend.secret_key: secret})
+        backend.configure(plain)
     except SystemExit as error:
         raise Refused(str(error)) from None
     failed = [c for c in backend.test() if not c.ok]
     if failed:
-        raise Refused(f"{backend.title} did not take the key: "
+        raise Refused(f"{backend.title} did not take the settings: "
                       + "; ".join(f"{c.name}: {c.detail}" for c in failed) + "; nothing was changed")
-    change = Change("", _file_now(), stale=_references([vault._runtime_file((backend.secret_key,)).get(backend.secret_key)]))
-    value = secret
-    if vault.sealing():   # a new reference: the old one still serves until the change is confirmed
-        value = secret_store.seal(secret, key=f"runtime/{backend.secret_key}/{secrets.token_hex(6)}")
-        change.made.append(value)
-    values = {backend.secret_key: value}
+
+
+def prepare(kind: str, values: dict, *, adding: bool) -> dict:
+    """A change from the web app, checked as add() will make it but
+    nothing written: the runtime (a provider's), enabled or not as asked,
+    the installation's domain (a provider's sandboxes call it back), the
+    store (Infisical: Conflict on the local one), the values against its
+    settings, and the provider's own checks with them. Returns the values to
+    queue for the root side (runtime_changes): a secret sealed into the store
+    as a reference, never its value."""
+    from . import secret_store, settings, vault
+    backend = _settable(kind)
+    on = kind in runtime.enabled()
+    if adding and on:
+        raise Conflict(f"{backend.title} is enabled already; change its settings instead")
+    if not adding and not on:
+        raise Refused(f"the {kind} runtime is not enabled here; add it first")
+    if not vault.sealing():
+        raise Conflict(LOCAL_STORE.replace("KIND", kind))
+    if adding and not settings.current().domain.name:
+        raise Conflict(f"{backend.title}'s sandboxes call this server back at its login address: connect a domain "
+                       "first (Settings → General)")
+    current = vault.runtime(backend.credential_keys) if on else {}
+    changes = _changes(backend, values, current)
+    if not changes and not adding:
+        raise Refused("nothing to change: the settings are as they were")
+    _check(backend, kind, {k: v for k, v in {**current, **changes}.items() if v})
+    found = fields(backend)
+    return {key: secret_store.seal(value, key=f"runtime/{key}/{secrets.token_hex(6)}")
+            if found[key].secret and value else value for key, value in changes.items()}
+
+
+def add(kind: str, values) -> Change:
+    """Enable a runtime that runs elsewhere (a provider) with its settings
+    (values by key: Runtime.settings; a string is its secret_key's value, as
+    sbx-admin runtime add reads it from stdin), or change an enabled one's:
+    checked first (its configure, then its own checks against the provider),
+    then written into runtime.env. A secret goes into the store under a new
+    reference once that is Infisical (one sealed already, from the web app's
+    queue, is written as it is); the old one goes only when the change is
+    confirmed. A runtime on this host is install.sh's (it sets up the host
+    side)."""
+    from . import secret_store, vault
+    backend = _settable(kind)
+    if isinstance(values, str):
+        values = {backend.secret_key: values}
+    enabled = runtime.enabled()
+    raw = vault._runtime_file(backend.credential_keys)
+    current = vault.runtime(backend.credential_keys)
+    changes = _changes(backend, values, current)
+    if not changes and kind in enabled:
+        raise Refused("nothing to change: the settings are as they were")
+    _check(backend, kind, {k: v for k, v in {**current, **changes}.items() if v})
+    found = fields(backend)
+    change = Change("", _file_now())
+    written = {}
+    for key, value in changes.items():
+        if not found[key].secret or value is None:
+            written[key] = value
+            continue
+        change.stale += _references([raw.get(key)])
+        if secret_store.is_reference(value):
+            change.made.append(value)
+        elif vault.sealing():   # a new reference: the old one still serves until the change is confirmed
+            value = secret_store.seal(value, key=f"runtime/{key}/{secrets.token_hex(6)}")
+            change.made.append(value)
+        written[key] = value
     if kind not in enabled:
-        values[runtime.ENABLED_KEY] = ",".join([*enabled, kind])
+        written[runtime.ENABLED_KEY] = ",".join([*enabled, kind])
     try:
-        vault.edit_runtime_file(values)
-        change.said = (f"{backend.title} ({kind}) {'has a new key' if kind in enabled else 'is enabled'}; the "
-                       f"runtimes: {', '.join(runtime.enabled())} (default {runtime.default()})")
+        vault.edit_runtime_file(written)
+        what = ("has a new key" if set(changes) == {backend.secret_key} else "has new settings") \
+            if kind in enabled else "is enabled"
+        change.said = (f"{backend.title} ({kind}) {what}; the runtimes: {', '.join(runtime.enabled())} "
+                       f"(default {runtime.default()})")
     except BaseException:
         change.undo()
         raise
     return change
 
 
-def remove(kind: str) -> Change:
-    """Disable a runtime: refused while it has sandboxes (running or paused)
-    or when it is the only one. A provider's keys leave runtime.env (and,
-    once the change is confirmed, the store); a runtime on this host keeps
-    install.sh's. A default naming it goes, so the first that stays is the
-    default."""
-    from . import vault
+def removal_refused(kind: str) -> None:
+    """Why the runtime can't be removed now (Refused; Conflict for what the
+    installation holds: it is the last one, or sandboxes run on it); nothing
+    when it can."""
     enabled = runtime.enabled()
     if kind not in enabled:
-        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(enabled)})")
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(enabled) or 'none'})")
     if len(enabled) == 1:
-        raise Refused(f"{kind} is the only runtime enabled here; add another first (sbx-admin runtime add KIND)")
+        raise Conflict(f"{kind} is the only runtime enabled here; add another first (sbx-admin runtime add KIND)")
     backend = runtime.get(kind)
     try:
         listed = runtime.complete(runtime.sandboxes(kind=kind))
@@ -260,8 +434,20 @@ def remove(kind: str) -> Change:
                       "nothing was changed") from None
     if listed:
         names = ", ".join(sorted((i.metadata or {}).get("sbx") or i.sandbox_id for i in listed))
-        raise Refused(f"{len(listed)} sandbox{'es' if len(listed) > 1 else ''} run on {backend.title} ({names}): "
-                      "delete them first (sbx down NAME, or the web app)")
+        raise Conflict(f"{len(listed)} sandbox{'es' if len(listed) > 1 else ''} run on {backend.title} ({names}): "
+                       "delete them first (sbx down NAME, or the web app)")
+
+
+def remove(kind: str) -> Change:
+    """Disable a runtime: refused while it has sandboxes (running or paused)
+    or when it is the only one (removal_refused). A provider's keys leave
+    runtime.env (and, once the change is confirmed, the store); a runtime on
+    this host keeps install.sh's. A default naming it goes, so the first
+    that stays is the default."""
+    from . import vault
+    removal_refused(kind)
+    enabled = runtime.enabled()
+    backend = runtime.get(kind)
     values: dict = {runtime.ENABLED_KEY: ",".join(k for k in enabled if k != kind)}
     if runtime.configuration()[runtime.DEFAULT_KEY] == kind:
         values[runtime.DEFAULT_KEY] = None
@@ -279,11 +465,15 @@ def remove(kind: str) -> Change:
     return change
 
 
+def default_refused(kind: str) -> None:
+    if kind not in runtime.enabled():
+        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(runtime.enabled()) or 'none'})")
+
+
 def set_default(kind: str) -> Change:
     """The runtime new sandboxes run on unless the request or the repo names another."""
     from . import vault
-    if kind not in runtime.enabled():
-        raise Refused(f"the {kind} runtime is not enabled here (enabled: {', '.join(runtime.enabled())})")
+    default_refused(kind)
     change = Change("", _file_now())
     try:
         vault.edit_runtime_file({runtime.DEFAULT_KEY: kind})

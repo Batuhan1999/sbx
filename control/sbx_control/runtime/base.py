@@ -148,6 +148,51 @@ LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
 MIN_TIMEOUT_SECONDS = 5 * 60
 
 
+@dataclasses.dataclass(frozen=True)
+class SettingField:
+    """One of a backend's settings, as the web app's form shows it: a key of
+    /etc/sbx/runtime.env (one of its credential_keys). A secret is write-only
+    (sealed into the store, never shown back); limit names the Limits field
+    an int setting sets, which presets and the limits the provider refused
+    refer to."""
+    key: str
+    label: str
+    secret: bool = False
+    default: str = ""          # what it is when not set ("": nothing)
+    help: str = ""
+    kind: str = "text"         # "text" or "int" (a whole number, at least 1)
+    optional: bool = False     # may stay empty (its default applies)
+    limit: str = ""            # the Limits field it sets, for an int limit
+
+    def view(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass(frozen=True)
+class Preset:
+    """A provider plan's limits, as values of the backend's settings by key;
+    source says where they come from."""
+    name: str
+    title: str
+    values: Mapping[str, str]
+    source: str = ""
+
+    def view(self) -> dict:
+        return {"name": self.name, "title": self.title, "values": dict(self.values), "source": self.source}
+
+
+class LimitRefused(Failed):
+    """The provider refused a request because of a limit of its own (the
+    plan's timeout, sandboxes at once, a sandbox's size): field is the Limits
+    field, asked what sbx asked for, allowed what the provider said it allows
+    (None when it did not say). sbx records it and names the setting to
+    change; it never raises a limit by itself."""
+
+    def __init__(self, message: str, *, field: str, asked=None, allowed=None):
+        super().__init__(message)
+        self.field, self.asked, self.allowed = field, asked, allowed
+
+
 class TemplateSpec:
     """A template as steps, in order: where it starts (an image or another
     template), then users, working directories, env and commands, then how
@@ -228,6 +273,14 @@ class Runtime(Protocol):
     host_unit: str | None   # the systemd unit that runs it on this host, which the host's guard needs
     credential_keys: tuple  # what it reads from /etc/sbx/runtime.env (vault.runtime)
     secret_key: str         # the one of them that is a secret, sealed into the store
+    # What an admin sets in the web app (SettingFields, keys of credential_keys);
+    # empty for a runtime install.sh sets up (on this host). presets: plans
+    # the form offers for its limits.
+    settings: tuple
+    presets: tuple
+
+    def can_run(self, facts: dict) -> str:
+        """Why it can't run on this host, given setup.host_facts ("" when it can)."""
 
     def host_units(self) -> list:
         """Its systemd units on this host (host.Unit), installed before the platform's."""
@@ -369,6 +422,11 @@ class HostSide:
     not run on this host (a hosted provider) inherits. A runtime on this host
     (Embed) overrides what it has."""
     host = False
+    settings: tuple = ()
+    presets: tuple = ()
+
+    def can_run(self, facts: dict) -> str:
+        return ""
     host_unit: str | None = None
     disk_path = ""
 

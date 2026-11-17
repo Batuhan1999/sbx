@@ -818,6 +818,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     migrate()
     platform.connect()
+    if not args.runtime and not runtime.enabled():
+        if args.which != "summary":
+            print(f"NOT BUILT: {runtime.NO_RUNTIME}", file=sys.stderr)
+        else:
+            print("Base templates: none to build until a sandbox runtime is set up")
+        return 0
     if args.which == "summary":
         print(summary())
         return 0

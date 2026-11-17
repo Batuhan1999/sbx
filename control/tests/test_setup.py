@@ -65,7 +65,7 @@ class SetupTests(Server):
 
     def test_ip_setup_signs_in_and_retires_token_without_repo_connections(self):
         initial = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual([s["step"] for s in initial["steps"]], ["address", "sign_in"])
+        self.assertEqual([s["step"] for s in initial["steps"]], ["address", "sign_in", "runtime"])
         self.assertFalse(initial["can_complete"])
         self.assertEqual(self.settings.current().sign_in.method, "password")
         self.assertEqual(self.settings.current().domain.acme, "delegated")

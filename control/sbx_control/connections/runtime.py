@@ -19,6 +19,9 @@ class Runtime(Connection):
         """Each runtime's own checks, then, on each one whose checks pass,
         whether its sandboxes reach this server."""
         from .. import reachability, runtime
+        if not runtime.enabled():
+            return [Check("Sandbox runtime", False, runtime.NO_RUNTIME,
+                          "add one in the web app (Settings → Sandbox runtimes) or: sbx-admin runtime add KIND")]
         found = []
         for kind in runtime.enabled():
             checks = runtime.test(kind)

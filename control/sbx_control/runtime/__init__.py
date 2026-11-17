@@ -4,9 +4,12 @@ sbx's core and its extensions reach VMs only through these functions;
 only a runtime's own package names its SDK (a test enforces it), and the
 core names no backend (a test enforces that too).
 
-An installation enables one or more runtimes in /etc/sbx/runtime.env:
-SBX_RUNTIMES lists them in order (missing or empty: embed) and
-SBX_RUNTIME_DEFAULT picks the one new sandboxes run on (missing: the first).
+An installation enables its runtimes in /etc/sbx/runtime.env: SBX_RUNTIMES
+lists them in order (missing: embed, as before several runtimes; present and
+empty: none yet, until an admin adds one) and SBX_RUNTIME_DEFAULT picks the
+one new sandboxes run on (missing: the first). With none, every call that
+needs a runtime raises NoRuntime, the listings are empty and the host's
+calls do nothing.
 Backends are the built-in ones (BUILTIN) and any installed package's
 through the entry-point group `sbx.runtimes` (name = kind, value =
 module:Class), loaded on first use. Each sandbox runs on exactly one runtime,
@@ -15,6 +18,7 @@ chosen when it is created: the calls that name a sandbox find its runtime
 calls run over every enabled runtime (only one on this host does anything)."""
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib
 import importlib.metadata
@@ -22,11 +26,12 @@ import shlex
 import threading
 
 from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info, Limits,
-                   NoRoom, NotRunning, Runtime, RuntimeLayer, Snapshot, TemplateGone, TemplateSpec, Timeout)
+                   LimitRefused, NoRoom, NotRunning, Preset, Runtime, RuntimeLayer, SettingField, Snapshot,
+                   TemplateGone, TemplateSpec, Timeout)
 
 __all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "HostSide", "Info",
-           "Limits", "NoRoom", "NotRunning", "Runtime", "RuntimeLayer", "Snapshot", "TemplateGone", "TemplateSpec", "Timeout",
-           "kinds", "enabled", "default", "get", "of"]
+           "Limits", "LimitRefused", "NoRoom", "NotRunning", "Preset", "Runtime", "RuntimeLayer", "SettingField",
+           "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
 BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud"}
@@ -62,7 +67,9 @@ def kinds() -> list[str]:
 
 
 def configuration() -> dict:
-    """SBX_RUNTIMES and SBX_RUNTIME_DEFAULT as runtime.env has them ("" when not)."""
+    """SBX_RUNTIMES and SBX_RUNTIME_DEFAULT as runtime.env has them: SBX_RUNTIMES
+    None when the file has no such line (Embed alone, as before), "" when it
+    names none; SBX_RUNTIME_DEFAULT "" when not set."""
     from .. import paths
     file = paths.runtime_env()
     try:
@@ -70,7 +77,7 @@ def configuration() -> dict:
     except OSError:
         key = (str(file), None)
     if _config["key"] != key:
-        found = dict.fromkeys(CONFIG_KEYS, "")
+        found = {ENABLED_KEY: None, DEFAULT_KEY: ""}
         if key[1] is not None:
             for line in file.read_text().splitlines():
                 name, sep, value = line.partition("=")
@@ -80,32 +87,51 @@ def configuration() -> dict:
     return _config["value"]
 
 
+def listed(value: str | None) -> list[str]:
+    """SBX_RUNTIMES's kinds, in order: None (no such line) is Embed alone."""
+    if value is None:
+        return [FALLBACK]
+    return list(dict.fromkeys(k.strip() for k in value.replace(" ", ",").split(",") if k.strip()))
+
+
+NO_RUNTIME = ("no sandbox runtime is set up: add one in Settings → Sandbox runtimes (or on the server: "
+              "sbx-admin runtime add KIND)")
+
+
+class NoRuntime(Failed):
+    """The installation enables no runtime yet (SBX_RUNTIMES is empty)."""
+
+    def __init__(self, message: str = NO_RUNTIME):
+        super().__init__(message)
+
+
 def enabled() -> list[str]:
-    """The kinds this installation runs, in order (SBX_RUNTIMES). One no
-    installed package provides stops sbx-control at start, naming those
-    that exist."""
-    listed = [k.strip() for k in configuration()[ENABLED_KEY].replace(" ", ",").split(",") if k.strip()]
-    listed = list(dict.fromkeys(listed)) or [FALLBACK]
-    unknown = [k for k in listed if k not in _references()]
+    """The kinds this installation runs, in order (SBX_RUNTIMES); [] when it
+    names none. One no installed package provides stops sbx-control at
+    start, naming those that exist."""
+    found = listed(configuration()[ENABLED_KEY])
+    unknown = [k for k in found if k not in _references()]
     if unknown:
         raise SystemExit(f"{ENABLED_KEY} in /etc/sbx/runtime.env names {', '.join(unknown)}, which no installed "
                          f"package provides; the runtimes there are: {', '.join(kinds())}")
-    return listed
+    return found
 
 
 def default() -> str:
     """The kind new sandboxes run on unless asked otherwise (SBX_RUNTIME_DEFAULT,
-    else the first enabled)."""
+    else the first enabled); "" when none is enabled."""
     found, kinds_now = configuration()[DEFAULT_KEY], enabled()
     if found and found not in kinds_now:
         raise SystemExit(f"{DEFAULT_KEY}={found} in /etc/sbx/runtime.env is not one of {ENABLED_KEY} "
-                         f"({', '.join(kinds_now)})")
-    return found or kinds_now[0]
+                         f"({', '.join(kinds_now) or 'none'})")
+    return found or (kinds_now[0] if kinds_now else "")
 
 
 def get(kind: str | None = None) -> Runtime:
-    """The enabled runtime of this kind (None: the default)."""
+    """The enabled runtime of this kind (None: the default); NoRuntime when none is enabled."""
     kind = kind or default()
+    if not kind:
+        raise NoRuntime()
     if kind not in enabled():
         raise Failed(f"the {kind} runtime is not enabled on this installation ({ENABLED_KEY}: "
                      f"{', '.join(enabled())})")
@@ -314,8 +340,9 @@ def create(template: str, *, timeout: int, envs: dict | None = None, metadata: d
     Its metadata carries this installation's id (INSTALL_KEY)."""
     backend = get(kind)
     metadata = {**(metadata or {}), INSTALL_KEY: installation_id()}
-    handle = backend.create(template, timeout=_capped(timeout, backend), envs=envs, metadata=metadata,
-                            deny_out=deny_out, on_timeout=on_timeout, auto_resume=auto_resume)
+    with _limits_learned(backend):
+        handle = backend.create(template, timeout=_capped(timeout, backend), envs=envs, metadata=metadata,
+                                deny_out=deny_out, on_timeout=on_timeout, auto_resume=auto_resume)
     _index[handle.sandbox_id] = backend.kind
     return handle
 
@@ -329,7 +356,8 @@ def deny_out(*cidrs: str, kind: str | None = None) -> list | None:
 
 def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
     backend = of(sandbox_id)
-    return backend.connect(sandbox_id, timeout=_capped(timeout, backend))
+    with _limits_learned(backend):
+        return backend.connect(sandbox_id, timeout=_capped(timeout, backend))
 
 
 class Listing(list):
@@ -362,6 +390,8 @@ def sandboxes(metadata: dict | None = None, states=None, kind: str | None = None
     found = Listing()
     chosen = [get(kind)] if kind else backends()
     kinds_now = [b.kind for b in chosen]
+    if not kinds_now:
+        return found
     for backend in chosen:
         try:
             listed = _listed(backend, metadata, states)
@@ -411,7 +441,8 @@ def pause(sandbox_id: str) -> None:
 
 def set_timeout(sandbox_id: str, seconds: int) -> None:
     backend = of(sandbox_id)
-    backend.set_timeout(sandbox_id, _capped(seconds, backend))
+    with _limits_learned(backend):
+        backend.set_timeout(sandbox_id, _capped(seconds, backend))
 
 
 def snapshot(sandbox_id: str, name: str) -> Snapshot:
@@ -491,6 +522,58 @@ def limits(kind: str | None = None) -> Limits:
     return get(kind).limits()
 
 
+# Limits the provider refused: the backend raises LimitRefused, the registry
+# keeps the last one per runtime (shown on its row in Settings → Sandbox
+# runtimes until its settings change) and says which setting to change. It
+# never raises a limit by itself.
+
+def _limit_hit_setting(kind: str):
+    from .. import state
+    return state.Setting(f"runtime_limit_hit:{kind}", encoded=True)
+
+
+def setting_for(backend, field: str):
+    """The backend's SettingField that sets the Limits field (None when none does)."""
+    return next((s for s in getattr(backend, "settings", ()) if s.limit == field), None)
+
+
+@contextlib.contextmanager
+def _limits_learned(backend):
+    try:
+        yield
+    except LimitRefused as error:
+        found = setting_for(backend, error.field)
+        change = (f"; change {found.label} ({found.key}) in Settings → Sandbox runtimes → {backend.title} to what "
+                  "your plan allows" if found else "")
+        message = f"{error}{change}"
+        try:
+            import datetime
+            _limit_hit_setting(backend.kind).set({
+                "field": error.field, "asked": error.asked, "allowed": error.allowed, "message": message,
+                "setting": found.key if found else "",
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")})
+        except Exception as recording:   # the refusal is said all the same
+            print(f"runtime {backend.kind}: could not record the limit it refused: {recording!r}", flush=True)
+        raise LimitRefused(message, field=error.field, asked=error.asked, allowed=error.allowed) from error
+
+
+def limit_hit(kind: str) -> dict | None:
+    """The last limit the runtime's provider refused: {field, asked, allowed,
+    message, setting, at}; None when none since its settings last changed."""
+    try:
+        return _limit_hit_setting(kind).get()
+    except Exception:
+        return None
+
+
+def forget_limit_hit(kind: str) -> None:
+    """Its settings changed: what it refused before no longer holds."""
+    try:
+        _limit_hit_setting(kind).delete()
+    except Exception:
+        pass
+
+
 SIZE_UNITS = {"cpu": "vCPUs", "memory_mb": "MiB", "disk_mb": "MiB"}
 
 
@@ -533,7 +616,10 @@ def too_many(kind: str | None = None) -> str:
 
 def build_template(spec: TemplateSpec, *, alias: str, cpu: int, memory_mb: int, disk_mb: int, on_log=None,
                    kind: str | None = None):
-    return get(kind).build_template(spec, alias=alias, cpu=cpu, memory_mb=memory_mb, disk_mb=disk_mb, on_log=on_log)
+    backend = get(kind)
+    with _limits_learned(backend):
+        return backend.build_template(spec, alias=alias, cpu=cpu, memory_mb=memory_mb, disk_mb=disk_mb,
+                                      on_log=on_log)
 
 
 def templates(kind: str | None = None) -> list[tuple[str, str]]:
@@ -655,9 +741,11 @@ def test(kind: str | None = None) -> list:
 def status(kind: str | None = None):
     """kind's connections.Status; without kind, the installation's: the one
     runtime's, or with several, the worst state and each one's summary."""
+    from ..connections.base import Status
+    if not kind and not enabled():
+        return Status("runtime", "Sandbox runtime", "not_connected", NO_RUNTIME, {}, (), ("test",))
     if kind or len(enabled()) == 1:
         return get(kind).status()
-    from ..connections.base import Status
     found = {backend.kind: backend.status() for backend in backends()}
     order = ("not_connected", "attention", "off", "connected")
     worst = min((s.state for s in found.values()), key=order.index)

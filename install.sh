@@ -16,10 +16,12 @@
 # it also enables E2B Cloud (the key goes to /etc/sbx/runtime.env), the
 # default where Embed is off; such a host needs about 2 GiB of memory and
 # 10 GiB of disk, and a domain (E2B's sandboxes call this server back at
-# login.D). A host that can run neither stops with what to set. An upgrade
-# keeps the runtimes the installation enables (SBX_RUNTIMES); a key given
-# again replaces E2B Cloud's or enables it. Later: sbx-admin runtime add,
-# remove, default.
+# login.D). A host that can run neither installs with no runtime enabled
+# (SBX_RUNTIMES empty): add one in the setup wizard or Settings → Sandbox
+# runtimes, or with sbx-admin runtime add e2b-cloud. An upgrade keeps the
+# runtimes the installation enables (SBX_RUNTIMES); a key given again
+# replaces E2B Cloud's or enables it. Later: sbx-admin runtime add, remove,
+# default, or the web app.
 #
 # Options:
 #   --domain D        previews at <name>.D, sbx-control at login.D (optional)
@@ -127,12 +129,16 @@ mem_mib=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 disk_gib=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
 first=""; configured || first=1
 # The runtimes this installation enables now (SBX_RUNTIMES in runtime.env,
-# missing: Embed alone); none before a first install writes the file.
+# missing: Embed alone; present and empty: none yet); none before a first
+# install writes the file.
 installed=""
 if [ -f /etc/sbx/runtime.env ]; then
   # As sbx reads it (runtime.configuration): spaces around the name are allowed.
-  installed=$(sed -n 's/^[[:space:]]*SBX_RUNTIMES[[:space:]]*=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ')
-  [ -n "$installed" ] || installed=embed
+  if grep -q '^[[:space:]]*SBX_RUNTIMES[[:space:]]*=' /etc/sbx/runtime.env; then
+    installed=$(sed -n 's/^[[:space:]]*SBX_RUNTIMES[[:space:]]*=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ' | xargs)
+  else
+    installed=embed
+  fi
 fi
 enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
 # Why E2B Embed can't run on this host ("" when it can).
@@ -160,8 +166,12 @@ fi
 # E2B Cloud: with its key in the environment, or enabled already.
 cloud=""
 { [ -n "$cloud_key" ] || enables e2b-cloud; } && cloud=1
+# Neither: sbx installs with no runtime enabled; an admin adds a provider's
+# in the setup wizard (it needs a domain: its sandboxes call this server back).
+none=""
 if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
-  die "this host can't run E2B Embed ($unfit), and no provider runtime is configured. Sandboxes can run at a provider instead: E2B Cloud, with its API key (from E2B's dashboard) in the environment (read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY), then: sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D ... (docs/reference.md, Runtimes)"
+  none=1
+  echo "E2B Embed: off on this host ($unfit); no provider runtime is configured: sbx installs with no sandbox runtime"
 fi
 if [ -z "$embed" ]; then
   # The sandboxes run at a provider: this host runs sbx-control, nginx and the secret store.
@@ -344,6 +354,10 @@ if [ -n "$cloud_key" ]; then
   runtimes=$(cd "$release" && E2B_CLOUD_API_KEY="$cloud_key" venv/bin/python -m sbx_control.runtime env \
     --enable e2b-cloud E2B_CLOUD_API_KEY) || die "could not write /etc/sbx/runtime.env (above)"
 fi
+if [ -n "$none" ]; then
+  # A first install names no runtime (SBX_RUNTIMES=''); an existing file stays as it is.
+  runtimes=$(cd "$release" && venv/bin/python -m sbx_control.runtime env) || die "could not write /etc/sbx/runtime.env (above)"
+fi
 unset cloud_key
 echo "ok: ${runtimes:-runtimes as runtime.env names them}"
 
@@ -367,4 +381,6 @@ if [ -z "$skip_templates" ]; then
   echo "ok"
 fi
 
+[ -z "$none" ] || echo "
+No sandbox runtime yet: add a sandbox runtime in the setup wizard (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
 SBX_PASSWORD=$password SBX_ROLLBACK=${rollback:-} sh /opt/sbx-control/current/install-report.sh

@@ -124,6 +124,8 @@ def api_setup_complete(request: Request, who: str = Depends(setup_or_admin)):
     s = setup.state(email, request.url.hostname or "")
     if not s["steps"][0]["done"] or not s["steps"][1]["done"]:
         raise HTTPException(400, "Choose the server address and configure admin access first.")
+    if not s["steps"][2]["done"]:
+        raise HTTPException(400, "Add a sandbox runtime first: sandboxes need one to run on.")
     if settings.current().sign_in.method != "none" and not email:
         raise HTTPException(400, "sign in with the method you chose; that makes you the first admin, then finish")
     checks = setup.readiness()

@@ -35,6 +35,7 @@ class HostUnit(enum.StrEnum):
     CONTROL = "control"              # sbx-control restart (what it reads at start: the cookie domain)
     RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Runtime.apply_host)
     UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
+    RUNTIME_CHANGE = "runtime-change"  # add, change, remove a runtime or make one the default (runtime_changes.py)
 
 
 class Section(BaseModel):

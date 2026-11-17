@@ -15,10 +15,11 @@ with connect after a restart (which resumes a paused sandbox, as the gate
 would), and the gate hands it to nginx for this runtime's requests."""
 from __future__ import annotations
 
+import re
 import threading
 import time
 
-from ..base import Capabilities, Failed, HostSide, Limits
+from ..base import Capabilities, Failed, HostSide, LimitRefused, Limits, Preset, SettingField
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute
 
 KIND = "e2b-cloud"
@@ -31,6 +32,34 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 LIMITS = {"timeout_seconds": ("E2B_CLOUD_MAX_TIMEOUT", 3600), "cpu": ("E2B_CLOUD_MAX_CPU", 8),
           "memory_mb": ("E2B_CLOUD_MAX_MEMORY_MB", 8192), "disk_mb": ("E2B_CLOUD_MAX_DISK_MB", 10240),
           "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 20)}
+LIMIT_LABELS = {"timeout_seconds": ("Longest run (seconds)", "How long a sandbox runs before E2B pauses it; "
+                                    "sbx renews it while the sandbox is used."),
+                "cpu": ("vCPUs per sandbox", ""), "memory_mb": ("Memory per sandbox (MiB)", ""),
+                "disk_mb": ("Disk per sandbox (MiB)", ""), "sandboxes": ("Sandboxes at once", "Per E2B team.")}
+SETTINGS = (
+    SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
+    SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True,
+                 help="E2B's domain; leave empty for E2B Cloud (e2b.app)."),
+    *(SettingField(key, LIMIT_LABELS[field][0], default=str(default), help=LIMIT_LABELS[field][1], kind="int",
+                   limit=field) for field, (key, default) in LIMITS.items()),
+)
+# E2B's plans as limits, from https://e2b.dev/pricing (read 2026-11-17).
+# Hobby: "Up to 1 hour per sandbox session", "Up to 10 concurrently running
+# sandboxes", "Up to 8 vCPUs per sandbox", "10 GiB of sandbox disk"; RAM
+# per the page's "1 to 8 GiB of RAM". Pro: "Up to 24 hours per sandbox
+# session", "Up to 100 concurrently running sandboxes", "20 GiB of sandbox
+# disk", "Custom sandbox CPU and RAM" within the page's 1 to 8 vCPUs and
+# 1 to 8 GiB. LIMITS' defaults stay as they were (20 at once), so an
+# installation that never chose a plan behaves as before.
+_PLAN_SOURCE = "https://e2b.dev/pricing (2026-11-17)"
+PRESETS = (
+    Preset("hobby", "Hobby", {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8",
+                              "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "10240",
+                              "E2B_CLOUD_MAX_SANDBOXES": "10"}, _PLAN_SOURCE),
+    Preset("pro", "Pro", {"E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_CPU": "8",
+                          "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "20480",
+                          "E2B_CLOUD_MAX_SANDBOXES": "100"}, _PLAN_SOURCE),
+)
 FETCH_RETRY_SECONDS = 15   # a failed token fetch answers from memory this long (an outage)
 INGRESS_NAME = "sbx-ingress"   # any name under the sandboxes' wildcard: the apex resolves elsewhere
 
@@ -49,6 +78,53 @@ def _limits(secrets: dict) -> Limits:
         raise SystemExit(f"{LIMITS['timeout_seconds'][0]} in /etc/sbx/runtime.env: {error}") from None
 
 
+_UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+
+
+def _duration(seconds) -> str:
+    seconds = int(seconds)
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= size and seconds % size == 0:
+            return f"{seconds // size} {unit}"
+    return f"{seconds} s"
+
+
+def refused_limit(error: BaseException, asked: dict) -> LimitRefused | None:
+    """E2B's answer as the limit it refused, when it is one: a timeout past
+    the plan's ("Timeout cannot be greater than 1 hours"), too many sandboxes
+    running at once, or a sandbox (or template build) larger than the plan
+    allows. asked: what sbx asked for, by Limits field."""
+    text = str(error)
+    lower = text.lower()
+    found = re.search(r"timeout cannot be greater than (\d+)\s*(second|minute|hour|day)", lower)
+    if found:
+        allowed = int(found.group(1)) * _UNITS[found.group(2)]
+        wanted = asked.get("timeout_seconds")
+        return LimitRefused(f"E2B refused {'a ' + _duration(wanted) + ' timeout' if wanted else 'the timeout'}: "
+                            f"your plan allows {_duration(allowed)}", field="timeout_seconds", asked=wanted,
+                            allowed=allowed)
+    if "concurrent" in lower and ("sandbox" in lower or "limit" in lower):
+        numbers = (re.search(pattern, lower) for pattern in (r"\((\d+)\)", r"limit of (\d+)", r"maximum of (\d+)"))
+        allowed = next((int(found.group(1)) for found in numbers if found), None)
+        return LimitRefused("E2B refused another sandbox: your plan runs "
+                            + (f"{allowed} at once" if allowed else "no more at once"),
+                            field="sandboxes", allowed=allowed)
+    # A size refusal names the team's (or plan's, tier's) limit; a build's own
+    # out-of-memory is no limit of the plan.
+    plan = any(w in lower for w in ("team", "plan", "tier"))
+    for field, words in (("cpu", ("cpu",)), ("memory_mb", ("memory", "ram")), ("disk_mb", ("disk",))):
+        if plan and any(w in lower for w in words) and any(w in lower for w in ("exceed", "too large", "greater than",
+                                                                                 "maximum", "limit")):
+            number = re.search(r"(\d+)", lower[lower.find(next(w for w in words if w in lower)):])
+            allowed = int(number.group(1)) if number else None
+            wanted = asked.get(field)
+            return LimitRefused(f"E2B refused a sandbox with {wanted} {field.replace('_mb', ' MiB')}: your plan "
+                                f"allows {allowed if allowed is not None else 'less'}" if wanted else
+                                f"E2B refused the sandbox's {field.replace('_mb', '')}: {text[:200]}",
+                                field=field, asked=wanted, allowed=allowed)
+    return None
+
+
 class Cloud(Compute, HostSide):
     kind = KIND
     title = "E2B Cloud"
@@ -57,6 +133,8 @@ class Cloud(Compute, HostSide):
     ports = frozenset({ENVD_PORT})
     credential_keys = (API_KEY, DOMAIN_KEY, *(key for key, _ in LIMITS.values()))
     secret_key = API_KEY
+    settings = SETTINGS
+    presets = PRESETS
     upstream_token_header = TOKEN_HEADER
     # Explicit, not the E2B project's default: a sandbox's ports answer only
     # with its traffic token.
@@ -125,11 +203,34 @@ class Cloud(Compute, HostSide):
         with self._locks_lock:
             self._locks.pop(sandbox_id, None)
 
+    def _limited(self, call, asked: dict):
+        """call's result; a refusal for a limit of the plan as LimitRefused."""
+        try:
+            return call()
+        except Failed:
+            raise
+        except Exception as error:
+            found = refused_limit(error, asked)
+            if found is None:
+                raise
+            raise found from error
+
+    def set_timeout(self, sandbox_id, seconds):
+        return self._limited(lambda: super(Cloud, self).set_timeout(sandbox_id, seconds),
+                             {"timeout_seconds": seconds})
+
+    def build_template(self, spec, *, alias, cpu, memory_mb, disk_mb, on_log=None):
+        return self._limited(lambda: super(Cloud, self).build_template(
+            spec, alias=alias, cpu=cpu, memory_mb=memory_mb, disk_mb=disk_mb, on_log=on_log),
+            {"cpu": cpu, "memory_mb": memory_mb, "disk_mb": disk_mb})
+
     def create(self, template, **options):
         """A new sandbox whose ports answer only with its traffic token
         (allow_public_traffic off, whatever the E2B project's default); one
-        that comes back without a token is killed, never served without one."""
-        handle = super().create(template, **options)
+        that comes back without a token is killed, never served without one.
+        A limit of the plan it refused is LimitRefused."""
+        handle = self._limited(lambda: super(Cloud, self).create(template, **options),
+                               {"timeout_seconds": options.get("timeout")})
         if not handle.traffic_access_token:
             try:
                 handle.kill()

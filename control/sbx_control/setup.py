@@ -1,5 +1,6 @@
-"""First-run control-plane setup: an address, admin access, and live runtime
-checks. Repository and provider connections follow after the server is ready."""
+"""First-run control-plane setup: an address, a sandbox runtime (added here
+when install.sh enabled none), admin access, and live runtime checks.
+Repository and provider connections follow after the server is ready."""
 from __future__ import annotations
 
 import hashlib
@@ -30,9 +31,10 @@ def complete() -> bool:
 
 
 def configured() -> bool:
+    """An address, a way to sign in, and a sandbox runtime."""
     from .connections import sign_in
     s = settings.current()
-    return bool(s.domain.name or s.domain.address) and sign_in.ready()
+    return bool(s.domain.name or s.domain.address) and sign_in.ready() and bool(runtime.enabled())
 
 
 def infer_complete() -> bool:
@@ -111,6 +113,12 @@ def host_facts() -> dict:
     disk = runtime.disk()
     if disk:
         facts["disk_free_gb"] = disk["free_gb"]
+    else:   # no runtime keeps its disk here: the root filesystem's, as install.sh measures it
+        import shutil
+        try:
+            facts["disk_free_gb"] = shutil.disk_usage("/").free // 1024 ** 3
+        except OSError:
+            pass
     return facts
 
 
@@ -139,11 +147,14 @@ def state(email: str | None, address: str = "") -> dict:
     s = settings.current()
     domain = connections.get("domain").status()
     sign_in = connections.get("sign_in").status()
+    kinds = runtime.enabled()
     steps = [{"step": "address", "done": address_ready(), "optional": False, "summary": domain.summary},
              {"step": "sign_in", "done": sign_in_connection.ready(),
-              "optional": False, "summary": sign_in.summary}]
+              "optional": False, "summary": sign_in.summary},
+             {"step": "runtime", "done": bool(kinds), "optional": False,
+              "summary": ", ".join(runtime.title(k) for k in kinds) if kinds else runtime.NO_RUNTIME}]
     signed_in = bool(email) and email != "anonymous"
-    can_complete = steps[0]["done"] and steps[1]["done"] and (signed_in or s.sign_in.method == "none")
+    can_complete = all(step["done"] for step in steps) and (signed_in or s.sign_in.method == "none")
     server_address = s.domain.address or ip_address(address) or domain_connection.public_ip()
     return {"complete": complete(), "steps": steps, "signed_in": signed_in, "email": email,
             "can_complete": can_complete, "host": {**host_facts(), "address": server_address},
