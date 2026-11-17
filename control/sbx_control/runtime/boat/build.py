@@ -209,7 +209,7 @@ class Builds:
         """The start command as an enabled systemd unit (Boat starts enabled
         units again on every resume), started now and waited for."""
         script = f"#!/bin/bash\n[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}\ncd \"${{SBX_TEMPLATE_WORKDIR:-$HOME}}\"\n" \
-                 f"exec {command}\n"
+                 f"exec bash -c {shlex.quote(command)}\n"
         unit = ("[Unit]\nDescription=sbx start command\nAfter=network.target\n[Service]\nUser=user\n"
                 "ExecStart=/bin/bash /etc/sbx/start.sh\nRestart=on-failure\n[Install]\nWantedBy=multi-user.target\n")
         commands = handle.commands

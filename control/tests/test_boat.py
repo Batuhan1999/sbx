@@ -257,6 +257,19 @@ class Backend(unittest.TestCase):
         self.assertTrue(self.backend.delete_template("abcd1234--repo-1"))
         self.assertFalse(self.backend.delete_template("abcd1234--repo-1"))
 
+    def written(self, path):
+        """What the build last wrote to path through base64 | sudo tee."""
+        command = [c for _, c, _ in self.fake.ran if f"sudo tee {path} " in c][-1]
+        return base64.b64decode(command.split("echo ")[1].split(" ")[0]).decode()
+
+    def test_the_start_command_runs_whole_through_a_shell(self):
+        import subprocess
+        from sbx_control.runtime import TemplateSpec
+        self.backend.build_template(TemplateSpec().from_template("tpl").set_start_cmd("cd / && echo started", "true"),
+                                    alias="s", cpu=2, memory_mb=4096, disk_mb=1024)
+        shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/start.sh")], capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "started\n")   # exec would run cd alone, or nothing after its &&
+
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
         steps = dockerfile.dockerfile_steps(
