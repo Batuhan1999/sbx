@@ -48,8 +48,9 @@ class Installation(unittest.TestCase):
 
     def setUp(self):
         from unittest.mock import patch
-        from sbx_control import recipes, settings, state, users
+        from sbx_control import recipes, runtime, settings, state, users
         users.forget()
+        self.enterContext(patch.dict(runtime._index, clear=True))   # which runtime saw which sandbox: per test
         # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
         self.remote_head = recipes.remote_head
         self.enterContext(patch.object(recipes, "remote_head", return_value=None))

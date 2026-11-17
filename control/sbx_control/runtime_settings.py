@@ -225,32 +225,25 @@ def _settable(kind: str):
 def _changes(backend, values: dict, current: dict) -> dict:
     """What values change, checked against the backend's settings: key ->
     the new text, None to remove it (back to its default). A secret left
-    empty keeps its value; an int is a whole number, at least 1."""
+    empty keeps its value; each value as its field parses it (SettingField.parse)."""
     found = fields(backend)
     out = {}
     for key, value in (values or {}).items():
         field = found.get(key)
         if field is None:
             raise Refused(f"{backend.title} has no setting {key}; its settings: {', '.join(found)}")
-        value = "" if value is None else str(value).strip()
+        try:
+            value = field.parse(value)
+        except ValueError as error:
+            raise Refused(str(error)) from None
         if field.secret:
             if value:
                 out[key] = value
             continue
-        if not value:
+        if value is None:
             if current.get(key):
                 out[key] = None
             continue
-        if field.kind == "int" and not (value.isdigit() and int(value) >= 1):
-            raise Refused(f"{field.label} ({key}) is a whole number, at least 1, not {value!r}")
-        if field.kind == "int" and ((field.min is not None and int(value) < field.min)
-                                    or (field.max is not None and int(value) > field.max)):
-            raise Refused(f"{field.label} ({key}) is from {field.min} to {field.max}"
-                          f"{' ' + field.unit if field.unit else ''}, not {value}")
-        if field.kind == "hostname":
-            value = value.lower().rstrip(".")
-            if not runtime.base.HOSTNAME.fullmatch(value):
-                raise Refused(f"{field.label} ({key}) is a host name such as example.com, not {value!r}")
         if value != current.get(key):
             out[key] = value
     # The stored secret never goes where a setting that says where it is sent now points.
