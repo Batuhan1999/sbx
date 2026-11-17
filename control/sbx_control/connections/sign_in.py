@@ -19,7 +19,7 @@ def ready() -> bool:
     if s.method == "oidc":
         return bool(s.oidc_issuer and s.oidc_client_id and vault.facts(vault.OIDC_CLIENT_SECRET).set)
     if s.method == "password":
-        return users.any_password()
+        return users.admin_has_password()
     return True
 
 
@@ -40,7 +40,7 @@ class SignIn(Connection):
                        if ok else "OIDC · issuer, client id or secret missing")
         elif s.method == "password":
             state = "connected" if ready() else "attention"
-            people = sum(1 for u in users.ls() if u["password"])
+            people = users.password_count()
             summary = (f"passwords · {people} {'person has' if people == 1 else 'people have'} one"
                        if people else "passwords · nobody has one yet")
         else:
@@ -76,9 +76,9 @@ class SignIn(Connection):
                                 "set" if has_secret else "missing", f"register {settings.current().base_url}/auth/callback at the provider"))
             return checks
         if method == "password":
-            has = users.any_password()
-            return [Check("people with a password", has, "yes" if has else "nobody yet",
-                          "give someone a password first: Settings → People, or sbx-admin user link EMAIL")]
+            has = users.admin_has_password()
+            return [Check("an admin with a password", has, "yes" if has else "no admin has one yet",
+                          "give an admin a password first: Settings → People, or sbx-admin user link EMAIL")]
         return [Check("open access", True, "no sign-in: everyone is an admin", "use oidc or password on a reachable host")]
 
     def connect(self, values: dict, *, by: str) -> Status:

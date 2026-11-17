@@ -1,11 +1,11 @@
 import { flexRender, getCoreRowModel, getFilteredRowModel, getSortedRowModel, useReactTable, type ColumnDef, type SortingState } from '@tanstack/react-table'
-import { Check, Copy, KeyRound, MoreHorizontal, Search, Trash2, UserPlus } from 'lucide-react'
+import { KeyRound, MoreHorizontal, Search, Trash2, UserPlus } from 'lucide-react'
 import { useId, useMemo, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useMe, useUsers } from '@/api/queries'
 import type { PasswordLink, User, Users } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { useCopy } from '@/components/CopyCommand'
+import { CopyButton } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
@@ -143,7 +143,8 @@ function RowMenu({ user, self, passwords, actions }: { user: User; self: boolean
   const [removing, setRemoving] = useState(false)
   if (self && !passwords) return null
   return <>
-    <DropdownMenu>
+    {/* Not modal: it opens the Remove dialog, and two modal layers can leave the page unclickable. */}
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={`Actions for ${user.email}`} className="data-[state=open]:bg-hover data-[state=open]:text-ink"><MoreHorizontal /></Button>
       </DropdownMenuTrigger>
@@ -198,14 +199,13 @@ function InviteDialog({ onLink, passwords }: { onLink: (l: PasswordLink) => void
 }
 
 function LinkDialog({ link, onClose }: { link: PasswordLink | null; onClose: () => void }) {
-  const { copied, copy } = useCopy()
   return <Dialog open={!!link} onOpenChange={o => { if (!o) onClose() }} title="Share the invite link"
     description={link ? <>Send it to <span className="font-medium text-ink">{link.email}</span>. It works once, for {plural(link.days, 'day')}, and is not shown again.</> : undefined}>
     {link && <div className="space-y-4">
       <div className="flex h-9 items-center gap-1 rounded-md border border-line bg-sunken pl-3 pr-1">
         <input readOnly value={link.link} aria-label="Invite link" onFocus={e => e.target.select()}
           className="h-full min-h-0 min-w-0 grow truncate border-0 bg-transparent p-0 font-mono text-[12px] shadow-none hover:border-0 focus-visible:shadow-none" />
-        <Button size="sm" variant="ghost" onClick={() => copy(link.link)} aria-label="Copy invite link">{copied ? <Check /> : <Copy />}{copied ? 'Copied' : 'Copy'}</Button>
+        <CopyButton text={link.link} variant="ghost" label="Copy" />
       </div>
       <div className="flex justify-end"><Button variant="primary" onClick={onClose}>Done</Button></div>
     </div>}

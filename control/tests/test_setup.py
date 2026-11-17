@@ -280,6 +280,49 @@ class SetupTests(Server):
         self.assertTrue(auth.may_sign_in("dev@example.com"))
         self.assertFalse(auth.may_sign_in("anyone@gmail.com"))
 
+    def test_a_link_works_once_and_only_until_it_expires(self):
+        from sbx_control import state, users
+        token = users.mint_link("dev@example.com", by="test")
+        with state.db() as conn:
+            conn.execute("update user_links set expires_at = 0")
+        with self.assertRaisesRegex(users.Refused, "expired"):
+            users.use_link(token, "test-only-password-123")
+        token = users.mint_link("dev@example.com", by="test")
+        with self.assertRaisesRegex(users.Refused, "between"):
+            users.use_link(token, "short")       # a refused password leaves the link usable
+        users.use_link(token, "test-only-password-123")
+        with self.assertRaisesRegex(users.Refused, "used"):
+            users.use_link(token, "test-only-password-456")
+
+    def test_passwords_are_refused_until_an_admin_has_one(self):
+        from sbx_control import connections, users
+        from sbx_control.connections import Refused
+        self.settings.update("access", {"admins": ["operator@example.com"]}, by="test")
+        self.settings.update("sign_in", {"method": "oidc", "oidc_issuer": "https://id.example.com",
+                                         "oidc_client_id": "fixture-client"}, by="test")
+        users.set_password("member@example.com", "test-only-password-123", by="test")
+        with self.assertRaisesRegex(Refused, "check failed"):
+            connections.get("sign_in").connect({"method": "password"}, by="test")
+        self.assertEqual(self.settings.current().sign_in.method, "oidc")
+        users.set_password("operator@example.com", "test-only-password-123", by="test")
+        connections.get("sign_in").connect({"method": "password"}, by="test")
+        self.assertEqual(self.settings.current().sign_in.method, "password")
+
+    def test_removing_an_oidc_person_ends_their_session(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from sbx_control import users
+        self.repo_admin()
+        self.settings.update("sign_in", {"method": "oidc", "oidc_issuer": "https://id.example.com",
+                                         "oidc_client_id": "fixture-client"}, by="test")
+        users.add("guest@gmail.com", by="test")
+        client = MagicMock()
+        client.authorize_access_token = AsyncMock(return_value={"userinfo": {"email": "guest@gmail.com", "email_verified": True}})
+        with patch("sbx_control.auth.oidc_client", return_value=client):
+            self.assertEqual(self.client.get("/auth/callback", follow_redirects=False).status_code, 307)
+        self.assertEqual(self.client.get("/api/me").json()["email"], "guest@gmail.com")
+        users.remove("guest@gmail.com", by="test")
+        self.assertEqual(self.client.get("/api/me").status_code, 401)
+
     def test_oidc_takes_only_a_verified_email(self):
         from unittest.mock import AsyncMock, MagicMock
         self.settings.update("sign_in", {"method": "oidc", "oidc_issuer": "https://id.example.com",

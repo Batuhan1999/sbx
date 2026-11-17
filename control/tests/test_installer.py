@@ -216,6 +216,7 @@ class SetupInferTests(Installation):
         from sbx_control import settings, setup, users
         self.assertEqual(self.infer(), 3)
         settings.update('domain', {'address': '203.0.113.10'}, by='test')
+        settings.update('access', {'admins': ['operator@example.com']}, by='test')
         users.set_password('operator@example.com', 'test-only-password', by='test')
         self.assertEqual(self.infer(), 0)
         self.assertTrue(setup.complete())

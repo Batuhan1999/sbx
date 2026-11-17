@@ -27,7 +27,11 @@ def _known(email: str) -> str:
 
 
 def _link(email: str, by: str) -> dict:
-    return {"email": email, "link": users.link_url(users.mint_link(email, by=by)), "days": users.LINK_DAYS}
+    try:
+        token = users.mint_link(email, by=by)
+    except users.Refused as error:
+        raise HTTPException(400, f"{email}: {error}")
+    return {"email": email, "link": users.link_url(token), "days": users.LINK_DAYS}
 
 
 @router.get("/api/users")

@@ -17,7 +17,7 @@ export function RepoRuntime({ repo }: { repo: string }) {
   </Panel>
 }
 
-function RuntimeForm({ current, choice, save }: { current: string; choice: Runtimes; save: { mutateAsync: (runtime: string) => Promise<unknown>; isSuccess: boolean } }) {
+function RuntimeForm({ current, choice, save }: { current: string; choice: Runtimes; save: { mutateAsync: (runtime: string) => Promise<unknown> } }) {
   const form = useAppForm({ defaultValues: { runtime: current }, onSubmit: async ({ value }) => { await save.mutateAsync(value.runtime); toast.success('Runtime saved') } })
   const fallback = choice.runtimes.find(r => r.kind === choice.default)?.title ?? choice.default
   return <AppForm form={form} className="space-y-3">

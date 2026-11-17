@@ -155,8 +155,22 @@ def signed_in(email: str, *, by: str) -> int:
 
 
 def any_password() -> bool:
+    return password_count() > 0
+
+
+def password_count() -> int:
     with db() as conn:
-        return bool(conn.execute("select 1 from users where password_hash is not null limit 1").fetchone())
+        return conn.execute("select count(*) from users where password_hash is not null").fetchone()[0]
+
+
+def admin_has_password() -> bool:
+    """Whether an admin can sign in with a password: switching to passwords must not lock them out."""
+    admins = sorted(settings.current().admins)
+    if not admins:
+        return False
+    with db() as conn:
+        return bool(conn.execute(f"select 1 from users where password_hash is not null and email in "
+                                 f"({','.join('?' * len(admins))}) limit 1", admins).fetchone())
 
 
 def clear(*, by: str):
@@ -210,12 +224,15 @@ def link_email(token: str) -> str | None:
 
 
 def use_link(token: str, password: str) -> tuple[str, int]:
-    """Sets the password the link is for and spends it: (email, generation)."""
-    email = link_email(token)
-    if not email:
-        raise Refused("This link is used or expired. Ask an admin for a new one.")
+    """Sets the password the link is for and spends it: (email, generation). The link is
+    taken in one statement, so two requests with it cannot both succeed."""
     _check_password(password)
-    return email, set_password(email, password, by=email)
+    with db() as conn:
+        row = conn.execute("delete from user_links where hash = ? and expires_at > ? returning email",
+                           (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
+    if not row:
+        raise Refused("This link is used or expired. Ask an admin for a new one.")
+    return row[0], set_password(row[0], password, by=row[0])
 
 
 SCHEMA = state.Schema(tables="""
