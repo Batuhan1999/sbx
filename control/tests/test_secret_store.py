@@ -470,6 +470,9 @@ class SecretStoreTests(Server):
         self.secret_store.discard_released()
         # rollback.sh brings back the row; the release before reads its payload when it starts.
         self.assertEqual(self.secret_store.unseal(reference), "old-shared-password")
+        # While a rollback may bring it back, the store can't move away from it.
+        with self.assertRaisesRegex(Exception, "holds sealed values"):
+            self.settings.update("store", {"project": "elsewhere"}, by="test")
         shutil.rmtree(backup)
         self.secret_store.discard_released()
         with self.assertRaises(self.secret_store.StoreError):

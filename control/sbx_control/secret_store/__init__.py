@@ -157,7 +157,8 @@ def moves(before, after) -> bool:
 
 @settings.check("store")
 def check_location(before, after):
-    if moves(before, after) and any(Infisical.owns(r) for r in references()):
+    held = references() + _AFTER_ROLLBACKS.get([])   # what a rollback would bring back too
+    if moves(before, after) and any(Infisical.owns(r) for r in held):
         raise ValueError("This Infisical store holds sealed values; restore or move them before changing it")
 
 
