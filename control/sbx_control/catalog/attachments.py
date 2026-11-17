@@ -98,6 +98,10 @@ def bind(package: Package, chosen: dict, label: str) -> tuple[dict, dict]:
         pick = chosen.get(slot)
         picked = next((c for c in of_kind if c["key"] == pick), None) if pick else (of_kind[0] if len(of_kind) == 1 else None)
         if picked is None:
+            if pick:
+                have = ", ".join(c["key"] for c in of_kind) or "none"
+                raise MissingConnection(f"{label}: names the {req['kind']} connection {pick}, which this server "
+                                        f"doesn't have (it has: {have}); name one with connections: {{{slot}: <key>}}")
             if not of_kind:
                 raise MissingConnection(f"{label}: needs a {req['kind']} connection; add one in Extensions")
             raise MissingConnection(f"{label}: several {req['kind']} connections ({', '.join(c['key'] for c in of_kind)}); "

@@ -511,3 +511,28 @@ class ManagedServerTests(Server):
                     self.cow.remove(self.hosted.Server("fixture", "postgres"), storage)
             self.assertTrue(image.exists())
 
+
+
+class ConnectionChoiceTests(Server):
+    def bind(self, chosen, keys):
+        from types import SimpleNamespace
+        from sbx_control.catalog import attachments
+        package = SimpleNamespace(requires={"server": {"kind": "postgres-server", "expose": {}}})
+        found = [{"key": k, "package": "postgres-server", "disabled": False, "inputs": {}} for k in keys]
+        with patch.object(attachments, "connections", return_value=found), \
+                patch.object(attachments, "connection", side_effect=lambda k: next(c for c in found if c["key"] == k)):
+            return attachments.bind(package, chosen, "service db")
+
+    def test_a_named_connection_the_server_lacks_is_said_so(self):
+        from sbx_control.catalog.attachments import MissingConnection
+        with self.assertRaises(MissingConnection) as refused:
+            self.bind({"server": "postgres"}, ["dev-pg"])
+        self.assertEqual(str(refused.exception), "service db: names the postgres-server connection postgres, which this "
+                         "server doesn't have (it has: dev-pg); name one with connections: {server: <key>}")
+
+    def test_one_connection_is_bound_by_itself_and_of_several_one_is_named(self):
+        from sbx_control.catalog.attachments import MissingConnection
+        self.assertEqual(self.bind({}, ["dev-pg"])[0], {"server": "dev-pg"})
+        self.assertEqual(self.bind({"server": "b"}, ["a", "b"])[0], {"server": "b"})
+        with self.assertRaisesRegex(MissingConnection, r"several postgres-server connections \(a, b\)"):
+            self.bind({}, ["a", "b"])
