@@ -196,7 +196,7 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   port; with `fetch=False` it returns only a token the backend kept, "" when
   none, and never asks the provider), which desktop its sandboxes have (`desktop`: `"sbx"`, sbx's
   noVNC that `platform.start` runs, or `"provider"`, its own, opened through
-  `desktop_url`), and whether every resume is a cold boot (`cold_resume`:
+  `desktop_url`), and whether every resume is treated as a cold boot (`cold_resume`:
   `core.restore_runtime` then re-ships `/run/sbx` and restarts the app).
   `Backend` holds their defaults.
 - `control/sbx_control/runtime/e2b/` is the E2B SDK adapter the E2B-based

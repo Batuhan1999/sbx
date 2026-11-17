@@ -158,7 +158,7 @@ servers and internal hosts through endpoints (`sbx_control/endpoints/`;
    per port in a cookie (`upstream_token_at = TokenPlace("cookie", name)`,
    `upstream_token(sandbox_id, port, *, fetch=True)`; E2B Cloud ignores the port), the
    provider's own desktop (`desktop = "provider"`, `desktop_url`; sbx's noVNC
-   only where `desktop` is `"sbx"`), and a cold boot on every resume
+   only where `desktop` is `"sbx"`), and every resume treated as a cold boot
    (`cold_resume`: sbx re-ships `/run/sbx` and restarts the processes).
 3. **Previews never end in a bare error.** On every runtime, signed out is
    the login for any host; signed in, every state the app can't answer in

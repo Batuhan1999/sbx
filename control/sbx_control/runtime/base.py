@@ -440,10 +440,11 @@ class Backend(abc.ABC):
     # desktop preview proxies to) or "provider" (the provider's own, which
     # desktop_url opens; sbx starts none of its own there).
     desktop = "sbx"
-    # Every resume boots the VM afresh (a provider without memory
-    # snapshots): its tmpfs is empty and nothing of what ran is running, so
-    # sbx re-ships what lives in platform.RUN and restarts the recipe's
-    # processes on every resume, whatever lifecycle.resume says.
+    # A resume may boot the VM afresh (a provider without memory
+    # snapshots): its tmpfs empty and nothing of what ran running. sbx
+    # can't count on the machine it had, so it re-ships what lives in
+    # platform.RUN and restarts the recipe's processes on every resume,
+    # whatever lifecycle.resume says.
     cold_resume = False
 
     # The compute part

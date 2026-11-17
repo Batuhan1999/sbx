@@ -7,9 +7,10 @@ What sbx asks for, as Boat has it, one module each:
 - plans: Boat's plans and machines as sbx's limits, settings and presets.
 - errors: Boat's answers as sbx's errors (call, BoatError).
 - sandbox: commands and files through Boat's API (Handle).
-- lifecycle: sandboxes from saved snapshots; pause is Boat's stop, so every
-  resume is a cold boot (cold_resume): sbx re-ships /run/sbx and restarts
-  the recipe's processes. Isolation: every sandbox carries labels
+- lifecycle: sandboxes from saved snapshots; pause is Boat's stop, which
+  keeps the disk (and the machine for 10 minutes, usually, not surely), so
+  sbx treats every resume as a cold boot (cold_resume): it re-ships /run/sbx
+  and restarts the recipe's processes. Isolation: every sandbox carries labels
   (sbx_install, and sbx_template, since Boat lists no template), listed with
   label filters; templates and snapshots are named with the installation's
   prefix (runtime.template_name).

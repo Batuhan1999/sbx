@@ -1,5 +1,5 @@
 """Boat sandboxes' lifecycle: create from a saved snapshot, connect
-(resuming a stopped one: every resume a cold boot), list by label, pause
+(resuming a stopped one: treated as a cold boot), list by label, pause
 (Boat's stop), kill."""
 from __future__ import annotations
 
@@ -100,8 +100,9 @@ class Sandboxes:
             time.sleep(POLL_SECONDS)
 
     def connect(self, sandbox_id, *, timeout=None):
-        """The running sandbox, resuming a stopped one (a cold boot: its
-        machine is new, its exposed ports' tokens are asked again)."""
+        """The running sandbox, resuming a stopped one (treated as a cold
+        boot: past Boat's 10 minutes its machine is new; its exposed ports'
+        tokens are asked again)."""
         from boat_sdk.models import ResumeRequest, UpdateSandboxRequest
         found = self._sandbox(sandbox_id)
         if found.state == "archiving":
@@ -172,7 +173,7 @@ class Sandboxes:
         return True
 
     def pause(self, sandbox_id):
-        """Boat's stop: the disk is kept, the machine goes (cold boot on resume)."""
+        """Boat's stop: the disk is kept, the machine goes after 10 minutes (cold boot on a later resume)."""
         found = self._sandbox(sandbox_id)
         if found.state == "archived":
             return

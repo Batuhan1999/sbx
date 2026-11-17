@@ -3,7 +3,7 @@ in a builder sandbox (from the parent template's snapshot, or Boat's own
 Ubuntu 24.04 for an image step), saves it under the template's name and
 deletes the builder. A Dockerfile step goes through runtime.dockerfile; COPY
 and ADD are refused. The start command is an enabled systemd unit, which
-Boat starts again on every resume."""
+Boat starts again whenever a resume boots a new machine."""
 from __future__ import annotations
 
 import base64
@@ -224,7 +224,7 @@ class Builds:
     @staticmethod
     def _start_unit(handle: Handle, command: str, ready, log):
         """The start command as an enabled systemd unit (Boat starts enabled
-        units again on every resume), started now and waited for: restarted,
+        units again when a resume boots a new machine), started now and waited for: restarted,
         as a builder from a parent template runs the parent's already."""
         script = f"#!/bin/bash\n[ -r {TEMPLATE_FILE} ] && . {TEMPLATE_FILE}\ncd \"${{SBX_TEMPLATE_WORKDIR:-$HOME}}\"\n" \
                  f"exec bash -c {shlex.quote(command)}\n"

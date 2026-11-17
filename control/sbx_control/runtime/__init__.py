@@ -414,7 +414,7 @@ def desktop_url(sandbox_id: str) -> str:
 
 
 def cold_resume(kind: str | None = None) -> bool:
-    """Whether every resume on the runtime boots the sandbox afresh (Backend.cold_resume)."""
+    """Whether sbx treats every resume on the runtime as a cold boot (Backend.cold_resume)."""
     return get(kind).cold_resume
 
 

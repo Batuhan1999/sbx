@@ -173,8 +173,8 @@ def restore_runtime(sbx, info) -> bool:
         kind = None
     if core.runtime_state(info) == "paused":
         extensions.on_resume(sbx, info)
-    # A runtime whose every resume is a cold boot (runtime.cold_resume) comes
-    # back with nothing running: everything below, and the app restarted.
+    # A runtime whose resumes are treated as cold boots (runtime.cold_resume):
+    # everything below, and the app restarted.
     cold = core.runtime_state(info) != "running" and runtime.cold_resume(kind)
     if not cold and sbx.commands.run(f"test -f {RUN}/env && echo ok || true", timeout=30).stdout.strip() == "ok":
         paused = core.runtime_state(info) == "paused"
@@ -195,7 +195,7 @@ def restore_runtime(sbx, info) -> bool:
     envs, hidden, layer = runtime_values(info, write)
     write_runtime(sbx, write.name, envs, layer, hidden=hidden, write=write)
     state.event(write.name, "runtime restored",
-                "every resume on this runtime is a cold boot: env, credentials and processes put back" if cold else
+                "every resume on this runtime is treated as a cold boot: env, credentials and processes put back" if cold else
                 "its tmpfs was empty (likely: booted from its disk, as the host had no room for its pause snapshot), "
                 "so its env and credentials were gone", internal=True)
     return True
