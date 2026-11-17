@@ -8,6 +8,8 @@ describe('a plan in one line', () => {
     expect(planSummary({ memory_mb: 512 })).toBe('0.5 GB RAM')
     expect(runLength(5400)).toBe('1 h 30 min')
     expect(runLength(300)).toBe('5 min')
+    expect(runLength(3599)).toBe('1 h')          // rounded once: never "60 min"
+    expect(runLength(7170)).toBe('2 h')
     expect(planSummary({})).toBe('')
   })
 })
