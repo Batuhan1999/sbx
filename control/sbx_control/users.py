@@ -259,7 +259,35 @@ def use_link(token: str, password: str) -> tuple[str, int]:
     return row[0], set_password(row[0], password, by=row[0])
 
 
-SCHEMA = state.Schema(tables="""
+SHARED_PASSWORD = "LOGIN_PASSWORD"   # vault row of the one password sign-in had before people had their own
+
+
+def _carry_shared_password(conn):
+    """Upgrading from one shared password: everyone who signed in with it (the admins and the
+    emails allowed_emails names exactly) keeps it as their own, unless they have one already;
+    then the shared one is deleted. A store that can't be read leaves it for the next start."""
+    import sys
+    from . import secret_store
+    row = conn.execute("select value from sealed where key = ?", (SHARED_PASSWORD,)).fetchone()
+    if not row:
+        return
+    try:
+        password = secret_store.unseal(row[0])
+        s = settings.current()
+        people = [*s.access.admins, *(e for e in s.sign_in.allowed_emails if "*" not in e and "?" not in e)]
+        if s.sign_in.method == "password" and password:
+            for email in dict.fromkeys(e.lower() for e in people):
+                conn.execute("insert into users (email, password_hash, generation, created_by) values (?, ?, ?, 'upgrade') "
+                             "on conflict (email) do update set password_hash = excluded.password_hash, "
+                             "generation = users.generation + 1 where users.password_hash is null",
+                             (email, _hash(password), secrets.randbelow(2 ** 31)))
+        secret_store.delete_rows(conn, "sealed", "key = ?", (SHARED_PASSWORD,))
+    except Exception as error:  # noqa: BLE001 - sbx still starts; the next start retries
+        print(f"keeping the shared password for now: {error}", file=sys.stderr)
+    forget()
+
+
+SCHEMA = state.Schema(upgrade=_carry_shared_password, tables="""
 create table if not exists users (
     email text primary key, password_hash text, generation integer not null default 0,
     created_at text not null default current_timestamp, created_by text not null default '',
