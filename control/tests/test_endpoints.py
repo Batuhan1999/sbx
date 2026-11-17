@@ -936,6 +936,19 @@ class ForwarderTests(Setup, Installation):
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/certs", asked
 
+    def test_a_renewal_answered_before_sbx_pushed_newer_certificates_leaves_them(self):
+        older, pushed = self.endpoints.issue("box", "dev-pg"), self.endpoints.issue("box", "dev-pg")
+        self.renewed.mkdir()
+
+        def answer():   # sbx pushes while the answer is on its way
+            (self.renewed / "dev-pg.bundle.pem").write_text(pushed[1] + pushed[0])
+            (self.renewed / "bundles.json").write_text(json.dumps({"dev-pg": pushed[2]}))
+            return 200, json.dumps({"endpoints": [{"name": "dev-pg", "cert": older[0], "key": older[1],
+                                                   "not_after": older[2]}]}).encode()
+        url, _ = self.callback(answer)
+        self.guest.renew({"renew": {"url": url, "sandbox": "box", "credential": "c"}}, self.folder, self.renewed)
+        self.assertEqual((self.renewed / "dev-pg.bundle.pem").read_text(), pushed[1] + pushed[0])
+
     def test_a_certificate_still_valid_is_used_while_its_renewal_runs_in_the_background(self):
         release = threading.Event()
         fresh = self.endpoints.issue("box", "dev-pg")

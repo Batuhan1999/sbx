@@ -546,10 +546,13 @@ def _certificate(endpoint, renewed):
 def renew(config, folder, renewed):
     """New certificates for every endpoint the sandbox may use, from
     sbx-control (its callback, with the sandbox's credential), into renewed:
-    each key and certificate in one file, replaced whole."""
+    each key and certificate in one file, replaced whole. Dropped when sbx
+    pushed others meanwhile (from a CA made anew, which the answer may predate)."""
     import ssl
     import urllib.error
     import urllib.request
+    renewed = Path(renewed)
+    before = read_json(renewed / BUNDLE_INDEX)
     target = config["renew"]
     trust = config.get("trust")
     context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
@@ -561,9 +564,10 @@ def renew(config, folder, renewed):
     except urllib.error.HTTPError as error:   # refused: a deleted sandbox, a revoked grant
         error.close()
         raise
-    renewed = Path(renewed)
-    renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
     times = dict(read_json(renewed / BUNDLE_INDEX))
+    if times != before:
+        return times
+    renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
     for item in found:
         _write_private(renewed / BUNDLE.format(item["name"]), item["key"] + item["cert"])
         times[item["name"]] = item["not_after"]
