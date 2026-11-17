@@ -4,7 +4,7 @@
 # HTTP-01 for an IP or DNS-01 for a wildcard domain, serving
 #   <login_host>.<domain>  sbx-control: the login, the API, /install
 #   <service>.<domain>     the operator's services, behind the login
-#   everything else        sandboxes, through the runtime's ingress (Embed's client-proxy on 3002)
+#   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
 # Every request to a service or a sandbox passes sbx-control's /gate first:
 # previews for anyone signed in, owner-only ports for their owner. nginx
 # removes the login cookie, and an sbx token, before a request reaches a
@@ -13,8 +13,11 @@ set -eu
 eval "$(venv/bin/python -m sbx_control.settings shell)"
 # The renewal scripts below run whichever release is active then.
 current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)')
-# Where previews go: the sandbox runtime's ingress (Embed's client-proxy).
-ingress=$(venv/bin/python -c 'from sbx_control import runtime; print(runtime.current().ingress)')
+# Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
+# one upstream per enabled runtime, picked by the kind the gate names.
+upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
+# An https ingress (a provider's): SNI with its own name, its certificate verified.
+upstream_tls=$(venv/bin/python -m sbx_control.ip_previews upstream-tls)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
@@ -184,12 +187,16 @@ location = /_sbx_gate {
   proxy_set_header X-Original-Host \$host;
   proxy_set_header X-Original-Sandbox-Id \$http_e2b_sandbox_id;
   proxy_set_header X-Original-Sandbox-Port \$http_e2b_sandbox_port;
+  # A CORS preflight carries no credentials: the gate lets it through to a
+  # declared preview, without a login, and names its runtime.
+  proxy_set_header X-Original-Method \$sbx_method;
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;
-  proxy_cache_key "\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
+  # The method first: an anonymous preflight's allow never answers a GET.
+  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
@@ -206,6 +213,7 @@ proxy_cache_path /var/cache/nginx/gate keys_zone=gate:2m max_size=20m inactive=5
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
 # The gate names the runtime's host (<port>-<id>) for readable host names.
 map \$sbx_upstream \$sbx_target { "" \$host; default \$sbx_upstream; }
+$upstreams
 # An sbx API token must not reach a sandbox either; an Authorization header the
 # gate did not use is the app's own (a JWT, Basic auth) and passes.
 map \$sbx_auth \$sandbox_authorization { bearer ""; default \$http_authorization; }
@@ -231,22 +239,18 @@ server {
   server_name $domain *.$domain;
   client_max_body_size 0;
   include /etc/nginx/conf.d/gate.inc;
-  location ^~ /_preflight/ {
-    internal;
-    rewrite ^/_preflight(.*)\$ \$1 break;
-    proxy_pass $ingress;
-    proxy_set_header Host \$host;
-  }
   location / {
-    # CORS preflights carry no credentials; the request that follows is gated.
-    if (\$request_method = OPTIONS) { rewrite ^ /_preflight\$uri last; }
+    # The gate's subrequest is a GET; it reads the request's method from here.
+    set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_upstream \$upstream_http_x_sbx_upstream;
     auth_request_set \$sbx_auth \$upstream_http_x_sbx_auth;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
+    auth_request_set \$sbx_runtime \$upstream_http_x_sbx_runtime;
     error_page 401 = @login;
     error_page 403 = @denied;
-    proxy_pass $ingress;
+    proxy_pass \$sbx_ingress;
+$upstream_tls
     proxy_http_version 1.1;
     # The runtime routes on Host; the app learns the host the browser used
     # from X-Forwarded-Host (Rails, Django, Next.js and Phoenix read it).
@@ -275,6 +279,7 @@ server {
   client_max_body_size 50m;
   include /etc/nginx/conf.d/gate.inc;
   location / {
+    set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
     error_page 401 = @login;

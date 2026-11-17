@@ -76,6 +76,12 @@ class Amp(extensions.Connector):
 
     def migrate(self, conn):
         conn.executescript(SCHEMA)
+        from ...state import columns
+        if "runtime" not in columns(conn, "amp_snapshots"):
+            conn.execute("alter table amp_snapshots add column runtime text not null default ''")
+        # Caches from before several runtimes are on the one runtime there was then.
+        from ... import runtime
+        conn.execute("update amp_snapshots set runtime = ? where runtime = ''", (runtime.LEGACY,))
 
     def ready(self) -> Ready:
         return Ready(READY)

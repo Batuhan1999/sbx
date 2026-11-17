@@ -18,8 +18,10 @@ from .host import recreates, write_embed_env
 def upgrade_check(source: pathlib.Path, hugepages: int | None = None) -> int:
     """1 when the release in source recreates Embed's running services while
     sandboxes exist, which they do not survive, paused ones included
-    (docs/reference.md, Limits); 1 too when that cannot be told."""
-    from ... import platform, runtime
+    (docs/reference.md, Limits), whether or not SBX_RUNTIMES enables Embed;
+    1 too when that cannot be told."""
+    from ... import platform
+    from . import own_sandboxes
     try:
         recreated = recreates(source, hugepages)
     except (OSError, subprocess.SubprocessError) as error:
@@ -28,7 +30,12 @@ def upgrade_check(source: pathlib.Path, hugepages: int | None = None) -> int:
     if not recreated:
         return 0
     platform.connect()
-    count = len(runtime.sandboxes())
+    try:
+        count = len(own_sandboxes())
+    except (Exception, SystemExit) as error:
+        print(f"this release recreates Embed's {', '.join(recreated)}, and Embed did not say which sandboxes it "
+              f"holds ({error}); start it and upgrade again", file=sys.stderr)
+        return 1
     if not count:
         print(f"Embed: this release recreates {', '.join(recreated)} (no sandboxes)")
         return 0

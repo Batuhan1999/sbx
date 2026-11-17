@@ -1,6 +1,6 @@
-"""The sandbox runtime on the settings page: what the installed runtime
-reports about itself (runtime.current().status and test), and whether its
-sandboxes reach this server at its public address (reachability)."""
+"""The sandbox runtimes on the settings page: what each enabled runtime
+reports about itself (runtime.status and test), and whether its sandboxes
+reach this server at its public address (reachability)."""
 from __future__ import annotations
 
 from .base import Check, Connection, Status
@@ -13,11 +13,16 @@ class Runtime(Connection):
 
     def status(self) -> Status:
         from .. import runtime
-        return runtime.current().status()
+        return runtime.status()
 
     def test(self, values: dict | None = None) -> list[Check]:
+        """Each runtime's own checks, then, on each one whose checks pass,
+        whether its sandboxes reach this server."""
         from .. import reachability, runtime
-        checks = runtime.current().test()
-        if not all(c.ok for c in checks):  # no sandbox to check from
-            return checks
-        return [*checks, reachability.check()]
+        found = []
+        for kind in runtime.enabled():
+            checks = runtime.test(kind)
+            found += checks
+            if all(c.ok for c in checks):  # else no sandbox to check from
+                found.append(reachability.check(kind))
+        return found

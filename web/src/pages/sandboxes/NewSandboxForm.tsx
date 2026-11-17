@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { api } from '@/api/endpoints'
-import { keys, useMe, useRepos } from '@/api/queries'
+import { keys, useMe, useRepoInfo, useRepos, useRuntimeChoice } from '@/api/queries'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { nameFromBranch, sandboxNameError } from '@/lib/validation'
 
@@ -20,10 +20,11 @@ export function NewSandboxForm({ repo: fixedRepo, branch: initialBranch = '', on
     for (const r of me.data?.repos ?? []) if (!r.includes('*')) served.add(r.toLowerCase())
     return [...served].sort()
   }, [repos.data, me.data])
+  const runtimes = useRuntimeChoice()
   const form = useAppForm({
-    defaultValues: { repo: fixedRepo ?? '', branch: initialBranch, name: nameFromBranch(initialBranch) },
+    defaultValues: { repo: fixedRepo ?? '', branch: initialBranch, name: nameFromBranch(initialBranch), runtime: '' },
     onSubmit: async ({ value }) => {
-      const body = { name: value.name, branch: value.branch.trim() || undefined, repo: value.repo || choices[0] || undefined, public_keys: '' }
+      const body = { name: value.name, branch: value.branch.trim() || undefined, repo: value.repo || choices[0] || undefined, public_keys: '', runtime: value.runtime || undefined }
       const created = api.sandboxes.create(body).finally(() => qc.invalidateQueries({ queryKey: keys.sandboxes }))
       const early = await Promise.race([created.then(() => 'done' as const), new Promise<'slow'>(r => setTimeout(() => r('slow'), EARLY_ERROR_MS))])
       created.catch(() => { /* shown on the sandbox page as its lifecycle error */ })
@@ -31,6 +32,11 @@ export function NewSandboxForm({ repo: fixedRepo, branch: initialBranch = '', on
     },
   })
   const repo = useStore(form.store, s => s.values.repo)
+  const target = repo || fixedRepo || choices[0] || ''
+  // With a choice of runtimes, "" leaves it to the server: the repo's setting, else the installation's default.
+  const repoInfo = useRepoInfo(target, !!runtimes)
+  const fallback = repoInfo.data?.runtime || runtimes?.default
+  const fallbackTitle = runtimes?.runtimes.find(r => r.kind === fallback)?.title ?? fallback
   return <AppForm form={form} className="space-y-4">
     {!fixedRepo && <form.AppField name="repo">{field => <field.SelectField label="Repository">
       {choices.length === 0 && <option value="">No repositories yet</option>}
@@ -45,7 +51,11 @@ export function NewSandboxForm({ repo: fixedRepo, branch: initialBranch = '', on
     <form.AppField name="name" validators={{ onChange: ({ value }) => sandboxNameError(value) }}>
       {field => <field.TextField label="Name" autoComplete="off" spellCheck={false} placeholder="feature-login" help="Lowercase letters, digits and hyphens. Also its preview hostname." />}
     </form.AppField>
-    <p className="text-[12.5px] text-muted">The sandbox runs {repo || fixedRepo || choices[0] || 'the repository'}'s recipe: services, setup, then the app. You can follow each step on its page.</p>
+    {runtimes && <form.AppField name="runtime">{field => <field.SelectField label="Runtime" help="Where it runs, until it is deleted.">
+      <option value="">{repoInfo.data?.runtime ? 'Repository’s choice' : 'Installation default'} ({fallbackTitle})</option>
+      {runtimes.runtimes.map(r => <option key={r.kind} value={r.kind}>{r.title}</option>)}
+    </field.SelectField>}</form.AppField>}
+    <p className="text-[12.5px] text-muted">The sandbox runs {target || 'the repository'}'s recipe: services, setup, then the app. You can follow each step on its page.</p>
     <div className="flex justify-end gap-2 pt-1">
       {onCancel && <button type="button" className="h-8 rounded-md px-3 text-[13px] text-muted hover:bg-hover hover:text-ink" onClick={onCancel}>Cancel</button>}
       <SubmitButton form={form} disabled={!fixedRepo && choices.length === 0}>Create sandbox</SubmitButton>

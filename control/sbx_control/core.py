@@ -66,22 +66,22 @@ class NotReady(SandboxError):
     """What an extension needs is not in the sandbox's template (its ready check failed)."""
 
 
-def capacity(memory_mb: int | None = None) -> dict:
-    """Room for sandboxes of memory_mb (the default size) as the runtime
-    reports it; when it can't say, {"known": False, "limits": the most it
-    allows (runtime.Limits.known)}."""
-    room = runtime.capacity(memory_mb or recipes.DEFAULT_SIZE["memory_mb"])
+def capacity(memory_mb: int | None = None, kind: str | None = None) -> dict:
+    """Room for sandboxes of memory_mb (the default size) as the runtime of
+    kind (None: the default) reports it; when it can't say, {"known": False,
+    "limits": the most it allows (runtime.Limits.known)}."""
+    room = runtime.capacity(memory_mb or recipes.DEFAULT_SIZE["memory_mb"], kind)
     if not room.get("known"):
-        room = {**room, "limits": runtime.limits().known()}
+        room = {**room, "limits": runtime.limits(kind).known()}
     return room
 
 
-def check_capacity(memory_mb: int | None = None) -> dict:
+def check_capacity(memory_mb: int | None = None, kind: str | None = None) -> dict:
     """capacity(), or NoCapacity when no sandbox of memory_mb fits now or
     as many as the runtime runs at once are running."""
-    if why := runtime.too_many():
+    if why := runtime.too_many(kind):
         raise NoCapacity(why)
-    room = capacity(memory_mb)
+    room = capacity(memory_mb, kind)
     if room.get("known") and room["slots_free"] < 1:
         raise NoCapacity(
             f"no free capacity on the sandbox host for another {room['memory_mb'] // 1024} GB sandbox "
@@ -92,11 +92,11 @@ def check_capacity(memory_mb: int | None = None) -> dict:
 
 
 @contextlib.contextmanager
-def reserve_capacity(memory_mb: int):
-    """Hold until the runtime has placed the new sandbox, so two creations
-    can't both take the last room."""
-    with runtime.placing():
-        yield check_capacity(memory_mb)
+def reserve_capacity(memory_mb: int, kind: str | None = None):
+    """Hold until the runtime of kind has placed the new sandbox, so two
+    creations can't both take the last room."""
+    with runtime.placing(kind):
+        yield check_capacity(memory_mb, kind)
 
 
 @contextlib.contextmanager
@@ -137,7 +137,7 @@ def detectable(port: int, a: recipes.App) -> bool:
 
 def detectable_port(port: int) -> bool:
     return ((port == 80 or 1024 <= port <= 65535) and port not in platform.PLATFORM_PORTS
-            and port not in runtime.current().ports and port not in extensions.reserved_ports())
+            and port not in runtime.ports() and port not in extensions.reserved_ports())
 
 
 def detected_ports(listening: str, a: recipes.App) -> dict:
@@ -194,8 +194,20 @@ def sandboxes(metadata=None, state=None):
     return runtime.sandboxes(metadata, state)
 
 
+def sandboxes_complete(metadata=None, state=None):
+    """sandboxes(), or runtime.Incomplete when a runtime did not answer: for
+    whoever acts on what is not listed (deletes, forgets, prunes)."""
+    return runtime.complete(sandboxes(metadata, state))
+
+
 def find(name):
-    return next(iter(sandboxes({"sbx": name})), None)
+    """The sandbox named name; None only when every runtime answered without
+    it (runtime.Incomplete when one did not answer: it may be there)."""
+    found = sandboxes({"sbx": name})
+    if found:
+        return found[0]
+    runtime.complete(found)
+    return None
 
 
 def sbx_env(name: str, slug: str, a: recipes.App, owner: str = "", branch: str = "", template: str = "") -> dict:
@@ -302,7 +314,7 @@ def create_services(a: recipes.App, env: dict) -> dict:
 
 
 def reconcile_services():
-    existing = {(i.metadata or {}).get("sbx") for i in sandboxes()} | lifecycle.busy()
+    existing = {(i.metadata or {}).get("sbx") for i in sandboxes_complete()} | lifecycle.busy()
     for name in variables.kept() - existing:
         try:
             variables.forget(name)
@@ -313,14 +325,15 @@ def reconcile_services():
 
 def create(name: str, slug: str, owner: str, branch: str, public_keys: str, repo: str | None = None,
            source_commit: str | None = None, *, template: str, memory_mb: int | None = None,
-           metadata: dict | None = None) -> dict:
+           metadata: dict | None = None, kind: str | None = None) -> dict:
     """Return after transport and the requested source are usable; app setup
     is separate. template: what the VM starts from (template_builds.template_for,
     or a snapshot an extension keeps); memory_mb: the VM's memory as the
     template was built (template_builds.size_of), else the recipe's size;
     metadata: generic tags: the extension that asked for the sandbox
     (connector), whose env values it gets (audience, personal) and whether
-    the team may open it (shared)."""
+    the team may open it (shared); kind: the runtime it runs on (None: the
+    default; sandboxes.create chooses it, runtimes.choose)."""
     check_name(name)
     if repo and not settings.trust(repo.lower()):
         raise SandboxError(f"{repo} is not served here: not in the settings' repos, and public_repos is off")
@@ -332,17 +345,18 @@ def create(name: str, slug: str, owner: str, branch: str, public_keys: str, repo
         source_commit = source_commit.lower()
     # The VM is the template's size: with memory_mb, a template built at
     # that memory (or a snapshot), whose cpu and disk are not known here.
-    if why := runtime.beyond_limits({"memory_mb": memory_mb} if memory_mb else a.size):
+    if why := runtime.beyond_limits({"memory_mb": memory_mb} if memory_mb else a.size, kind):
         raise SandboxError(why)
-    with lifecycle.operation(name, "create") as operation, reserve_capacity(memory_mb or a.size["memory_mb"]):
+    with lifecycle.operation(name, "create") as operation, \
+            reserve_capacity(memory_mb or a.size["memory_mb"], kind):
         operation.configure_workspace(a.repo)
-        return _create_reserved(name, slug, owner, branch, public_keys, a,
-                                operation=operation, source_commit=source_commit, metadata=metadata)
+        return _create_reserved(name, slug, owner, branch, public_keys, a, operation=operation,
+                                source_commit=source_commit, metadata=metadata, kind=kind)
 
 
 def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys: str,
                      a: recipes.App, *, operation: lifecycle.Operation | None = None,
-                     source_commit=None, metadata=None) -> dict:
+                     source_commit=None, metadata=None, kind: str | None = None) -> dict:
     """Create after ``reserve_capacity`` has serialized the last-slot check."""
     if find(name):
         raise SandboxError(f"sbx-{name} already exists")
@@ -364,7 +378,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
                     operation.advance("services_ready")
                 operation.advance("allocating")
             result = _start(a, env, app_env(a, env, trusted=False), public_keys, trusted=False,
-                            operation=operation, metadata=metadata)
+                            operation=operation, metadata=metadata, kind=kind)
         else:
             if operation:
                 operation.advance("provisioning_services")
@@ -374,7 +388,7 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
                 operation.advance("services_ready")
                 operation.advance("allocating")
             result = _start(a, env, values, public_keys, hidden=hidden,
-                            operation=operation, metadata=metadata)
+                            operation=operation, metadata=metadata, kind=kind)
         if operation:
             operation.advance("preparing_workspace", sandbox_id=result["sandbox_id"], runtime="running")
             # A new sandbox's checkout is its template's: what the template's setup changed is nobody's edit.
@@ -449,14 +463,14 @@ def target_of(info) -> extensions.Target:
 
 
 def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool = True,
-           hidden: set = frozenset(), operation=None, metadata=None) -> dict:
+           hidden: set = frozenset(), operation=None, metadata=None, kind: str | None = None) -> dict:
     name, slug = env["SBX_NAME"], env["SBX_SLUG"]
-    envs, layer = runtime_layer(name, a, _envs(env, app_env), trusted, metadata)
+    envs, layer = runtime_layer(name, a, _envs(env, app_env, kind), trusted, metadata)
     # The cloud metadata service, denied per sandbox where the runtime
     # applies egress rules (one without them may deny it already). Private
     # ranges are the runtime's to enforce (Runtime.apply_network), not per sandbox.
-    sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs,
-                         deny_out=runtime.deny_out("169.254.169.254/32"),
+    sbx = runtime.create((metadata or {})["template"], timeout=TIMEOUT_SECONDS, envs=envs, kind=kind,
+                         deny_out=runtime.deny_out("169.254.169.254/32", kind=kind),
                          metadata={**(metadata or {}), "sbx": name, "owner": env["SBX_OWNER"], "branch": env["SBX_BRANCH"], "slug": slug,
                                    "repo": a.repo},
                          on_timeout="pause", auto_resume=True)
@@ -511,8 +525,8 @@ def initialize_ssh_identity(sbx):
     sbx.commands.run(f"umask 077; {command} > {RUN}/ssh-identity.log 2>&1", timeout=120)
 
 
-def _envs(env: dict, app_env: dict) -> dict:
-    return {**app_env, **env, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": addressing.vite_allowed_hosts()}
+def _envs(env: dict, app_env: dict, kind: str | None = None) -> dict:
+    return {**app_env, **env, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": addressing.vite_allowed_hosts(kind)}
 
 
 def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer, public_keys=None,
@@ -578,12 +592,13 @@ def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
     meta, a = info.metadata or {}, app_of(info)
     name = meta["sbx"]
     env = sbx_env(name, slug_of(info), a, meta.get("owner", ""), meta.get("branch", ""), meta.get("template", ""))
+    kind = runtime.kind_of(info)
     if settings.trust(a.repo) != "trusted":
-        envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False)), False, meta)
+        envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False), kind), False, meta)
         return envs, set(), layer
     created = extensions.packages().refresh(name, a.repo)
     values, hidden = trusted_values(a, env, created, audience(meta), personal(meta))
-    envs, layer = runtime_layer(name, a, _envs(env, values), True, meta)
+    envs, layer = runtime_layer(name, a, _envs(env, values, kind), True, meta)
     return envs, hidden, layer
 
 
@@ -1104,7 +1119,7 @@ def pause_refusal(info, error) -> str:
     """Why the runtime would not pause the sandbox, in words a person can act on."""
     tries = len(PAUSE_RETRY_SECONDS) + 1
     retries = f"{tries} tries over {sum(PAUSE_RETRY_SECONDS)} s" if tries > 1 else "once"
-    cause = runtime.why_busy(getattr(info, "memory_mb", None))
+    cause = runtime.why_busy(getattr(info, "memory_mb", None), runtime.kind_of(info))
     return (f"the runtime refused the pause ({retries}): {cause}. The sandbox keeps running. "
             f"Runtime: {str(error)[-300:]}")
 

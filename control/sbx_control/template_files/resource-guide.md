@@ -48,7 +48,8 @@ resources:
   change is refused when the VM lacks the free RAM to do it safely; use a new
   sandbox then. Swap uses disk and is much slower than RAM; it does not replace
   enough memory.
-- vCPUs share the host's cores; they are not pinned or dedicated.
+- vCPUs share the cores of the machine the sandbox runs on; they are not
+  pinned or dedicated.
 - A recipe change never resizes an existing VM. The snapshot reports
   `allocation_below_recipe` until you build the template again and start a new
   sandbox. Keep source edits and data you need before replacing one.
@@ -75,7 +76,12 @@ When the snapshot reports an issue:
 
 ## The host has two budgets
 
-Sandbox RAM comes from the host's hugepage pool. Everything else runs in the
+The hugepage pool counts only for sandboxes that run on this server (E2B
+Embed). A runtime at a provider sets its own limits instead: `GET /api/runtimes`
+lists each runtime's, and a recipe beyond them is refused with the limit it
+exceeds. The host reserve counts either way.
+
+Sandbox RAM on this server comes from the host's hugepage pool. Everything else runs in the
 **host reserve** outside that pool (12 GiB by default): the control service,
 the secret store, shared Postgres and ClickHouse servers, the OS and its file
 cache. Free memory inside a sandbox is not available to shared services, and

@@ -10,6 +10,7 @@ import { NavTabs } from '@/components/Tabs'
 import { Panel } from '@/components/ui/primitives'
 import { emailError } from '@/lib/validation'
 import { ConnectionCard } from '../extensions/ConnectionCard'
+import { Runtimes } from './Runtimes'
 import { Updates } from './Updates'
 
 const SECTIONS = { general: 'General', access: 'Access', updates: 'Updates' } as const
@@ -39,6 +40,7 @@ function General() {
     {domain && <ConnectionCard c={domain} icon={<Globe className="size-4" />} />}
     {signIn && <ConnectionCard c={signIn} icon={<LogIn className="size-4" />} />}
     <QueryView query={settings} loading={null}>{s => <SandboxDefaults key={s.revision} settings={s} />}</QueryView>
+    <Runtimes />
   </div>
 }
 

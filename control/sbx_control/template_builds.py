@@ -1,5 +1,12 @@
 """Template builds: the one owner of their state, start and schedule.
 
+Templates are built per runtime: each runtime keeps its own, and a row is
+keyed by (runtime, key). The base and the default one are built on every
+enabled runtime; a repo's own template and the default one of its size on
+the runtimes its sandboxes use (its setting, the default, and any a sandbox
+of it runs on: runtimes.used_by). Every function takes kind, the runtime's
+(None: the installation's default).
+
 Each template (templates.BASE, the default one at each size the served
 repos ask for, every repo that has one of its own (own)) has a row
 in template_builds: its latest build, a small state machine (TRANSITIONS,
@@ -17,9 +24,10 @@ repo's own when it has one (own), else the default one of its size. A
 create before that template is built starts its build and is refused (503). Every template is built
 at its sandboxes' size, which the row keeps for capacity (size_of).
 
-  python -m sbx_control.template_builds base|default [OWNER/REPO]|app OWNER/REPO
+  python -m sbx_control.template_builds base|default [OWNER/REPO]|app OWNER/REPO [--runtime KIND]
       build one now (install.sh builds base and default); default with a
-      repo: the default template at that repo's size"""
+      repo: the default template at that repo's size; on the default
+      runtime unless --runtime names another"""
 import argparse
 import os
 import sys
@@ -27,7 +35,7 @@ import threading
 import time
 
 from . import extensions, recipes, runtime, settings, templates
-from .state import Schema, db
+from .state import Schema, columns, db, tables
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
 CHECK_SECONDS = 300
@@ -38,7 +46,7 @@ FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_
 TRANSITIONS = {None: {"building"}, "built": {"building"}, "failed": {"building"}, "building": {"built", "failed"}}
 
 _lock = threading.Lock()
-_running: set = set()  # keys this process is building
+_running: set = set()  # (kind, key) this process is building
 
 
 class NotBuilt(Exception):
@@ -79,23 +87,32 @@ def _gb(mb: int) -> str:
     return f"{mb / 1024:.1f} GB"
 
 
-def check_room(key: str):
-    """NoRoom, saying what is missing, when key's build cannot fit now."""
+def _kind(kind: str | None) -> str:
+    return kind or runtime.default()
+
+
+def _on(kind: str | None) -> str:
+    """" on <runtime>" when the installation runs several, else ""."""
+    return f" on {runtime.title(kind)}" if len(runtime.enabled()) > 1 else ""
+
+
+def check_room(key: str, kind: str | None = None):
+    """NoRoom, saying what is missing, when key's build cannot fit on the runtime now."""
     from . import core
     try:
         size = plan(key).size
     except (recipes.RecipeError, OSError):
         return  # the build fails on the recipe and says so
     needs = build_needs(size)
-    memory = core.capacity(size["memory_mb"])
+    memory = core.capacity(size["memory_mb"], kind=kind)
     if memory.get("known") and memory["free_mb"] < needs["memory_mb"]:
         raise NoRoom(f"building the {key} template needs {_gb(needs['memory_mb'])} of free sandbox memory "
                      f"(twice its {_gb(size['memory_mb'])}: each build step starts from the previous one's "
                      f"snapshot), and {_gb(memory['free_mb'])} is free; pause or delete a sandbox, then build again")
-    free = runtime.free_disk_mb()
+    free = runtime.free_disk_mb(_kind(kind))
     if free is not None and free < needs["disk_mb"]:
         raise NoRoom(f"building the {key} template needs {_gb(needs['disk_mb'])} of free disk for the runtime "
-                     f"({runtime.current().disk_path}), and {_gb(free)} is free; delete sandboxes or templates nobody uses "
+                     f"({runtime.disk_path(kind)}), and {_gb(free)} is free; delete sandboxes or templates nobody uses "
                      "(sbx-admin template rm), or add disk, then build again")
 
 
@@ -104,8 +121,8 @@ class Watch:
     failed is what it saw, where Embed reports "internal error" or, after
     its orchestrator died of a full disk, a refused connection."""
 
-    def __init__(self, key: str, p: templates.Plan):
-        self.key, self.size = key, p.size
+    def __init__(self, key: str, p: templates.Plan, kind: str | None = None):
+        self.key, self.size, self.kind = key, p.size, _kind(kind)
         self.reserve = build_needs(p.size)["reserve_mb"]
         self.lowest_disk = self.lowest_memory = None
         self._done = threading.Event()
@@ -121,10 +138,10 @@ class Watch:
 
     def sample(self):
         from . import core
-        free = runtime.free_disk_mb()
+        free = runtime.free_disk_mb(self.kind)
         if free is not None:
             self.lowest_disk = free if self.lowest_disk is None else min(self.lowest_disk, free)
-        memory = core.capacity(self.size["memory_mb"])
+        memory = core.capacity(self.size["memory_mb"], kind=self.kind)
         if memory.get("known"):
             self.lowest_memory = memory["free_mb"] if self.lowest_memory is None else min(self.lowest_memory, memory["free_mb"])
 
@@ -139,8 +156,8 @@ class Watch:
         """What the watch saw that explains a failure; "" when nothing did."""
         reasons = []
         if self.lowest_disk is not None and self.lowest_disk < self.reserve:
-            reasons.append(f"the runtime's disk ({runtime.current().disk_path}) fell to {_gb(self.lowest_disk)} free during "
-                           f"the build (one step at {self.size['memory_mb']} MB can write {_gb(self.reserve)}); "
+            reasons.append(f"the runtime's disk ({runtime.disk_path(self.kind)}) fell to {_gb(self.lowest_disk)} free "
+                           f"during the build (one step at {self.size['memory_mb']} MB can write {_gb(self.reserve)}); "
                            "delete sandboxes or templates nobody uses (sbx-admin template rm), or add disk")
         if self.lowest_memory is not None and self.lowest_memory < self.size["memory_mb"]:
             reasons.append(f"free sandbox memory fell to {_gb(self.lowest_memory)} while a step needed "
@@ -164,33 +181,41 @@ def _alive(pid) -> bool:
         return False
 
 
-def status(key: str, row: dict | None) -> str | None:
+def status(key: str, row: dict | None, kind: str | None = None) -> str | None:
     """The build's status: building, built, failed, or None for no build. A
     build that no process is running any more was cut off."""
     if row is None:
         return None
-    if row["status"] == "building" and key not in _running and not _alive(row["pid"]):
+    if row["status"] == "building" and (_kind(kind), key) not in _running and not _alive(row["pid"]):
         return "failed"
     return row["status"]
 
 
-def _read(conn, key: str) -> dict | None:
-    row = conn.execute(f"select {', '.join(FIELDS)} from template_builds where repo = ?", (key,)).fetchone()
+def _read(conn, key: str, kind: str | None = None) -> dict | None:
+    row = conn.execute(f"select {', '.join(FIELDS)} from template_builds where runtime = ? and repo = ?",
+                       (_kind(kind), key)).fetchone()
     return dict(zip(FIELDS, row)) if row else None
 
 
-def _transition(key: str, to: str, **facts):
+def _rows(conn, kind: str | None = None) -> dict:
+    """key -> row of every build on the runtime."""
+    found = conn.execute("select repo from template_builds where runtime = ?", (_kind(kind),)).fetchall()
+    return {key: _read(conn, key, kind) for (key,) in found}
+
+
+def _transition(key: str, to: str, kind: str | None = None, **facts):
     with db() as conn:
         conn.execute("begin immediate")
         try:
-            row = _read(conn, key)
-            before = status(key, row)
+            row = _read(conn, key, kind)
+            before = status(key, row, kind)
             if to not in TRANSITIONS[before]:
                 raise ValueError(f"template build {key}: {before} -> {to} is not allowed")
             values = {**(row or {}), **facts, "status": to}
-            conn.execute(f"insert into template_builds (repo, {', '.join(FIELDS)}) values (?{', ?' * len(FIELDS)}) "
-                         f"on conflict(repo) do update set {', '.join(f'{f}=excluded.{f}' for f in FIELDS)}",
-                         (key, *(values.get(f) for f in FIELDS)))
+            conn.execute(f"insert into template_builds (runtime, repo, {', '.join(FIELDS)}) "
+                         f"values (?, ?{', ?' * len(FIELDS)}) on conflict(runtime, repo) do update set "
+                         f"{', '.join(f'{f}=excluded.{f}' for f in FIELDS)}",
+                         (_kind(kind), key, *(values.get(f) for f in FIELDS)))
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -204,15 +229,15 @@ def plan(key: str) -> templates.Plan:
     return templates.plan(key, extensions.contributions_for(target))
 
 
-def state(key: str) -> dict:
-    """{status, started_at, finished_at, error, template, stale} of key's
-    latest build; {} for none."""
+def state(key: str, kind: str | None = None) -> dict:
+    """{status, started_at, finished_at, error, template, stale, runtime} of
+    key's latest build on the runtime; {} for none."""
     with db() as conn:
-        row = _read(conn, key)
+        row = _read(conn, key, kind)
     if row is None:
         return {}
     out = {f: row[f] for f in ("started_at", "finished_at", "error", "built_template")}
-    out["status"] = status(key, row)
+    out["status"] = status(key, row, kind)
     if row["status"] == "building" and out["status"] == "failed":
         out["error"] = "The control service restarted during this build. Build the template again."
     out["template"] = row["built_template"]
@@ -220,24 +245,32 @@ def state(key: str) -> dict:
         out["stale"] = bool(row["built_fingerprint"]) and plan(key).fingerprint != row["built_fingerprint"]
     except (recipes.RecipeError, OSError):
         out["stale"] = False
+    out["runtime"] = _kind(kind)
     return out
 
 
-def builds() -> dict:
+def builds(kind: str | None = None) -> dict:
+    """key -> state() of every build on the runtime."""
     with db() as conn:
-        keys = [row[0] for row in conn.execute("select repo from template_builds")]
-    return {key: state(key) for key in keys}
+        keys_ = [row[0] for row in conn.execute("select repo from template_builds where runtime = ?", (_kind(kind),))]
+    return {key: state(key, kind) for key in keys_}
 
 
-def building(key: str) -> bool:
-    return key in _running
-
-
-def built(key: str) -> str:
+def build_keys() -> set:
+    """Every key with a build on any runtime."""
     with db() as conn:
-        row = _read(conn, key)
+        return {row[0] for row in conn.execute("select repo from template_builds")}
+
+
+def building(key: str, kind: str | None = None) -> bool:
+    return (_kind(kind), key) in _running
+
+
+def built(key: str, kind: str | None = None) -> str:
+    with db() as conn:
+        row = _read(conn, key, kind)
     if not row or not row["built_template"]:
-        raise NotBuilt(f"the {key} template is not built yet; it builds by itself shortly")
+        raise NotBuilt(f"the {key} template is not built{_on(kind)} yet; it builds by itself shortly")
     return row["built_template"]
 
 
@@ -257,10 +290,10 @@ def own(repo: str | None) -> bool:
     return any(c.template for c in extensions.packages().contributions(target))
 
 
-def current(repo: str) -> dict:
-    """state() of the template the repo's sandboxes start from: its own,
-    else the default one of its size."""
-    return state(repo if own(repo) else default_for(repo))
+def current(repo: str, kind: str | None = None) -> dict:
+    """state() of the template the repo's sandboxes start from on the
+    runtime: its own, else the default one of its size."""
+    return state(repo if own(repo) else default_for(repo), kind)
 
 
 def default_for(repo: str | None) -> str:
@@ -268,103 +301,97 @@ def default_for(repo: str | None) -> str:
     return templates.default_key(recipes.load(repo).size) if repo else templates.DEFAULT
 
 
-def template_for(repo: str | None) -> str:
-    """The template a new sandbox of the repo starts from: the repo's own
-    built last when it has one of its own (own), else the default one of its
-    size. One not built yet starts building here (unless its last build of
-    the same plan failed) and the create is refused with NotBuilt (503): it
-    is what the repo's readiness shows as missing."""
+def template_for(repo: str | None, kind: str | None = None) -> str:
+    """The template a new sandbox of the repo starts from on the runtime:
+    the repo's own built last when it has one of its own (own), else the
+    default one of its size. One not built yet starts building here (unless
+    its last build of the same plan failed) and the create is refused with
+    NotBuilt (503): it is what the repo's readiness shows as missing."""
     key = repo if own(repo) else default_for(repo)
     with db() as conn:
-        row = _read(conn, key)
+        row = _read(conn, key, kind)
     if row and row["built_template"]:
         return row["built_template"]
-    raise NotBuilt(_building(key, row))
+    raise NotBuilt(_building(key, row, kind))
 
 
-def _building(key: str, row: dict | None) -> str:
+def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     """Start key's build unless it is running or failed on this plan; what a refused create says."""
+    on = _on(kind)
     try:
-        failed = status(key, row) == "failed" and row["fingerprint"] == plan(key).fingerprint
+        failed = status(key, row, kind) == "failed" and row["fingerprint"] == plan(key).fingerprint
     except (recipes.RecipeError, OSError) as error:
-        return f"the {key} template is not built yet and cannot be planned: {error}"
+        return f"the {key} template is not built{on} yet and cannot be planned: {error}"
     if failed:
-        return (f"the {key} template is not built: its last build failed ({(row['error'] or '').strip()[-300:]}); "
+        return (f"the {key} template is not built{on}: its last build failed ({(row['error'] or '').strip()[-300:]}); "
                 f"fix it and build again: sbx-admin template build {key}")
-    if status(key, row) != "building":
+    if status(key, row, kind) != "building":
         try:
-            start(key)
+            start(key, _kind(kind))
         except NoRoom as error:
-            return f"the {key} template is not built yet and cannot build now: {error}"
-    return f"the {key} template is building; try again in a few minutes"
+            return f"the {key} template is not built{on} yet and cannot build now: {error}"
+    return f"the {key} template is building{on}; try again in a few minutes"
 
 
 def size_of(template: str) -> int | None:
     """The memory (MiB) of every VM started from a template the platform
-    built, or None for one it did not record (a snapshot)."""
+    built, or None for one it did not record (a snapshot). A template's name
+    is its plan's, the same on every runtime, and so is its size."""
     with db() as conn:
         row = conn.execute("select built_memory_mb from template_builds where built_template = ?",
                            (template,)).fetchone()
     return row[0] if row and row[0] else None
 
 
-def _claim(key: str) -> bool:
-    with _lock:
-        if key in _running:
-            return False
-        _running.add(key)
-        return True
+def build_now(key: str, kind: str | None = None):
+    """Build key's template on the runtime here, the base first when the platform layer changed."""
+    _begin(key, kind)
+    _build(key, kind)
 
 
-def build_now(key: str):
-    """Build key's template here, the base first when the platform layer changed."""
-    _begin(key)
-    _build(key)
-
-
-def start(key: str) -> bool:
+def start(key: str, kind: str | None = None) -> bool:
     """build_now on a thread; False when one is already running for key,
     NoRoom when the host cannot hold it now."""
     try:
-        _begin(key)
+        _begin(key, kind)
     except RuntimeError:
         return False
 
     def run():
         try:
-            _build(key)
-            prune()
+            _build(key, kind)
+            prune(_kind(kind))
         except BaseException as error:  # recorded as the build's error
             print(f"template build {key}: {error!r}", flush=True)
     threading.Thread(target=run, daemon=True).start()
     return True
 
 
-def _begin(key: str):
+def _begin(key: str, kind: str | None = None):
     if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
-        check_room(key)
+        check_room(key, kind)
     with _lock:
         try:
-            if key in _running:
+            if (_kind(kind), key) in _running:
                 raise ValueError
-            _transition(key, "building", started_at=_utc(), finished_at=None, error=None, fingerprint=None,
-                    pid=os.getpid())
+            _transition(key, "building", kind, started_at=_utc(), finished_at=None, error=None, fingerprint=None,
+                        pid=os.getpid())
         except ValueError:  # here, or in another process
             raise RuntimeError(f"{key}'s template is already building") from None
-        _running.add(key)
+        _running.add((_kind(kind), key))
 
 
-def _build(key: str):
-    """Build key, begun by this process; its claim ends with it."""
+def _build(key: str, kind: str | None = None):
+    """Build key on the runtime, begun by this process; its claim ends with it."""
     p = None
     try:
         try:
             platform_owned = key == templates.BASE or templates.is_default(key)
             if key != templates.BASE:
                 with db() as conn:
-                    base = _read(conn, templates.BASE)
+                    base = _read(conn, templates.BASE, kind)
                 if not base or base["built_fingerprint"] != plan(templates.BASE).fingerprint:
-                    build_now(templates.BASE)
+                    build_now(templates.BASE, kind)
             git_dir = None
             if not platform_owned:
                 git_dir = recipes.mirror(key, extensions.git_access(key))
@@ -375,119 +402,138 @@ def _build(key: str):
                 # Only services, env, previews or a size: its sandboxes start
                 # from the default template of its size, built now if it isn't.
                 sized = default_for(key)
-                if sized in stale():
-                    build_now(sized)
-                _transition(key, "built", finished_at=_utc(), built_fingerprint=None, built_template=None)
+                if sized in stale(kind):
+                    build_now(sized, kind)
+                _transition(key, "built", kind, finished_at=_utc(), built_fingerprint=None, built_template=None)
                 return
             p = plan(key)
-            print(f"template build {key}: {p.name}", flush=True)
-            with Watch(key, p) as watch:
+            print(f"template build {key}{_on(kind)}: {p.name}", flush=True)
+            with Watch(key, p, kind) as watch:
                 try:
-                    templates.build(p, git_dir)
+                    templates.build(p, git_dir, kind=_kind(kind))
                 except Exception as error:
                     if watch.why():
                         raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
                     raise
-            _transition(key, "built", finished_at=_utc(), fingerprint=p.fingerprint, built_fingerprint=p.fingerprint,
-                        built_template=p.name, built_memory_mb=p.size["memory_mb"])
+            _transition(key, "built", kind, finished_at=_utc(), fingerprint=p.fingerprint,
+                        built_fingerprint=p.fingerprint, built_template=p.name, built_memory_mb=p.size["memory_mb"])
         except BaseException as error:
-            _transition(key, "failed", finished_at=_utc(), error=str(error)[-2000:], fingerprint=p and p.fingerprint)
+            _transition(key, "failed", kind, finished_at=_utc(), error=str(error)[-2000:],
+                        fingerprint=p and p.fingerprint)
             if p is not None:
-                collect_storage()  # a failed build's layers: tens of GB for a large app
+                collect_storage(kind)  # a failed build's layers: tens of GB for a large app
             raise
     finally:
-        _running.discard(key)
+        _running.discard((_kind(kind), key))
 
 
-def collect_storage():
+def collect_storage(kind: str | None = None):
     """Reclaim what the runtime keeps that nothing uses now: a failed
     build's layers, a pruned template's."""
-    runtime.collect_storage()
+    runtime.collect_storage(_kind(kind))
 
 
-def in_use() -> set:
-    """The templates running and paused sandboxes started from."""
-    from . import core, runtime
+def in_use(kind: str | None = None) -> set:
+    """The templates running and paused sandboxes on the runtime started from."""
+    from . import core
+    kind = _kind(kind)
     return {(info.metadata or {}).get("template")
-            for info in core.sandboxes(state=[runtime.RUNNING, runtime.PAUSED])} - {None, ""}
+            for info in core.sandboxes_complete(state=[runtime.RUNNING, runtime.PAUSED])
+            if (getattr(info, "runtime", "") or kind) == kind} - {None, ""}
 
 
-def known_keys() -> list:
+def known_keys(kind: str | None = None) -> list:
     """Every template key the platform may have built for: the served ones,
     those with a build row, and repos with a recipe."""
-    with db() as conn:
-        rows = [row[0] for row in conn.execute("select repo from template_builds")]
-    return sorted({*keys(), *rows, *recipes.with_recipe()})
+    return sorted({*keys(kind), *build_keys(), *recipes.with_recipe()})
 
 
-def prune() -> list:
-    """Delete from the runtime the templates the platform built that nothing
-    starts from any more: an earlier build of a template (a changed input is
-    a new name), a size no served repo asks for, a repo that has no template
-    any more. Kept: each served key's template built last, what running or
-    paused sandboxes started from, and builds still running. A key nothing
-    serves loses its row once its template is gone. Returns what was deleted."""
-    wanted = keys()
+def prune(kind: str | None = None) -> list:
+    """Delete from the runtime (None: from every enabled one) the templates
+    the platform built that nothing starts from any more: an earlier build
+    of a template (a changed input is a new name), a size no served repo
+    asks for, a repo that has no template any more. Kept: each served key's
+    template built last, what running or paused sandboxes started from, and
+    builds still running. A key nothing serves loses its row once its
+    template is gone. Returns what was deleted."""
+    if kind is None:
+        deleted = []
+        for one in runtime.enabled():
+            try:
+                deleted += prune(one)
+            except Exception as error:  # the others are pruned all the same
+                if len(runtime.enabled()) == 1:
+                    raise
+                print(f"template prune on {one}: {error!r}", flush=True)
+        return sorted(deleted)
+    wanted = keys(kind)
     with db() as conn:
-        rows = {key: _read(conn, key) for key in [r[0] for r in conn.execute("select repo from template_builds")]}
-    used = in_use()
+        rows = _rows(conn, kind)
+    used = in_use(kind)
     keep = used | {row["built_template"] for key, row in rows.items() if key in wanted and row["built_template"]}
-    names = known_keys()
+    names = known_keys(kind)
     deleted = []
-    for t in templates.listing():
+    for t in templates.listing(kind):
         if t.name in keep or t.status in ("building", "waiting") or not templates.named_for(t.name, names):
             continue
         try:
-            if templates.delete(t.name):
+            if templates.delete(t.name, kind):
                 deleted.append(t.name)
         except RuntimeError as error:
             print(f"template prune: {error}", flush=True)
     for key, row in rows.items():
-        if key not in wanted and key not in _running and status(key, row) != "building" \
+        if key not in wanted and (kind, key) not in _running and status(key, row, kind) != "building" \
                 and row["built_template"] not in used:
             with db() as conn:
-                conn.execute("delete from template_builds where repo = ?", (key,))
+                conn.execute("delete from template_builds where runtime = ? and repo = ?", (kind, key))
     if deleted:
-        print(f"template prune: deleted {', '.join(sorted(deleted))}", flush=True)
-        collect_storage()
+        print(f"template prune{_on(kind)}: deleted {', '.join(sorted(deleted))}", flush=True)
+        collect_storage(kind)
     return sorted(deleted)
 
 
-def remove(key: str) -> dict:
-    """Delete key's templates from the runtime and its build record (the
-    last build, a failure among them). A template a sandbox still runs or is
-    paused from stays until it is gone. A key still served builds again on
-    the scheduler's next round."""
-    if key in _running or status(key, state_row(key)) == "building":
-        raise Busy(f"{key}'s template is building; remove it once the build ends")
-    used = in_use()
+def remove(key: str, kind: str | None = None) -> dict:
+    """Delete key's templates from the runtime (None: from every enabled
+    one) and its build record (the last build, a failure among them). A
+    template a sandbox still runs or is paused from stays until it is gone.
+    A key still served builds again on the scheduler's next round."""
+    kinds = [kind] if kind else runtime.enabled()
+    for one in kinds:
+        if (one, key) in _running or status(key, state_row(key, one), one) == "building":
+            raise Busy(f"{key}'s template is building{_on(one)}; remove it once the build ends")
     deleted, kept = [], []
-    for t in templates.listing():
-        if not templates.named_for(t.name, [key]):
-            continue
-        if t.name in used:
-            kept.append(t.name)
-        elif templates.delete(t.name):
-            deleted.append(t.name)
-    with db() as conn:
-        conn.execute("delete from template_builds where repo = ?", (key,))
-    if deleted:
-        collect_storage()
+    for one in kinds:
+        used, gone = in_use(one), []
+        for t in templates.listing(one):
+            if not templates.named_for(t.name, [key]):
+                continue
+            if t.name in used:
+                kept.append(t.name)
+            elif templates.delete(t.name, one):
+                gone.append(t.name)
+        with db() as conn:
+            conn.execute("delete from template_builds where runtime = ? and repo = ?", (one, key))
+        if gone:
+            collect_storage(one)
+        deleted += gone
     return {"key": key, "deleted": sorted(deleted), "kept_in_use": sorted(kept),
-            "rebuilds": key in keys()}
+            "rebuilds": any(key in keys(one) for one in kinds)}
 
 
-def state_row(key: str) -> dict | None:
+def state_row(key: str, kind: str | None = None) -> dict | None:
     with db() as conn:
-        return _read(conn, key)
+        return _read(conn, key, kind)
 
 
-def keys() -> list:
-    """Every template some sandbox starts from: the base, the default one,
-    the default one at the size of each served repo without a template of
-    its own (a repo with one never starts from a default one), and each
-    repo's own."""
-    served = [r for r in recipes.with_recipe() if settings.trust(r)]
+def keys(kind: str | None = None) -> list:
+    """Every template some sandbox on the runtime starts from: the base, the
+    default one, the default one at the size of each served repo without a
+    template of its own (a repo with one never starts from a default one),
+    and each repo's own; a repo's only on the runtimes its sandboxes use
+    (runtimes.used_by)."""
+    from . import runtimes
+    kind = _kind(kind)
+    served = [r for r in recipes.with_recipe() if settings.trust(r) and kind in runtimes.used_by(r)]
     sizes, owned = set(), []
     for repo in served:
         try:
@@ -501,17 +547,17 @@ def keys() -> list:
     return [templates.BASE, templates.DEFAULT, *sorted(sizes), *owned]
 
 
-def stale() -> list:
-    """The keys whose template, as planned now, differs from the one built
-    (or none was), but for one whose last build of that plan failed."""
+def stale(kind: str | None = None) -> list:
+    """The keys whose template on the runtime, as planned now, differs from
+    the one built (or none was), but for one whose last build of that plan failed."""
     out = []
     with db() as conn:
-        rows = {key: _read(conn, key) for key in keys()}
+        rows = {key: _read(conn, key, kind) for key in keys(kind)}
     for key, row in rows.items():
-        if key in _running or (row and status(key, row) == "building"):
+        if (_kind(kind), key) in _running or (row and status(key, row, kind) == "building"):
             continue
         fingerprint = plan(key).fingerprint
-        if row and status(key, row) == "failed" and row["fingerprint"] == fingerprint:
+        if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
             continue
         if not _current(row, fingerprint):
             out.append(key)
@@ -519,9 +565,10 @@ def stale() -> list:
 
 
 def summary() -> str:
-    """What an install or upgrade rebuilds, as the title of its templates
-    step: the base and default ones it builds now, and the others (default
-    sizes, repos' own) the scheduler rebuilds once it runs."""
+    """What an install or upgrade rebuilds on the default runtime, as the
+    title of its templates step: the base and default ones it builds now,
+    and the others (default sizes, repos' own, other runtimes') the
+    scheduler rebuilds once it runs."""
     with db() as conn:
         rows = {key: _read(conn, key) for key in keys()}
     if not any(rows.values()):
@@ -572,32 +619,35 @@ def _unmark(repo: str):
         conn.execute("delete from template_moved where repo = ?", (repo,))
 
 
-def _build_quietly(key: str):
+def _build_quietly(key: str, kind: str | None = None):
     try:
-        build_now(key)
+        build_now(key, kind)
     except NoRoom as error:  # nothing started; tried again next round
-        print(f"template build {key}: not now: {error}", flush=True)
+        print(f"template build {key}{_on(kind)}: not now: {error}", flush=True)
     except Exception as error:
-        print(f"template build {key}: {error!r}", flush=True)
+        print(f"template build {key}{_on(kind)}: {error!r}", flush=True)
 
 
 def schedule(stop: threading.Event):
-    """Until stop: every CHECK_SECONDS the stale templates, and at
-    NIGHTLY_REBUILD_HOUR the moved repos', one at a time, for the disk's sake."""
+    """Until stop: every CHECK_SECONDS the stale templates on every enabled
+    runtime, and at NIGHTLY_REBUILD_HOUR the moved repos', one at a time,
+    for the disk's sake."""
     night = None
     while not stop.wait(CHECK_SECONDS):
         try:
-            for key in stale():
-                if stop.is_set():
-                    return
-                _build_quietly(key)
+            for kind in runtime.enabled():
+                for key in stale(kind):
+                    if stop.is_set():
+                        return
+                    _build_quietly(key, kind)
             today = time.strftime("%Y-%m-%d")
             if time.localtime().tm_hour == NIGHTLY_REBUILD_HOUR and night != today:
                 night = today
                 for repo in moved():
                     _unmark(repo)
-                    if repo in keys():
-                        _build_quietly(repo)
+                    for kind in runtime.enabled():
+                        if repo in keys(kind):
+                            _build_quietly(repo, kind)
             prune()
         except Exception as error:  # one bad round must not stop the scheduler
             print(f"template scheduler: {error!r}", flush=True)
@@ -611,6 +661,7 @@ def main(argv=None) -> int:
                         help="summary: what an upgrade rebuilds, in one line")
     parser.add_argument("repo", nargs="?", help="app: owner/repo; default: a repo whose size to build it at")
     parser.add_argument("--if-stale", action="store_true", help="only when the built template is not the one planned now")
+    parser.add_argument("--runtime", help="the runtime to build on (default: the installation's default)")
     args = parser.parse_args(argv)
     migrate()
     platform.connect()
@@ -621,13 +672,14 @@ def main(argv=None) -> int:
         or (args.repo or "").lower()
     if args.which == "app" and not settings.trust(key):
         raise SystemExit(f"app needs one of the repos this installation serves: {', '.join(settings.current().repos)}")
+    kind = args.runtime
     with db() as conn:
-        row = _read(conn, key)
+        row = _read(conn, key, kind)
     if args.if_stale and _current(row, plan(key).fingerprint):
         print(f"CURRENT {row['built_template'] or key}", file=sys.stderr)
         return 0
     try:
-        build_now(key)
+        build_now(key, kind)
     except NoRoom as error:
         if row and row["built_template"]:   # an upgrade: the template built before serves until there is room
             print(f"KEPT {row['built_template']}: {key} is stale and not rebuilt now: {error}; the scheduler "
@@ -635,19 +687,48 @@ def main(argv=None) -> int:
             return 0
         print(f"NOT BUILT {key}: {error}", file=sys.stderr)
         return 1
-    print(f"BUILT {state(key).get('template') or key}", file=sys.stderr)
+    print(f"BUILT {state(key, kind).get('template') or key}", file=sys.stderr)
     return 0
 
 
-# A template's latest build, keyed by repo or by the platform's own template;
-# repos whose default branch moved since their template's last build.
-SCHEMA = Schema(tables="""
-create table if not exists template_builds (
-    repo text primary key, status text not null, started_at text, finished_at text, error text);
+TABLE = """create table if not exists template_builds (
+    runtime text not null, repo text not null, status text not null, started_at text, finished_at text, error text,
+    fingerprint text, built_fingerprint text, built_template text, pid integer, built_memory_mb integer,
+    primary key (runtime, repo));"""
+
+
+OLD_TABLE = "template_builds_by_repo"
+
+
+def _per_runtime(conn):
+    """A template_builds keyed by repo alone (from before several runtimes):
+    its rows become the one runtime's there was then (runtime.LEGACY), in one
+    transaction. An upgrade that stopped part way (the old table renamed and
+    kept) is finished: its rows are copied when the new table has none."""
+    if "runtime" in columns(conn, "template_builds") and OLD_TABLE not in tables(conn):
+        return
+    conn.execute("begin immediate")
+    try:
+        if "runtime" not in columns(conn, "template_builds"):
+            conn.execute(f"alter table template_builds rename to {OLD_TABLE}")
+            conn.execute(TABLE)
+        if not conn.execute("select 1 from template_builds limit 1").fetchone():
+            kept = list(dict.fromkeys(c for c in ("repo", "error", "started_at", "finished_at", *FIELDS)
+                                      if c in columns(conn, OLD_TABLE)))
+            conn.execute(f"insert into template_builds (runtime, {', '.join(kept)}) "
+                         f"select ?, {', '.join(kept)} from {OLD_TABLE}", (runtime.LEGACY,))
+        conn.execute(f"drop table {OLD_TABLE}")
+        conn.execute("commit")
+    except BaseException:
+        conn.execute("rollback")
+        raise
+
+
+# A template's latest build on a runtime, keyed by repo or by the platform's
+# own template; repos whose default branch moved since their template's last build.
+SCHEMA = Schema(tables=TABLE + """
 create table if not exists template_moved (repo text primary key, since text not null default current_timestamp);
-""", columns=(("template_builds", "fingerprint", "text"), ("template_builds", "built_fingerprint", "text"),
-              ("template_builds", "built_template", "text"), ("template_builds", "pid", "integer"),
-              ("template_builds", "built_memory_mb", "integer")))
+""", upgrade=_per_runtime)
 
 
 if __name__ == "__main__":

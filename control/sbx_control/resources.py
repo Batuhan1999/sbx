@@ -22,7 +22,7 @@ def snapshot(name, live=False):
                    "swap_mb": app.swap_mb, "min_free_disk_mb": size["disk_mb"],
                    "allocation_source": "build_resources" if app.spec.get("build_resources")
                    else "resources" if app.spec.get("resources") else "default"},
-        "usage": None, "host": core.capacity(actual.memory_mb), "issues": [],
+        "usage": None, "host": core.capacity(actual.memory_mb, kind=runtime.kind_of(actual)), "issues": [],
     }
     if live and runtime_state == "running":
         try:

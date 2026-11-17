@@ -259,16 +259,25 @@ key=$(cd /opt/e2b && docker compose exec -T ready cat /run/e2b/sdk.env | sed -n 
 echo "ok: $hugepages hugepages, API on 127.0.0.1:3000"
 
 say "Sandbox runtime credentials: /etc/sbx/runtime.env"
-# This host's sandbox runtime: E2B's credentials, made here by Embed, in
+# This host's sandbox runtimes: Embed's credentials, made here by Embed, in
 # runtime.env (never backed up). Header routing in client-proxy takes an IP
-# host, not localhost.
+# host, not localhost. A fresh install enables Embed alone (SBX_RUNTIMES);
+# on an existing one, what is not Embed's (the runtimes enabled, the default,
+# other runtimes' keys) stays as the operator set it.
 umask 077
-cat > /etc/sbx/runtime.env <<ENV
-# This host's sandbox runtime (E2B Embed). Written by install.sh; not backed up.
-E2B_API_KEY=$key
-E2B_API_URL=http://127.0.0.1:3000
-E2B_SANDBOX_URL=http://127.0.0.1:3002
-ENV
+if [ -f /etc/sbx/runtime.env ]; then
+  kept=$(grep -vE '^(#|E2B_API_KEY=|E2B_API_URL=|E2B_SANDBOX_URL=|E2B_HOST=|E2B_DOMAIN=)' /etc/sbx/runtime.env || true)
+else
+  kept="SBX_RUNTIMES=embed"
+fi
+{
+  echo "# This host's sandbox runtimes (E2B Embed here). Written by install.sh; not backed up."
+  echo "E2B_API_KEY=$key"
+  echo "E2B_API_URL=http://127.0.0.1:3000"
+  echo "E2B_SANDBOX_URL=http://127.0.0.1:3002"
+  [ -z "$kept" ] || printf '%s\n' "$kept"
+} > /etc/sbx/runtime.env.new
+mv /etc/sbx/runtime.env.new /etc/sbx/runtime.env
 umask 022
 
 say "sbx-control, the host's guard, nginx, connector services"

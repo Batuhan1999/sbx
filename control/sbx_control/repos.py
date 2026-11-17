@@ -4,7 +4,7 @@ import json
 import pathlib
 import re
 
-from . import addressing, catalog, env, github_app, paths, recipes, settings, template_builds
+from . import addressing, catalog, env, github_app, paths, recipes, runtimes, settings, template_builds
 from .catalog import attachments, connections
 
 BRIEFS = pathlib.Path(__file__).parent / "template_files"
@@ -20,17 +20,20 @@ def render_brief(name: str, **values) -> str:
 
 def info(repo: str) -> dict:
     """Whether and how the installation serves the repo, its sbx.yaml as the
-    server reads it, and which secrets its sbx.yaml asks for that aren't set."""
+    server reads it, which secrets its sbx.yaml asks for that aren't set, and
+    the runtime its sandboxes run on when an admin chose one (runtime; null:
+    the installation's default)."""
     trust = settings.trust(repo)
     a = recipes.load(repo)
-    build = template_builds.current(repo)
+    build = template_builds.current(repo, runtimes.of_repo(repo))
     return {"repo": repo, "trust": trust, "configured": a.has_recipe, "prebuilt": template_builds.own(repo),
             "template": build.get("template") or "", "recipe_sha256": recipes.fingerprint(a),
             "previews": sorted(k.lstrip("-") or "web" for k, p in addressing.previews(a).items() if p["link"]), "secrets_missing": env.missing(repo),
             "services": sorted(a.spec.get("services") or {}),
             "template_build": build.get("status") or "-", "template_stale": bool(build.get("stale")),
             "github": github_app.access(repo) if trust else "-", "github_app_install": github_app.install_url(),
-            "github_anonymous": bool(trust) and github_app.reachable_anonymously(repo)}
+            "github_anonymous": bool(trust) and github_app.reachable_anonymously(repo),
+            "runtime": runtimes.setting(repo)}
 
 
 def setup_brief(repo: str, email: str) -> str:

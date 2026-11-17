@@ -3,8 +3,8 @@ import { ArrowLeft, ArrowRight, Check, Globe, Server } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { setSetupToken, setupToken } from '@/api/client'
 import { api } from '@/api/endpoints'
-import { keys, useSetup, useSetupChecks } from '@/api/queries'
-import type { SetupState } from '@/api/types'
+import { keys, useRuntimes, useSetup, useSetupChecks } from '@/api/queries'
+import type { SandboxRuntime, SetupState } from '@/api/types'
 import { CopyCommand } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { ErrorState, Loading } from '@/components/states'
@@ -14,6 +14,7 @@ import { portsHint } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError, required } from '@/lib/validation'
 import { Checks } from '../extensions/ConnectionCard'
+import { RuntimeList } from '../settings/Runtimes'
 
 type Step = 'address' | 'admin'
 
@@ -157,6 +158,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
 function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   const qc = useQueryClient()
   const checks = useSetupChecks()
+  const runtimes = useRuntimes()
   const existing = !!s.steps.find(x => x.step === 'sign_in')?.done  // someone can sign in already
   const ready = s.signed_in || s.can_complete
   const finish = async (admin?: { email: string; password: string }) => {
@@ -191,11 +193,7 @@ function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
       </div>
     </AppForm>}
     {!ready && existing && <AnchorButton variant="primary" href="/auth/login?next=%2Fapp%2Fsetup">Sign in to continue<ArrowRight /></AnchorButton>}
-    <div className="space-y-2">
-      <p className="text-[12.5px] font-medium">Server checks</p>
-      {checks.isPending ? <Spinner label="Checking…" /> : checks.error ? <ErrorState error={checks.error} compact retry={() => checks.refetch()} /> : checks.data && <Checks checks={checks.data.checks} />}
-      {checks.data && !checks.data.ok && <Button size="sm" busy={checks.isFetching} onClick={() => checks.refetch()}>Check again</Button>}
-    </div>
+    <ServerChecks checks={checks} runtimes={runtimes.data?.runtimes ?? []} />
     {ready && <ErrorState error={error} compact />}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
@@ -204,6 +202,27 @@ function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
     </div>
     <p className="text-[12px] text-muted">Finishing disables the one-time setup link.</p>
   </div>
+}
+
+/** The server's checks; each runtime's own checks under that runtime when the runtimes could be read, else one list as before. */
+function ServerChecks({ checks, runtimes }: { checks: ReturnType<typeof useSetupChecks>; runtimes: SandboxRuntime[] }) {
+  const all = checks.data?.checks ?? []
+  const kinds = new Set(runtimes.map(r => r.kind))
+  const own = all.filter(c => !c.runtime || !kinds.has(c.runtime))
+  return <>
+    {(!checks.data || own.length > 0) && <div className="space-y-2">
+      <p className="text-[12.5px] font-medium">Server checks</p>
+      {checks.isPending ? <Spinner label="Checking…" /> : checks.error ? <ErrorState error={checks.error} compact retry={() => checks.refetch()} /> : <Checks checks={own} />}
+    </div>}
+    {runtimes.length > 0 && <div className="space-y-2">
+      <p className="text-[12.5px] font-medium">Sandbox runtimes</p>
+      <RuntimeList runtimes={runtimes} className="rounded-lg border border-line bg-panel">{r => {
+        const mine = all.filter(c => c.runtime === r.kind)
+        return mine.length > 0 && <div className="mt-2"><Checks checks={mine} /></div>
+      }}</RuntimeList>
+    </div>}
+    {checks.data && !checks.data.ok && <Button size="sm" busy={checks.isFetching} onClick={() => checks.refetch()}>Check again</Button>}
+  </>
 }
 
 function Done({ s }: { s: SetupState }) {

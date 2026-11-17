@@ -78,11 +78,11 @@ def main():
     platform.connect()
     if not args.template:
         from ... import template_builds, templates
-        args.template = template_builds.built(templates.BASE)
+        args.template = template_builds.built(templates.BASE, "embed")
     # On a cloud VM the public address is not on an interface; the domain names it.
     addresses = set(host_addresses()) | {socket.gethostbyname(f"{settings.current().domain.login_host}.{settings.current().domain.name}")}
     ports = listening_ports()
-    sbx = runtime.create(args.template, timeout=600, metadata={"sbx": "netcheck"})
+    sbx = runtime.create(args.template, timeout=600, metadata={"sbx": "netcheck"}, kind="embed")
     try:
         gateway = sbx.commands.run("ip route | awk '/^default/ {print $3}'").stdout.strip()
         if gateway:

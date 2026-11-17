@@ -19,6 +19,9 @@
   sbx-admin recipe rm OWNER/REPO     remove the recipe `sbx recipe apply` installed (refused while it has sandboxes)
   sbx-admin template rm KEY          delete a template (OWNER/REPO, default, default:<size>, sbx-base) and its build record
   sbx-admin template prune           delete the templates nothing starts from any more (the scheduler does it too)
+  sbx-admin runtime list             the enabled sandbox runtimes: kind, default, capabilities, limits, state
+  sbx-admin runtime verify [KIND]    take a throwaway sandbox through its life on one (default: the default)
+  sbx-admin runtime apply            after editing /etc/sbx/runtime.env: check it, regenerate nginx, restart sbx-control
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
   sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
@@ -207,6 +210,36 @@ def do_template(a) -> int:
     return 0
 
 
+def do_runtime(a) -> int:
+    from . import platform, runtime, runtimes
+    platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action == "apply":
+        kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
+        # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control
+        # configures each runtime at start (platform.connect): both again.
+        settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
+        print(f"runtimes {', '.join(kinds)} (default {first}): nginx is regenerated and "
+              "sbx-control restarts within seconds")
+        return 0
+    if a.action == "verify":
+        if a.kind and a.kind not in runtime.enabled():
+            print(f"no runtime {a.kind} is enabled here; the enabled ones are {', '.join(runtime.enabled())}",
+                  file=sys.stderr)
+            return 2
+        return 0 if runtimes.verify(a.kind) else 1
+    found = runtimes.describe()
+    if a.json:
+        print(json.dumps(found))
+        return 0
+    for r in found["runtimes"]:
+        caps = ", ".join(name for name, on in r["capabilities"].items() if on) or "none"
+        limits = ", ".join(f"{k}={v}" for k, v in r["limits"].items()) or "none known"
+        print(f"{r['kind']:10} {'default' if r['default'] else '':8} {'this host' if r['host'] else 'hosted':10} "
+              f"{r['status']['state']:14} {r['title']}: {r['status']['summary']}")
+        print(f"{'':10} capabilities: {caps}; limits: {limits}")
+    return 0
+
+
 def do_upgrade(tag: str | None) -> int:
     from . import setup, updates
     if tag:
@@ -273,6 +306,10 @@ def main(argv: list) -> int:
     template = sub.add_parser("template")
     template.add_argument("action", choices=["rm", "prune"])
     template.add_argument("key", nargs="?")
+    runtime_cmd = sub.add_parser("runtime", help="the enabled sandbox runtimes")
+    runtime_cmd.add_argument("action", choices=["list", "verify", "apply"])
+    runtime_cmd.add_argument("kind", nargs="?", help="verify: the runtime to verify (default: the default)")
+    runtime_cmd.add_argument("--json", action="store_true", help="list: as GET /api/runtimes answers")
     preview = sub.add_parser("preview", help="loopback-only app preview; forward its listener over SSH")
     preview.add_argument("name")
     preview.add_argument("--port", type=int)
@@ -386,6 +423,8 @@ def main(argv: list) -> int:
         return do_recipe_rm(a.repo)
     if a.cmd == "template":
         return do_template(a)
+    if a.cmd == "runtime":
+        return do_runtime(a)
     if a.cmd == "jobs":
         from . import jobs
         if a.verb == "run":

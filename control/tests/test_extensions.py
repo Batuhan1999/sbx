@@ -293,7 +293,7 @@ class ExtensionTests(Installation):
             with patch.object(template_builds, "start") as start:
                 with self.assertRaisesRegex(template_builds.NotBuilt, "owner/app template is building"):
                     template_builds.template_for("owner/app")
-            start.assert_called_once_with("owner/app")
+            start.assert_called_once_with("owner/app", "embed")
             self.assertEqual(readiness.template_key(True, template_builds.current("owner/app")), "missing")
             with patch.object(recipes, "mirror", return_value=Path("/unused")):  # the repo's clone
                 template_builds.build_now("owner/app")
@@ -305,14 +305,14 @@ class ExtensionTests(Installation):
         self.recipe("owner/app", "template: yes\n")
         settings.add_repo("owner/app", by="test")
         with state.db() as conn:
-            conn.execute("insert into template_builds (repo, status, finished_at) values ('owner/app', 'built', '2026-11-01')")
+            conn.execute("insert into template_builds (runtime, repo, status, finished_at) values ('embed', 'owner/app', 'built', '2026-11-01')")
         build = template_builds.current("owner/app")
         self.assertEqual(readiness.template_key(True, build), "missing")
         self.assertIn("owner/app", template_builds.stale())
         self.assertIsNone(next(r for r in readiness.summaries() if r["repo"] == "owner/app")["built_at"])
         with patch.object(template_builds, "start") as start, self.assertRaises(template_builds.NotBuilt):
             template_builds.template_for("owner/app")
-        start.assert_called_once_with("owner/app")
+        start.assert_called_once_with("owner/app", "embed")
 
     def test_a_template_whose_last_build_failed_is_not_restarted_by_a_create(self):
         from sbx_control import settings, template_builds

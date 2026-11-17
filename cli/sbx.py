@@ -414,7 +414,10 @@ def up(args):
     keys = public_keys()
     if not keys:
         note("no ~/.ssh/id_*.pub: SSH into the sandbox won't work (ssh-keygen -t ed25519)")
-    info = api("POST", "/api/sandboxes", {"name": args.name, "branch": branch, "public_keys": keys, "repo": repo})
+    body = {"name": args.name, "branch": branch, "public_keys": keys, "repo": repo}
+    if args.runtime:
+        body["runtime"] = args.runtime
+    info = api("POST", "/api/sandboxes", body)
     if write_host(args.name, info) and keys:
         hand_credentials(args.name)
     note(f"[{time.time() - started:4.1f}s] sbx-{args.name} is on {info.get('branch') or branch or 'the default branch'}")
@@ -454,6 +457,17 @@ def open_tool(name, tool):
         "zed": ["zed", f"ssh://{host}{repo}"],
     }
     os.execvp(commands[tool][0], commands[tool])
+
+
+def runtimes_cmd(args):
+    found = api("GET", "/api/runtimes")
+    if args.json:
+        print(json.dumps(found))
+        return
+    for r in found["runtimes"]:
+        where = "this server" if r.get("host") else "hosted"
+        print(f"{r['kind']:<12} {'default' if r.get('default') else '':<8} {where:<12} "
+              f"{r['status']['state']:<14} {r['title']}: {r['status']['summary']}")
 
 
 def ls(args):
@@ -986,6 +1000,10 @@ def parser():
     p.add_argument("--json", action="store_true", help="print the sandbox as the API returns it")
     p.add_argument("--no-wait", action="store_true", help="return once SSH works")
     p.add_argument("--timeout", type=int, default=1800, help="seconds to wait for it (default 1800)")
+    p.add_argument("--runtime", metavar="KIND", help="the sandbox runtime it runs on (sbx runtimes lists them; "
+                   "default: the repo's, else the server's)")
+    p = command("runtimes", runtimes_cmd, "the sandbox runtimes the server runs sandboxes on")
+    p.add_argument("--json", action="store_true")
     p = command("down", down, "delete the sandbox and what was provisioned for it")
     p.add_argument("name")
     p = command("ls", ls, "your sandboxes")

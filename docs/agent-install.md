@@ -19,7 +19,12 @@ failed step before presenting it as done.
 
 1. **Server.** Check Ubuntu 24.04, `/dev/kvm`, memory, disk and network access
    against the [host requirements](../README.md#host-requirements). Explain any
-   prerequisite only the owner can fix. Download the latest release's archive
+   prerequisite only the owner can fix. What the server needs depends on the
+   [runtimes](reference.md#runtimes) it will run: Embed, the built-in runtime,
+   runs sandboxes on the server itself and needs `/dev/kvm` and the memory and
+   disk the host requirements list. A server without `/dev/kvm` can still run
+   sbx once a provider's runtime is available, with sandboxes running at the
+   provider; that is coming, so today a server needs `/dev/kvm`. Download the latest release's archive
    (or the release the owner names), check its `.sha256` and run
    `sh install.sh` from the unpacked directory as root, as the
    [README](../README.md#install) shows; keep its progress visible. A git
@@ -31,11 +36,11 @@ failed step before presenting it as done.
    admin login is a shared password that admits the admins only, and whoever
    holds it can sign in as any of them; for a team, suggest OIDC with
    `allowed_emails`.
-   Confirm the control service, runtime and secret store are ready
-   (`sbx-admin doctor`, `sbx-admin store status`). The runtime's checks
-   include one that starts a sandbox and fetches this server's public address
-   from inside it: template builds, git pushes and catalog actions all need
-   that address to work from where sandboxes run.
+   Confirm the control service, runtimes and secret store are ready
+   (`sbx-admin doctor`, `sbx-admin runtime verify`, `sbx-admin store status`).
+   The runtimes' checks include one that starts a sandbox and fetches this
+   server's public address from inside it: template builds, git pushes and
+   catalog actions all need that address to work from where sandboxes run.
 3. **Repository access.** Connect GitHub on the web app's **Extensions** page
    and let the owner select a repository. A public repository URL works
    without a GitHub App.

@@ -128,7 +128,7 @@ def address_ready() -> bool:
 
 def readiness() -> dict:
     from .connections import runtime as runtime_connection
-    checks = [*runtime.current().readiness(host_facts()), *runtime_connection.Runtime().test()]
+    checks = [*runtime.readiness(host_facts()), *runtime_connection.Runtime().test()]
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 

@@ -7,7 +7,7 @@ The repo page's checklist, the repo list's one-line state and the template
 badge all read the rules here; the web app only renders them."""
 from __future__ import annotations
 
-from . import auth, env, recipes, repos, settings, template_builds, views
+from . import auth, env, recipes, repos, runtime, runtimes, settings, template_builds, views
 from .catalog import attachments
 
 STEPS = ("served", "github", "configured", "services", "env", "template", "sandbox")
@@ -115,7 +115,7 @@ def of(repo: str, email: str) -> dict:
     info = repos.info(repo)
     trusted = info["trust"] == "trusted"
     view = env.repo_env(repo, email) if trusted else None
-    build = template_builds.current(repo) if info["configured"] else {}
+    build = template_builds.current(repo, runtimes.of_repo(repo)) if info["configured"] else {}
     try:
         sandboxes = views.collect()
     except Exception as error:  # the runtime not answering must not hide the rest
@@ -152,7 +152,7 @@ def summaries() -> list:
     for repo in views.known_repos():
         a, trust = recipes.load(repo), settings.trust(repo)
         own = a.has_recipe and template_builds.own(repo)
-        build = template_builds.current(repo) if a.has_recipe else {}
+        build = template_builds.current(repo, runtimes.of_repo(repo)) if a.has_recipe else {}
         trusted = trust == "trusted" and a.has_recipe
         out.append({"repo": repo, "trust": trust, "configured": a.has_recipe, "prebuilt": own,
                     "built_at": build.get("finished_at") if build.get("template") else None, "sandboxes": counts.get(repo, 0),
@@ -163,9 +163,20 @@ def summaries() -> list:
 
 
 def template(repo: str) -> dict:
-    """GET /api/repos/{repo}/template, without the log."""
+    """GET /api/repos/{repo}/template, without the log: the template its
+    sandboxes start from on its runtime (runtime); with several runtimes,
+    the same for each other one under runtimes."""
     own = template_builds.own(repo)
-    build = template_builds.current(repo)  # its own, else the default one its sandboxes start from
+    kind = runtimes.of_repo(repo)
+    out = {"repo": repo, **_template_on(repo, own, kind)}
+    if len(runtime.enabled()) > 1:
+        out["runtimes"] = [_template_on(repo, own, other) for other in runtime.enabled() if other != kind]
+    return out
+
+
+def _template_on(repo: str, own: bool, kind: str) -> dict:
+    build = template_builds.current(repo, kind)  # its own, else the default one its sandboxes start from
     key = template_key(own, build)
     _, _, level, label, _ = TEMPLATE[key]
-    return {"repo": repo, **build, "status": build.get("status", "-"), "state": key, "label": label, "level": level}
+    return {**build, "runtime": kind, "status": build.get("status", "-"), "state": key, "label": label,
+            "level": level}

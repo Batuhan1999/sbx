@@ -2,7 +2,7 @@
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
   AttachBody, Attachment, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
-  GitHubRepository, Me, RecipeFiles, RepoInspection, RepoReadiness, RepoSummary, Sandbox,
+  GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
   SetupState, TemplateState, Updates, Audience,
 } from './types'
@@ -15,6 +15,7 @@ const s = (name: string) => `/api/sandboxes/${enc(name)}`
 
 export const api = {
   me: () => get<Me>('/api/me'),
+  runtimes: () => get<Runtimes>('/api/runtimes'),
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
 
   sandboxes: {
@@ -32,6 +33,9 @@ export const api = {
 
   repos: {
     list: () => get<{ repos: RepoSummary[] }>('/api/repos'),
+    get: (repo: string) => get<RepoDetail>(r(repo)),
+    /** Admins only; null goes back to the installation's default. */
+    setRuntime: (repo: string, runtime: string | null) => put<RepoDetail>(`${r(repo)}/runtime`, { runtime }),
     readiness: (repo: string) => get<RepoReadiness>(`${r(repo)}/readiness`),
     setupBrief: (repo: string) => request<string>('GET', `${r(repo)}/setup-brief`, undefined, 'text'),
     files: (repo: string) => get<RecipeFiles>(`${r(repo)}/files`),

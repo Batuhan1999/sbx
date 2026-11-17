@@ -105,10 +105,15 @@ def jobs() -> list:
             continue
         out.append({"id": job.id, "group": job.group, "title": job.title, "text": job.text(), "kind": job.kind,
                     "runnable": job.runnable, "schedule": job.schedule(), **info})
-    for repo, build in sorted(template_builds.builds().items()):
-        out.append({"id": f"template:{repo}", "group": "templates", "title": f"Template build · {repo}", "kind": "build",
-                    "text": build.get("error") or "", "status": build.get("status"), "last": build.get("finished_at") or build.get("started_at"),
-                    "available": True, "runnable": build.get("status") != "building"})
+    several = len(runtime.enabled()) > 1
+    for kind in runtime.enabled():
+        prefix = "template:" if kind == runtime.default() else f"template@{kind}:"
+        on = f" · {runtime.title(kind)}" if several else ""
+        for repo, build in sorted(template_builds.builds(kind).items()):
+            out.append({"id": f"{prefix}{repo}", "group": "templates", "title": f"Template build · {repo}{on}",
+                        "kind": "build", "text": build.get("error") or "", "status": build.get("status"),
+                        "last": build.get("finished_at") or build.get("started_at"),
+                        "available": True, "runnable": build.get("status") != "building"})
     return out
 
 
@@ -127,12 +132,15 @@ def run_now(job_id: str) -> str:
     if job_id == "services-reconciler":
         threading.Thread(target=keeper.reconcile_services, daemon=True).start()
         return "reconciler started"
-    if job_id.startswith("template:"):
-        repo = job_id.split(":", 1)[1]
+    if job_id.startswith(("template:", "template@")):
+        head, _, repo = job_id.partition(":")
+        kind = head.partition("@")[2] or None   # template@<kind>:<key> on another runtime than the default
+        if kind and kind not in runtime.enabled():
+            raise RuntimeError(f"no runtime {kind} is enabled here")
         if not (repo == templates.BASE or templates.is_default(repo) or settings.trust(repo)):
             raise RuntimeError(f"{repo} is not served here")
         try:
-            started = template_builds.start(repo)
+            started = template_builds.start(repo, kind)
         except template_builds.NoRoom as error:
             raise RuntimeError(str(error)) from None
         if not started:

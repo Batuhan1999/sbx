@@ -73,7 +73,7 @@ def connect() -> Credentials:
     global _connected
     from . import runtime
     found = vault.platform_secrets()
-    runtime.current().configure(found)
+    runtime.configure(found)
     key = found.get("GITHUB_DEPLOY_KEY", "").strip()
     _connected = Credentials(key + "\n" if key else "", found)
     return _connected

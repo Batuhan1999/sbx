@@ -149,9 +149,11 @@ def handle_job(env: dict) -> dict:
             owners = settings.current().access.admins
             if not owners:
                 raise JobError("finish sbx administrator setup first")
+            cache = snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo)
             sandboxes.create_locked(
-                sandboxes.CreateSandbox(name=name, repo=repo, branch=recipes.default_branch(repo), public_keys=""),
-                owners[0], start_from=snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo),
+                sandboxes.CreateSandbox(name=name, repo=repo, branch=recipes.default_branch(repo), public_keys="",
+                                        runtime=cache.runtime if cache else None),
+                owners[0], start_from=cache.snapshot_id if cache else None,
                 # Registered to an admin, driven by any Amp user: no admin's own values.
                 metadata={"connector": KIND, "orbId": orb_id, "personal": "off"})
             info = core.find(name)
@@ -202,14 +204,15 @@ def provider():
 
 def build(repo: str | None):
     """Amp's layer is in every template while the connector is enabled."""
-    from ... import template_builds
+    from ... import runtimes, template_builds
     selected = [repo] if repo else [r["repo"] for r in routes()]
     if not selected:
         raise JobError("prepare a repository in sbx before building its Amp template")
     for one in selected:
         if one not in [r["repo"] for r in routes()]:
             raise JobError("connect and prepare the repository in sbx first")
-        template_builds.build_now(one if template_builds.own(one) else template_builds.default_for(one))
+        template_builds.build_now(one if template_builds.own(one) else template_builds.default_for(one),
+                                  runtimes.of_repo(one))
 
 
 def main(argv=None):

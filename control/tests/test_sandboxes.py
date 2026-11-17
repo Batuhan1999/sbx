@@ -369,7 +369,7 @@ class WorkspaceTests(Server):
         from sbx_control.runtime.embed import network as host_network
         original = 'OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=172.29.20.0/24\n'
         env, marker = self.embed_env(original)
-        with patch.object(host_network.core, 'sandboxes', return_value=[Mock()]), \
+        with patch('sbx_control.runtime.embed.own_sandboxes', return_value=[Mock()]), \
                 patch.object(host_network.subprocess, 'run') as run:
             with self.assertRaisesRegex(ValueError, 'before creating sandboxes'):
                 runtime.apply_network()
@@ -383,7 +383,7 @@ class WorkspaceTests(Server):
         network = self.settings.current().network.model_dump()
         self.settings.update('network', {**network, 'internal_cidrs': ['172.29.50.0/24']}, by='test')
         env, marker = self.embed_env('OTHER_SETTING=preserved\nALLOW_SANDBOX_INTERNAL_CIDRS=\n')
-        with patch.object(host_network.core, 'sandboxes', return_value=[]), \
+        with patch('sbx_control.runtime.embed.own_sandboxes', return_value=[]), \
                 patch.object(host_network.subprocess, 'run') as run:
             result = runtime.apply_network()
         self.assertEqual(result['status'], 'applied')
@@ -761,7 +761,7 @@ class WorkspaceTests(Server):
         self.assertEqual(template_builds.state(key)['status'], 'built')
         self.assertTrue(template_builds.state(key)['template'].startswith('default-'))
         release = threading.Event()
-        with patch('sbx_control.templates.build', side_effect=lambda *a: release.wait(5)):
+        with patch('sbx_control.templates.build', side_effect=lambda *a, **k: release.wait(5)):
             before = set(threading.enumerate())
             self.assertTrue(template_builds.start(key))
             worker = next(t for t in threading.enumerate() if t not in before)

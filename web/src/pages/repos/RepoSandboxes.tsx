@@ -16,7 +16,7 @@ export default function RepoSandboxes() {
   const [open, setOpen] = useState(false)
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <p className="text-[13px] text-muted">{scope === 'all' ? 'Every sandbox of this repository.' : 'Your sandboxes of this repository.'} <CapacityNote capacity={list.data?.capacity} /></p>
+      <p className="text-[13px] text-muted">{scope === 'all' ? 'Every sandbox of this repository.' : 'Your sandboxes of this repository.'} <CapacityNote list={list.data} /></p>
       <Dialog open={open} onOpenChange={setOpen} title="New sandbox" description={repo} trigger={<Button size="sm" variant="primary"><Plus />New sandbox</Button>}>
         <NewSandboxForm repo={repo} onCancel={() => setOpen(false)} />
       </Dialog>

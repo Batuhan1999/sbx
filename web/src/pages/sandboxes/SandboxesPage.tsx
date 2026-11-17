@@ -1,8 +1,8 @@
 import { Boxes, Plus, Search } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { useMe, useSandboxes } from '@/api/queries'
-import type { Capacity, SandboxScope } from '@/api/types'
+import { useMe, useRuntimeTitle, useSandboxes } from '@/api/queries'
+import type { Capacity, SandboxList, SandboxScope } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/states'
 import { Segmented } from '@/components/Tabs'
@@ -20,12 +20,20 @@ const EMPTY: Record<SandboxScope, string> = {
   all: 'Nobody has a sandbox on this server yet.',
 }
 
-export function CapacityNote({ capacity }: { capacity?: Capacity }) {
-  if (!capacity) return null
+/** The room for sandboxes: the default runtime's, or with several runtimes one line per runtime that knows its room. */
+export function CapacityNote({ list }: { list?: Pick<SandboxList, 'capacity' | 'capacities'> }) {
+  const title = useRuntimeTitle()
+  if (!list?.capacity) return null
+  if (!title) return <Room capacity={list.capacity} />
+  const known = Object.values(list.capacities ?? { [list.capacity.runtime ?? '']: list.capacity }).filter(c => c.known)
+  return <span>{known.map((c, i) => <Fragment key={c.runtime}>{i > 0 && ' · '}<Room capacity={c} title={title(c.runtime)} /></Fragment>)}</span>
+}
+
+function Room({ capacity, title }: { capacity: Capacity; title?: string }) {
   if (!capacity.known) return <LimitsNote limits={capacity.limits} />
   const low = (capacity.slots_free ?? 0) <= 1
   return <span className={low ? 'text-warn' : undefined}>
-    Room for {capacity.slots_free} more of {capacity.slots_total} at {memory(capacity.memory_mb)} each
+    {title ? `${title}: room` : 'Room'} for {capacity.slots_free} more of {capacity.slots_total} at {memory(capacity.memory_mb)} each
   </span>
 }
 
@@ -65,7 +73,7 @@ export default function SandboxesPage() {
   ]
   return <>
     <PageHeader title="Sandboxes" description="Each sandbox is one branch running in its own VM: workspace, services, app and preview URLs."
-      meta={<CapacityNote capacity={list.data?.capacity} />}
+      meta={<CapacityNote list={list.data} />}
       actions={<Dialog open={creating} onOpenChange={setCreating} title="New sandbox" description="A development environment for one branch."
         trigger={<Button variant="primary"><Plus />New sandbox</Button>}>
         <NewSandboxForm onCancel={() => setCreating(false)} />

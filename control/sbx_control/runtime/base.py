@@ -4,9 +4,25 @@ A runtime makes, lists, pauses and deletes VMs, runs commands and writes
 files in them, and builds the templates they start from. Everything else
 (recipes, the lifecycle, env, services, previews, extensions) is sbx's
 and the same on every runtime. Results are plain values: a sandbox's
-state is RUNNING or PAUSED, its times are datetimes."""
+state is RUNNING or PAUSED, its times are datetimes.
+
+An installation runs several runtimes at once (sbx_control.runtime is the
+registry), so a backend keeps no process-global configuration: nothing it is
+configured with may be where another backend reads it. Its credentials come
+to configure() as its own keys of /etc/sbx/runtime.env (credential_keys, a
+name no other backend uses) and stay on the instance; it passes them to its
+SDK per call. Embed still puts its keys in the process environment, where
+the E2B SDK reads them, which is allowed only while it is the one E2B-based
+backend; the next E2B-based backend moves both to per-call options.
+
+The contract has two parts. Every backend implements the compute part
+(Runtime: create, list, connect, templates, ...). The host part (systemd
+units, the host's firewall, disk, capacity, readiness) is for a runtime that
+runs on this host; HostSide gives every member of it a no-op, so a hosted
+backend inherits it and implements nothing it does not have."""
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import pathlib
@@ -56,11 +72,13 @@ class Info:
     end_at: datetime.datetime | None = None    # when it pauses (running) or paused (paused)
     cpu_count: int | None = None
     memory_mb: int | None = None
+    runtime: str = ""                          # its runtime's kind, as the registry tags it
 
 
 @dataclasses.dataclass(frozen=True)
 class Snapshot:
     snapshot_id: str
+    runtime: str = ""    # the kind of the runtime that holds it, as the registry tags it
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +205,7 @@ class Handle(Protocol):
 class Runtime(Protocol):
     kind: str
     title: str
+    host: bool        # it runs on this server (its host part does something)
     capabilities: Capabilities
     disk_path: str    # where it keeps templates and snapshots, as messages name it
     # The last hop of a preview: nginx proxies to ingress with the Host
@@ -321,3 +340,54 @@ class Runtime(Protocol):
     def placing(self) -> ContextManager:
         """Held while a sandbox is placed, so two creations can't both take
         the last room."""
+
+
+class HostSide:
+    """The host part of the contract, as nothing: what a runtime that does
+    not run on this host (a hosted provider) inherits. A runtime on this host
+    (Embed) overrides what it has."""
+    host = False
+    host_unit: str | None = None
+    disk_path = ""
+
+    def host_units(self) -> list:
+        return []
+
+    def host_commands(self, into) -> dict:
+        return {}
+
+    def guard_host(self) -> None:
+        return None
+
+    def apply_host(self, key: str) -> bool:
+        return False
+
+    def apply_network(self) -> dict:
+        return {"status": "unchanged", "allowed_cidrs": []}
+
+    def disk(self) -> dict | None:
+        return None
+
+    def free_disk_mb(self) -> int | None:
+        return None
+
+    def collect_storage(self) -> None:
+        return None
+
+    def jobs(self) -> list:
+        return []
+
+    def capacity(self, memory_mb: int) -> dict:
+        return {"known": False}
+
+    def placing(self) -> ContextManager:
+        return contextlib.nullcontext()
+
+    def readiness(self, facts: dict) -> list:
+        return []
+
+    def why_busy(self, memory_mb: int | None) -> str:
+        return "the runtime is busy; pause again in a minute"
+
+    def snapshot_usage(self, sandbox_id: str) -> dict:
+        return {}

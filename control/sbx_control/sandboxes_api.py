@@ -40,7 +40,8 @@ def api_create(body: sandboxes.CreateSandbox, start_app: bool = True, email: str
     except Exception as error:
         # The runtime failed before a VM was made (none recorded): the same request may be sent again.
         if core.runtime_failure(error) and not (lifecycle.get(body.name) or {}).get("sandbox_id"):
-            raise HTTPException(503, f"the sandbox runtime ({runtime.title()}) did not take the sandbox: {error}. It may still "
+            title = runtime.title(body.runtime if body.runtime in runtime.enabled() else None)
+            raise HTTPException(503, f"the sandbox runtime ({title}) did not take the sandbox: {error}. It may still "
                                      "be starting (sbx-admin network apply and upgrades recreate it); try again in a "
                                      "minute", headers={"Retry-After": str(RUNTIME_RETRY_SECONDS)}) from error
         raise HTTPException(502, str(error)) from error  # a service failed
@@ -169,7 +170,17 @@ async def api_sandboxes_all(scope: str = "mine", repo: str = "", email: str = De
     items = [_item(i, email) for i in sorted(items, key=lambda i: i.get("created_at") or "", reverse=True)]
     if repo:
         items = [i for i in items if (i.get("app") or "").lower() == repo.lower()]
-    return {"sandboxes": items, "capacity": core.capacity()}
+    return {"sandboxes": items, **await run_in_threadpool(capacities)}
+
+
+def capacities() -> dict:
+    """The default runtime's room (capacity, naming its kind), and with
+    several runtimes each one's by kind (capacities)."""
+    first = runtime.default()
+    out = {"capacity": {**core.capacity(kind=first), "runtime": first}}
+    if len(runtime.enabled()) > 1:
+        out["capacities"] = {kind: {**core.capacity(kind=kind), "runtime": kind} for kind in runtime.enabled()}
+    return out
 
 
 def _item(i: dict, email: str) -> dict:

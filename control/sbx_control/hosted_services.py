@@ -113,6 +113,21 @@ def allowed_cidrs() -> list[str]:
     return list(dict.fromkeys([*settings.current().network.internal_cidrs, *networks()]))
 
 
+def attached_to(repo: str) -> list[str]:
+    """The managed servers the repo's attachments bind to (by choice or as
+    the only connection of their kind): its sandboxes must reach this host's
+    private network (runtimes.choose)."""
+    try:
+        with state.db() as conn:
+            names = {row[0] for row in conn.execute("select name from managed_servers")}
+    except sqlite3.OperationalError:
+        return []
+    if not names:
+        return []
+    bound = {key for att in attachments.effective(repo) for key in att["connections"].values()}
+    return sorted(bound & names)
+
+
 def networks() -> list[str]:
     """The private networks of the managed servers this installation keeps
     (a stopped one's too: its record and network stay)."""
@@ -216,8 +231,9 @@ def up(name, kind, *, data_root=None, storage_gb=None):
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
     from . import runtime
-    if not runtime.capabilities().private_networks:
-        raise ValueError(f"sandboxes on {runtime.title()} can't reach this host's private network, so a managed "
+    if not any(runtime.capabilities(kind).private_networks for kind in runtime.enabled()):
+        titles = ", ".join(runtime.title(kind) for kind in runtime.enabled())
+        raise ValueError(f"sandboxes on {titles} can't reach this host's private network, so a managed "
                          "server here would be out of their reach; use a hosted database instead")
     with _lock():
         return _up(Server(name, kind), data_root, storage_gb)

@@ -6,8 +6,8 @@ from __future__ import annotations
 import datetime
 import os
 
-from ..base import (Busy, Capabilities, CommandFailed, Info, Limits, NoRoom, NotRunning, Snapshot, TemplateSpec,
-                    Timeout)
+from ..base import (Busy, Capabilities, CommandFailed, HostSide, Info, Limits, NoRoom, NotRunning, Snapshot,
+                    TemplateSpec, Timeout)
 from . import capacity, storage
 
 
@@ -96,9 +96,10 @@ ENVD_PORT = 49983           # E2B's control daemon in every sandbox; it checks i
 PAUSE_DISK_HEADROOM_MB = 1024
 
 
-class Embed:
+class Embed(HostSide):
     kind = "embed"
     title = "E2B Embed"
+    host = True
     capabilities = Capabilities(snapshots=True, private_networks=True, egress_rules=True)
     disk_path = str(storage.ROOT)
     ingress = f"http://127.0.0.1:{CLIENT_PROXY_PORT}"
@@ -317,6 +318,17 @@ class Embed:
     def test(self):
         from . import connection
         return connection.test()
+
+
+def own_sandboxes() -> list:
+    """Embed's own sandboxes, whether or not SBX_RUNTIMES enables it: what
+    recreating its services would lose. Raises when Embed does not answer."""
+    from ... import runtime, vault
+    if Embed.kind in runtime.enabled():
+        return runtime.get(Embed.kind).sandboxes()
+    embed = Embed()
+    embed.configure(vault.runtime(Embed.credential_keys))
+    return embed.sandboxes()
 
 
 def dashboard_host() -> str:

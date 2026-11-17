@@ -112,15 +112,15 @@ def units() -> list[Unit]:
     from .secret_store.infisical import env_file
     s = shell()
     infisical, port = env_file().exists(), settings.current().store.port
-    sandboxes = runtime.current()
-    needs = f"Requires={sandboxes.host_unit}\n" if sandboxes.host_unit else ""
+    runs = runtime.host_unit_names()
+    needs = "".join(f"Requires={unit}\n" for unit in runs)
     found = [
-        *sandboxes.host_units(),
+        *runtime.host_units(),
         # Sandboxes' TCP leaves through the runtime's egress (host-guard.sh says what it allows).
         Unit("sbx-host-guard.service", _service(
             "Keep sandboxes off the host and the cloud metadata service; close the public interface",
             f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-host-guard",
-            after=sandboxes.host_unit or "network-online.target", unit_extra=needs)),
+            after=" ".join(runs) or "network-online.target", unit_extra=needs)),
         Unit("sbx-firewall.service", _service(
             "Keep sandboxes off the host's own ports",
             f"Type=oneshot\nRemainAfterExit=yes\nExecStart={SBIN}/sbx-firewall",
@@ -180,7 +180,7 @@ def commands() -> dict[str, str]:
         "sbx-admin": into('venv/bin/python -m sbx_control.admin "$@"'),
         "sbx-apply": into('venv/bin/python -m sbx_control.host apply "$@"'),
         "sbx-host-guard": into("sh host-guard.sh"),
-        **runtime.current().host_commands(into),
+        **runtime.host_commands(into),
         # Sandboxes may reach the host's nginx (the gate) and nothing else of it.
         "sbx-firewall": (
             "#!/bin/sh\nset -eu\n"
@@ -302,8 +302,8 @@ def apply(key: str) -> int:
         _systemctl("restart", "sbx-host-guard", check=True)
     elif key == "control":
         _systemctl("restart", "sbx-control", check=True)
-    elif runtime.current().apply_host(key):
-        pass   # the runtime's own
+    elif runtime.apply_host(key):
+        pass   # a runtime's own
     else:
         from . import extensions
         names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
@@ -371,7 +371,7 @@ def upgrade_backup() -> pathlib.Path | None:
         units.mkdir(mode=0o700)
         directory = systemd_dir()
         from . import runtime
-        own = {unit.name for unit in runtime.current().host_units()} | set(stopped)
+        own = {unit.name for unit in runtime.host_units()} | set(stopped)
         for path in sorted(directory.iterdir()):
             if path.name.startswith("sbx-") or path.name.removesuffix(".d") in own:
                 (shutil.copytree if path.is_dir() else shutil.copy2)(path, units / path.name)

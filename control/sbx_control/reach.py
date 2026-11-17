@@ -1,8 +1,10 @@
-"""What sandboxes may reach, as far as the runtime enforces it: the access
-and network settings it can't enforce are refused (runtime.Capabilities),
+"""What sandboxes may reach, as far as the runtimes enforce it: the access
+and network settings they can't enforce are refused (runtime.Capabilities),
 in words that name the capability, so no setting silently does nothing.
-Every writer of those sections imports this module (settings_api,
-sbx-admin config set)."""
+With several runtimes, public_repos needs every one to fence a sandbox
+(an untrusted repo's may run on any), and internal_cidrs one whose
+sandboxes reach them. Every writer of those sections imports this module
+(settings_api, sbx-admin config set)."""
 from . import runtime, settings
 
 SHARED = ("public_repos and network.internal_cidrs can't both be set: the runtime opens the internal ranges to "
@@ -10,17 +12,24 @@ SHARED = ("public_repos and network.internal_cidrs can't both be set: the runtim
           "public repos from another installation.")
 
 
+def _fence() -> bool:
+    return all(runtime.capabilities(kind).egress_rules for kind in runtime.enabled())
+
+
+def _private() -> bool:
+    return any(runtime.capabilities(kind).private_networks for kind in runtime.enabled())
+
+
 def offered() -> dict:
-    """The settings this runtime can enforce, by name: what the settings page offers."""
-    caps = runtime.capabilities()
-    return {"public_repos": caps.egress_rules, "internal_cidrs": caps.private_networks}
+    """The settings the runtimes can enforce, by name: what the settings page offers."""
+    return {"public_repos": _fence(), "internal_cidrs": _private()}
 
 
 @settings.check("access")
 def _access(before, after):
     if not after.public_repos:
         return
-    if not runtime.capabilities().egress_rules:
+    if not _fence():
         raise ValueError("public_repos needs a runtime that applies each sandbox's egress rules (egress_rules), "
                          "and this one doesn't: an untrusted repo's sandbox couldn't be fenced")
     if settings.current().network.internal_cidrs:
@@ -31,7 +40,7 @@ def _access(before, after):
 def _network(before, after):
     if not after.internal_cidrs:
         return
-    if not runtime.capabilities().private_networks:
+    if not _private():
         raise ValueError("network.internal_cidrs needs a runtime whose sandboxes reach this host's private network "
                          "(private_networks), and this one's don't: the ranges would do nothing")
     if settings.current().access.public_repos:
