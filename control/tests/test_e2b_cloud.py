@@ -442,50 +442,50 @@ class CredentialHelper(Installation):
         self.assertIn(f"cat {github.PIN}", layer.files["credential"].content)
 
     def test_a_listing_that_missed_a_runtime_delivers_to_what_it_has(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
             # One runtime did not answer: the listed sandboxes get the pin now, once.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=False))
             self.assertEqual(delivery.waiting(), {"a"})
             delivery.forget("a")
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertFalse(tls_pin.redeliver(["a"], complete=False))
             self.assertEqual(delivery.waiting(), set())
             # Every runtime answers: the ones missed before, and the pin counts as delivered.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+            self.assertTrue(tls_pin.redeliver(["a", "b"], complete=True))
             self.assertEqual(delivery.waiting(), {"b"})
             delivery.forget("b")
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"], complete=True))
+            self.assertFalse(tls_pin.redeliver(["a", "b"], complete=True))
         self.assertEqual(delivery.waiting(), set())
 
     def test_going_back_to_the_pin_before_a_partial_delivery_queues_again(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
-            sandboxes.redeliver_on_certificate_change(["a"], complete=True)   # pin one delivered everywhere
+            tls_pin.redeliver(["a"], complete=True)   # pin one delivered everywhere
             delivery.forget("a")
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
             # A listing that missed a runtime: "a" gets pin two, the round is incomplete.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=False))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=False))
             delivery.forget("a")
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
             # Back to pin one: "a" holds two now, so it is queued again.
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"], complete=True))
+            self.assertTrue(tls_pin.redeliver(["a"], complete=True))
         self.assertEqual(delivery.waiting(), {"a"})
         delivery.forget("a")
 
     def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
-        from sbx_control import delivery, sandboxes, templates
+        from sbx_control import delivery, templates, tls_pin
         with patch.object(templates, "pinned_key", return_value=""):
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # a public CA's: nothing
+            self.assertFalse(tls_pin.redeliver(["a", "b"]))   # a public CA's: nothing
         self.assertEqual(delivery.waiting(), set())
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b", None]))
+            self.assertTrue(tls_pin.redeliver(["a", "b", None]))
             self.assertEqual(delivery.waiting(), {"a", "b"})
             self.assertEqual(delivery.pending("a")[:2], ([], False))         # no values, no app restart
             for name in ("a", "b"):
                 delivery.forget(name)
-            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # unchanged: once
+            self.assertFalse(tls_pin.redeliver(["a", "b"]))   # unchanged: once
         with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
-            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"]))
+            self.assertTrue(tls_pin.redeliver(["a"]))
         self.assertEqual(delivery.waiting(), {"a"})
 
 
