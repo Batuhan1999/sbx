@@ -97,31 +97,20 @@ class Domain(Section):
 
 
 class SignIn(Section):
-    """The non-secret half; the vault holds OIDC_CLIENT_SECRET and LOGIN_PASSWORD."""
+    """The non-secret half; the vault holds OIDC_CLIENT_SECRET, users.py the passwords."""
     method: Literal["oidc", "password", "none"] = "password"
     oidc_issuer: str = ""
     oidc_client_id: str = ""
-    allowed_emails: tuple[str, ...] = ()  # patterns such as *@example.com; OIDC needs one (* admits anyone)
+    allowed_emails: tuple[str, ...] = ()  # OIDC: patterns such as *@example.com (* admits anyone), besides the people added
 
-    def admits(self, email: str, admins) -> bool:
-        """Who may sign in: the one rule auth.may_sign_in applies. OIDC: whom
-        allowed_emails names (* for anyone the provider admits; empty:
-        nobody). The shared password: the admins and allowed_emails (empty:
-        the admins only), since whoever holds it types any listed email."""
-        email = email.lower()
-        listed = any(fnmatch.fnmatchcase(email, pattern.lower()) for pattern in self.allowed_emails)
-        if self.method == "oidc":
-            return listed
-        if self.method == "password":
-            return email in admins or listed
-        return True
+    def listed(self, email: str) -> bool:
+        """Whether allowed_emails names email (OIDC; * for anyone the
+        provider admits). auth.may_sign_in also admits the people added."""
+        return any(fnmatch.fnmatchcase(email.lower(), pattern.lower()) for pattern in self.allowed_emails)
 
     def refusal(self) -> str:
         """Why this can't be saved ("" when it can): every writer of the
         section goes through update(), which checks it."""
-        if self.method == "oidc" and not self.allowed_emails:
-            return ("OIDC needs allowed_emails: patterns such as *@example.com, "
-                    "or * for anyone the provider admits")
         return ""
 
 

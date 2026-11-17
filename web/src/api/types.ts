@@ -16,6 +16,21 @@ export type Me = {
 }
 
 /** A published release newer than the installed one (updates.py). */
+/** A person of this server (GET /api/users, admins only). */
+export type User = {
+  email: string
+  admin: boolean
+  /** Whether they have a password of their own (password sign-in). */
+  password: boolean
+  created_at: string | null
+  created_by: string | null
+  last_sign_in_at: string | null
+  tokens: number
+}
+export type Users = { users: User[]; login: Me['login'] }
+/** A one-time link that sets a person's password. */
+export type PasswordLink = { email: string; link: string; days: number }
+
 export type Release = { tag: string; url: string; notes: string; breaking: boolean; prerelease: boolean; published_at: string }
 
 /** One step of an upgrade: the download, then each step install.sh announces. */

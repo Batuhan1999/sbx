@@ -10,6 +10,8 @@ import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { ErrorState, Loading } from '@/components/states'
 import { AnchorButton, Button, LinkButton } from '@/components/ui/button'
 import { Facts, Spinner } from '@/components/ui/primitives'
+import { RadioCard, RadioGroup } from '@/components/ui/radio-group'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { portsHint } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError, required } from '@/lib/validation'
@@ -128,14 +130,11 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
       <p className="mt-1.5 text-muted">Sandboxes get preview URLs under this address, with a trusted HTTPS certificate that renews itself.</p>
     </div>
     <HostFacts s={s} />
-    <fieldset className="grid gap-2 sm:grid-cols-2">
-      <legend className="sr-only">Address</legend>
+    <RadioGroup aria-label="Address" value={mode} onValueChange={v => { form.setFieldValue('mode', v as typeof mode); setWaiting(false) }} className="sm:grid-cols-2">
       {([['ip', 'This server’s IP', 'No domain needed. Previews get a port each.', Server], ['domain', 'A domain', 'Named preview URLs under your own domain.', Globe]] as const).map(([id, title, text, Icon]) =>
-        <label key={id} className={cn('flex cursor-pointer items-start gap-3 rounded-lg border bg-panel p-3 transition-colors', mode === id ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-line-strong', !!s.access.domain && id === 'ip' && 'pointer-events-none opacity-50')}>
-          <input type="radio" name="mode" value={id} checked={mode === id} disabled={!!s.access.domain && id === 'ip'} onChange={() => { form.setFieldValue('mode', id); setWaiting(false) }} className="mt-1 shrink-0 self-start accent-[var(--accent)]" />
-          <span><span className="flex items-center gap-1.5 font-medium"><Icon className="size-3.5 text-muted" />{title}</span><span className="block text-[12.5px] text-muted">{text}</span></span>
-        </label>)}
-    </fieldset>
+        <RadioCard key={id} value={id} disabled={!!s.access.domain && id === 'ip'} description={text}
+          title={<span className="flex items-center gap-1.5"><Icon className="size-3.5 text-muted" />{title}</span>} />)}
+    </RadioGroup>
     {mode === 'domain' && <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <form.AppField name="domain" validators={{ onChange: ({ value }) => domainError(value) }}>{field => <field.TextField label="Domain" placeholder="sbx.example.com" autoComplete="off" spellCheck={false} />}</form.AppField>
@@ -151,10 +150,10 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
       </div>}
       <div>
         <p className="mb-1.5 text-[12.5px] font-medium">DNS records to add</p>
-        <div className="overflow-x-auto rounded-lg border border-line bg-panel"><table className="w-full text-left text-[12px]">
-          <thead className="text-muted"><tr><th className="px-3 py-2 font-medium">Type</th><th className="px-3 py-2 font-medium">Name</th><th className="px-3 py-2 font-medium">Value</th></tr></thead>
-          <tbody>{records.map(([t, n, v]) => <tr key={t + n} className="border-t border-line"><td className="px-3 py-2">{t}</td><td className="break-all px-3 py-2 font-mono">{n}</td><td className="break-all px-3 py-2 font-mono">{v}</td></tr>)}</tbody>
-        </table></div>
+        <Table className="text-[12px]">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="h-8 px-3">Type</TableHead><TableHead className="h-8 px-3">Name</TableHead><TableHead className="h-8 px-3">Value</TableHead></TableRow></TableHeader>
+          <TableBody>{records.map(([t, n, v]) => <TableRow key={t + n} className="hover:bg-transparent"><TableCell className="px-3 py-2">{t}</TableCell><TableCell className="break-all px-3 py-2 font-mono">{n}</TableCell><TableCell className="break-all px-3 py-2 font-mono">{v}</TableCell></TableRow>)}</TableBody>
+        </Table>
       </div>
     </div>}
     {waiting && !s.access.certificate_error && <div role="status" className="rounded-lg border border-line bg-panel px-4 py-3 text-[13px]"><Spinner label="Getting the certificate…" /><p className="mt-1 text-muted">This page continues on its own when HTTPS works{mode === 'domain' ? ', on the new address' : ''}.{portsHint(s.access.needs_ports) && ` It needs ${portsHint(s.access.needs_ports)} open.`}</p></div>}

@@ -646,6 +646,11 @@ class SetupWithoutABrowser(Server):
         wrong = fresh.post("/api/setup/complete", headers=self.headers,
                            json={"email": "operator@example.com", "password": "not-the-password"})
         self.assertEqual(wrong.status_code, 403)
+        from sbx_control import users
+        users.set_password("dev@example.com", "test-only-password-456", by="test")   # a person, not an admin
+        not_admin = fresh.post("/api/setup/complete", headers=self.headers,
+                               json={"email": "dev@example.com", "password": "test-only-password-456"})
+        self.assertEqual(not_admin.status_code, 403)
         self.assertEqual(fresh.post("/api/setup/complete", headers=self.headers).status_code, 400)   # nobody signed in
         done = fresh.post("/api/setup/complete", headers=self.headers,
                           json={"email": "Operator@example.com", "password": "test-only-password-123"})

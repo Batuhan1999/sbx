@@ -74,16 +74,16 @@ class InstallReportTests(unittest.TestCase):
                 self.assertFalse(link_requested)
 
     def test_a_generated_password_is_shown_with_the_url(self):
-        result, _ = self.report(state=self.SET_UP, password='generated-once')
+        result, _ = self.report(state=self.SET_UP, password='operator@example.com: generated-once')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Sign in with an admin's email and the password: generated-once", result.stdout)
+        self.assertIn("  operator@example.com: generated-once", result.stdout)
 
     def test_incomplete_installations_print_the_setup_link_and_the_generated_password(self):
-        result, link_requested = self.report(state=self.OPEN, password='generated-once')
+        result, link_requested = self.report(state=self.OPEN, password='operator@example.com: generated-once')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Done: finish the setup in your browser', result.stdout)
         self.assertIn('https://203.0.113.10/setup#t=test-only', result.stdout)
-        self.assertIn("Sign in with an admin's email and the password: generated-once", result.stdout)
+        self.assertIn("  operator@example.com: generated-once", result.stdout)
         self.assertTrue(link_requested)
 
     def test_unreadable_setup_state_fails_without_minting_a_setup_link(self):
@@ -270,10 +270,11 @@ class SetupInferTests(Installation):
             return admin.main(['setup-infer'])
 
     def test_open_until_configured_then_set_up(self):
-        from sbx_control import settings, setup, vault
+        from sbx_control import settings, setup, users
         self.assertEqual(self.infer(), 3)
         settings.update('domain', {'address': '203.0.113.10'}, by='test')
-        vault.put(vault.LOGIN_PASSWORD, 'test-only-password', by='test')
+        settings.update('access', {'admins': ['operator@example.com']}, by='test')
+        users.set_password('operator@example.com', 'test-only-password', by='test')
         self.assertEqual(self.infer(), 0)
         self.assertTrue(setup.complete())
         self.assertEqual(self.infer(), 0)

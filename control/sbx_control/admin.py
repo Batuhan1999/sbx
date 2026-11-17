@@ -36,8 +36,13 @@
                                      endpoints): add --server NAME | --name N --target HOST:PORT [--repo R];
                                      rm NAME; grant|revoke NAME REPO
   sbx-admin store enable|status     initialize and move to the default Infisical store, or inspect delivery status
-  sbx-admin sign-in password         password sign-in for the admins and allowed_emails (a first install's;
-                                     one is generated and printed when none is set)
+  sbx-admin sign-in password         password sign-in (a first install's): each admin without a password
+                                     gets a generated one, printed once
+  sbx-admin user ls                  the people: email, admin, password set, last sign-in, API tokens
+  sbx-admin user add EMAIL [--admin] add a person; prints a one-time link to set their password
+  sbx-admin user link EMAIL          a new set-password link (a forgotten password); the old one stops working
+  sbx-admin user admin EMAIL on|off  make them an admin or not
+  sbx-admin user rm EMAIL            remove them: their sessions, API tokens and admin role end
   sbx-admin connect KIND k=v ...     connect one (github, claude, sign_in, domain, store); a secret
                                      given as k=- is read from stdin
   sbx-admin upgrade [TAG]            the releases newer than this one and their notes; with TAG
@@ -168,8 +173,37 @@ def _connected(connect) -> int:
             print(f"  {'ok ' if check.ok else 'NO '} {check.name}: {check.detail}", file=sys.stderr)
         return 1
     print(f"{status.title}: {status.state} · {status.summary}")
-    if status.facts.get("generated_password"):
-        print(f"generated password: {status.facts['generated_password']}")
+    return 0
+
+
+def do_user(a) -> int:
+    from . import users
+    if a.action == "ls":
+        for u in users.ls():
+            print(f"{u['email']}\t{'admin' if u['admin'] else 'member'}\t"
+                  f"{'password' if u['password'] else 'no password'}\t"
+                  f"last sign-in {u['last_sign_in_at'] or 'never'}\t{u['tokens']} token(s)")
+        return 0
+    if not a.email or (a.action == "admin") != bool(a.value):
+        print("user add|link|rm EMAIL, user admin EMAIL on|off", file=sys.stderr)
+        return 2
+    try:
+        if a.action == "add":
+            users.add(a.email, admin=a.admin, by="sbx-admin")
+        if a.action in ("add", "link"):
+            if a.action == "link" and not users.get(a.email) and a.email.lower() not in settings.current().admins:
+                raise users.Refused(f"{a.email} is not here: sbx-admin user add {a.email}")
+            print(f"set-password link for {a.email.lower()}, good for {users.LINK_DAYS} days and once:", file=sys.stderr)
+            print(users.link_url(users.mint_link(a.email, by="sbx-admin")))
+        elif a.action == "admin":
+            users.set_admin(users.ensure(users.valid_email(a.email), by="sbx-admin")["email"], a.value == "on", by="sbx-admin")
+        elif a.action == "rm":
+            if not users.get(a.email) and a.email.lower() not in settings.current().admins:
+                raise users.Refused(f"{a.email} is not here")
+            users.remove(a.email, by="sbx-admin")
+    except users.Refused as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -375,6 +409,11 @@ def main(argv: list) -> int:
     sub.add_parser("setup-infer")
     sub.add_parser("setup-reset").add_argument("--sign-in", action="store_true")
     jobs = sub.add_parser("jobs"); jobs.add_argument("verb", nargs="?", choices=["run"]); jobs.add_argument("id", nargs="?")
+    user = sub.add_parser("user")
+    user.add_argument("action", choices=["ls", "add", "link", "admin", "rm"])
+    user.add_argument("email", nargs="?")
+    user.add_argument("value", nargs="?", choices=["on", "off"], help="admin: on or off")
+    user.add_argument("--admin", action="store_true", help="add: as an admin")
     token = sub.add_parser("token")
     token.add_argument("action", choices=["create", "ls", "revoke"])
     token.add_argument("email", nargs="?", help="create, ls: an email; revoke: the token's id")
@@ -529,6 +568,8 @@ def main(argv: list) -> int:
         return do_doctor()
     if a.cmd == "token":
         return do_token(a)
+    if a.cmd == "user":
+        return do_user(a)
     if a.cmd == "recipe":
         return do_recipe_rm(a.repo)
     if a.cmd == "template":
@@ -593,8 +634,15 @@ def main(argv: list) -> int:
     if a.cmd == "upgrade":
         return do_upgrade(a.tag)
     if a.cmd == "sign-in":
-        from .connections import sign_in
-        return _connected(lambda: sign_in.use_password(by="sbx-admin"))
+        from .connections import Refused, sign_in
+        try:
+            generated = sign_in.use_password(by="sbx-admin")
+        except Refused as error:
+            print(f"refused: {error}", file=sys.stderr)
+            return 1
+        for email, password in generated.items():
+            print(f"generated password for {email}: {password}")
+        return 0
     return 2
 
 

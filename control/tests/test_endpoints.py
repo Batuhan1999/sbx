@@ -185,7 +185,8 @@ class ApiTests(Setup, Server):
         self.assertIn("did not pick up", self.client.get("/api/endpoints").json()["endpoints"][0]["message"])
 
     def test_only_admins(self):
-        from sbx_control import auth
+        from sbx_control import auth, users
+        users.set_password("someone@example.com", "test-only-password", by="test")   # a person, not an admin
         headers = {"Authorization": f"Bearer {auth.mint_token('someone@example.com', 'test')}"}
         self.client.cookies.clear()
         self.assertEqual(self.client.get("/api/endpoints", headers=headers).status_code, 403)

@@ -31,6 +31,7 @@ export const keys = {
   runtimesAvailable: ['runtimes', 'available'] as const,
   runtimeChange: ['runtimes', 'change'] as const,
   endpoints: ['endpoints'] as const,
+  users: ['users'] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)
@@ -63,6 +64,8 @@ export const useSandbox = (name: string) => useQuery({
 export const useResources = (name: string, enabled = true) => useQuery({
   queryKey: keys.resources(name), queryFn: () => api.sandboxes.resources(name), enabled, staleTime: 30_000, retry: false,
 })
+
+export const useUsers = () => useQuery({ queryKey: keys.users, queryFn: api.users.list })
 
 export const useRuntimes = () => useQuery({ queryKey: keys.runtimes, queryFn: api.runtimes, staleTime: 60_000, retry: false })
 /** The enabled runtimes when there is a choice between them; null with one (or while loading), and the UI then says nothing about runtimes. */

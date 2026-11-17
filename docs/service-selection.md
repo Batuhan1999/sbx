@@ -28,6 +28,7 @@ product mode.
 | The repository uses | Packages | Each sandbox starts with |
 | --- | --- | --- |
 | Neon | `neon-project` + `neon-branch` | A branch of the selected development parent. Discover the actual branch, database and owner instead of assuming `main`. |
+| Supabase | `supabase-project` + `supabase-branch` | A preview branch of the project, set up by Supabase with the project's migrations, and its data only when selected; `DATABASE_URL` (session pooler), `SUPABASE_URL` and its keys. |
 | PlanetScale Postgres | `planetscale-database` + `planetscale-branch` | An empty development branch and a migration-capable role; run the normal migrations and fixtures. |
 | Any other Postgres | `postgres-server` + `postgres-clone` | A database copied from `template0` or a selected [development baseline](reference.md#development-baselines). |
 | Tinybird | `tinybird-workspace` + `tinybird-branch` | A branch with the workspace's structure; data from the last partition only when selected. |
