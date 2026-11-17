@@ -826,7 +826,7 @@ class LifecycleTests(Installation):
                     patch.object(self.core, "run_in", side_effect=run):
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     first = pool.submit(self.core.app_script, Mock(), "setup", recipe, operation=Mock())
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + 30   # a hang, not a slow CI runner
                     while not (root / "started").exists():
                         self.assertLess(time.monotonic(), deadline)
                         time.sleep(.01)
