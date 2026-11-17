@@ -11,6 +11,13 @@ SHARED_POOLER = '.pooler.supabase.com'  # Supavisor: IPv4, unlike the database's
 SESSION_PORT = '5432'  # the shared pooler's session mode, fit for migrations
 
 
+def records(value, what):
+    """A reply that must be a list of objects."""
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise sbx.ProviderError(f'Supabase returned an unexpected {what}; no connection values were published')
+    return value
+
+
 class Supabase(sbx.Api):
     def __init__(self):
         super().__init__('Supabase', 'https://api.supabase.com/v1',
@@ -19,10 +26,7 @@ class Supabase(sbx.Api):
         self.project = sbx.env('SUPABASE_PROJECT')
 
     def branches(self):
-        branches = self.request('/projects/' + quote(self.project, safe='') + '/branches')
-        if not isinstance(branches, list):
-            raise sbx.ProviderError('Supabase returned an unexpected branch list; no resource was changed')
-        return branches
+        return records(self.request('/projects/' + quote(self.project, safe='') + '/branches'), 'branch list')
 
     def matching(self, name):
         return sbx.only(self.branches(), 'Supabase branch name', lambda branch: branch['name'] == name)
@@ -36,19 +40,23 @@ class Supabase(sbx.Api):
     def branch(self, name):
         return self.request('/projects/' + quote(self.project, safe='') + '/branches/' + quote(name, safe=''), missing_ok=True)
 
-    def ready(self, name):
+    def ready(self, name, ref):
         branch = self.branch(name)
         if not branch:  # a new branch may not be listed yet
             return None
+        if branch['project_ref'] != ref:
+            raise sbx.ProviderError('the recorded Supabase branch was replaced; no connection values were published')
         if branch.get('status') in FAILED:
             raise sbx.ProviderError(f'Supabase could not set up the branch ({branch["status"]}); see its logs in the dashboard')
         if branch.get('status') in SETTING_UP:
             return None
         detail = self.request('/branches/' + quote(branch['project_ref'], safe=''))
+        if not isinstance(detail, dict):
+            raise sbx.ProviderError('Supabase returned unexpected branch details; no connection values were published')
         return detail if detail.get('status') == 'ACTIVE_HEALTHY' else None
 
     def keys(self, ref):
-        keys = self.request('/projects/' + quote(ref, safe='') + '/api-keys?reveal=true')
+        keys = records(self.request('/projects/' + quote(ref, safe='') + '/api-keys?reveal=true'), 'API key list')
 
         def pick(legacy, kind):
             usable = [k for k in keys if isinstance(k.get('api_key'), str) and k['api_key']]
@@ -60,7 +68,7 @@ class Supabase(sbx.Api):
         return pick('anon', 'publishable'), pick('service_role', 'secret')
 
     def pooler(self, ref):
-        entries = self.request('/projects/' + quote(ref, safe='') + '/config/database/pooler')
+        entries = records(self.request('/projects/' + quote(ref, safe='') + '/config/database/pooler'), 'pooler list')
         primary = sbx.only(entries, 'Supabase shared pooler', lambda entry: entry.get('database_type') == 'PRIMARY'
                            and str(entry.get('db_host', '')).endswith(SHARED_POOLER))
         if not primary:
@@ -106,7 +114,7 @@ class Supabase(sbx.Api):
         ref = branch['project_ref']
         if not re.fullmatch(r'[a-z]{20}', ref):
             raise sbx.ProviderError('Supabase returned an unexpected branch ref; no connection values were published')
-        detail = sbx.wait('Supabase branch', lambda: self.ready(name), 600, interval=5)
+        detail = sbx.wait('Supabase branch', lambda: self.ready(name, ref), 600, interval=5)
         password = detail.get('db_pass')
         if not isinstance(password, str) or not password:
             raise sbx.ProviderError('Supabase returned no database password; no connection values were published')

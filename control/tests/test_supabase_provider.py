@@ -182,6 +182,29 @@ class SupabaseProviderTests(ScriptCase):
         with self.assertRaisesRegex(ValueError, 'HTTP 409'):
             self.supabase.run('delete')
 
+    def test_branch_replaced_during_the_wait_is_not_used(self):
+        fake = self.fake(branches=[self.main])
+        original = fake.handle
+
+        def replace(method, path, body):
+            if path == f'/projects/{PROJECT}/branches/sbx-fixture-resource':
+                fake.branches[-1]['project_ref'] = 'replacementrefaaaaaa'
+            return original(method, path, body)
+        fake.handle = replace
+        with self.assertRaisesRegex(ValueError, 'recorded Supabase branch was replaced'):
+            self.supabase.run('create')
+        self.assertEqual(self.values(), {'_branch_ref': CHILD})
+
+    def test_malformed_replies_stop_with_a_clear_error(self):
+        for path, reply in ((f'/branches/{CHILD}', None), (f'/projects/{CHILD}/api-keys?reveal=true', ['key']),
+                            (f'/projects/{CHILD}/config/database/pooler', {'database_type': 'PRIMARY'})):
+            fake = self.fake(branches=[self.main, self.child])
+            original = fake.handle
+            fake.handle = lambda method, p, body, path=path, reply=reply, original=original: \
+                reply if p == path and method == 'GET' else original(method, p, body)
+            with self.subTest(path=path), self.assertRaisesRegex(sbx_provider.ProviderError, 'unexpected'):
+                self.supabase.run('create')
+
     def test_same_name_replacement_is_never_reused_or_deleted(self):
         for action in ('create', 'delete'):
             fake = self.fake(branches=[self.main, {**self.child, 'project_ref': 'replacementrefaaaaaa'}])
