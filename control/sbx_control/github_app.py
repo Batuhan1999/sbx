@@ -346,12 +346,16 @@ def sandbox_credential(name: str, session_key: str) -> str:
 
 
 def credential_helper(name: str, credential: str) -> str:
-    """git's credential helper protocol: answer `get` for github.com."""
+    """git's credential helper protocol: answer `get` for github.com. A
+    self-signed certificate (--dns none) is pinned by its key, as the
+    template builds' downloads pin it (templates.pinned_key)."""
+    from .templates import pinned_key
     url = f"{sbx_settings.current().base_url}/api/sandbox/git-credential"
+    pin = pinned_key()
     return f"""#!/bin/sh
 # git credential helper: a fresh token for this sandbox's repo from sbx-control.
 [ "$1" = get ] || exit 0
 host=$(sed -n 's/^host=//p')
 [ "$host" = github.com ] || exit 0
-curl -fsS -m 20 -H "Authorization: Bearer {name}:{credential}" "{url}"
+curl -fsS -m 20 {pin + ' ' if pin else ''}-H "Authorization: Bearer {name}:{credential}" "{url}"
 """
