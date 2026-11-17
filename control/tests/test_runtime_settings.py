@@ -417,7 +417,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "plan": "hobby", "values": {
             "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
         queued = json.loads(self.request_file.read_text())["values"]
-        self.assertEqual({k: queued[k] for k in hobby.values}, dict(hobby.values))
+        self.assertEqual({k: queued[k] for k in hobby.by_key()}, hobby.by_key())
         self.assertEqual(self.apply()[0], 0)
         self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {
             "E2B_CLOUD_MAX_CPU": "16"}}).status_code, 202)                # no plan: the values alone
@@ -426,7 +426,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"plan": "pro", "values": {}}).status_code, 202)
         queued = json.loads(self.request_file.read_text())["values"]
         self.assertNotIn("E2B_CLOUD_MAX_CPU", queued)                      # adjustable: the value set stays
-        self.assertEqual(queued["E2B_CLOUD_MAX_TIMEOUT"], pro.values["E2B_CLOUD_MAX_TIMEOUT"])
+        self.assertEqual(queued["E2B_CLOUD_MAX_TIMEOUT"], pro.by_key()["E2B_CLOUD_MAX_TIMEOUT"])
 
     def test_an_enabled_runtime_s_checks_over_the_api(self):
         from sbx_control import reachability, template_builds

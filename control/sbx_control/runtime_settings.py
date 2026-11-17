@@ -301,11 +301,12 @@ def with_plan(backend, plan: str | None, values: dict, current: dict, *, adding:
     if preset is None:
         names = [p.name for p in backend.presets] + [CUSTOM]
         raise Refused(f"{backend.title} has no plan {plan}; its plans: {', '.join(names)}")
-    fixed = [key for key in values if key in preset.values and key not in preset.adjustable]
+    by_key, adjustable = preset.by_key(), preset.adjustable_keys()
+    fixed = [key for key in values if key in by_key and key not in adjustable]
     if fixed:
         raise Refused(f"the {preset.title} plan fixes {', '.join(fixed)}; choose the {CUSTOM} plan to set it")
-    planned = {key: (current.get(key) if not adding and key in preset.adjustable else "") or value
-               for key, value in preset.values.items()}
+    planned = {key: (current.get(key) if not adding and key in adjustable else "") or value
+               for key, value in by_key.items()}
     return {**planned, **values}
 
 

@@ -314,10 +314,10 @@ def verify(kind: str | None = None, say=print) -> bool:
             # An https ingress is asked by the sandbox's own host (SNI), as nginx does.
             base = f"https://{route['X-Sbx-Upstream']}" if ingress.startswith("https://") else ingress
             traffic = route.get(gate.TOKEN)
-            backend = runtime.get(kind)
-            cookie = backend.upstream_token_cookie
-            extra = ({} if not traffic else {"headers": {"Cookie": f"{cookie}={traffic}"}} if cookie
-                     else {"headers": {backend.upstream_token_header: traffic}})
+            where = runtime.get(kind).upstream_token_at
+            extra = ({} if not traffic or not where else
+                     {"headers": {"Cookie": f"{where.name}={traffic}"}} if where.place == "cookie"
+                     else {"headers": {where.name: traffic}})
             last = None
             for _ in range(20):
                 try:

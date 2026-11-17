@@ -290,6 +290,9 @@ class Preset:
         """Its values by runtime.env key, as strings."""
         return {self._key(field): str(value) for field, value in self.values.items()}
 
+    def adjustable_keys(self) -> list:
+        return [self._key(field) for field in self.adjustable]
+
     def matches(self, effective: Mapping[str, str]) -> bool:
         """Whether settings with these effective values (by key) are this plan: its fixed values alike."""
         return all(effective.get(self._key(field)) == str(value) for field, value in self.values.items()
@@ -297,7 +300,7 @@ class Preset:
 
     def view(self) -> dict:
         return {"name": self.name, "title": self.title, "values": self.by_key(), "source": self.source,
-                "adjustable": [self._key(f) for f in self.adjustable], "note": self.note}
+                "adjustable": self.adjustable_keys(), "note": self.note}
 
 
 class LimitRefused(Failed):
