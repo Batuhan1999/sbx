@@ -160,9 +160,16 @@ def _upstream_url(kind: str, ingress: str) -> str:
 
 def default_ingress() -> str:
     """The default runtime's upstream, for what reaches a runtime without the
-    gate naming one (a CORS preflight)."""
-    kind, (ingress, _) = next(iter(runtime.ingresses().items()))
+    gate naming one (a CORS preflight); with no runtime set up, a closed port
+    on this host (nginx answers 502: there is no sandbox to reach)."""
+    found = runtime.ingresses()
+    if not found:
+        return NO_INGRESS
+    kind, (ingress, _) = next(iter(found.items()))
     return _upstream_url(kind, ingress)
+
+
+NO_INGRESS = "http://127.0.0.1:9"   # the discard port: nothing listens
 
 
 def runtime_upstreams(source: str = "sbx_runtime", target: str = "sbx_ingress") -> str:

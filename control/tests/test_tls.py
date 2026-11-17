@@ -117,6 +117,8 @@ if sys.argv[1:] == ["start", "sbx-tls-renew.service"]:
     result = subprocess.run([str(root / "bin/sbx-tls-renew")])
     sys.exit(result.returncode)
 ''')
+        # util-linux's flock (the nginx start lock) isn't on macOS: a no-op stands in.
+        self.write_command(self.bin / "flock", "")
         # The host script targets Linux sed; emulate that invocation on macOS too.
         self.write_command(self.bin / "sed", '''
 expression, filename = sys.argv[2:]

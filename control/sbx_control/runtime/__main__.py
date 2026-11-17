@@ -6,26 +6,28 @@
                                           install.sh: set each NAME of /etc/sbx/runtime.env to its
                                           value in this process's environment (unset or empty:
                                           remove the line; values never on the command line), and
-                                          enable each KIND (SBX_RUNTIMES); every other line stays
+                                          enable each KIND (SBX_RUNTIMES); every other line stays.
+                                          A first one without any KIND enables none (SBX_RUNTIMES=''):
+                                          an admin adds one in the web app
 """
 import argparse
 import os
 
-from . import ENABLED_KEY, FALLBACK, configuration, default, enabled, guard_host
+from . import ENABLED_KEY, configuration, default, enabled, guard_host, listed
 
 
 def write_env(names: list, kinds: list, environ=os.environ) -> list:
     """runtime.env with names set from environ and kinds enabled, in
     order after those it enables already (a file without SBX_RUNTIMES
-    enables Embed alone, as ever: that stays so). The kinds now enabled."""
+    enables Embed alone, as ever: that stays so). A new file names the
+    kinds it enables, none included. The kinds now enabled."""
     from .. import paths, vault
     file = paths.runtime_env()
     existed = file.exists()
-    listed = [k.strip() for k in configuration()[ENABLED_KEY].replace(" ", ",").split(",") if k.strip()]
-    now = list(dict.fromkeys(listed or ([FALLBACK] if existed else [])))
+    now = listed(configuration()[ENABLED_KEY]) if existed else []
     wanted = list(dict.fromkeys([*now, *kinds]))
     values = {name: environ.get(name) or None for name in names}
-    if wanted != now or (not existed and wanted):
+    if wanted != now or not existed:
         values[ENABLED_KEY] = ",".join(wanted)
     if not existed:
         file.parent.mkdir(parents=True, exist_ok=True)
@@ -47,10 +49,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.action == "enabled":
         first = default()
-        print("\n".join([first, *(k for k in enabled() if k != first)]))
+        if first:
+            print("\n".join([first, *(k for k in enabled() if k != first)]))
         return 0
     if args.action == "env":
-        print(f"runtimes: {', '.join(write_env(args.names, args.enable))}")
+        print(f"runtimes: {', '.join(write_env(args.names, args.enable)) or 'none yet'}")
         return 0
     guard_host()
     return 0

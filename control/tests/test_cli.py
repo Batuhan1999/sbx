@@ -315,6 +315,228 @@ class CliTests(unittest.TestCase):
         self.assertEqual((root / "current").resolve(), (root / "2").resolve())
 
 
+# GET /api/runtimes/available's E2B Cloud, as the server declares it (runtime/e2b_cloud).
+CLOUD_KEY = "test-only-cli-key-91c2"
+HOBBY = {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8", "E2B_CLOUD_MAX_MEMORY_MB": "8192",
+         "E2B_CLOUD_MAX_DISK_MB": "10240", "E2B_CLOUD_MAX_SANDBOXES": "10"}
+PRO = {**HOBBY, "E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_DISK_MB": "20480", "E2B_CLOUD_MAX_SANDBOXES": "100"}
+AVAILABLE = [
+    {"kind": "embed", "title": "E2B Embed", "host": True, "enabled": False, "default": False, "can_run": False,
+     "why_not": "needs /dev/kvm", "managed_by": "install.sh", "not_editable": "set up by install.sh", "settings": [],
+     "presets": [], "values": {}, "secrets_set": [], "facts": {"kvm": False}, "sandboxes": [], "removable": "",
+     "limit_hit": None, "plan": None},
+    {"kind": "e2b-cloud", "title": "E2B Cloud", "host": False, "enabled": False, "default": False, "can_run": True,
+     "why_not": "", "managed_by": "", "not_editable": "", "values": {}, "secrets_set": [], "facts": {},
+     "sandboxes": [], "removable": "", "limit_hit": None, "plan": None,
+     "settings": [{"key": "E2B_CLOUD_API_KEY", "label": "API key", "secret": True, "default": "", "unit": ""},
+                  {"key": "E2B_CLOUD_DOMAIN", "label": "Domain", "secret": False, "default": "e2b.app", "unit": ""},
+                  *({"key": key, "label": key, "secret": False, "default": value, "unit": "", "min": 1, "max": 99999}
+                    for key, value in HOBBY.items())],
+     "presets": [{"name": "hobby", "title": "Hobby", "values": HOBBY, "adjustable": []},
+                 {"name": "pro", "title": "Pro", "values": PRO,
+                  "adjustable": ["E2B_CLOUD_MAX_CPU", "E2B_CLOUD_MAX_MEMORY_MB"]}]},
+]
+
+
+def change(state, operation="add", message="", restarting=False):
+    return {"state": state, "operation": operation, "kind": "e2b-cloud", "message": message, "at": "now",
+            "restarting": restarting}
+
+
+class RuntimeCliTests(CliTests):
+    """sbx runtimes: list, available, and an admin's add | set | remove | default over the HTTP API,
+    following the queued change through sbx-control's restart."""
+
+    def setUp(self):
+        super().setUp()
+        self.routes[("GET", "/api/runtimes/available")] = lambda q, body: AVAILABLE
+        self.enterContext(patch.object(self.cli.time, "sleep"))   # polls without waiting
+
+    def polls(self, *answers):
+        """GET /api/runtimes/change answers these in turn, the last one again."""
+        found = list(answers)
+        self.routes[("GET", "/api/runtimes/change")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_available_says_what_can_run_its_plans_and_settings(self):
+        code, out, err = self.run_cli("runtimes", "available")
+        self.assertEqual(code, 0, err)
+        self.assertIn("embed        E2B Embed: can't run here: needs /dev/kvm", out)
+        self.assertIn("e2b-cloud    E2B Cloud: can be added", out)
+        self.assertIn("--plan pro", out)
+        self.assertIn("adjustable: E2B_CLOUD_MAX_CPU (from 8)", out)
+        self.assertIn("--secret E2B_CLOUD_API_KEY (API key: not set; the value on stdin)", out)
+        code, out, err = self.run_cli("runtimes", "available", "--json")
+        self.assertEqual(json.loads(out), AVAILABLE)
+
+    def test_add_with_a_plan_and_the_key_on_stdin_waits_through_the_restart(self):
+        self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
+        done = change("done", message="E2B Cloud (e2b-cloud) is enabled")
+        self.polls(change("applying"), {**done, "restarting": True}, (502, b"Bad Gateway"), done)
+        code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--plan", "pro", "--set",
+                                      "E2B_CLOUD_MAX_CPU=16", "--secret", "E2B_CLOUD_API_KEY", stdin=CLOUD_KEY + "\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "E2B Cloud (e2b-cloud) is enabled\n")
+        self.assertIn("waiting for sbx-control to restart", err)
+        posted = next(c for c in self.control.calls if c[0] == "POST")[3]
+        self.assertEqual(posted, {"kind": "e2b-cloud", "values": {**PRO, "E2B_CLOUD_MAX_CPU": "16",
+                                                                  "E2B_CLOUD_API_KEY": CLOUD_KEY}})
+        self.assertNotIn(CLOUD_KEY, out + err)
+        self.assertGreaterEqual(sum(c[1] == "/api/runtimes/change" for c in self.control.calls), 4)
+
+    def test_a_plan_s_fixed_limits_and_secrets_stay_off_the_command_line(self):
+        for argv, said in (
+                (("--plan", "hobby", "--set", "E2B_CLOUD_MAX_CPU=16"), "the Hobby plan fixes E2B_CLOUD_MAX_CPU"),
+                (("--plan", "pro", "--set", "E2B_CLOUD_MAX_SANDBOXES=500"), "the Pro plan fixes E2B_CLOUD_MAX_SANDBOXES"),
+                (("--set", f"E2B_CLOUD_API_KEY={CLOUD_KEY}"), "is a secret: --secret E2B_CLOUD_API_KEY reads it from stdin"),
+                (("--set", "NOPE=1"), "has no setting NOPE"),
+                (("--plan", "enterprise"), "has no plan enterprise"),
+                (("--secret", "E2B_CLOUD_API_KEY"), "no value for E2B_CLOUD_API_KEY on stdin")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", *argv)
+                self.assertIn(said, str(code))
+        self.assertFalse(any(c[0] == "POST" for c in self.control.calls))   # nothing was sent
+
+    def test_set_custom_limits_and_a_refusal_shows_the_server_s_detail(self):
+        self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (409, {"detail": "set up the secret store first"})
+        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "custom", "--set",
+                                      "E2B_CLOUD_MAX_SANDBOXES=50")
+        self.assertEqual(code, "sbx-control: set up the secret store first")
+        self.assertEqual(self.control.calls[-1][3], {"values": {"E2B_CLOUD_MAX_SANDBOXES": "50"}})
+
+    def test_a_failed_change_exits_non_zero_with_why(self):
+        self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
+        self.polls(change("failed", "default", "the e2b-cloud runtime is not enabled here"))
+        code, out, err = self.run_cli("runtimes", "default", "e2b-cloud")
+        self.assertEqual(code, "the runtime change failed: the e2b-cloud runtime is not enabled here")
+        self.assertEqual(self.control.calls[-2][3] if self.control.calls[-2][0] == "PUT" else
+                         next(c[3] for c in self.control.calls if c[0] == "PUT"), {"kind": "e2b-cloud"})
+
+    def test_test_prints_each_check_and_fails_when_one_does(self):
+        checks = [{"name": "E2B Cloud API", "ok": True, "detail": "answers; 3 template names", "fix": "", "runtime": "e2b-cloud"},
+                  {"name": "Base template", "ok": False, "detail": "its last build failed: boom",
+                   "fix": "build it again: sbx-admin jobs run template@e2b-cloud:sbx-base", "runtime": "e2b-cloud"}]
+        self.routes[("POST", "/api/runtimes/e2b-cloud/test")] = lambda q, body: {"kind": "e2b-cloud", "ok": False, "checks": checks}
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud")
+        self.assertEqual(code, 1)
+        self.assertIn("ok  E2B Cloud API: answers; 3 template names", out)
+        self.assertIn("NO  Base template: its last build failed: boom — build it again", out)
+        self.routes[("POST", "/api/runtimes/e2b-cloud/test")] = lambda q, body: {"kind": "e2b-cloud", "ok": True, "checks": checks[:1]}
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud", "--json")
+        self.assertEqual((code, json.loads(out)["ok"]), (0, True))
+        self.routes[("POST", "/api/runtimes/nope/test")] = lambda q, body: (400, {"detail": "the nope runtime is not enabled here"})
+        self.assertEqual(self.run_cli("runtimes", "test", "nope")[0], "sbx-control: the nope runtime is not enabled here")
+
+    def test_remove_without_waiting(self):
+        self.routes[("DELETE", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "remove"))
+        code, out, err = self.run_cli("runtimes", "remove", "e2b-cloud", "--no-wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("queued: remove e2b-cloud", out)
+        self.assertFalse(any(c[1] == "/api/runtimes/change" for c in self.control.calls))
+
+    def test_the_list_says_when_none_is_set_up_and_names_a_plan(self):
+        self.routes[("GET", "/api/runtimes")] = lambda q, body: {"default": "", "runtimes": []}
+        self.assertIn("no sandbox runtime is set up", self.run_cli("runtimes")[1])
+        self.routes[("GET", "/api/runtimes")] = lambda q, body: {"default": "e2b-cloud", "runtimes": [{
+            "kind": "e2b-cloud", "title": "E2B Cloud", "default": True, "host": False, "plan": {"name": "pro", "title": "Pro"},
+            "status": {"state": "connected", "summary": "0 running"}}]}
+        self.assertIn("E2B Cloud (Pro plan): 0 running", self.run_cli("runtimes")[1])
+
+    def test_add_without_a_plan_is_on_hobby_and_set_pro_keeps_the_vcpus_set(self):
+        self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
+        self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "change"))
+        self.polls(change("done", message="ok"))
+        code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
+                                      stdin=CLOUD_KEY + "\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3]["values"],
+                         {**HOBBY, "E2B_CLOUD_API_KEY": CLOUD_KEY})
+        enabled = {**AVAILABLE[1], "enabled": True, "values": {**HOBBY, "E2B_CLOUD_MAX_CPU": "16"}}
+        self.routes[("GET", "/api/runtimes/available")] = lambda q, body: [AVAILABLE[0], enabled]
+        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "pro")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3]["values"],
+                         {**PRO, "E2B_CLOUD_MAX_CPU": "16"})   # Pro leaves vCPUs adjustable: the 16 set stays
+
+    def test_waiting_retries_only_a_restart_and_json_prints_the_outcome(self):
+        self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
+        done = change("done", "default", "new sandboxes run on E2B Cloud")
+        self.polls((503, b"starting"), (504, b"gateway"), done)
+        code, out, err = self.run_cli("runtimes", "default", "e2b-cloud", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out), done)
+        self.polls((404, {"detail": "no route"}), done)                # anything else: at once
+        code, out, err = self.run_cli("runtimes", "default", "e2b-cloud")
+        self.assertEqual(code, "sbx-control: no route")
+        self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: change("done", "default", "already the default")
+        code, out, err = self.run_cli("runtimes", "default", "e2b-cloud")
+        self.assertEqual((code, out), (0, "already the default\n"))
+
+
+SETUP_STATE = {"complete": False, "can_complete": False, "host": {"address": "203.0.113.7"}, "link": "https://x/setup",
+               "access": {"url": "https://203.0.113.7", "certificate_error": ""},
+               "steps": [{"step": "address", "done": False, "summary": "not chosen"},
+                         {"step": "sign_in", "done": False, "summary": "none set yet"},
+                         {"step": "runtime", "done": False, "summary": "no sandbox runtime is set up"}]}
+
+
+class SetupCliTests(CliTests):
+    """sbx setup: a fresh server set up without a browser, with the setup link (SBX_SETUP_LINK, never argv)
+    as the Setup authorization and every secret on stdin."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.enterContext(patch.dict(os.environ, {"SBX_SETUP_LINK": f"{self.control.url}/setup#t=one-time-token"}))
+        self.state = json.loads(json.dumps(SETUP_STATE))
+        self.routes[("GET", "/api/setup")] = lambda q, body: self.state
+        self.routes[("GET", "/api/runtimes/available")] = lambda q, body: AVAILABLE
+
+    polls = RuntimeCliTests.polls
+
+    def done(self, step):
+        next(s for s in self.state["steps"] if s["step"] == step)["done"] = True
+
+    def test_every_step_goes_with_the_setup_link_and_secrets_on_stdin(self):
+        code, out, err = self.run_cli("setup", "status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("todo  runtime", out)
+        self.routes[("POST", "/api/setup/address")] = lambda q, body: (self.done("address"), self.state)[1]
+        code, out, err = self.run_cli("setup", "address", "--ip")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.control.calls[-2][3], {"address": "203.0.113.7"})
+        self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
+        self.polls(change("done", message="E2B Cloud (e2b-cloud) is enabled"))
+        code, out, err = self.run_cli("setup", "runtime", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
+                                      stdin=CLOUD_KEY + "\n")
+        self.assertEqual((code, out), (0, "E2B Cloud (e2b-cloud) is enabled\n"), err)
+        self.routes[("POST", "/api/setup/admin")] = lambda q, body: self.state
+        code, out, err = self.run_cli("setup", "admin", "ada@example.com", stdin="test-only-password\n")
+        self.assertEqual(code, 0, err)
+        self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
+        code, out, err = self.run_cli("setup", "finish", "--admin", "ada@example.com", stdin="test-only-password\n")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Next: sbx login", out)
+        sent = {(c[0], c[1]): c[3] for c in self.control.calls}
+        self.assertEqual(sent[("POST", "/api/setup/admin")], {"email": "ada@example.com", "password": "test-only-password"})
+        self.assertEqual(sent[("POST", "/api/setup/complete")], {"email": "ada@example.com", "password": "test-only-password"})
+        self.assertEqual(sent[("POST", "/api/runtimes")]["values"]["E2B_CLOUD_API_KEY"], CLOUD_KEY)
+        self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
+        self.assertNotIn("one-time-token", out + err)
+
+    def test_the_link_comes_from_the_environment_or_a_file_never_argv(self):
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):
+            code, out, err = self.run_cli("setup", "status")
+            self.assertIn("never on the command line", str(code))
+            link = self.home / "link"
+            link.write_text(f"{self.control.url}/setup#t=from-a-file\n")
+            self.assertEqual(self.run_cli("setup", "status", "--link-file", str(link))[0], 0)
+        self.assertEqual(self.control.calls[-1][4], "Setup from-a-file")
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": "https://203.0.113.7/setup"}):
+            self.assertIn("not a setup link", str(self.run_cli("setup", "status")[0]))
+        self.routes[("GET", "/api/setup")] = lambda q, body: (401, {"detail": "the setup token"})
+        self.assertIn("the setup link was refused", str(self.run_cli("setup", "status")[0]))
+
+
 class CliApiTests(Server):
     def test_scaffold_names_the_files_it_reads_then_drafts_the_recipe(self):
         self.repo_admin()

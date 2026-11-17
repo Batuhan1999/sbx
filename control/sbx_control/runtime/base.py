@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import datetime
 import pathlib
+import re
 from typing import Any, Callable, ContextManager, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
@@ -148,6 +149,75 @@ LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
 MIN_TIMEOUT_SECONDS = 5 * 60
 
 
+# A host name, lowercase, without a trailing dot: what a "hostname" setting
+# takes (SettingField.view hands the web app the same pattern).
+HOSTNAME = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+
+
+@dataclasses.dataclass(frozen=True)
+class SettingField:
+    """One of a backend's settings, as the web app's form shows it: a key of
+    /etc/sbx/runtime.env (one of its credential_keys). A secret is write-only
+    (sealed into the store, never shown back); limit names the Limits field
+    an int setting sets, which presets and the limits the provider refused
+    refer to. rekey: it says where the secret is sent (a provider's domain),
+    so changing it needs the secret typed again: a stored one is never sent
+    to a new place."""
+    key: str
+    label: str
+    secret: bool = False
+    default: str = ""          # what it is when not set ("": nothing)
+    help: str = ""
+    kind: str = "text"         # "text", "int" (a whole number, at least 1) or "hostname"
+    optional: bool = False     # may stay empty (its default applies)
+    limit: str = ""            # the Limits field it sets, for an int limit
+    rekey: bool = False
+    # An int's range and step (the web app's slider; values outside are
+    # refused), and its unit: "seconds", "MiB" or "" (a count).
+    min: int | None = None
+    max: int | None = None
+    step: int | None = None
+    unit: str = ""
+
+    def view(self) -> dict:
+        """As the API shows it; a hostname's pattern (HOSTNAME) for the web app's own check."""
+        return {**dataclasses.asdict(self), **({"pattern": HOSTNAME.pattern} if self.kind == "hostname" else {})}
+
+
+@dataclasses.dataclass(frozen=True)
+class Preset:
+    """A provider plan's limits, as values of the backend's settings by key;
+    source says where they come from. adjustable: the keys the plan does not
+    fix (the provider publishes no number), set by the admin starting from
+    values; note says why."""
+    name: str
+    title: str
+    values: Mapping[str, str]
+    source: str = ""
+    adjustable: tuple = ()
+    note: str = ""
+
+    def matches(self, effective: Mapping[str, str]) -> bool:
+        """Whether settings with these effective values are this plan: its fixed values alike."""
+        return all(effective.get(key) == value for key, value in self.values.items() if key not in self.adjustable)
+
+    def view(self) -> dict:
+        return {"name": self.name, "title": self.title, "values": dict(self.values), "source": self.source,
+                "adjustable": list(self.adjustable), "note": self.note}
+
+
+class LimitRefused(Failed):
+    """The provider refused a request because of a limit of its own (the
+    plan's timeout, sandboxes at once, a sandbox's size): field is the Limits
+    field, asked what sbx asked for, allowed what the provider said it allows
+    (None when it did not say). sbx records it and names the setting to
+    change; it never raises a limit by itself."""
+
+    def __init__(self, message: str, *, field: str, asked=None, allowed=None):
+        super().__init__(message)
+        self.field, self.asked, self.allowed = field, asked, allowed
+
+
 class TemplateSpec:
     """A template as steps, in order: where it starts (an image or another
     template), then users, working directories, env and commands, then how
@@ -228,6 +298,14 @@ class Runtime(Protocol):
     host_unit: str | None   # the systemd unit that runs it on this host, which the host's guard needs
     credential_keys: tuple  # what it reads from /etc/sbx/runtime.env (vault.runtime)
     secret_key: str         # the one of them that is a secret, sealed into the store
+    # What an admin sets in the web app (SettingFields, keys of credential_keys);
+    # empty for a runtime install.sh sets up (on this host). presets: plans
+    # the form offers for its limits.
+    settings: tuple
+    presets: tuple
+
+    def can_run(self, facts: dict) -> str:
+        """Why it can't run on this host, given setup.host_facts ("" when it can)."""
 
     def host_units(self) -> list:
         """Its systemd units on this host (host.Unit), installed before the platform's."""
@@ -369,6 +447,11 @@ class HostSide:
     not run on this host (a hosted provider) inherits. A runtime on this host
     (Embed) overrides what it has."""
     host = False
+    settings: tuple = ()
+    presets: tuple = ()
+
+    def can_run(self, facts: dict) -> str:
+        return ""
     host_unit: str | None = None
     disk_path = ""
 

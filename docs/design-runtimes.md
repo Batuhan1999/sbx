@@ -16,8 +16,9 @@ runtime; it asks the registry.
 
 1. **Configuration lives in `/etc/sbx/runtime.env`** (root-only, not backed
    up, as today):
-   - `SBX_RUNTIMES=embed` lists the enabled runtimes in order. Missing or empty
-     means `embed`, so every existing installation keeps working unchanged.
+   - `SBX_RUNTIMES=embed` lists the enabled runtimes in order. Missing
+     means `embed`, so every existing installation keeps working unchanged;
+     present and empty means none yet (phase 3: added from the web app).
    - `SBX_RUNTIME_DEFAULT=<kind>` picks the default for new sandboxes; missing
      means the first in `SBX_RUNTIMES`.
    - Each backend reads only its own keys (`Runtime.credential_keys`). Two

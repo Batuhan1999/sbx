@@ -213,7 +213,7 @@ def validate(repo: str, source: Path) -> dict:
     parsed.swap_mb
     # Each runtime's own limits refuse a create there (runtimes.choose); a
     # recipe is wrong only when no enabled runtime can run it.
-    if all(runtime.beyond_limits(parsed.size, kind) for kind in runtime.enabled()):
+    if runtime.enabled() and all(runtime.beyond_limits(parsed.size, kind) for kind in runtime.enabled()):
         raise RecipeError(runtime.beyond_limits(parsed.size))
     return spec
 

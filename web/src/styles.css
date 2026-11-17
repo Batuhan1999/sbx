@@ -100,7 +100,7 @@ body {
   font-feature-settings: "cv11", "ss01";
 }
 code, pre, kbd, .mono { font-family: var(--font-mono); font-size: 0.9em; }
-:where(input:not([type="radio"]):not([type="checkbox"]), select, textarea) {
+:where(input:not([type="radio"]):not([type="checkbox"]):not([type="range"]), select, textarea) {
   @apply w-full rounded-md border border-line bg-panel px-2.5 text-ink outline-none;
   min-height: 2rem;
   font-size: 13.5px;

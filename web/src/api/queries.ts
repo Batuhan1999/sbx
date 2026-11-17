@@ -28,6 +28,8 @@ export const keys = {
   settings: ['settings'] as const,
   updates: ['updates'] as const,
   runtimes: ['runtimes'] as const,
+  runtimesAvailable: ['runtimes', 'available'] as const,
+  runtimeChange: ['runtimes', 'change'] as const,
   users: ['users'] as const,
 }
 
@@ -75,6 +77,18 @@ export function useRuntimeTitle() {
   const choice = useRuntimeChoice()
   return choice ? (kind?: string) => choice.runtimes.find(r => r.kind === kind)?.title ?? kind ?? '' : null
 }
+
+export const useAvailableRuntimes = (enabled = true) => useQuery({ queryKey: keys.runtimesAvailable, queryFn: api.runtimeSettings.available, enabled, retry: false })
+
+/** Queued, applying, or done but answered by the process from before the restart that takes it. */
+const pending = (c?: { state: string; restarting?: boolean }) => c?.state === 'queued' || c?.state === 'applying' || (c?.state === 'done' && !!c.restarting)
+/** The last runtime change; every 2 s until it is done and a restarted sbx-control answers
+ * (a failed poll keeps the last answer, so polling goes on through the restart). */
+export const useRuntimeChange = (enabled = true) => useQuery({
+  queryKey: keys.runtimeChange, queryFn: api.runtimeSettings.change, enabled, retry: false,
+  refetchInterval: q => (pending(q.state.data) ? 2_000 : false),
+})
+export const isApplying = (change?: { state: string; restarting?: boolean }) => pending(change)
 
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
 export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })

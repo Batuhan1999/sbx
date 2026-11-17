@@ -25,6 +25,7 @@
   sbx-admin runtime add KIND         enable a provider's runtime (e2b-cloud) with its API key, read from stdin
   sbx-admin runtime remove KIND      disable one (refused while it has sandboxes)
   sbx-admin runtime default KIND     the runtime new sandboxes run on unless asked otherwise
+  sbx-admin runtime apply-pending    the change the web app queued (sbx-apply runtime-change runs it)
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
   sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
@@ -251,41 +252,30 @@ def _apply_runtimes() -> None:
     """What `runtime apply` does once runtime.env is checked: nginx's
     upstreams are per enabled runtime (tls.sh), and sbx-control configures
     each runtime at start (platform.connect): both again."""
-    from . import runtime
+    from . import runtime, runtime_changes
     kinds, first = runtime.enabled(), runtime.default()
-    settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
-    print(f"runtimes {', '.join(kinds)} (default {first}): nginx is regenerated and "
-          "sbx-control restarts within seconds")
+    runtime_changes.request_effects()
+    print(f"runtimes {', '.join(kinds) or 'none'}{f' (default {first})' if first else ''}: nginx is regenerated "
+          "and sbx-control restarts within seconds")
 
 
 def do_runtime_change(a) -> int:
     """runtime add | remove | default: edit runtime.env, check the result the
-    way sbx-control will read it (platform.connect), and only then let go of
-    the store references it replaced; any failure puts the file back and
-    drops the references it made. Then apply it."""
-    from . import platform, runtimes
+    way sbx-control will read it, and only then let go of the store
+    references it replaced; any failure puts the file back and drops the
+    references it made (runtime_changes.perform). Then apply it. Under the
+    lock a change from the web app takes, so neither undoes the other."""
+    from . import runtime_changes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
         return 2
-    change = None
+    secret = sys.stdin.read().strip() if a.action == "add" else None
     try:
-        if a.action == "add":
-            change = runtimes.add(a.kind, sys.stdin.read().strip())
-        elif a.action == "remove":
-            change = runtimes.remove(a.kind)
-        else:
-            change = runtimes.set_default(a.kind)
-        platform.connect()
+        with runtime_changes.locked():
+            change = runtime_changes.perform(a.action, a.kind, secret)
     except (Exception, SystemExit) as error:
-        if change is not None:
-            change.undo()
-            try:
-                platform.connect()   # the backends as the file has them again
-            except (Exception, SystemExit):
-                pass                 # it was so before (add mends a missing key)
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    change.confirm()
     print(change.said)
     _apply_runtimes()
     if a.action == "add":
@@ -314,7 +304,9 @@ def start_template_builds(kind: str) -> None:
 
 
 def do_runtime(a) -> int:
-    from . import platform, runtime, runtimes
+    from . import platform, runtime, runtime_changes, runtimes
+    if a.action == "apply-pending":
+        return runtime_changes.apply_pending()
     if a.action != "add":   # add mends a runtime's missing key too
         platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
     if a.action in ("add", "remove", "default"):
@@ -331,6 +323,9 @@ def do_runtime(a) -> int:
     found = runtimes.describe()
     if a.json:
         print(json.dumps(found))
+        return 0
+    if not found["runtimes"]:
+        print(runtime.NO_RUNTIME)
         return 0
     for r in found["runtimes"]:
         caps = ", ".join(name for name, on in r["capabilities"].items() if on) or "none"
@@ -413,7 +408,8 @@ def main(argv: list) -> int:
     template.add_argument("action", choices=["rm", "prune"])
     template.add_argument("key", nargs="?")
     runtime_cmd = sub.add_parser("runtime", help="the enabled sandbox runtimes")
-    runtime_cmd.add_argument("action", choices=["list", "verify", "apply", "add", "remove", "default"])
+    runtime_cmd.add_argument("action", choices=["list", "verify", "apply", "add", "remove", "default",
+                                                "apply-pending"])
     runtime_cmd.add_argument("kind", nargs="?", help="verify: the runtime to verify (default: the default); "
                              "add, remove, default: the runtime")
     runtime_cmd.add_argument("--json", action="store_true", help="list: as GET /api/runtimes answers")

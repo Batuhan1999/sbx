@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, Check, Globe, Server } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { setSetupToken, setupToken } from '@/api/client'
 import { api } from '@/api/endpoints'
-import { keys, useRuntimes, useSetup, useSetupChecks } from '@/api/queries'
+import { keys, useAvailableRuntimes, useRuntimes, useSetup, useSetupChecks } from '@/api/queries'
 import type { SandboxRuntime, SetupState } from '@/api/types'
 import { CopyCommand } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
@@ -16,9 +16,10 @@ import { portsHint } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError, required } from '@/lib/validation'
 import { Checks } from '../extensions/ConnectionCard'
-import { RuntimeList } from '../settings/Runtimes'
+import { ChangeStatus, RuntimeSettingsForm, useRuntimeChangeFlow } from '../settings/RuntimeForms'
+import { blockedText, RuntimeChoices, RuntimeList } from '../settings/Runtimes'
 
-type Step = 'address' | 'admin'
+type Step = 'address' | 'runtime' | 'admin'
 
 function goToLink(s: SetupState) {
   const target = new URL(s.link)
@@ -39,7 +40,12 @@ export default function SetupPage() {
     if (s?.complete) { setSetupToken(null); qc.invalidateQueries({ queryKey: keys.me }) }
   }, [s?.complete, qc])
   const addressDone = !!s?.steps.find(x => x.step === 'address')?.done
-  const current: Step = step ?? (addressDone ? 'admin' : 'address')
+  // A server from before the runtime step has none: its runtimes came with install.sh.
+  const runtimeDone = s?.steps.find(x => x.step === 'runtime')?.done ?? true
+  const current: Step = step ?? (!addressDone ? 'address' : !runtimeDone ? 'runtime' : 'admin')
+  useEffect(() => {   // a runtime was added: the lists name it
+    if (runtimeDone) void qc.invalidateQueries({ queryKey: keys.runtimes })
+  }, [runtimeDone, qc])
   return <div className="flex min-h-dvh flex-col">
     <header className="flex h-14 items-center justify-between border-b border-line bg-panel px-4 sm:px-8">
       <div className="flex items-center gap-2"><span aria-hidden className="grid size-6 place-items-center rounded-md bg-ink text-[11px] font-bold text-bg">sb</span><span className="font-semibold">sbx</span></div>
@@ -53,9 +59,13 @@ export default function SetupPage() {
           <ol aria-label="Setup progress" className="mb-8 flex items-center gap-3 text-[13px]">
             <StepPill n={1} label="Server address" active={current === 'address'} done={addressDone} onClick={() => setStep('address')} />
             <span aria-hidden className="h-px w-8 bg-line" />
-            <StepPill n={2} label="Admin access" active={current === 'admin'} done={s!.signed_in} onClick={addressDone ? () => setStep('admin') : undefined} />
+            <StepPill n={2} label="Sandbox runtime" active={current === 'runtime'} done={runtimeDone} onClick={addressDone ? () => setStep('runtime') : undefined} />
+            <span aria-hidden className="h-px w-8 bg-line" />
+            <StepPill n={3} label="Admin access" active={current === 'admin'} done={s!.signed_in} onClick={addressDone && runtimeDone ? () => setStep('admin') : undefined} />
           </ol>
-          {current === 'address' ? <AddressStep s={s!} onNext={() => setStep('admin')} /> : <AdminStep s={s!} onBack={() => setStep('address')} />}
+          {current === 'address' ? <AddressStep s={s!} onNext={() => setStep(runtimeDone ? 'admin' : 'runtime')} />
+            : current === 'runtime' ? <RuntimeStep done={runtimeDone} onBack={() => setStep('address')} onNext={() => setStep('admin')} />
+            : <AdminStep s={s!} runtimeDone={runtimeDone} onBack={() => setStep('runtime')} />}
         </>}
     </main>
   </div>
@@ -154,7 +164,42 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
   </AppForm>
 }
 
-function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
+/** Where sandboxes run: with none enabled, the runtimes to choose from and the chosen one's settings;
+ * adding it is applied by the host (sbx-control restarts) and this step follows it. With one or more, read-only. */
+function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => void; onNext: () => void }) {
+  const runtimes = useRuntimes()
+  const available = useAvailableRuntimes(!done)
+  const flow = useRuntimeChangeFlow()
+  const choices = (available.data ?? []).filter(a => !a.enabled)
+  const [kind, setKind] = useState('')
+  const selectable = choices.filter(c => !c.host && c.can_run)
+  const chosen = choices.find(c => c.kind === (kind || selectable[0]?.kind))
+  return <div className="space-y-6">
+    <div>
+      <h1 className="text-[24px] font-semibold tracking-tight">Where will sandboxes run?</h1>
+      <p className="mt-1.5 text-muted">{done ? 'You can change this later in Settings.' : 'Choose a runtime for your sandboxes.'}</p>
+    </div>
+    {done ? <RuntimeList runtimes={runtimes.data?.runtimes ?? []} className="rounded-lg border border-line bg-panel" />
+      : available.isPending ? <Spinner label="Loading…" />
+      : available.error ? <ErrorState error={available.error} compact retry={() => available.refetch()} />
+      : <>
+        <RuntimeChoices choices={choices} value={chosen?.kind ?? ''} onChange={setKind} />
+        <ChangeStatus flow={flow} />
+        {chosen && !flow.busy && (chosen.not_editable ? <div className="space-y-2">
+          <ErrorState compact error={blockedText(chosen)} />
+          {chosen.needs_domain && <Button size="sm" onClick={onBack}><Globe />Choose a domain</Button>}
+        </div>
+          : <RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} />)}
+        {!chosen && <p className="text-[13px] text-muted">None can run here. Rerun install.sh on a server with /dev/kvm.</p>}
+      </>}
+    <div className="flex justify-between gap-3 border-t border-line pt-5">
+      <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
+      <Button variant="primary" disabled={!done} onClick={onNext}>Continue<ArrowRight /></Button>
+    </div>
+  </div>
+}
+
+function AdminStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boolean; onBack: () => void }) {
   const qc = useQueryClient()
   const checks = useSetupChecks()
   const runtimes = useRuntimes()
@@ -173,7 +218,7 @@ function AdminStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   const submitting = useStore(form.store, st => st.isSubmitting)
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
-  const blocked = checks.isPending || !!checks.error || checks.data?.ok === false
+  const blocked = checks.isPending || !!checks.error || checks.data?.ok === false || !runtimeDone
   return <div className="space-y-6">
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Who runs this server?</h1>

@@ -167,7 +167,8 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   backends installed (the built-in `embed`, and any package's through the
   entry-point group `sbx.runtimes`, name = kind, value = `module:Class`),
   `enabled()` and `default()` read `SBX_RUNTIMES` and `SBX_RUNTIME_DEFAULT`
-  from `/etc/sbx/runtime.env` (missing: `embed`), `get(kind)` is one
+  from `/etc/sbx/runtime.env` (missing: `embed`; present and empty: none, and
+  `get()` raises `NoRuntime`), `get(kind)` is one
   backend and `of(sandbox_id)` the one a sandbox runs on. Calls that name a
   sandbox route through `of()`; calls that make something (`create`,
   `build_template`, `templates`, `limits`, `capacity`, ...) take `kind`, where
@@ -209,8 +210,53 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   refused with the reason when it is not enabled, when managed servers are
   attached to the repo and it lacks `private_networks`, or when the recipe is
   beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
-  templates the scheduler builds), `GET /api/runtimes`, and
-  `sbx-admin runtime verify [KIND]`.
+  templates the scheduler builds), `GET /api/runtimes` and
+  `/api/runtimes/available`, adding, changing and removing one (`add`,
+  `remove`, `set_default`; `prepare` checks a change from the web app
+  without writing), and `sbx-admin runtime verify [KIND]`.
+- `control/sbx_control/runtime_changes.py` queues a change from the web app
+  for the root side (`/run/sbx/apply/runtime-change`, a secret only as a
+  store reference), applies it as root (`sbx-admin runtime apply-pending`,
+  `perform`, shared with `sbx-admin runtime add | remove | default`) and
+  records its outcome for `GET /api/runtimes/change`.
+
+### Declaring a backend's settings
+
+A backend that an admin configures in the web app declares its settings on
+the class, each one of its `credential_keys`:
+
+```python
+from sbx_control.runtime import Preset, SettingField
+
+class Provider(Compute, HostSide):
+    credential_keys = ("PROVIDER_API_KEY", "PROVIDER_MAX_SANDBOXES")
+    secret_key = "PROVIDER_API_KEY"
+    settings = (
+        SettingField("PROVIDER_API_KEY", "API key", secret=True, help="From the provider's dashboard."),
+        SettingField("PROVIDER_MAX_SANDBOXES", "Sandboxes at once", kind="int", default="10",
+                     limit="sandboxes"),
+    )
+    presets = (Preset("free", "Free", {"PROVIDER_MAX_SANDBOXES": "5"}, "https://provider.example/pricing"),)
+```
+
+`secret=True` is write-only: sealed into the managed store, shown as "set",
+replaced only when a new value is typed. `kind="int"` takes a whole number,
+at least 1; `kind="hostname"` a host name (lowercased); `limit` names the
+`Limits` field it sets, which presets fill and which a refusal names;
+`rekey=True` marks a setting that says where the secret is sent (a
+provider's domain): changing it needs the secret typed again, so a stored
+one never goes to a new place. A backend that declares nothing has its `secret_key`
+as its one setting. A runtime on this host (`host = True`) declares none:
+`install.sh` sets it up, and `can_run(facts)` says why this server can't run
+it (`""` when it can) from `setup.host_facts()`.
+
+When the provider refuses a request for a limit of its plan, the backend
+raises `LimitRefused(message, field=..., asked=..., allowed=...)` for a
+refusal it reads for sure (E2B Cloud's `refused_limit`: the timeout message
+only; anything else passes on in the provider's words); the registry records it
+(`runtime.limit_hit(kind)`, until the runtime's settings change), adds the
+setting to change to the message, and raises it on. sbx never raises a
+limit by itself.
 - `control/sbx_control/runtime/embed/` is everything that knows Embed: its
   connection to the SDK adapter and its host side (`__init__.py`), room for sandboxes (`capacity.py`), how it enforces
   `hosted_services.allowed_cidrs` and limits its egress proxy (`network.py`,

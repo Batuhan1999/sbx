@@ -287,11 +287,15 @@ def remove_stale_effects(found: list[Unit]):
 
 def apply(key: str) -> int:
     """sbx-apply KEY, as root. The request goes first, so one made while
-    this runs triggers it again; an upgrade's names its release (updates.py)."""
+    this runs triggers it again; an upgrade's names its release (updates.py),
+    a runtime change's holds the change (runtime_changes.py)."""
     from . import paths, runtime
     if key == "upgrade":
         from . import updates
         return updates.install_requested()
+    if key == "runtime-change":   # sbx-admin runtime apply-pending: the request holds the change
+        from . import runtime_changes
+        return runtime_changes.apply_pending()
     (paths.run() / "apply" / key).unlink(missing_ok=True)
     if key == "tls":
         acme = next(u for u in units() if u.name == "sbx-acme-dns.service")

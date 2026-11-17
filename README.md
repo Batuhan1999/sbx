@@ -110,16 +110,18 @@ Running them at E2B Cloud (any small VPS, no KVM):
 - Ubuntu 24.04, about 2 GiB RAM and 10 GiB free disk: the server runs only
   sbx-control, nginx and the secret store.
 - An E2B API key (E2B's dashboard), in the installer's environment
-  ([Install](#install)).
+  ([Install](#install)), or added after the install in the setup wizard's
+  "Sandbox runtime" step.
   Sandboxes then run at E2B, within your E2B plan's limits (Hobby: one hour
   before a sandbox pauses, renewed while it is used; 8 vCPUs, 8 GiB, 10 GiB
-  disk each; 20 at once).
+  disk each; 10 at once).
 - A domain: E2B's sandboxes call the server back at `login.D` on 443
   (repository bundles, git credentials). Managed servers on the host's
   private network are not available to them.
 
-A server with KVM can run both; add E2B Cloud later with `sbx-admin runtime
-add e2b-cloud` (the key on stdin). For every server:
+A server with KVM can run both; add E2B Cloud later in Settings → Sandbox
+runtimes, or with `sbx-admin runtime add e2b-cloud` (the key on stdin). For
+every server:
 
 - Inbound SSH and HTTPS (443). Validating a certificate for a bare IP also needs
   inbound TCP 80. A domain is optional.
@@ -161,7 +163,9 @@ the emails `allowed_emails` names (`*` for anyone the provider admits).
    instead (the key in the environment, never on the command line of a shared
    shell history: `read -rs E2B_CLOUD_API_KEY; export E2B_CLOUD_API_KEY`, then
    `sudo --preserve-env=E2B_CLOUD_API_KEY sh install.sh --domain D --email E`).
-   Without either it stops and says what to set.
+   Without either, it installs with no sandbox runtime: install with the
+   domain (`--domain D --email E`), then add the runtime in the setup
+   wizard, which asks for the E2B key.
 3. Open the link, accept the temporary certificate, choose IP access or a
    domain, and create the admin login. `sbx-admin setup-link` makes a new link
    if it expires.

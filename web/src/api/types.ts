@@ -167,9 +167,57 @@ export type SandboxRuntime = {
   host: boolean
   capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean }
   limits: RuntimeLimits
-  status: { state: ConnectionState | string; summary: string }
+  /** running: how many of this installation's sandboxes run there, when it says. */
+  status: { state: ConnectionState | string; summary: string; running?: number | null }
+  /** The last limit its provider refused, until its settings change. */
+  limit_hit?: LimitHit | null
+  /** The plan its limits match ("custom": none), for a runtime with plans; null otherwise. */
+  plan?: RuntimePlan | null
 }
+export type RuntimePlan = { name: string; title: string }
+/** default is "" and runtimes empty until a runtime is set up. */
 export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
+
+export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
+/** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean
+  /** A hostname's pattern, the server's own (runtime.base.HOSTNAME). */
+  pattern?: string
+  /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
+  min?: number | null; max?: number | null; step?: number | null; unit?: string }
+/** adjustable: keys the plan does not fix (no published number), set from values; note says why. */
+export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string; adjustable?: string[]; note?: string }
+/** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
+export type AvailableRuntime = {
+  kind: string
+  title: string
+  host: boolean
+  enabled: boolean
+  default: boolean
+  can_run: boolean
+  why_not: string
+  /** "install.sh" for a runtime on this host. */
+  managed_by: string
+  /** Why the web app can't add or change it ("" when it can). */
+  not_editable: string
+  /** A provider's runtime needs the installation's domain first (its sandboxes call it back). */
+  needs_domain?: boolean
+  settings: RuntimeSetting[]
+  presets: RuntimePreset[]
+  values: Record<string, string>
+  secrets_set: string[]
+  facts: { kvm?: boolean; memory_gb?: number; disk_free_gb?: number }
+  /** Its sandboxes' names when enabled; null when it did not say. */
+  sandboxes: string[] | null
+  /** Why it can't be removed ("" when it can). */
+  removable: string
+  limit_hit: LimitHit | null
+  /** An enabled one's plan now, as GET /api/runtimes says it. */
+  plan?: RuntimePlan | null
+}
+export type RuntimeChangeState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
+/** restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
+export type RuntimeChange = { state: RuntimeChangeState; operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; message: string; at: string; restarting?: boolean }
 
 export type Trust = 'trusted' | 'public' | null
 /** Who has to act: the coding agent, a person, an admin, or nobody (the server is working on it). */
@@ -382,7 +430,7 @@ export type CheckResult = { ok: boolean; checks: Check[] }
 
 export type SetupState = {
   complete: boolean
-  steps: { step: 'address' | 'sign_in'; done: boolean; optional: boolean; summary: string }[]
+  steps: { step: 'address' | 'sign_in' | 'runtime'; done: boolean; optional: boolean; summary: string }[]
   signed_in: boolean
   email: string | null
   can_complete: boolean

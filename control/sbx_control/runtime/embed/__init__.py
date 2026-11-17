@@ -14,6 +14,8 @@ from . import capacity, storage
 CLIENT_PROXY_PORT = 3002    # Embed's client-proxy, which reaches <port>-<sandbox id> hosts
 # The <port>-<id> host suffix client-proxy routes when there is no domain.
 INTERNAL_HOST_SUFFIX = "e2b.sandboxes.internal"
+# What install.sh asks of a host before it enables Embed there.
+MIN_MEMORY_GB, MIN_DISK_GB = 15, 60
 # Embed's PAUSE_ADMISSION_DISK_HEADROOM_MIB (vendor/e2b-embed compose.yaml): a
 # pause needs room on disk for the sandbox's whole memory plus this.
 PAUSE_DISK_HEADROOM_MB = 1024
@@ -135,6 +137,16 @@ class Embed(Compute, HostSide):
     def guard_host(self):
         from . import network
         network.guard()
+
+    def can_run(self, facts):
+        """As install.sh checks before it enables Embed: /dev/kvm, memory, free disk."""
+        if not facts.get("kvm"):
+            return "needs /dev/kvm: bare metal, or a VM with nested virtualization enabled"
+        if facts.get("memory_gb") is not None and facts["memory_gb"] < MIN_MEMORY_GB:
+            return f"needs 16 GiB of memory; this server has {facts['memory_gb']} GiB"
+        if facts.get("disk_free_gb") is not None and facts["disk_free_gb"] < MIN_DISK_GB:
+            return f"needs {MIN_DISK_GB} GiB of free disk; this server has {facts['disk_free_gb']} GiB"
+        return ""
 
     def readiness(self, facts):
         from ... import vault
