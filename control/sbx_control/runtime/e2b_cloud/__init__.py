@@ -38,8 +38,8 @@ LIMIT_LABELS = {"timeout_seconds": ("Longest run (seconds)", "How long a sandbox
                 "disk_mb": ("Disk per sandbox (MiB)", ""), "sandboxes": ("Sandboxes at once", "Per E2B team.")}
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
-    SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True,
-                 help="E2B's domain; leave empty for E2B Cloud (e2b.app)."),
+    SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True,
+                 help="E2B's domain; leave empty for E2B Cloud (e2b.app). Changing it needs the API key again."),
     *(SettingField(key, LIMIT_LABELS[field][0], default=str(default), help=LIMIT_LABELS[field][1], kind="int",
                    limit=field) for field, (key, default) in LIMITS.items()),
 )
@@ -78,6 +78,7 @@ def _limits(secrets: dict) -> Limits:
         raise SystemExit(f"{LIMITS['timeout_seconds'][0]} in /etc/sbx/runtime.env: {error}") from None
 
 
+DOMAIN_RE = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
 
 
@@ -90,39 +91,19 @@ def _duration(seconds) -> str:
 
 
 def refused_limit(error: BaseException, asked: dict) -> LimitRefused | None:
-    """E2B's answer as the limit it refused, when it is one: a timeout past
-    the plan's ("Timeout cannot be greater than 1 hours"), too many sandboxes
-    running at once, or a sandbox (or template build) larger than the plan
-    allows. asked: what sbx asked for, by Limits field."""
-    text = str(error)
-    lower = text.lower()
-    found = re.search(r"timeout cannot be greater than (\d+)\s*(second|minute|hour|day)", lower)
-    if found:
-        allowed = int(found.group(1)) * _UNITS[found.group(2)]
-        wanted = asked.get("timeout_seconds")
-        return LimitRefused(f"E2B refused {'a ' + _duration(wanted) + ' timeout' if wanted else 'the timeout'}: "
-                            f"your plan allows {_duration(allowed)}", field="timeout_seconds", asked=wanted,
-                            allowed=allowed)
-    if "concurrent" in lower and ("sandbox" in lower or "limit" in lower):
-        numbers = (re.search(pattern, lower) for pattern in (r"\((\d+)\)", r"limit of (\d+)", r"maximum of (\d+)"))
-        allowed = next((int(found.group(1)) for found in numbers if found), None)
-        return LimitRefused("E2B refused another sandbox: your plan runs "
-                            + (f"{allowed} at once" if allowed else "no more at once"),
-                            field="sandboxes", allowed=allowed)
-    # A size refusal names the team's (or plan's, tier's) limit; a build's own
-    # out-of-memory is no limit of the plan.
-    plan = any(w in lower for w in ("team", "plan", "tier"))
-    for field, words in (("cpu", ("cpu",)), ("memory_mb", ("memory", "ram")), ("disk_mb", ("disk",))):
-        if plan and any(w in lower for w in words) and any(w in lower for w in ("exceed", "too large", "greater than",
-                                                                                 "maximum", "limit")):
-            number = re.search(r"(\d+)", lower[lower.find(next(w for w in words if w in lower)):])
-            allowed = int(number.group(1)) if number else None
-            wanted = asked.get(field)
-            return LimitRefused(f"E2B refused a sandbox with {wanted} {field.replace('_mb', ' MiB')}: your plan "
-                                f"allows {allowed if allowed is not None else 'less'}" if wanted else
-                                f"E2B refused the sandbox's {field.replace('_mb', '')}: {text[:200]}",
-                                field=field, asked=wanted, allowed=allowed)
-    return None
+    """E2B's answer as the limit it refused, when it is one sbx can read for
+    sure: a timeout past the plan's ("Timeout cannot be greater than 1
+    hours", as E2B answered on a Hobby plan). Any other refusal (sandboxes
+    at once, a sandbox's size) is passed on in E2B's own words. asked: what
+    sbx asked for, by Limits field."""
+    found = re.search(r"timeout cannot be greater than (\d+)\s*(second|minute|hour|day)", str(error).lower())
+    if not found:
+        return None
+    allowed = int(found.group(1)) * _UNITS[found.group(2)]
+    wanted = asked.get("timeout_seconds")
+    return LimitRefused(f"E2B refused {'a ' + _duration(wanted) + ' timeout' if wanted else 'the timeout'}: "
+                        f"your plan allows {_duration(allowed)}", field="timeout_seconds", asked=wanted,
+                        allowed=allowed)
 
 
 class Cloud(Compute, HostSide):
@@ -156,7 +137,10 @@ class Cloud(Compute, HostSide):
         if not key:
             raise SystemExit(f"missing platform secret: {API_KEY} (/etc/sbx/runtime.env), an API key from E2B's "
                              f"dashboard: sbx-admin runtime add {KIND} reads it from stdin")
-        self._domain = secrets.get(DOMAIN_KEY) or DEFAULT_DOMAIN
+        domain = secrets.get(DOMAIN_KEY) or DEFAULT_DOMAIN
+        if not DOMAIN_RE.fullmatch(domain):   # it goes into nginx's upstream and the API's URL
+            raise SystemExit(f"{DOMAIN_KEY}={domain!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
+        self._domain = domain
         self._limits = _limits(secrets)
         self.connect_with(api_key=key, domain=self._domain, api_url=f"https://api.{self._domain}")
 
@@ -166,7 +150,10 @@ class Cloud(Compute, HostSide):
         before configure (nginx's configuration is written without it)."""
         if self._domain is None:
             from ... import vault
-            return vault.runtime((DOMAIN_KEY,)).get(DOMAIN_KEY) or DEFAULT_DOMAIN
+            found = vault.runtime((DOMAIN_KEY,)).get(DOMAIN_KEY) or DEFAULT_DOMAIN
+            if not DOMAIN_RE.fullmatch(found):
+                raise SystemExit(f"{DOMAIN_KEY}={found!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
+            return found
         return self._domain
 
     @property
@@ -218,11 +205,6 @@ class Cloud(Compute, HostSide):
     def set_timeout(self, sandbox_id, seconds):
         return self._limited(lambda: super(Cloud, self).set_timeout(sandbox_id, seconds),
                              {"timeout_seconds": seconds})
-
-    def build_template(self, spec, *, alias, cpu, memory_mb, disk_mb, on_log=None):
-        return self._limited(lambda: super(Cloud, self).build_template(
-            spec, alias=alias, cpu=cpu, memory_mb=memory_mb, disk_mb=disk_mb, on_log=on_log),
-            {"cpu": cpu, "memory_mb": memory_mb, "disk_mb": disk_mb})
 
     def create(self, template, **options):
         """A new sandbox whose ports answer only with its traffic token

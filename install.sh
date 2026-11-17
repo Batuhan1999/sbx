@@ -131,8 +131,9 @@ first=""; configured || first=1
 # The runtimes this installation enables now (SBX_RUNTIMES in runtime.env,
 # missing: Embed alone; present and empty: none yet); none before a first
 # install writes the file.
-installed=""
+installed="" has_env=""
 if [ -f /etc/sbx/runtime.env ]; then
+  has_env=1
   # As sbx reads it (runtime.configuration): spaces around the name are allowed.
   if grep -q '^[[:space:]]*SBX_RUNTIMES[[:space:]]*=' /etc/sbx/runtime.env; then
     installed=$(sed -n 's/^[[:space:]]*SBX_RUNTIMES[[:space:]]*=//p' /etc/sbx/runtime.env | tail -1 | tr -d "'\"" | tr ',' ' ' | xargs)
@@ -156,11 +157,13 @@ fi
 need_gib=60; ! configured || need_gib=15
 [ -n "$unfit" ] || [ "$disk_gib" -ge "$need_gib" ] || unfit="$need_gib GiB of free disk at least, this has $disk_gib GiB"
 # Embed: where the installation enables it already (it must still fit), or
-# on a first install where the host can run it.
+# on a first install (no runtime.env yet) where the host can run it. An
+# installation that enables none keeps it so: runtime.env changes only by an
+# explicit change (the web app, sbx-admin runtime, a key given here).
 embed=""
 if [ -n "$installed" ]; then
   if enables embed; then embed=1; [ -z "$unfit" ] || die "$unfit"; fi
-elif [ -z "$unfit" ]; then
+elif [ -z "$has_env" ] && [ -z "$unfit" ]; then
   embed=1
 fi
 # E2B Cloud: with its key in the environment, or enabled already.
@@ -171,11 +174,15 @@ cloud=""
 none=""
 if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
   none=1
-  echo "E2B Embed: off on this host ($unfit); no provider runtime is configured: sbx installs with no sandbox runtime"
+  if [ -n "$has_env" ]; then
+    echo "no sandbox runtime is enabled (SBX_RUNTIMES is empty): add one in Settings → Sandbox runtimes"
+  else
+    echo "E2B Embed: off on this host ($unfit); no provider runtime is configured: sbx installs with no sandbox runtime"
+  fi
 fi
 if [ -z "$embed" ]; then
   # The sandboxes run at a provider: this host runs sbx-control, nginx and the secret store.
-  [ -z "$unfit" ] || [ -n "$installed" ] || echo "E2B Embed: off on this host ($unfit)"
+  [ -z "$unfit" ] || [ -n "$installed" ] || [ -n "$none" ] || echo "E2B Embed: off on this host ($unfit)"
   [ "$mem_mib" -ge 1800 ] || die "2 GiB of memory at least, this has $mem_mib MiB"
   [ "$disk_gib" -ge 10 ] || die "10 GiB of free disk at least, this has $disk_gib GiB"
 else
@@ -354,8 +361,8 @@ if [ -n "$cloud_key" ]; then
   runtimes=$(cd "$release" && E2B_CLOUD_API_KEY="$cloud_key" venv/bin/python -m sbx_control.runtime env \
     --enable e2b-cloud E2B_CLOUD_API_KEY) || die "could not write /etc/sbx/runtime.env (above)"
 fi
-if [ -n "$none" ]; then
-  # A first install names no runtime (SBX_RUNTIMES=''); an existing file stays as it is.
+if [ -n "$none" ] && [ -z "$has_env" ]; then
+  # A first install names no runtime (SBX_RUNTIMES=''); an existing file is never rewritten here.
   runtimes=$(cd "$release" && venv/bin/python -m sbx_control.runtime env) || die "could not write /etc/sbx/runtime.env (above)"
 fi
 unset cloud_key

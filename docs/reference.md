@@ -444,13 +444,18 @@ runtimes (Change settings, then a plan or Custom), or in the file and then
 8192 MiB, 20480 MiB, 100 at once). The defaults above stay as they were
 (20 at once), so an installation that never chose a plan behaves as before.
 
-When E2B refuses a request for a limit of its own (a timeout past the
-plan's, too many sandboxes at once, a sandbox or build larger than the plan
-allows), sbx says so, naming the setting to change ("E2B refused a 2 h
+When E2B refuses a timeout past the plan's ("Timeout cannot be greater than
+1 hours"), sbx says so, naming the setting to change ("E2B refused a 2 h
 timeout: your plan allows 1 h; change Longest run (seconds)
 (E2B_CLOUD_MAX_TIMEOUT) in Settings → Sandbox runtimes → E2B Cloud ..."), and
 shows it on the runtime's row (`limit_hit` in `GET /api/runtimes`) until its
-settings change. It never raises a limit by itself.
+settings change. Any other refusal (too many sandboxes at once, a sandbox
+larger than the plan allows) shows E2B's own message. sbx never raises a
+limit by itself.
+
+The domain (`E2B_CLOUD_DOMAIN`) must be a host name, and changing it in the
+web app needs the API key typed again: the key set is never sent to a new
+domain.
 
 What it needs:
 
@@ -574,12 +579,19 @@ it for the root side; it never edits `runtime.env` itself:
    default`, checked the way sbx-control reads it, put back on any failure
    (and the queued reference discarded), then nginx regenerated and
    sbx-control restarted. Its outcome is kept in
-   `/var/lib/sbx/runtime-change.json`.
-4. `GET /api/runtimes/change` answers `{state, operation, kind, message, at}`,
-   `state` one of `idle`, `queued`, `applying`, `done`, `failed`. The web app
-   polls it every 2 seconds while the change is queued or applying, through
-   sbx-control's restart, and shows the outcome. One change at a time: another
-   request while one is queued or applying is a 409.
+   `/var/lib/sbx/runtime-change.json`. A request the root side has not taken
+   within two minutes fails ("the root side did not pick up the change:
+   check sbx-apply-runtime-change.path"), and goes with its reference. A
+   change made but whose old store reference could not be discarded is
+   done, saying so.
+4. `GET /api/runtimes/change` answers `{state, operation, kind, message, at,
+   restarting}`, `state` one of `idle`, `queued`, `applying`, `done`,
+   `failed`; `restarting` is true while a done change is answered by the
+   sbx-control from before its restart. The web app polls it every 2 seconds
+   until the change failed, or is done and a restarted sbx-control answers,
+   then refreshes the runtimes. One change at a time: another request while
+   one is queued or applying is a 409, and `sbx-admin runtime add | remove |
+   default` take the same lock as the root side.
 
 A secret travels from the browser over HTTPS to sbx-control, which checks it
 with the provider in memory and seals it into Infisical; from there on only

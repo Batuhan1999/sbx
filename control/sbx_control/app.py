@@ -39,11 +39,22 @@ async def lifespan(_app):
 async def unexpected(request: Request, error: Exception):
     """Say what failed instead of a bare 500: most often it is the sandbox
     runtime not answering, or answering with an error."""
+    if isinstance(error, runtime.NoRuntime):
+        return no_runtime(request, error)
     traceback.print_exception(error)
     if core.runtime_failure(error):
-        return PlainTextResponse(f"the sandbox runtime ({runtime.title()}) failed: {type(error).__name__}: {error}",
+        try:
+            title = runtime.title()
+        except Exception:
+            title = "none set up"
+        return PlainTextResponse(f"the sandbox runtime ({title}) failed: {type(error).__name__}: {error}",
                                  status_code=503)
     return PlainTextResponse(f"sbx-control failed: {type(error).__name__}: {error}", status_code=500)
+
+
+def no_runtime(_request, error):
+    """The installation enables no runtime yet: what to do, not a 500."""
+    return JSONResponse({"detail": str(error)}, status_code=503)
 
 
 async def lifecycle_conflict(_request, error):
@@ -67,6 +78,7 @@ async def refused(_request, error):
 def create_app() -> FastAPI:
     app = FastAPI(title="sbx-control", lifespan=lifespan)
     app.add_exception_handler(Exception, unexpected)
+    app.add_exception_handler(runtime.NoRuntime, no_runtime)
     app.add_exception_handler(lifecycle.Conflict, lifecycle_conflict)
     app.add_exception_handler(core.SandboxError, refused)
     app.add_exception_handler(template_builds.NotBuilt, not_built)

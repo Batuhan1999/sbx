@@ -263,6 +263,108 @@ class Web(TwoRuntimes, Server):
         self.client.cookies.clear()
         self.assertEqual(self.call("GET", "/api/runtimes/available").status_code, 401)  # the token is spent
 
+    def test_a_remove_is_applied_by_a_root_process_that_configured_nothing_yet(self):
+        from sbx_control.runtime.fake import Fake
+        self.assertEqual(self.call("DELETE", "/api/runtimes/fake").status_code, 202)
+        listed = []
+
+        def sandboxes(backend, *args):
+            if backend.credentials is None:
+                raise RuntimeError("not configured")
+            listed.append(backend.kind)
+            return []
+        # A fresh process: no backend made or configured yet (sbx-apply runtime-change).
+        with patch.dict(self.runtime._backends, clear=True), patch.object(Fake, "sandboxes", autospec=True,
+                                                                          side_effect=sandboxes):
+            code, said = self.apply()
+        self.assertEqual(code, 0, said)
+        self.assertEqual(listed, ["fake"])
+        self.assertEqual(self.runtime.enabled(), ["embed"])
+
+    def test_a_domain_is_a_host_name_and_moving_it_needs_the_key_again(self):
+        self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+            "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        bad = self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {"E2B_CLOUD_DOMAIN": "evil.example/x;"}})
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("host name", bad.json()["detail"])
+        from sbx_control.runtime.e2b_cloud import Cloud
+        with patch.object(Cloud, "test", side_effect=AssertionError("the stored key must not be tried")):
+            moved = self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {"E2B_CLOUD_DOMAIN": "other.example"}})
+        self.assertEqual(moved.status_code, 400)
+        self.assertIn("type the API key again", moved.json()["detail"])
+        self.assertFalse(self.request_file.exists())
+        typed = self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {"E2B_CLOUD_DOMAIN": "Other.Example.",
+                                                                         "E2B_CLOUD_API_KEY": "test-only-new"}})
+        self.assertEqual(typed.status_code, 202, typed.text)
+        self.assertEqual(json.loads(self.request_file.read_text())["values"]["E2B_CLOUD_DOMAIN"], "other.example")
+        with self.assertRaisesRegex(SystemExit, "not a host name"):
+            Cloud().configure({"E2B_CLOUD_API_KEY": "k", "E2B_CLOUD_DOMAIN": "x.example/y"})
+
+    def test_done_waits_for_the_restart_that_takes_it(self):
+        from sbx_control import runtime_changes
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        status = self.call("GET", "/api/runtimes/change").json()
+        self.assertEqual((status["state"], status["restarting"]), ("done", True))   # this process is the old one
+        with patch.object(runtime_changes, "STARTED", runtime_changes.time.time() + 1):
+            self.assertFalse(self.call("GET", "/api/runtimes/change").json()["restarting"])   # a new one answers
+
+    def test_an_old_reference_that_will_not_go_leaves_the_change_done_with_its_effects(self):
+        self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+            "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        self.effects()
+        self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {
+            "E2B_CLOUD_API_KEY": "test-only-second"}}).status_code, 202)
+        from sbx_control import secret_store
+        with patch.object(secret_store, "discard", side_effect=RuntimeError("the store did not answer")):
+            code, said = self.apply()
+        self.assertEqual(code, 0, said)
+        status = self.call("GET", "/api/runtimes/change").json()
+        self.assertEqual(status["state"], "done")
+        self.assertIn("an old sealed value was not discarded", status["message"])
+        self.assertEqual(self.effects(), ["control", "tls"])
+
+    def test_a_refused_queue_drops_the_sealed_key_and_one_request_at_a_time(self):
+        from sbx_control import runtime_changes
+        with patch.object(runtime_changes, "request", side_effect=runtime_changes.Busy("busy now")):
+            response = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store, {})                                 # sealed, then discarded
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        with self.assertRaises(runtime_changes.Busy):                    # the request is there: never overwritten
+            runtime_changes.request("default", "embed", by="test")
+        self.assertEqual(json.loads(self.request_file.read_text())["kind"], "fake")
+
+    def test_a_request_the_root_side_never_takes_fails_and_goes(self):
+        from sbx_control import runtime_changes
+        self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+            "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
+        self.assertEqual(len(self.store), 1)
+        later = runtime_changes.time.time() + runtime_changes.PICKUP_SECONDS + 1
+        with patch.object(runtime_changes.time, "time", return_value=later):
+            status = self.call("GET", "/api/runtimes/change").json()
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("sbx-apply-runtime-change.path", status["message"])
+        self.assertFalse(self.request_file.exists())
+        self.assertEqual(self.store, {})
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)   # unblocked
+
+    def test_the_cli_takes_the_same_lock(self):
+        from sbx_control import admin, runtime_changes
+        taken = []
+        real = runtime_changes.locked
+
+        def locked():
+            taken.append(1)
+            return real()
+        out = io.StringIO()
+        with patch.object(runtime_changes, "locked", side_effect=locked), patch("sys.stdout", out), \
+                patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
+        self.assertEqual(taken, [1])
+
     def test_a_change_that_stopped_part_way_is_failed_not_waited_for(self):
         from sbx_control import runtime_changes
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
@@ -297,10 +399,9 @@ class LearnedLimits(TwoRuntimes, Installation):
         found = refused_limit(Exception("400: Timeout cannot be greater than 1 hours"), {"timeout_seconds": 7200})
         self.assertEqual((found.field, found.asked, found.allowed), ("timeout_seconds", 7200, 3600))
         self.assertEqual(str(found), "E2B refused a 2 h timeout: your plan allows 1 h")
-        found = refused_limit(Exception("You have reached the maximum number of concurrent E2B sandboxes (20)"), {})
-        self.assertEqual((found.field, found.allowed), ("sandboxes", 20))
-        found = refused_limit(Exception("Memory 16384 MiB exceeds the team limit of 8192"), {"memory_mb": 16384})
-        self.assertEqual(found.field, "memory_mb")
+        # Only the refusal sbx reads for sure; any other is E2B's own message.
+        self.assertIsNone(refused_limit(Exception("You have reached the maximum number of concurrent E2B sandboxes (20)"), {}))
+        self.assertIsNone(refused_limit(Exception("Memory 16384 MiB exceeds the team limit of 8192"), {"memory_mb": 16384}))
         self.assertIsNone(refused_limit(Exception("build failed: out of memory"), {}))
         self.assertIsNone(refused_limit(Exception("connection reset"), {}))
 
@@ -343,6 +444,26 @@ class NoRuntimeYet(Server):
         with patch("sys.stderr", out):
             self.assertEqual(template_builds.main(["base", "--if-stale"]), 0)
         self.assertIn("no sandbox runtime is set up", out.getvalue())
+
+    def test_routes_that_need_a_runtime_say_so(self):
+        self.repo_admin_without_runtime()
+        listed = self.client.get("/api/sandbox-list?scope=mine")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["capacity"], {"known": False, "runtime": ""})
+        from fastapi.testclient import TestClient
+        client = TestClient(self.app.app, base_url="https://203.0.113.10", raise_server_exceptions=False)
+        self.addCleanup(client.close)
+        client.cookies.update(self.client.cookies)
+        self.assertEqual(client.get("/api/repos/owner/app/template").status_code, 200)
+        from sbx_control import sandboxes_api
+        with patch.object(sandboxes_api, "capacities", side_effect=self.runtime.NoRuntime()):   # any call to get()
+            response = client.get("/api/sandbox-list?scope=mine")
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("no sandbox runtime is set up", response.json()["detail"])
+        from sbx_control import app
+        failed = app.unexpected(None, self.runtime.Failed("x"))
+        import asyncio
+        self.assertEqual(asyncio.run(failed).status_code, 503)           # no title to name: still an answer
 
     def test_a_create_through_the_api_is_refused_with_what_to_do(self):
         self.repo_admin_without_runtime()
@@ -416,18 +537,28 @@ class InstallerWithoutARuntime(Installation):
         """install.sh's runtime choice, cut from the script, on a host without
         /dev/kvm and no key: no FAILED, none chosen."""
         text = (Path(__file__).parents[2] / "install.sh").read_text()
-        step = text[text.index("installed=\"\"\n"):text.index('echo "ok: $PRETTY_NAME')]
+        step = text[text.index('installed="" has_env=""\n'):text.index('echo "ok: $PRETTY_NAME')]
         with tempfile.TemporaryDirectory(prefix="sbx-install-none-") as directory:
             env = Path(directory) / "runtime.env"
-            for before, expected in ((None, "none=1 embed= cloud="), ("SBX_RUNTIMES=''\n", "none=1 embed= cloud="),
-                                     ("E2B_API_KEY=x\n", "FAILED")):
-                with self.subTest(before=before):
+            cases = (
+                (None, False, "none=1 embed= cloud="),
+                ("SBX_RUNTIMES=''\n", False, "none=1 embed= cloud="),
+                ("E2B_API_KEY=x\n", False, "FAILED"),
+                (None, True, "none= embed=1 cloud="),                   # a first install where Embed fits
+                ("SBX_RUNTIMES=''\n", True, "none=1 embed= cloud="),    # none enabled stays so: no auto-enable
+            )
+            for before, kvm, expected in cases:
+                with self.subTest(before=before, kvm=kvm):
                     env.unlink(missing_ok=True)
                     if before is not None:
                         env.write_text(before)
-                    script = ("set -eu\nmem_mib=4000 disk_gib=40 hugepages= cloud_key= first=1 email= admin= sign_in= domain=\n"
-                              "configured() { false; }\ndie() { echo \"FAILED: $*\"; exit 1; }\n"
-                              + step.replace("/etc/sbx/runtime.env", str(env)).replace("/dev/kvm", "/nonexistent-kvm")
+                    device = directory if kvm else "/nonexistent-kvm"   # a path that exists stands for /dev/kvm
+                    script = ("set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
+                              "sign_in= domain=\nconfigured() { false; }\ndie() { echo \"FAILED: $*\"; exit 1; }\n"
+                              + step.replace("/etc/sbx/runtime.env", str(env)).replace("/dev/kvm", device)
+                              .replace("/dev/net/tun", directory if kvm else "/nonexistent-tun")
                               + 'echo "none=$none embed=$embed cloud=$cloud"\n')
                     result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
                     self.assertIn(expected, result.stdout + result.stderr)
+        # The none path writes runtime.env only where there is none.
+        self.assertIn('if [ -n "$none" ] && [ -z "$has_env" ]; then', text)

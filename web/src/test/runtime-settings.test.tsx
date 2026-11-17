@@ -38,11 +38,18 @@ function inTurn(...answers: { status: number; body: unknown }[]) {
 describe('Settings → Sandbox runtimes', () => {
   it('adds a provider with a plan, follows the change through the restart and refreshes', async () => {
     let enabled = [EMBED]
+    const done = change('done', 'add', 'E2B Cloud (e2b-cloud) is enabled')
+    const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: { ...done, restarting: true } }, { status: 502, body: 'Bad Gateway' }, { status: 200, body: done })
     const calls = stubApi({
       'GET /api/me': ME,
       'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
-      'GET /api/runtimes/change': inTurn({ status: 200, body: IDLE }, { status: 502, body: 'Bad Gateway' }, { status: 200, body: change('done', 'add', 'E2B Cloud (e2b-cloud) is enabled') }),
-      'POST /api/runtimes': () => { enabled = [EMBED, runtime('e2b-cloud', 'E2B Cloud')]; return { status: 202, body: change('queued', 'add') } },
+      // Done, first from the process before the restart, then nothing (restarting), then the new process.
+      'GET /api/runtimes/change': () => {
+        const answer = polls()
+        if ((answer.body as RuntimeChange).state === 'done' && !(answer.body as RuntimeChange).restarting) enabled = [EMBED, runtime('e2b-cloud', 'E2B Cloud')]
+        return answer
+      },
+      'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
       'GET /api/runtimes': () => ({ status: 200, body: { default: 'embed', runtimes: enabled } }),
     })
     renderApp(<Runtimes />)
@@ -58,9 +65,11 @@ describe('Settings → Sandbox runtimes', () => {
     await user.click(within(form).getByRole('button', { name: 'Add E2B Cloud' }))
     expect(await screen.findByText('Adding E2B Cloud…')).toBeTruthy()
     expect(calls.find(c => c.method === 'POST')!.body).toEqual({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_MAX_TIMEOUT: '3600', E2B_CLOUD_MAX_SANDBOXES: '50' } })
-    expect(await screen.findByText('E2B Cloud (e2b-cloud) is enabled', undefined, { timeout: 8000 })).toBeTruthy()
+    await waitFor(() => expect(calls.filter(c => c.url === '/api/runtimes/change').length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
+    expect(screen.getByText('Adding E2B Cloud…')).toBeTruthy()            // done, but the old process answered: still waiting
+    expect(await screen.findByText('E2B Cloud (e2b-cloud) is enabled', undefined, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect(screen.getAllByRole('heading', { name: 'E2B Cloud' }).length).toBe(1))
-  }, 15000)
+  }, 25000)
 
   it('changes settings with the key kept, makes a default, and says why one can’t be removed', async () => {
     const calls = stubApi({

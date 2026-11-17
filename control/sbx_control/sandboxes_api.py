@@ -35,7 +35,7 @@ def api_create(body: sandboxes.CreateSandbox, start_app: bool = True, email: str
     """Return once SSH works; the app starts in the background unless start_app is false."""
     try:
         return sandboxes.create(body, email, start_app=start_app)
-    except (lifecycle.Conflict, core.SandboxError, recipes.RecipeError, template_builds.NotBuilt):
+    except (lifecycle.Conflict, core.SandboxError, recipes.RecipeError, template_builds.NotBuilt, runtime.NoRuntime):
         raise
     except Exception as error:
         # The runtime failed before a VM was made (none recorded): the same request may be sent again.
@@ -177,6 +177,8 @@ def capacities() -> dict:
     """The default runtime's room (capacity, naming its kind), and with
     several runtimes each one's by kind (capacities)."""
     first = runtime.default()
+    if not first:   # no runtime set up yet: no room to tell
+        return {"capacity": {"known": False, "runtime": ""}}
     out = {"capacity": {**core.capacity(kind=first), "runtime": first}}
     if len(runtime.enabled()) > 1:
         out["capacities"] = {kind: {**core.capacity(kind=kind), "runtime": kind} for kind in runtime.enabled()}

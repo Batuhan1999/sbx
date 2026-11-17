@@ -241,15 +241,19 @@ class Provider(Compute, HostSide):
 
 `secret=True` is write-only: sealed into the managed store, shown as "set",
 replaced only when a new value is typed. `kind="int"` takes a whole number,
-at least 1; `limit` names the `Limits` field it sets, which presets fill and
-which a refusal names. A backend that declares nothing has its `secret_key`
+at least 1; `kind="hostname"` a host name (lowercased); `limit` names the
+`Limits` field it sets, which presets fill and which a refusal names;
+`rekey=True` marks a setting that says where the secret is sent (a
+provider's domain): changing it needs the secret typed again, so a stored
+one never goes to a new place. A backend that declares nothing has its `secret_key`
 as its one setting. A runtime on this host (`host = True`) declares none:
 `install.sh` sets it up, and `can_run(facts)` says why this server can't run
 it (`""` when it can) from `setup.host_facts()`.
 
 When the provider refuses a request for a limit of its plan, the backend
-raises `LimitRefused(message, field=..., asked=..., allowed=...)` (E2B
-Cloud's `refused_limit` reads E2B's answers); the registry records it
+raises `LimitRefused(message, field=..., asked=..., allowed=...)` for a
+refusal it reads for sure (E2B Cloud's `refused_limit`: the timeout message
+only; anything else passes on in the provider's words); the registry records it
 (`runtime.limit_hit(kind)`, until the runtime's settings change), adds the
 setting to change to the message, and raises it on. sbx never raises a
 limit by itself.

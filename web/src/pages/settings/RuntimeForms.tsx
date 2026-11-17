@@ -14,24 +14,25 @@ const VERBS: Record<string, string> = { add: 'Adding', change: 'Changing', remov
 export type ChangeFlow = ReturnType<typeof useRuntimeChangeFlow>
 
 /** A runtime change: queued by the server, applied by the host, which restarts sbx-control.
- * Polls until it is done or failed (through the restart), then refreshes what it changed. */
+ * Polls until it failed, or is done and the restarted sbx-control answers, then refreshes what it changed. */
 export function useRuntimeChangeFlow(enabled = true) {
   const qc = useQueryClient()
   const change = useRuntimeChange(enabled)
   const [mine, setMine] = useState(false)
   const state = change.data?.state
   const at = change.data?.at
+  const busy = isApplying(change.data)
   useEffect(() => {
-    if (state !== 'done' && state !== 'failed') return
+    if (busy || (state !== 'done' && state !== 'failed')) return
     void qc.invalidateQueries({ queryKey: keys.runtimes })
     void qc.invalidateQueries({ queryKey: keys.setup })
-  }, [state, at, qc])
+  }, [state, at, busy, qc])
   const submit = async (run: () => Promise<RuntimeChange>) => {
     const queued = await run()
     qc.setQueryData(keys.runtimeChange, queued)
     setMine(true)
   }
-  return { change: change.data, busy: isApplying(change.data), mine, submit }
+  return { change: change.data, busy, mine, submit }
 }
 
 /** The change in flight or the last one's outcome: applying, failed (why), or done (only right after this page asked for it). */

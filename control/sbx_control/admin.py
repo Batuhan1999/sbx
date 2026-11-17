@@ -229,13 +229,16 @@ def do_runtime_change(a) -> int:
     """runtime add | remove | default: edit runtime.env, check the result the
     way sbx-control will read it, and only then let go of the store
     references it replaced; any failure puts the file back and drops the
-    references it made (runtime_changes.perform). Then apply it."""
+    references it made (runtime_changes.perform). Then apply it. Under the
+    lock a change from the web app takes, so neither undoes the other."""
     from . import runtime_changes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
         return 2
+    secret = sys.stdin.read().strip() if a.action == "add" else None
     try:
-        change = runtime_changes.perform(a.action, a.kind, sys.stdin.read().strip() if a.action == "add" else None)
+        with runtime_changes.locked():
+            change = runtime_changes.perform(a.action, a.kind, secret)
     except (Exception, SystemExit) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1

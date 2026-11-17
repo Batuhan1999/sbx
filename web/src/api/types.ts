@@ -161,7 +161,7 @@ export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
-export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int'; optional: boolean; limit: string }
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean }
 export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string }
 /** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
 export type AvailableRuntime = {
@@ -188,7 +188,8 @@ export type AvailableRuntime = {
   limit_hit: LimitHit | null
 }
 export type RuntimeChangeState = 'idle' | 'queued' | 'applying' | 'done' | 'failed'
-export type RuntimeChange = { state: RuntimeChangeState; operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; message: string; at: string }
+/** restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
+export type RuntimeChange = { state: RuntimeChangeState; operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; message: string; at: string; restarting?: boolean }
 
 export type Trust = 'trusted' | 'public' | null
 /** Who has to act: the coding agent, a person, an admin, or nobody (the server is working on it). */

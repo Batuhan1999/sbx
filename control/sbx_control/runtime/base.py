@@ -154,15 +154,18 @@ class SettingField:
     /etc/sbx/runtime.env (one of its credential_keys). A secret is write-only
     (sealed into the store, never shown back); limit names the Limits field
     an int setting sets, which presets and the limits the provider refused
-    refer to."""
+    refer to. rekey: it says where the secret is sent (a provider's domain),
+    so changing it needs the secret typed again: a stored one is never sent
+    to a new place."""
     key: str
     label: str
     secret: bool = False
     default: str = ""          # what it is when not set ("": nothing)
     help: str = ""
-    kind: str = "text"         # "text" or "int" (a whole number, at least 1)
+    kind: str = "text"         # "text", "int" (a whole number, at least 1) or "hostname"
     optional: bool = False     # may stay empty (its default applies)
     limit: str = ""            # the Limits field it sets, for an int limit
+    rekey: bool = False
 
     def view(self) -> dict:
         return dataclasses.asdict(self)

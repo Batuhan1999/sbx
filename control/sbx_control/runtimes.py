@@ -10,6 +10,7 @@ sbx_control.runtime's; this module names no runtime either."""
 from __future__ import annotations
 
 import dataclasses
+import re
 import secrets
 import sqlite3
 import time
@@ -319,9 +320,22 @@ def _changes(backend, values: dict, current: dict) -> dict:
             continue
         if field.kind == "int" and not (value.isdigit() and int(value) >= 1):
             raise Refused(f"{field.label} ({key}) is a whole number, at least 1, not {value!r}")
+        if field.kind == "hostname":
+            value = value.lower().rstrip(".")
+            if not HOSTNAME.fullmatch(value):
+                raise Refused(f"{field.label} ({key}) is a host name such as example.com, not {value!r}")
         if value != current.get(key):
             out[key] = value
+    # The stored secret never goes where a setting that says where it is sent now points.
+    secret = getattr(backend, "secret_key", "")
+    moved = [found[k] for k in out if found[k].rekey]
+    if moved and secret and current.get(secret) and not out.get(secret):
+        raise Refused(f"{moved[0].label} changes where {backend.title}'s {found[secret].label} is sent: type the "
+                      f"{found[secret].label} again (the one set is never sent to a new {moved[0].label.lower()})")
     return out
+
+
+HOSTNAME = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 
 
 def _check(backend, kind: str, merged: dict) -> None:
