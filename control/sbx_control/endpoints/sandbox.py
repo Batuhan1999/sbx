@@ -15,7 +15,7 @@ import secrets
 
 from .. import contributions, paths, platform, runtime, sandbox_layers, settings, state
 from . import certs
-from .model import INTERNAL, LOCAL_PORTS, Refused, address, domain, env_name, join, permitted, split_target
+from .model import INTERNAL, LOCAL_PORTS, Refused, _lock, address, domain, env_name, join, permitted, split_target
 from ..tls_front import PORT   # where sandboxes reach endpoints: the HTTPS port, shared by SNI
 from .access import HOSTPORT
 
@@ -155,15 +155,24 @@ def ensure_forwarder(sbx) -> dict:
         return {}
 
 
+def _issue(name: str, repo: str, kind: str | None, only=None) -> dict:
+    """certs.issue_all for the endpoints (of only, when given) the repo may
+    use now, chosen and signed under the endpoints' lock: a revoke's new CA
+    never signs for the repo it revoked. {} when it may use none."""
+    with _lock():
+        names = [r.name for r in routes(kind, repo).rows if only is None or r.name in only]
+        return certs.issue_all(name, repo, names) if names else {}
+
+
 def push(sbx, info) -> bool:
     """Fresh certificates into the running sandbox, for the endpoints its
     repo may use now; False for one that may use none."""
     from .. import core
     name, repo = (info.metadata or {}).get("sbx"), core.app_of(info).repo
-    found = routes(runtime.kind_of(info), repo)
-    if not name or not found.rows:
+    issued = _issue(name, repo, runtime.kind_of(info)) if name else {}
+    if not issued:
         return False
-    write_bundles(sbx, certs.issue_all(name, repo, [r.name for r in found.rows]))
+    write_bundles(sbx, issued)
     ensure_forwarder(sbx)
     return True
 
@@ -180,10 +189,9 @@ def issue_for(name: str) -> list[dict]:
     repo = core.app_of(info).repo
     if certs.bound_repo(name) != (repo or "").lower():
         raise LookupError(f"{name} is another sandbox now")
-    found = routes(runtime.kind_of(info), repo)
-    if not found.rows:
+    issued = _issue(name, repo, runtime.kind_of(info))
+    if not issued:
         raise PermissionError(f"{name}'s repo may use no endpoint now")
-    issued = certs.issue_all(name, repo, [r.name for r in found.rows])
     return [{"name": n, "cert": c, "key": k, "not_after": t} for n, (c, k, t) in sorted(issued.items())]
 
 
@@ -235,7 +243,7 @@ class Layer(sandbox_layers.SandboxLayer):
             sbx.commands.run(f"rm -rf {RENEWED}", timeout=30)
             return
         certs.bind(write.name, write.repo, mine["credential"])
-        write_bundles(sbx, certs.issue_all(write.name, write.repo, [r.name for r in found.rows]))
+        write_bundles(sbx, _issue(write.name, write.repo, write.kind, {r.name for r in found.rows}))
         sandbox_runtime.ship_guest(sbx)
         ensure_forwarder(sbx)
 

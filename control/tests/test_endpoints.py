@@ -233,6 +233,33 @@ class ApiTests(Setup, Server):
         sandboxes.unregister("box")   # deleted
         self.assertEqual(renew().status_code, 404)
 
+    def test_a_revoke_during_a_renewal_leaves_the_revoked_repo_nothing_the_new_ca_signed(self):
+        from cryptography import x509
+        from sbx_control.endpoints import sandbox
+        self.sandbox_found()
+        self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app"], by="test")
+        self.register("box")
+        self.credential("box")
+        chosen, revoking = sandbox.routes, []
+
+        def routes(kind, repo):   # the revoke lands once the renewal has chosen its endpoints
+            found = chosen(kind, repo)
+            if not revoking:
+                revoking.append(threading.Thread(target=self.endpoints.revoke, args=("temporal", "owner/app")))
+                revoking[0].start()
+                revoking[0].join(1)
+            return found
+        with patch.object(sandbox, "routes", side_effect=routes):
+            try:
+                issued = {e["name"]: e["cert"] for e in self.endpoints.issue_for("box")}
+            except PermissionError:
+                issued = {}
+        revoking[0].join()
+        ca = x509.load_pem_x509_certificate(self.model.find("temporal").ca_cert.encode())
+        if "temporal" in issued:
+            with self.assertRaises(Exception):   # from the CA before the revoke: nginx no longer takes it
+                x509.load_pem_x509_certificate(issued["temporal"].encode()).verify_directly_issued_by(ca)
+
     def test_a_name_made_again_for_another_repo_doesn_t_take_the_old_credential(self):
         repos = self.sandbox_found()
         self.client.post("/api/endpoints", json={"name": "theirs", "target": "10.0.0.6:80", "repos": ["other/repo"]})
@@ -562,7 +589,8 @@ class RouteTests(Setup, Installation):
         written = {}
         vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout="")),
                              files=SimpleNamespace(write=lambda path, text, **kw: written.update({path: text})))
-        self.endpoints.LAYER.after_write(write, vm)
+        with provider(self.runtime):
+            self.endpoints.LAYER.after_write(write, vm)
         self.assertEqual(self.certs.sandbox_of(f"Bearer box:{config['renew']['credential']}"), "box")
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
         self.assertIn(f"{self.endpoints.sandbox.RENEWED}/.push/temporal.bundle.pem", written)
