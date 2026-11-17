@@ -11,8 +11,8 @@ import time
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, settings,
-               state, template_builds, variables)
+from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, sandbox_layers,
+               settings, state, template_builds, variables)
 from .state import db
 
 SLUG_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -155,6 +155,7 @@ def prepare_waiting(present: set):
 def unregister(name: str):
     with db() as conn:
         conn.execute("delete from sandboxes where name = ?", (name,))
+    sandbox_layers.forget(name)
 
 
 def forget(name: str):

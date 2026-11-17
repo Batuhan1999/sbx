@@ -107,8 +107,13 @@ def apply_host() -> int:
     try:
         if not (folder.is_dir() and (paths.tls() / "nginx.conf").exists()):
             raise RuntimeError("nginx is not set up on this server yet (connect a domain first)")
-        before = replace(folder, render(routable(), domain()))
-        result = subprocess.run([NGINX], capture_output=True, text=True, timeout=300)
+        before = _held(folder)
+        try:
+            replace(folder, render(routable(), domain()))
+            result = subprocess.run([NGINX], capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.SubprocessError):   # not written whole, or nginx not run to the end
+            replace(folder, before)
+            raise
         if result.returncode:
             print(result.stdout + result.stderr, file=sys.stderr, flush=True)
             replace(folder, before)

@@ -103,9 +103,10 @@ def record(sandbox: str, repo: str, endpoints: list, not_after: float):
 
 
 def forget(sandbox: str):
-    """It holds none now (it may use no endpoint)."""
+    """It holds none now and has no credential (it may use no endpoint, or it is gone)."""
     with state.db() as conn:
         conn.execute("delete from endpoint_certs where sandbox = ?", (sandbox,))
+        conn.execute("delete from endpoint_credentials where sandbox = ?", (sandbox,))
 
 
 def holders() -> set:

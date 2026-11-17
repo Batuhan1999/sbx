@@ -351,10 +351,22 @@ def restart_listener():
         subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        os.kill(int(Path("/run/sshd.pid").read_text().strip()), signal.SIGTERM)
+        old = int(Path("/run/sshd.pid").read_text().strip())
+        os.kill(old, signal.SIGTERM)
+        if not wait_until(lambda: exited(old), 15):   # it holds the port until it exits
+            raise GuestError("workspace SSH listener did not stop")
         subprocess.run(["/usr/sbin/sshd"], check=True, timeout=30)
     if not wait_until(lambda: listener_alive(), 15):
         raise GuestError("workspace SSH listener did not start again")
+
+
+def exited(pid):
+    """Whether the process is gone, or a zombie (no exe, no sockets)."""
+    try:
+        os.readlink(PROC / str(pid) / "exe")
+    except OSError:
+        return True
+    return False
 
 
 def listener_alive():
@@ -534,10 +546,13 @@ def _certificate(endpoint, renewed):
 def renew(config, folder, renewed):
     """New certificates for every endpoint the sandbox may use, from
     sbx-control (its callback, with the sandbox's credential), into renewed:
-    each key and certificate in one file, replaced whole."""
+    each key and certificate in one file, replaced whole. Dropped when sbx
+    pushed others meanwhile (from a CA made anew, which the answer may predate)."""
     import ssl
     import urllib.error
     import urllib.request
+    renewed = Path(renewed)
+    before = read_json(renewed / BUNDLE_INDEX)
     target = config["renew"]
     trust = config.get("trust")
     context = ssl.create_default_context(cafile=str(folder / trust) if trust else None)
@@ -549,9 +564,10 @@ def renew(config, folder, renewed):
     except urllib.error.HTTPError as error:   # refused: a deleted sandbox, a revoked grant
         error.close()
         raise
-    renewed = Path(renewed)
-    renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
     times = dict(read_json(renewed / BUNDLE_INDEX))
+    if times != before:
+        return times
+    renewed.mkdir(mode=0o700, parents=True, exist_ok=True)
     for item in found:
         _write_private(renewed / BUNDLE.format(item["name"]), item["key"] + item["cert"])
         times[item["name"]] = item["not_after"]
@@ -806,13 +822,15 @@ def forward(action, config_path, state_file=None):
         write_json(state_file, record(os.getpid()))
         Forwarder(config_path).run()
         return
-    if alive(read_json(state_file)):
-        return
-    with open("/tmp/sbx-endpoints.log", "a") as log:
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run", str(config_path)],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-                                   start_new_session=True)
-    write_json(state_file, record(process.pid))
+    with open(f"{state_file}.lock", "a") as lock:   # two ensures at once start one
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if alive(read_json(state_file)):
+            return
+        with open("/tmp/sbx-endpoints.log", "a") as log:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "forward", "run",
+                                        str(config_path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=log, start_new_session=True)
+        write_json(state_file, record(process.pid))
 
 
 def main(argv=None):

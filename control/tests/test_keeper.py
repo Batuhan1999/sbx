@@ -25,6 +25,7 @@ class Keeper(unittest.TestCase):
                     (keeper.sandboxes, "record_transition", None),
                     (keeper.sandboxes, "prepare_waiting", None),
                     (keeper.tls_pin, "redeliver", None),
+                    (keeper.tls_pin, "observed", None),
                     (keeper.routing, "forget_except", None),
                     (keeper.routing, "detect_ports", None),
                     (keeper.sandbox_layers, "tick", None),

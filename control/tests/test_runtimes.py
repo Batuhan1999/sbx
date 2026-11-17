@@ -220,6 +220,9 @@ class Choosing(TwoRuntimes, Installation):
             self.assertEqual(hosted_services.attached_to("owner/app"), ["pg"])
         with patch.object(hosted_services.attachments, "effective", return_value=[{"connections": {"db": "neon"}}]):
             self.assertEqual(hosted_services.attached_to("owner/app"), [])
+        with patch.object(hosted_services.attachments, "effective",
+                          return_value=[{"connections": {"db": "pg"}, "disabled": True}]):
+            self.assertEqual(hosted_services.attached_to("owner/app"), [])
 
     def state(self):
         from sbx_control import state

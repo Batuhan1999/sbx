@@ -231,7 +231,36 @@ class ApiTests(Setup, Server):
         self.assertEqual(response.status_code, 403)
         self.bound["owner/app"] = ["dev_pg"]
         sandboxes.unregister("box")   # deleted
-        self.assertEqual(renew().status_code, 404)
+        self.assertEqual(renew().status_code, 401)
+        self.register("box")   # made again for the same repo: the old credential is not its
+        self.assertEqual(renew().status_code, 401)
+
+    def test_a_revoke_during_a_renewal_leaves_the_revoked_repo_nothing_the_new_ca_signed(self):
+        from cryptography import x509
+        from sbx_control.endpoints import sandbox
+        self.sandbox_found()
+        self.endpoints.add(name="temporal", target="10.0.0.5:7233", repos=["owner/app"], by="test")
+        self.register("box")
+        self.credential("box")
+        chosen, revoking = sandbox.routes, []
+
+        def routes(kind, repo):   # the revoke lands once the renewal has chosen its endpoints
+            found = chosen(kind, repo)
+            if not revoking:
+                revoking.append(threading.Thread(target=self.endpoints.revoke, args=("temporal", "owner/app")))
+                revoking[0].start()
+                revoking[0].join(1)
+            return found
+        with patch.object(sandbox, "routes", side_effect=routes):
+            try:
+                issued = {e["name"]: e["cert"] for e in self.endpoints.issue_for("box")}
+            except PermissionError:
+                issued = {}
+        revoking[0].join()
+        ca = x509.load_pem_x509_certificate(self.model.find("temporal").ca_cert.encode())
+        if "temporal" in issued:
+            with self.assertRaises(Exception):   # from the CA before the revoke: nginx no longer takes it
+                x509.load_pem_x509_certificate(issued["temporal"].encode()).verify_directly_issued_by(ca)
 
     def test_a_name_made_again_for_another_repo_doesn_t_take_the_old_credential(self):
         repos = self.sandbox_found()
@@ -389,6 +418,15 @@ class HostTests(Setup, Installation):
         self.assertNotIn("emerg", found["message"])
 
 
+    def test_an_apply_that_can_t_run_nginx_keeps_the_one_before(self):
+        (self.tls / "nginx/endpoints.stream").write_text("# before\n")
+        self.endpoints.add(server="dev_pg", by="test")
+        with self.fake_nginx(0), patch.object(self.nginx, "NGINX", str(self.tls / "missing")), patch("sys.stderr"):
+            self.assertEqual(self.endpoints.apply_host(), 1)
+        self.assertEqual((self.tls / "nginx/endpoints.stream").read_text(), "# before\n")
+        self.assertEqual(list((self.tls / "nginx").glob("endpoint-*-ca.pem")), [])
+        self.assertEqual(self.endpoints.one("dev-pg")["state"], "failed")
+
 class CertificateTests(Setup, Installation):
     def setUp(self):
         super().setUp()
@@ -500,6 +538,13 @@ class GateTests(Setup, Installation):
             self.assertEqual(self.endpoints.missing("owner/app"), [])
             self.assertEqual(self.runtimes.choose("owner/app"), self.runtime.default())
 
+    def test_a_disabled_attachment_s_connection_needs_no_endpoint(self):
+        from sbx_control.catalog import attachments
+        with patch.object(attachments, "effective", return_value=[
+                {"connections": {"server": "temporal"}, "disabled": True}]):
+            self.assertEqual(self.endpoints.missing("owner/app"), [
+                ("the managed server dev_pg", "sbx endpoints add --server dev_pg")])
+
     def test_internal_ranges_are_kept_on_a_provider_only_installation_with_a_domain(self):
         from sbx_control import reach  # noqa: F401  (its settings checks)
         with provider(self.runtime):
@@ -555,7 +600,8 @@ class RouteTests(Setup, Installation):
         written = {}
         vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout="")),
                              files=SimpleNamespace(write=lambda path, text, **kw: written.update({path: text})))
-        self.endpoints.LAYER.after_write(write, vm)
+        with provider(self.runtime):
+            self.endpoints.LAYER.after_write(write, vm)
         self.assertEqual(self.certs.sandbox_of(f"Bearer box:{config['renew']['credential']}"), "box")
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
         self.assertIn(f"{self.endpoints.sandbox.RENEWED}/.push/temporal.bundle.pem", written)
@@ -890,6 +936,19 @@ class ForwarderTests(Setup, Installation):
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/certs", asked
 
+    def test_a_renewal_answered_before_sbx_pushed_newer_certificates_leaves_them(self):
+        older, pushed = self.endpoints.issue("box", "dev-pg"), self.endpoints.issue("box", "dev-pg")
+        self.renewed.mkdir()
+
+        def answer():   # sbx pushes while the answer is on its way
+            (self.renewed / "dev-pg.bundle.pem").write_text(pushed[1] + pushed[0])
+            (self.renewed / "bundles.json").write_text(json.dumps({"dev-pg": pushed[2]}))
+            return 200, json.dumps({"endpoints": [{"name": "dev-pg", "cert": older[0], "key": older[1],
+                                                   "not_after": older[2]}]}).encode()
+        url, _ = self.callback(answer)
+        self.guest.renew({"renew": {"url": url, "sandbox": "box", "credential": "c"}}, self.folder, self.renewed)
+        self.assertEqual((self.renewed / "dev-pg.bundle.pem").read_text(), pushed[1] + pushed[0])
+
     def test_a_certificate_still_valid_is_used_while_its_renewal_runs_in_the_background(self):
         release = threading.Event()
         fresh = self.endpoints.issue("box", "dev-pg")
@@ -1045,6 +1104,23 @@ class ForwarderLivenessTests(Setup, Installation):
             with patch.object(self.guest, "alive", return_value=True):
                 self.guest.forward("ensure", self.folder / "config.json", state_file=state)
             self.assertEqual(popen.call_count, 1)
+
+    def test_two_ensures_at_once_start_one(self):
+        state = self.folder / "forwarder.json"
+
+        def spawn(*args, **kwargs):
+            time.sleep(0.3)   # the other ensure looks meanwhile
+            return SimpleNamespace(pid=4242)
+        with patch.object(self.guest.subprocess, "Popen", side_effect=spawn) as popen, \
+                patch.object(self.guest, "record", side_effect=lambda pid, proc=None: {"pid": pid, "birth": "7"}), \
+                patch.object(self.guest, "alive", side_effect=bool):
+            both = [threading.Thread(target=self.guest.forward, args=("ensure", self.folder / "config.json", state))
+                    for _ in range(2)]
+            for thread in both:
+                thread.start()
+            for thread in both:
+                thread.join()
+        self.assertEqual(popen.call_count, 1)
 
     def test_the_keeper_keeps_it_running_and_says_a_taken_port_once(self):
         from sbx_control import keeper, state

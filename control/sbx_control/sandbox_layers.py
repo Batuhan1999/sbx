@@ -8,6 +8,7 @@ own state there between the steps, and is called at fixed points:
 - after_write: once the runtime is written (sandbox_runtime.write_runtime);
 - on_resume: when sbx resumes a paused sandbox (core.connect);
 - tick: the keeper's look at one running sandbox; round: once per round;
+- forget: its name unregistered (deleted, or about to be made again);
 - ports: a sandbox's ports it owns, never offered as previews."""
 from __future__ import annotations
 
@@ -52,6 +53,9 @@ class SandboxLayer:
         pass
 
     def round(self, infos: list, running: set):
+        pass
+
+    def forget(self, name: str):
         pass
 
 
@@ -114,3 +118,8 @@ def round(infos: list, running: set):
 
 def reserved_ports() -> set:
     return {port for layer in layers() for port in layer.ports}
+
+
+def forget(name: str):
+    for layer in layers():
+        layer.forget(name)

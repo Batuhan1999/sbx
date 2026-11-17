@@ -125,7 +125,8 @@ def attached_to(repo: str) -> list[str]:
         return []
     if not names:
         return []
-    bound = {key for att in attachments.effective(repo) for key in att["connections"].values()}
+    bound = {key for att in attachments.effective(repo) if not att.get("disabled")
+             for key in att["connections"].values()}
     return sorted(bound & names)
 
 

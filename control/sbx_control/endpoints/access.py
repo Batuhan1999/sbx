@@ -47,6 +47,8 @@ def needs(repo: str, sources=GATED) -> list[dict]:
     values = []
     if "connection" in sources:
         for att in attachments.effective(repo):
+            if att.get("disabled"):   # its connection is bound to nothing a sandbox gets
+                continue
             for key in att["connections"].values():
                 found = None if key in servers else attachments.connection(key)
                 if found:

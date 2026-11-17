@@ -157,9 +157,6 @@ describe('Settings → Shared servers', () => {
     const picker = within(row).getByRole('group', { name: 'Repositories' })
     expect((await within(picker).findByRole('checkbox', { name: 'acme/shop' }) as HTMLInputElement).checked).toBe(true)
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/shop' }))
-    await user.click(within(row).getByRole('button', { name: 'Save' }))
-    expect(within(row).getByText('Choose at least one repository.')).toBeTruthy()
-    expect(calls.some(c => c.method === 'PUT')).toBe(false)
     answer = { status: 400, body: { detail: 'acme/docs is not connected to this installation' } }
     await user.click(within(picker).getByRole('checkbox', { name: 'acme/docs' }))
     await user.click(within(row).getByRole('button', { name: 'Save' }))
@@ -169,6 +166,22 @@ describe('Settings → Shared servers', () => {
     await user.click(within(row).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(within(row).queryByRole('group', { name: 'Repositories' })).toBeNull())
     expect(calls.filter(c => c.method === 'PUT').at(-1)).toMatchObject({ url: '/api/endpoints/billing', body: { repos: ['acme/docs', 'acme/api'] } })
+  })
+
+  it('takes the last repository’s access back with none chosen', async () => {
+    const calls = stubApi({
+      'PUT /api/endpoints/billing': () => ok({ ...BILLING, repos: [] }),
+      'GET /api/endpoints': data({ endpoints: [{ ...BILLING, used_by: ['acme/shop'] }] }),
+      'GET /api/repos': REPOS,
+    })
+    renderApp(<Endpoints />)
+    const user = userEvent.setup()
+    const row = (await screen.findByText('billing.example.com')).closest('li')!
+    await user.click(within(row).getByRole('button', { name: 'Edit repositories for billing' }))
+    const picker = within(row).getByRole('group', { name: 'Repositories' })
+    await user.click(await within(picker).findByRole('checkbox', { name: 'acme/shop' }))
+    await user.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls.find(c => c.method === 'PUT')).toMatchObject({ url: '/api/endpoints/billing', body: { repos: [] } }))
   })
 
   it('shows a refusal in the confirm step', async () => {
