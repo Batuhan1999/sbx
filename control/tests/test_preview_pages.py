@@ -373,5 +373,10 @@ class PausedSinceListing(GateCase):
         op.advance("workspace_ready", finish=True, sandbox_id=self.vm, runtime="paused")
         with patch.object(core, "attach", side_effect=lambda *a, **k: time.sleep(1)), \
                 patch.object(self.waking, "WAKE_WAIT_SECONDS", 0.05):
-            response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+            try:
+                response = self.ask("memos-a.example.test", self.owner, Accept="text/html")
+            finally:   # its resume ends here, not in a later test with the fixtures gone
+                if thread := self.waking._waking.get(self.vm):
+                    thread.join(5)
+                self.waking.forget_preview_resume(self.vm)
         self.assertEqual(response.headers.get("x-sbx-page"), "waking")
