@@ -34,6 +34,12 @@ Commands read them from stdin or a file. Create the folder once:
 mkdir -m 700 -p ~/.sbx-install
 ```
 
+Every secret file is created readable only by its owner (`umask 077`, as
+the commands below do), and never printed: to check a file arrived, count
+its bytes (`wc -c < FILE`). Once sbx has stored a key (step 5), delete its
+file. At the end, only `setup-link` and `admin-password` may remain, and
+the owner keeps or deletes them.
+
 ## 1. Inspect the server
 
 Download the latest release onto the server, check its checksum, and unpack
@@ -150,14 +156,33 @@ Decide:
   the repositories need more than the server holds.
 - **`embed: no`** → use a provider runtime. Tell the owner why Embed can't run
   (the line from `--check`) and what would fix it, then ask:
-  1. E2B Cloud or Boat, and which plan. E2B Hobby allows 1 hour before an
-     idle sandbox pauses, 8 vCPUs, 8 GiB, 10 GiB of disk and 10 sandboxes at
-     once. Pro allows 24 hours, 20 GiB of disk and 100 at once. **Boat's
-     trial can't save snapshots, and sbx's templates are snapshots**, so
-     templates build only once the account has paid. Plan on `20` or above.
-  2. The API key. The owner saves it in the file `~/.sbx-install/e2b-key`
-     or `~/.sbx-install/boat-key` on your machine (for example
-     `pbpaste > ~/.sbx-install/e2b-key`). It never goes into the chat.
+  1. **E2B Cloud or Boat, and which plan.** Show the owner this comparison:
+
+     | | E2B Cloud | Boat |
+     |---|---|---|
+     | New sandbox ready | about 1–2 s | about 5–6 s |
+     | Pause and resume | keeps memory: processes continue | keeps the disk: a resume after ~10 minutes is a cold boot and sbx restarts the app |
+     | Plans | Hobby: 1 h before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 GiB disk, 10 at once. Pro: 24 h, 20 GiB disk, 100 at once | `20`: up to 8 vCPUs, 16 GiB, 100 at once; `100` and up add 16 vCPUs, 32 GiB. The trial can't save snapshots, and sbx's templates are snapshots, so plan on `20` or above |
+     | Price | per second while a sandbox runs | per second while a sandbox runs (e.g. 4 vCPUs, 8 GiB: about $0.04 an hour) |
+
+     Both work with the same recipes; several can be enabled.
+  2. **The API key.** The owner creates it in the provider's dashboard (E2B:
+     [e2b.dev/dashboard](https://e2b.dev/dashboard), API keys; Boat:
+     [boat.dev/dashboard](https://boat.dev/dashboard), API keys, scope
+     `full-sandbox`) and saves it in a file only they and you can read, on
+     your machine. It never goes into the chat or onto a command line.
+     Give the owner the line for their system:
+
+     ```sh
+     # macOS, with the key copied
+     (umask 077; pbpaste > ~/.sbx-install/e2b-key)
+     # any system: type or paste the key, then Enter
+     (umask 077; read -rs k; printf '%s\n' "$k" > ~/.sbx-install/e2b-key)
+     ```
+
+     (`boat-key` for Boat.) Check it arrived without reading it:
+     `wc -c < ~/.sbx-install/e2b-key` (a few dozen bytes). Step 5 hands it to
+     sbx's secret store; delete the file then (`rm ~/.sbx-install/e2b-key`).
   3. A domain (step 3). Provider runtimes need one.
 - **Several runtimes** are fine. The first one enabled is the default for
   new sandboxes. Change it with `sbx runtimes default KIND`, or set it per
