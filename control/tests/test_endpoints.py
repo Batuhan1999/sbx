@@ -500,6 +500,13 @@ class GateTests(Setup, Installation):
             self.assertEqual(self.endpoints.missing("owner/app"), [])
             self.assertEqual(self.runtimes.choose("owner/app"), self.runtime.default())
 
+    def test_a_disabled_attachment_s_connection_needs_no_endpoint(self):
+        from sbx_control.catalog import attachments
+        with patch.object(attachments, "effective", return_value=[
+                {"connections": {"server": "temporal"}, "disabled": True}]):
+            self.assertEqual(self.endpoints.missing("owner/app"), [
+                ("the managed server dev_pg", "sbx endpoints add --server dev_pg")])
+
     def test_internal_ranges_are_kept_on_a_provider_only_installation_with_a_domain(self):
         from sbx_control import reach  # noqa: F401  (its settings checks)
         with provider(self.runtime):
