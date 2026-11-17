@@ -142,7 +142,14 @@ def of(sandbox_id: str) -> Runtime:
         raise Unavailable(f"sandbox {sandbox_id} runs on the {recorded} runtime, which is not enabled here "
                           f"({ENABLED_KEY}: {', '.join(kinds_now)})")
     if len(kinds_now) == 1:
-        return get(kinds_now[0])
+        backend = get(kinds_now[0])
+        if _shared(backend) and sandbox_id not in _index:
+            # Seen in none of this installation's listings or creates: on an
+            # account other installations share, ask once whose it is.
+            if not _mine(backend, backend.info(sandbox_id)):
+                raise NotRunning(f"sandbox {sandbox_id} is another installation's")
+            _index[sandbox_id] = backend.kind
+        return backend
     kind = _index.get(sandbox_id)
     if kind in kinds_now:
         return get(kind)
@@ -256,7 +263,18 @@ def _legacy(kind: str) -> set:
 
 
 def _listed(backend, metadata, states) -> list:
-    """The runtime's sandboxes that are this installation's (see above)."""
+    """The runtime's sandboxes that are this installation's (see above). A
+    full listing (no filter) is handed to the backend's optional
+    listed(sandbox_ids) hook: what it keeps per sandbox (a token) for one no
+    longer there goes, whoever ended it."""
+    found = _own(backend, metadata, states)
+    hook = getattr(backend, "listed", None)
+    if metadata is None and states is None and callable(hook):
+        hook({i.sandbox_id for i in found})
+    return found
+
+
+def _own(backend, metadata, states) -> list:
     if not _shared(backend):
         return backend.sandboxes(metadata, states)
     mine = backend.sandboxes({**(metadata or {}), INSTALL_KEY: installation_id()}, states)

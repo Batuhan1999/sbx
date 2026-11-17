@@ -528,6 +528,42 @@ class Cloud(unittest.TestCase):
             waiting.join(5)
         self.assertEqual(self.cloud.upstream_token("slow", fetch=False), "t-slow")
 
+    def test_a_failed_token_fetch_is_remembered_briefly(self):
+        from e2b import Sandbox
+        from e2b.exceptions import SandboxException
+        from sbx_control import runtime
+        from sbx_control.runtime import e2b_cloud
+        with patch.object(Sandbox, "connect", side_effect=SandboxException("502: bad gateway")) as connect:
+            for _ in range(3):   # an outage: one call to E2B, the same answer after
+                with self.assertRaisesRegex(runtime.Failed, "did not hand over"):
+                    self.cloud.upstream_token("vm9")
+        self.assertEqual(connect.call_count, 1)
+        later = e2b_cloud.time.monotonic() + e2b_cloud.FETCH_RETRY_SECONDS + 1
+        good = SimpleNamespace(sandbox_id="vm9", commands=None, files=None, traffic_access_token="test-token-9")
+        with patch.object(e2b_cloud.time, "monotonic", return_value=later), \
+                patch.object(Sandbox, "connect", return_value=good):
+            self.assertEqual(self.cloud.upstream_token("vm9"), "test-token-9")   # asked again once it passed
+
+    def test_what_it_keeps_of_sandboxes_that_went_is_pruned_on_a_full_listing(self):
+        from e2b import Sandbox
+        from sbx_control import runtime
+        for sandbox_id in ("kept", "went"):
+            made = SimpleNamespace(sandbox_id=sandbox_id, commands=None, files=None, traffic_access_token=f"t-{sandbox_id}")
+            with patch.object(Sandbox, "create", return_value=made):
+                self.cloud.create("tpl", timeout=600)
+        self.cloud._failed["went-too"] = (0, runtime.Failed("x"))
+        listed = [runtime.Info("kept", {"sbx_install": "0123456789abcdef"}, "running")]
+        with patch.dict(runtime._backends, {"e2b-cloud": self.cloud}), \
+                patch.object(runtime, "enabled", return_value=["e2b-cloud"]), \
+                patch.object(runtime, "installation_id", return_value="0123456789abcdef"), \
+                patch.object(runtime, "_legacy", return_value=set()), \
+                patch.object(self.cloud, "sandboxes", return_value=listed):
+            runtime.sandboxes({"sbx": "kept"})            # filtered: nothing is pruned on it
+            self.assertIn("went", self.cloud._tokens)
+            runtime.sandboxes()
+        self.assertEqual(set(self.cloud._tokens), {"kept"})
+        self.assertEqual(self.cloud._failed, {})
+
     def test_its_check_lists_the_templates_and_says_what_failed(self):
         with patch.object(self.cloud, "templates", return_value=[("sbx-base", "ready")]):
             self.assertTrue(all(c.ok for c in self.cloud.test()))

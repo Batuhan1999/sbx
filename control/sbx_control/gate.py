@@ -93,6 +93,13 @@ def route(port: int, sandbox_id: str, *, preflight: bool = False) -> dict:
         token = runtime.upstream_token(sandbox_id, kind, fetch=not preflight)
     except runtime.NotRunning:
         raise HTTPException(404) from None
+    except runtime.Failed as error:
+        # The runtime did not hand over the sandbox's token (it did not answer,
+        # or answered without one): refused like anything not routable now,
+        # never a 500. Its backend keeps the failure briefly, so an outage is
+        # not a call to the provider for every request.
+        print(f"gate: no upstream token for {sandbox_id}: {error}", flush=True)
+        raise HTTPException(404) from None
     if token:
         if not token[1]:
             raise HTTPException(404)

@@ -16,6 +16,7 @@ would), and the gate hands it to nginx for this runtime's requests."""
 from __future__ import annotations
 
 import threading
+import time
 
 from ..base import Capabilities, Failed, HostSide, Limits
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute
@@ -30,6 +31,7 @@ TOKEN_HEADER = "e2b-traffic-access-token"
 LIMITS = {"timeout_seconds": ("E2B_CLOUD_MAX_TIMEOUT", 3600), "cpu": ("E2B_CLOUD_MAX_CPU", 8),
           "memory_mb": ("E2B_CLOUD_MAX_MEMORY_MB", 8192), "disk_mb": ("E2B_CLOUD_MAX_DISK_MB", 10240),
           "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 20)}
+FETCH_RETRY_SECONDS = 15   # a failed token fetch answers from memory this long (an outage)
 INGRESS_NAME = "sbx-ingress"   # any name under the sandboxes' wildcard: the apex resolves elsewhere
 
 
@@ -67,6 +69,7 @@ class Cloud(Compute, HostSide):
         self._tokens: dict[str, str] = {}
         self._locks: dict[str, threading.Lock] = {}   # one token fetch per sandbox at a time
         self._locks_lock = threading.Lock()
+        self._failed: dict = {}   # sandbox id -> (when, the error) of a token fetch that failed
 
     # Its connection and where previews go
 
@@ -118,6 +121,7 @@ class Cloud(Compute, HostSide):
 
     def _forget(self, sandbox_id):
         self._tokens.pop(sandbox_id, None)
+        self._failed.pop(sandbox_id, None)
         with self._locks_lock:
             self._locks.pop(sandbox_id, None)
 
@@ -144,16 +148,36 @@ class Cloud(Compute, HostSide):
         Failed when connect returns none either."""
         if sandbox_id in self._tokens or not fetch:
             return self._tokens.get(sandbox_id, "")
+        failed = self._failed.get(sandbox_id)
+        if failed and time.monotonic() - failed[0] < FETCH_RETRY_SECONDS:
+            raise failed[1]   # asked moments ago: not E2B again for every request of an outage
         with self._locks_lock:
             lock = self._locks.setdefault(sandbox_id, threading.Lock())
         with lock:
             if sandbox_id not in self._tokens:
-                self.connect(sandbox_id)
-        token = self._tokens.get(sandbox_id, "")
-        if not token:
-            raise Failed(f"E2B Cloud returned no traffic access token for sandbox {sandbox_id}; its previews are "
-                         "not served without one")
-        return token
+                try:
+                    self.connect(sandbox_id)
+                    if not self._tokens.get(sandbox_id):
+                        raise Failed(f"E2B Cloud returned no traffic access token for sandbox {sandbox_id}; its "
+                                     "previews are not served without one")
+                except Exception as error:
+                    raised = error if isinstance(error, Failed) else \
+                        Failed(f"E2B Cloud did not hand over sandbox {sandbox_id}'s token: {type(error).__name__}: "
+                               f"{error}")
+                    self._failed[sandbox_id] = (time.monotonic(), raised)
+                    raise raised from error
+        self._failed.pop(sandbox_id, None)
+        return self._tokens[sandbox_id]
+
+    def listed(self, sandbox_ids: set) -> None:
+        """After a full listing (the registry's hook): forget what it kept of
+        sandboxes no longer there, whoever ended them."""
+        for kept in (self._tokens, self._failed):
+            for sandbox_id in [s for s in list(kept) if s not in sandbox_ids]:
+                kept.pop(sandbox_id, None)
+        with self._locks_lock:
+            for sandbox_id in [s for s in self._locks if s not in sandbox_ids and not self._locks[s].locked()]:
+                del self._locks[sandbox_id]
 
     def kill(self, sandbox_id):
         self._forget(sandbox_id)

@@ -551,6 +551,25 @@ class Review(TwoRuntimes, Installation):
         finally:
             file.write_text(before)
 
+    def test_resealing_keeps_the_object_of_now_and_the_one_before_only(self):
+        from sbx_control import vault
+        file = self.root / "etc/runtime.env"
+        before = file.read_text()
+        made, discarded = iter(range(1, 10)), []
+        try:
+            with patch.object(vault.secret_store, "seal", side_effect=lambda value, key: f"sealed-{next(made)}"), \
+                    patch.object(vault.secret_store, "is_reference", side_effect=lambda v: v.startswith("sealed-")), \
+                    patch.object(vault.secret_store, "unseal", side_effect=lambda v: v), \
+                    patch.object(vault.secret_store, "discard", side_effect=discarded.append):
+                for value in ("one", "two", "three", "four"):   # an upgrade writes a plain value each time
+                    file.write_text(f"SBX_RUNTIMES=embed,fake\nE2B_API_KEY={value}\nE2B_API_URL=u\n"
+                                    "FAKE_RUNTIME_TOKEN=sealed-0\n")
+                    vault.seal_runtime_file()
+        finally:
+            file.write_text(before)
+        # The one runtime.env names (sealed-4) and the one the last upgrade's backup names (sealed-3) stay.
+        self.assertEqual(discarded, ["sealed-1", "sealed-2"])
+
     def test_amp_caches_from_before_are_the_default_runtime_s_once(self):
         from sbx_control import state
         from sbx_control.connectors.amp import Amp

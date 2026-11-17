@@ -172,9 +172,25 @@ def seal_runtime_file() -> int:
         return 0
     # Each value under a key of its own: an upgrade's backup of runtime.env
     # (rollback.sh) keeps naming the object the value before is in.
-    edit_runtime_file({s: secret_store.seal(found[s], key=f"runtime/{s}/{secrets_module.token_hex(6)}")
-                       for s in secrets})
+    sealed = {s: secret_store.seal(found[s], key=f"runtime/{s}/{secrets_module.token_hex(6)}") for s in secrets}
+    edit_runtime_file(sealed)
+    for s, reference in sealed.items():
+        _keep_two(s, reference)
     return 1
+
+
+def _keep_two(name: str, reference: str) -> None:
+    """The objects this sealing made for a runtime secret: kept are the one
+    runtime.env names now and the one before it (what the last upgrade's
+    backup of runtime.env names, for rollback.sh); older ones are discarded."""
+    history = state.Setting(f"runtime_sealed:{name}", encoded=True)
+    found = [*history.get([]), reference]
+    for old in found[:-2]:
+        try:
+            secret_store.discard(old)
+        except Exception as error:   # gone already, or the store did not answer: tried no more
+            print(f"runtime secret {name}: an old sealed value was not discarded: {error}", flush=True)
+    history.set(found[-2:])
 
 
 def sealing() -> bool:

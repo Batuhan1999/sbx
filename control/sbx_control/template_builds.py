@@ -57,6 +57,13 @@ class NoRoom(Exception):
     """The host lacks the memory or disk a build needs now; nothing started."""
 
 
+class BaseNotReady(NoRoom):
+    """What the build starts from, the base template, is building (it waits:
+    the scheduler starts it once the base is built, holding no build slot
+    meanwhile) or its build failed on the plan of now (until the base is
+    built again or its plan changes); nothing started."""
+
+
 class Busy(RuntimeError):
     """The template is building; what was asked waits for the build to end."""
 
@@ -315,9 +322,6 @@ def template_for(repo: str | None, kind: str | None = None) -> str:
     raise NotBuilt(_building(key, row, kind))
 
 
-BASE_WAIT_SECONDS = 3600   # how long a build waits for the base another build is making
-
-
 def _parent_current(kind: str | None = None) -> dict | None:
     """The base template's row when what builds on it can start from it: built
     as planned now, under the name planned now on this runtime (a name from
@@ -332,17 +336,22 @@ def _parent_current(kind: str | None = None) -> dict | None:
     return None
 
 
-def _wait_for_base(kind: str | None = None) -> dict | None:
-    """While another build (here or in another process) makes the base: its
-    row once it is current; None when nobody is building it (or it failed)."""
-    deadline = time.monotonic() + BASE_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with db() as conn:
-            row = _read(conn, templates.BASE, kind)
-        if not ((_kind(kind), templates.BASE) in _running or (row and status(templates.BASE, row, kind) == "building")):
-            return _parent_current(kind)
-        time.sleep(5)
-    raise RuntimeError(f"the {templates.BASE} template has been building{_on(kind)} for over an hour")
+def base_not_ready(key: str, kind: str | None = None) -> str:
+    """Why key's build can't start now because of the base it starts from:
+    the base is building (key waits, holding no build slot), or its build
+    failed on the plan of now (a final failure, _stuck: not built again from
+    every template that starts from it); "" when the base is no reason."""
+    if key == templates.BASE or _parent_current(kind) is not None:
+        return ""
+    with db() as conn:
+        row = _read(conn, templates.BASE, kind)
+    if (_kind(kind), templates.BASE) in _running or (row and status(templates.BASE, row, kind) == "building"):
+        return (f"the {templates.BASE} template it starts from is building{_on(kind)}; {key} builds once it is "
+                "built (the scheduler starts it; try again in a few minutes)")
+    if _stuck(templates.BASE, row, kind):
+        return (f"the {templates.BASE} template failed{_on(kind)}: {(row['error'] or '').strip()[-300:]}; fix it "
+                f"and build it again (sbx-admin template build {templates.BASE}), then {key} builds")
+    return ""
 
 
 def _stuck(key: str, row: dict | None, kind: str | None = None) -> bool:
@@ -458,14 +467,15 @@ def start(key: str, kind: str | None = None) -> bool:
     return True
 
 
-def start_detached(kind: str, keys=None) -> str:
+def start_detached(kind: str, keys=None) -> tuple[str, bool]:
     """Build keys (default: the base, then the default template) on the
     runtime of kind in a process of their own, as `python -m
     sbx_control.template_builds KEY --runtime KIND --if-stale` one after
     the other, so a short-lived command (sbx-admin runtime add) can start
-    them and return: a transient systemd unit where there is systemd, else
-    a detached process. Returns the unit's or process's name; its output
-    goes to the journal or to the state directory's log."""
+    them and return: a transient systemd unit (one per runtime: while it
+    runs, another is not started), or a detached process on a host without
+    systemd. Returns (where to follow them, whether this call started them);
+    RuntimeError when systemd refused the unit."""
     import shlex
     import subprocess
     from . import paths
@@ -474,22 +484,29 @@ def start_detached(kind: str, keys=None) -> str:
                         f"--runtime {shlex.quote(kind)} --if-stale" for key in keys)
     cwd = os.getcwd()
     unit = f"sbx-template-builds-{templates.slug(kind)}"
+    where = f"{unit}.service (journalctl -u {unit})"
     try:
+        active = subprocess.run(["systemctl", "is-active", "--quiet", f"{unit}.service"], capture_output=True,
+                                timeout=10)
+        if active.returncode == 0:
+            return where, False
         made = subprocess.run(["systemd-run", "--no-block", "--collect", f"--unit={unit}",
                                f"--working-directory={cwd}", "sh", "-c", steps],
                               capture_output=True, text=True, timeout=30)
-        if made.returncode == 0:
-            return f"{unit}.service (journalctl -u {unit})"
-    except (OSError, subprocess.SubprocessError):
-        pass
-    log = paths.state_dir() / f"{unit}.log"
-    with open(log, "ab") as out:
-        subprocess.Popen(["sh", "-c", steps], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                         stdin=subprocess.DEVNULL, start_new_session=True)
-    return str(log)
+    except FileNotFoundError:   # no systemd here at all
+        log = paths.state_dir() / f"{unit}.log"
+        with open(log, "ab") as out:
+            subprocess.Popen(["sh", "-c", steps], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+        return str(log), True
+    if made.returncode != 0:
+        raise RuntimeError(f"systemd-run did not start {unit}: {(made.stderr or made.stdout).strip()[-300:]}")
+    return where, True
 
 
 def _begin(key: str, kind: str | None = None):
+    if why := base_not_ready(key, kind):
+        raise BaseNotReady(why)
     if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
         check_room(key, kind)
     with _lock:
@@ -513,8 +530,8 @@ def _build(key: str, kind: str | None = None):
             if key != templates.BASE:
                 # What it starts from first: the base as planned now, under
                 # the name planned now (not one from before installations
-                # were told apart), waited for while another build makes it.
-                if _parent_current(kind) is None and _wait_for_base(kind) is None:
+                # were told apart). Building or failed: _begin refused already.
+                if _parent_current(kind) is None:
                     build_now(templates.BASE, kind)
                 base_name = built(templates.BASE, kind)
             git_dir = None

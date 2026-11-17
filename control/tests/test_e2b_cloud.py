@@ -74,6 +74,17 @@ class TrafficToken(TwoRuntimes, Server):
             gate.route(3000, self.at_provider)
         self.assertEqual(raised.exception.status_code, 404)
 
+    def test_a_runtime_that_hands_over_no_token_is_refused_not_a_500(self):
+        with patch.object(self.fake, "upstream_token", side_effect=self.runtime.Failed("E2B did not answer")):
+            response = self.client.get("/gate", headers={"X-Original-Host": f"3000-{self.at_provider}.example.test",
+                                                         "X-Original-Method": "GET",
+                                                         "Authorization": f"Bearer {self.token_for_admin()}"})
+        self.assertEqual((response.status_code, response.headers.get("x-sbx-gone")), (403, "1"))   # nginx: 404
+
+    def token_for_admin(self):
+        from sbx_control import auth
+        return auth.mint_token("operator@example.com", "test")
+
     def test_a_cors_preflight_gets_the_token_too(self):
         self.fake.kept.add(self.at_provider)          # a browser's real request fetched and kept it
         response = self.ask(self.at_provider)
@@ -132,7 +143,7 @@ class RuntimeAdmin(Installation):
         from sbx_control import template_builds
         self.real_start_detached = template_builds.start_detached   # never run for real: it starts builds
         self.builds = self.enterContext(patch.object(template_builds, "start_detached",
-                                                     return_value="sbx-template-builds-e2b-cloud.service"))
+                                                     return_value=("sbx-template-builds-e2b-cloud.service", True)))
         self.effects()
 
     def test_add_starts_the_new_runtime_s_base_and_default_templates_now(self):
@@ -149,20 +160,43 @@ class RuntimeAdmin(Installation):
         import subprocess
         from sbx_control import template_builds
         self.assertIsNot(self.real_start_detached, template_builds.start_detached)   # setUp's stand-in
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
+        done = lambda code: subprocess.CompletedProcess([], code, "", "")   # noqa: E731
+        # Not running yet (is-active: 3): systemd-run starts the unit.
+        with patch.object(subprocess, "run", side_effect=[done(3), done(0)]) as run, \
                 patch.object(subprocess, "Popen") as popen:
-            where = self.real_start_detached("e2b-cloud")
+            where, started = self.real_start_detached("e2b-cloud")
+        self.assertTrue(started)
+        self.assertEqual(run.call_args_list[0].args[0][:3], ["systemctl", "is-active", "--quiet"])
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["systemd-run", "--no-block", "--collect", "--unit=sbx-template-builds-e2b-cloud"])
         self.assertIn("-m sbx_control.template_builds base --runtime e2b-cloud --if-stale && ", command[-1])
         self.assertIn("-m sbx_control.template_builds default --runtime e2b-cloud --if-stale", command[-1])
         self.assertIn("sbx-template-builds-e2b-cloud", where)
         popen.assert_not_called()
-        with patch.object(subprocess, "run", side_effect=FileNotFoundError("systemd-run")), \
+        # Running already (a second runtime add): no second chain, in parallel or otherwise.
+        with patch.object(subprocess, "run", side_effect=[done(0)]) as run, patch.object(subprocess, "Popen") as popen:
+            where, started = self.real_start_detached("e2b-cloud")
+        self.assertFalse(started)
+        self.assertEqual(run.call_count, 1)
+        popen.assert_not_called()
+        # systemd refused the unit: an error, not a detached chain beside it.
+        with patch.object(subprocess, "run", side_effect=[done(3), done(1)]), patch.object(subprocess, "Popen") as popen, \
+                self.assertRaises(RuntimeError):
+            self.real_start_detached("e2b-cloud")
+        popen.assert_not_called()
+        # No systemd at all: a detached process.
+        with patch.object(subprocess, "run", side_effect=FileNotFoundError("systemctl")), \
                 patch.object(subprocess, "Popen") as popen:
-            where = self.real_start_detached("e2b-cloud")
+            where, started = self.real_start_detached("e2b-cloud")
+        self.assertTrue(started)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])    # outlives the command
         self.assertTrue(where.endswith("sbx-template-builds-e2b-cloud.log"))
+
+    def test_add_while_the_builds_run_says_so(self):
+        self.builds.return_value = ("sbx-template-builds-e2b-cloud.service", False)
+        code, said = self.admin("add", "e2b-cloud", stdin="test-only-cloud-key")
+        self.assertEqual(code, 0, said)
+        self.assertIn("builds on E2B Cloud are already running", said)
 
     def admin(self, *argv, stdin=""):
         from sbx_control import admin
@@ -370,15 +404,56 @@ class InstallerEnv(Installation):
 
 
 class CredentialHelper(Installation):
-    def test_a_self_signed_certificate_is_pinned_like_a_template_build(self):
-        from sbx_control import github_app, templates
-        pin = "--insecure --pinnedpubkey sha256//abc="
-        with patch.object(templates, "pinned_key", return_value=pin):
-            script = github_app.credential_helper("box", "secret-credential")
-        self.assertIn(f"curl -fsS -m 20 {pin} -H", script)
+    def test_the_helper_reads_the_pin_when_it_runs(self):
+        import os
+        import stat
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from sbx_control import github_app
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        pin_file, bin_dir = folder / "tls-pin", folder / "bin"
+        bin_dir.mkdir()
+        curl = bin_dir / "curl"   # a stand-in that says what it was asked
+        curl.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
+        helper = folder / "credential"
+        helper.write_text(github_app.credential_helper("box", "secret-credential", str(pin_file)))
+        helper.chmod(0o700)
+        run = lambda: subprocess.run([str(helper), "get"], input="protocol=https\nhost=github.com\n\n",   # noqa: E731
+                                     capture_output=True, text=True, check=True,
+                                     env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}).stdout.split("\n")
+        self.assertNotIn("--pinnedpubkey", run())                         # no pin file: a public CA's
+        pin_file.write_text("--insecure --pinnedpubkey sha256//first=")
+        self.assertIn("sha256//first=", run())
+        pin_file.write_text("--insecure --pinnedpubkey sha256//second=")  # the certificate changed
+        self.assertIn("sha256//second=", run())                          # the same helper follows it
+
+    def test_the_runtime_layer_carries_the_pin_of_now(self):
+        from sbx_control import extensions, github_app, templates
+        from sbx_control.connections import github
+        with patch.object(github, "connected", return_value=True), \
+                patch.object(github_app, "access", return_value="app"), \
+                patch.object(templates, "pinned_key", return_value="--insecure --pinnedpubkey sha256//now="):
+            layer = github.GitHub().contribution(extensions.Target(repo="owner/app", name="box", trusted=True)).runtime
+        self.assertEqual(layer.files["tls-pin"].content, "--insecure --pinnedpubkey sha256//now=")
+        self.assertIn(f"cat {github.PIN}", layer.files["credential"].content)
+
+    def test_a_certificate_change_redelivers_every_sandbox_s_runtime_layer(self):
+        from sbx_control import delivery, sandboxes, templates
         with patch.object(templates, "pinned_key", return_value=""):
-            script = github_app.credential_helper("box", "secret-credential")
-        self.assertIn('curl -fsS -m 20 -H "Authorization: Bearer box:secret-credential"', script)
+            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # a public CA's: nothing
+        self.assertEqual(delivery.waiting(), set())
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//one="):
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a", "b", None]))
+            self.assertEqual(delivery.waiting(), {"a", "b"})
+            self.assertEqual(delivery.pending("a")[:2], ([], False))         # no values, no app restart
+            for name in ("a", "b"):
+                delivery.forget(name)
+            self.assertFalse(sandboxes.redeliver_on_certificate_change(["a", "b"]))   # unchanged: once
+        with patch.object(templates, "pinned_key", return_value="--pinnedpubkey sha256//two="):
+            self.assertTrue(sandboxes.redeliver_on_certificate_change(["a"]))
+        self.assertEqual(delivery.waiting(), {"a"})
 
 
 class VerifyBeforeTheBaseIsBuilt(TwoRuntimes, Installation):

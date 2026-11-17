@@ -266,10 +266,14 @@ def start_template_builds(kind: str) -> None:
     from . import runtime, template_builds, templates
     title = runtime.title(kind)
     try:
-        where = template_builds.start_detached(kind)
+        where, started = template_builds.start_detached(kind)
     except Exception as error:
         print(f"could not start the template builds on {title} ({error}); the scheduler starts them within "
               f"minutes, or: sbx-admin jobs run template@{kind}:{templates.BASE}", file=sys.stderr)
+        return
+    if not started:
+        print(f"the {templates.BASE} and {templates.DEFAULT} builds on {title} are already running ({where}); "
+              f"`sbx-admin runtime verify {kind}` works once they're built")
         return
     print(f"building {templates.BASE} and {templates.DEFAULT} on {title} now (about 10 minutes the first time; "
           f"{where}); `sbx-admin runtime verify {kind}` works once they're built")

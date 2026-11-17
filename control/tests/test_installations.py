@@ -65,6 +65,20 @@ class TwoInstallations(SharedAccount):
         self.assertIn(theirs, self.shared.boxes)        # the other's stays
         self.assertIsNone(core.find("memos-a"))
 
+    def test_calls_by_id_refuse_another_installation_s_sandbox(self):
+        mine = self.runtime.create("tpl", timeout=600, metadata={"sbx": "a"}).sandbox_id
+        self.as_installation(OTHER)          # its own index: it never listed or made mine
+        for call in (lambda: self.runtime.pause(mine), lambda: self.runtime.set_timeout(mine, 600),
+                     lambda: self.runtime.connect(mine), lambda: self.runtime.snapshot(mine, "s")):
+            with self.assertRaises(self.runtime.NotRunning):
+                call()
+        self.assertFalse(self.runtime.kill(mine))
+        self.assertIn(mine, self.shared.boxes)
+        self.assertEqual(self.shared.boxes[mine].state, "running")
+        self.as_installation(ONE)            # its own sandbox: as before, even unlisted
+        self.runtime.pause(mine)
+        self.assertEqual(self.shared.boxes[mine].state, "paused")
+
     def test_templates_are_named_and_pruned_per_installation(self):
         from sbx_control import template_builds, templates
         template_builds.build_now(templates.BASE, "fake")
@@ -243,6 +257,44 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         self.assertIn("its last build failed (apt failed)", str(refused.exception))
         start.assert_not_called()
         self.assertNotIn(templates.DEFAULT, builds.stale("fake"))
+
+    def test_a_base_that_failed_is_not_rebuilt_from_every_child(self):
+        from sbx_control.state import db
+        builds, templates, _ = self.built()
+        # The base's last build failed on the plan of now: final until built again explicitly.
+        builds._transition(templates.BASE, "building", "fake", started_at=builds._utc(), pid=None,
+                           fingerprint=builds.plan(templates.BASE).fingerprint, error="apt failed")
+        with db() as conn:   # the default never built since: a create needs it
+            conn.execute("update template_builds set built_template = null, built_fingerprint = null "
+                         "where runtime = 'fake' and repo = ?", (templates.DEFAULT,))
+        with patch.object(builds, "build_now", wraps=builds.build_now) as build_now, \
+                self.assertRaisesRegex(builds.BaseNotReady, "the sbx-base template failed.*apt failed.*fix it"):
+            builds.start(templates.DEFAULT, "fake")
+        build_now.assert_not_called()                              # the base is not built again from here
+        self.assertNotEqual(builds.state(templates.DEFAULT, "fake")["status"], "building")
+        with self.assertRaises(builds.NotBuilt) as refused:
+            builds.template_for(None, "fake")
+        self.assertIn("the sbx-base template failed", str(refused.exception))
+        self.assertIn("apt failed", str(refused.exception))
+        builds.build_now(templates.BASE, "fake")                   # built again explicitly
+        builds.build_now(templates.DEFAULT, "fake")
+        self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
+
+    def test_a_child_waits_for_a_base_building_elsewhere_without_holding_a_slot(self):
+        import os
+        import time
+        from sbx_control.state import db
+        builds, templates, _ = self.built()
+        with db() as conn:   # the base being built again, by another live process
+            conn.execute("update template_builds set built_template = null where runtime = 'fake' and repo = ?",
+                         (templates.BASE,))
+        builds._transition(templates.BASE, "building", "fake", started_at=builds._utc(), pid=os.getppid())
+        began = time.monotonic()
+        with self.assertRaisesRegex(builds.BaseNotReady, "builds once it is built"):
+            builds.start(templates.DEFAULT, "fake")
+        self.assertLess(time.monotonic() - began, 2)                # no hour-long wait
+        self.assertNotIn(("fake", templates.DEFAULT), builds._running)   # no slot held
+        self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
 
     def test_the_e2b_adapter_names_a_missing_template(self):
         from e2b import Sandbox

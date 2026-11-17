@@ -345,17 +345,19 @@ def sandbox_credential(name: str, session_key: str) -> str:
     return hmac.new(session_key.encode(), f"sandbox:{name}".encode(), hashlib.sha256).hexdigest()
 
 
-def credential_helper(name: str, credential: str) -> str:
+def credential_helper(name: str, credential: str, pin_file: str) -> str:
     """git's credential helper protocol: answer `get` for github.com. A
     self-signed certificate (--dns none) is pinned by its key, as the
-    template builds' downloads pin it (templates.pinned_key)."""
-    from .templates import pinned_key
+    template builds' downloads pin it (templates.pinned_key): read when it
+    runs from pin_file, which the runtime layer carries and sbx writes again
+    when the certificate changes (sandboxes.redeliver_on_certificate_change)."""
     url = f"{sbx_settings.current().base_url}/api/sandbox/git-credential"
-    pin = pinned_key()
     return f"""#!/bin/sh
 # git credential helper: a fresh token for this sandbox's repo from sbx-control.
 [ "$1" = get ] || exit 0
 host=$(sed -n 's/^host=//p')
 [ "$host" = github.com ] || exit 0
-curl -fsS -m 20 {pin + ' ' if pin else ''}-H "Authorization: Bearer {name}:{credential}" "{url}"
+# curl's options that pin this server's self-signed certificate; empty for a public CA's.
+pin=$(cat {pin_file} 2>/dev/null || true)
+curl -fsS -m 20 $pin -H "Authorization: Bearer {name}:{credential}" "{url}"
 """

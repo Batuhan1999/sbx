@@ -364,6 +364,28 @@ def deliver_pending(sandbox: str):
         guard.release()
 
 
+DELIVERED_PIN = state.Setting("tls_pin_delivered")
+
+
+def redeliver_on_certificate_change(names) -> bool:
+    """When this server's self-signed certificate's key changed (or the
+    sandboxes do not have it yet): their runtime layers again, so what calls
+    sbx from inside them (the git credential helper) pins the key of now.
+    names: the sandboxes listed. Running ones get it at this round's
+    deliveries, paused ones when they resume. Whether it queued them."""
+    from . import templates
+    pin, delivered = templates.pinned_key(), DELIVERED_PIN.get()
+    if pin == delivered or (delivered is None and not pin):
+        if delivered is None:
+            DELIVERED_PIN.set(pin)
+        return False
+    for name in names:
+        if name:
+            delivery.queue(name, [], restart=False)
+    DELIVERED_PIN.set(pin)
+    return True
+
+
 def deliver_waiting(running: set):
     """The keeper's round: the repo changes kept while the runtime did not
     answer, then what waits for each running sandbox."""
