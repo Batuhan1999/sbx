@@ -151,7 +151,7 @@ class ApiTests(Setup, Server):
                 ({"name": "x", "target": "db.internal:5432"}, 400, "must be an IP address"),
                 ({"name": "x", "target": "10.0.0.5"}, 400, "is not HOST:PORT"),
                 ({"name": "Bad_Name", "target": "10.0.0.5:80"}, 400, "not a host name label"),
-                ({"name": "login", "target": "10.0.0.5:80"}, 409, "taken by this installation"),
+                ({"name": "app", "target": "10.0.0.5:80"}, 409, "taken by this installation"),
                 ({"server": "nope"}, 400, "no managed server nope"),
                 ({}, 400, "give a managed server")):
             with self.subTest(body=body):
@@ -652,7 +652,7 @@ class RouteTests(Setup, Installation):
         self.assertEqual([(e["name"], e["address"], e["port"], e["local_port"]) for e in config["endpoints"]], [
             ("dev-pg", f"dev-pg.{DOMAIN}", 443, 17400),
             ("temporal", f"temporal.{DOMAIN}", 443, 17401)])
-        self.assertEqual(config["renew"]["url"], f"https://login.{DOMAIN}/api/sandbox/endpoint-certs")
+        self.assertEqual(config["renew"]["url"], f"https://app.{DOMAIN}/api/sandbox/endpoint-certs")
         self.assertEqual(sorted(files), ["config.json"])   # no certificate in the config: they come after the write
         # Nothing is recorded until the runtime is written: the credential is bound after.
         self.assertIsNone(self.certs.sandbox_of(f"Bearer box:{config['renew']['credential']}"))

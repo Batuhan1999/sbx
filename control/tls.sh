@@ -282,7 +282,7 @@ for former in $former_logins; do
   cat >> "$dir/nginx/default.conf" <<NGINX
 
 server {
-  listen 443 ssl;
+  listen $https_listen;
   http2 on;
   server_name $former;
   return 308 https://$login\$request_uri;

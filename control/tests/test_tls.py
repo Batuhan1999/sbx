@@ -192,7 +192,7 @@ path.write_text(path.read_text().replace(before, after))
         self.assertNotIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", config)
         self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", bootstrap)
         self.assertNotIn("listen 443", config + bootstrap)
-        self.assertEqual(config.count("listen 127.0.0.1:8442 ssl proxy_protocol"), 2)
+        self.assertEqual(config.count("listen 127.0.0.1:8442 ssl proxy_protocol"), 3)   # sign-in, its former name, sandboxes
         front = (self.root / "tls/nginx/endpoints.stream").read_text()
         self.assertIn("listen 443;\n  ssl_preread on;", front)
         self.assertIn("default 127.0.0.1:8442;", front)
