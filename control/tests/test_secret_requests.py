@@ -75,7 +75,7 @@ class Keys(TwoRuntimes, Server):
         found = self.ask(("runtime:e2b-cloud", "E2B key"), ("dns:cloudflare", ""),
                          ("repo:Owner/App:E2B_API_KEY=from:runtime:e2b-cloud", "Same key for the app"))
         self.assertEqual(found["state"], "pending")
-        self.assertRegex(found["url"], r"^https://login\.sbx\.example\.com/keys/[A-Za-z0-9_-]+$")
+        self.assertRegex(found["url"], r"^https://app\.sbx\.example\.com/keys/[A-Za-z0-9_-]+$")
         self.assertEqual([i["target"] for i in found["items"]],
                          ["runtime:e2b-cloud:E2B_CLOUD_API_KEY", "dns:cloudflare",
                           "repo:owner/app:E2B_API_KEY=from:runtime:e2b-cloud:E2B_CLOUD_API_KEY"])

@@ -963,7 +963,7 @@ def key_request(state="pending", done=(), **over):
              {"target": "repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY", "label": "Boat key for the app",
               "reuse": "runtime:boat:BOAT_API_KEY"}]
     items = [{**i, "done": n in done, "help_url": "", "what": "", "hint": ""} for n, i in enumerate(items)]
-    return {"id": "req12345", "url": "https://login.sbx.example/keys/req12345", "state": state,
+    return {"id": "req12345", "url": "https://app.sbx.example.com/keys/req12345", "state": state,
             "expires_at": "2099-01-01T00:00:00Z", "created_by": "ada@example.com", "items": items,
             "remaining": sum(1 for i in items if not i["done"]), **over}
 
@@ -985,7 +985,7 @@ class SecretsCliTests(CliTests):
         code, out, err = self.run_cli("secrets", "request", "runtime:boat", "Boat API key", "dns:cloudflare",
                                       "Cloudflare DNS token", "--expires", "2h", "--note", "for the first sandbox",
                                       "--help-url", "dns:cloudflare=https://example.com/howto")
-        self.assertEqual((code, out), (0, "https://login.sbx.example/keys/req12345\n"), err)
+        self.assertEqual((code, out), (0, "https://app.sbx.example.com/keys/req12345\n"), err)
         self.assertIn("sbx secrets status req12345 --wait", err)
         method, path, _, body, authorization = self.control.calls[-1]
         self.assertEqual((method, path, authorization), ("POST", "/api/secret-requests", "Bearer sbx_test"))
@@ -1003,7 +1003,7 @@ class SecretsCliTests(CliTests):
         code, out, err = self.run_cli("secrets", "request", "--wait", "--json", "runtime:boat", "Boat API key")
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["state"], "completed")      # only the final answer on stdout
-        self.assertIn("https://login.sbx.example/keys/req12345", err)
+        self.assertIn("https://app.sbx.example.com/keys/req12345", err)
         self.assertIn("waiting for the owner: 0/3 keys in", err)
         self.assertIn("waiting for the owner: 1/3 keys in", err)
 
