@@ -32,6 +32,7 @@ export const keys = {
   runtimeChange: ['runtimes', 'change'] as const,
   endpoints: ['endpoints'] as const,
   users: ['users'] as const,
+  secretRequest: (id: string) => ['secret-request', id] as const,
 }
 
 const anyBusy = (list?: Sandbox[]) => !!list?.some(isBusy)

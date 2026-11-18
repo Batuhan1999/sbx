@@ -15,22 +15,26 @@ requires:
       url: PG_ADMIN_URL
 inputs:
   connection_limit:
+    type: integer
+    min: 1
+    advanced: true
     default: '20'
-    description: maximum concurrent connections for this sandbox login; size application pools below this budget
   template:
     label: Template database
-    help: the template database
     required: true
   owner_role:
+    advanced: true
     default: ''
-    description: a role the login is a member of, such as the owner of the template's objects
+    help: "Such as the template's owner."
   createrole:
+    advanced: true
     label: Can create roles
-    help: For migrations that create roles.
+    help: "For migrations that create roles."
     default: 'false'
   replication:
+    advanced: true
     label: Can replicate
-    help: Lets the login stream its database, for services such as ElectricSQL.
+    help: "For services such as ElectricSQL."
     default: 'false'
 outputs:
   url:

@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 
-from . import addressing, core, github_app, lifecycle, platform, recipes, sandboxes, settings, template_builds
+from . import addressing, core, github_app, lifecycle, platform, recipes, sandboxes, settings, setup_pr, template_builds
 
 router = APIRouter()
 # Who owns PR previews: no person, the GitHub extension.
@@ -155,8 +155,10 @@ def comment_when_up(repo: str, pr: int):
 
 
 async def on_pull_request(repo: str, payload: dict) -> dict:
-    """The App's pull_request event."""
+    """The App's pull_request event; it also keeps the recipe PR's state
+    (merged, closed) for readiness."""
     pull, number = payload["pull_request"], payload["number"]
+    await run_in_threadpool(setup_pr.note, repo, pull)
     if (pull["head"]["repo"] or {}).get("full_name", "").lower() != repo:
         return {"ignored": "a fork"}
     wanted = pull["state"] == "open" and "preview" in {label["name"] for label in pull.get("labels") or []}

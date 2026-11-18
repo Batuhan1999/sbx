@@ -92,7 +92,7 @@ class Package:
     docs: str
     source: str                  # shipped | operator | edited | repo
     files: dict                  # relative path -> text: package.yaml, the scripts, the rest of the folder
-    inputs: dict                 # name -> {required, default, secret, agent, help}; scripts get INPUT_<NAME>
+    inputs: dict                 # name -> {required, default, secret, agent, help, type, ...}; scripts get INPUT_<NAME>
     outputs: dict                # name -> {sensitive}
     env: dict                    # NAME -> template with ${outputs.x}
     requires: dict               # slot -> {kind: <connection package>, expose: {input: ENV}}
@@ -127,9 +127,13 @@ class Package:
         if missing:
             raise PackageError(f"{label}: needs {', '.join(missing)}")
         for name, value in out.items():
+            shown = "" if self.secret(name) else f", not {value!r}"   # a secret's value never goes into an error
             allowed = [c["value"] for c in self.inputs.get(name, {}).get("choices", ())]
             if allowed and value not in allowed:
-                raise PackageError(f"{label}: {name} is one of {', '.join(c or '(blank)' for c in allowed)}, not {value!r}")
+                raise PackageError(f"{label}: {name} is one of {', '.join(c or '(blank)' for c in allowed)}{shown}")
+            problem = _type_problem(self.inputs.get(name, {}), value)
+            if problem:
+                raise PackageError(f"{label}: {name} {problem}{shown}")
         return out
 
     def secret(self, name: str) -> bool:
@@ -159,6 +163,12 @@ class Package:
                 "logo": self.logo_url(), "used_by": list(used_by)}
 
 
+# What an input holds, so the web app draws the right control and the
+# server refuses what is not one: text (any), a number or whole number
+# (min/max), yes or no ("true"/"false"), an email or an http(s) URL.
+INPUT_TYPES = ("text", "number", "integer", "boolean", "email", "url")
+
+
 def _input(name, v) -> dict:
     v = v or {}
     if not VAR_RE.match(str(name)) or not isinstance(v, dict):
@@ -169,11 +179,46 @@ def _input(name, v) -> dict:
         out["label"] = str(v["label"])
     if "choices" in v:
         out["choices"] = _choices(name, v["choices"])
+    kind = str(v.get("type") or ("boolean" if _text(v.get("default")) in ("true", "false") and "choices" not in v
+                                 else "text"))
+    if kind not in INPUT_TYPES or (kind != "text" and "choices" in out):
+        raise PackageError(f"input {name}: type is one of {', '.join(INPUT_TYPES)} (choices take text)")
+    out["type"] = kind
+    for bound in ("min", "max"):
+        if bound in v:
+            if kind not in ("number", "integer") or isinstance(v[bound], bool) or not isinstance(v[bound], (int, float)):
+                raise PackageError(f"input {name}: {bound} is a number, for a number or integer input")
+            out[bound] = v[bound]
+    for flag in ("advanced", "hidden"):   # hidden: an operator's path, set from the API and CLI only
+        if v.get(flag):
+            out[flag] = True
     if "default" in v:
         out["default"] = _text(v["default"])
         if "choices" in out and out["default"] not in [c["value"] for c in out["choices"]]:
             raise PackageError(f"input {name}: its default {out['default']!r} is not one of its choices")
+        problem = out["default"] and _type_problem(out, out["default"])
+        if problem:
+            raise PackageError(f"input {name}: its default {problem}")
     return out
+
+
+def _type_problem(spec: dict, value: str) -> str:
+    """Why value is not one of what the input takes ("" when it is)."""
+    kind = spec.get("type", "text")
+    if kind in ("number", "integer"):
+        try:
+            number = int(value) if kind == "integer" else float(value)
+        except ValueError:
+            return "is a whole number" if kind == "integer" else "is a number"
+        if number != number or ("min" in spec and number < spec["min"]) or ("max" in spec and number > spec["max"]):
+            return f"is from {spec.get('min', '-')} to {spec.get('max', '-')}"
+    if kind == "boolean" and value not in ("true", "false"):
+        return "is true or false"
+    if kind == "email" and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+        return "is an email address"
+    if kind == "url" and not re.fullmatch(r"https?://[^\s/]+\S*", value):
+        return "is an http(s) URL"
+    return ""
 
 
 def _choices(name, given) -> list:

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { ApiError, describeError, errorText, request } from '@/api/client'
-import { ErrorState } from '@/components/states'
+import { ErrorState, splitDetail } from '@/components/states'
 import { stubApi } from './render'
 
 describe('request', () => {
@@ -55,5 +55,16 @@ describe('ErrorState', () => {
   it('renders nothing without an error', () => {
     const { container } = render(<ErrorState error={null} />)
     expect(container.textContent).toBe('')
+  })
+})
+
+describe('technical detail', () => {
+  it('keeps what is wrong in front and puts addresses and exception text under Details', () => {
+    expect(splitDetail('The API key was refused')).toEqual({ head: 'The API key was refused', detail: '' })
+    const long = splitDetail('Boat did not answer: HTTPSConnectionPool(host=127.0.0.1, port=9): Max retries exceeded with url: /api/v1/sandboxes')
+    expect(long.head).toBe('Boat did not answer')
+    expect(long.detail).toContain('HTTPSConnectionPool')
+    render(<ErrorState error={new Error('Boat did not answer: HTTPSConnectionPool(host=127.0.0.1): refused')} />)
+    expect(screen.getByText('Details')).toBeTruthy()
   })
 })

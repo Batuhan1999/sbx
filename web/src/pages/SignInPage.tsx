@@ -2,9 +2,9 @@ import { api } from '@/api/endpoints'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { emailError } from '@/lib/validation'
 
-export function AuthFrame({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+export function AuthFrame({ title, description, children, wide }: { title: string; description?: React.ReactNode; children: React.ReactNode; wide?: boolean }) {
   return <main className="flex min-h-dvh items-center justify-center px-4 py-12">
-    <div className="w-full max-w-[360px]">
+    <div className={wide ? 'w-full max-w-[520px]' : 'w-full max-w-[360px]'}>
       <div className="mb-6 flex items-center gap-2">
         <span aria-hidden className="grid size-7 place-items-center rounded-md bg-ink text-[12px] font-bold text-bg">sb</span>
         <span className="font-semibold">sbx</span>
@@ -26,7 +26,7 @@ export default function SignInPage() {
       await new Promise(() => {}) // stay busy while the browser navigates
     },
   })
-  return <AuthFrame title="Sign in" description="With the email and password for this server.">
+  return <AuthFrame title="Sign in">
     <AppForm form={form} className="space-y-4">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>
         {field => <field.TextField label="Email" type="email" autoComplete="username" autoFocus />}

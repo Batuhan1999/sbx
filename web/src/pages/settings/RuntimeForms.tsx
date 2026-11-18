@@ -1,10 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronRight, ExternalLink } from 'lucide-react'
+import { Check, ExternalLink } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { isApplying, keys, useRuntimeChange } from '@/api/queries'
 import type { AvailableRuntime, RuntimeChange, RuntimePreset, RuntimeSetting } from '@/api/types'
-import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { AppForm, MoreOptions, SECRET_KEPT, SubmitButton, useAppForm } from '@/components/form'
+import { urlError } from '@/lib/validation'
 import { ErrorState } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/primitives'
@@ -116,7 +117,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
 }) {
   const secret = r.settings.find(s => s.secret)
   const limits = r.settings.filter(s => s.limit)
-  const advanced = r.settings.filter(s => !s.secret && !s.limit)
+  const advanced = r.settings.filter(s => !s.secret && !s.limit && !s.hidden)
   const keySet = !!secret && r.secrets_set.includes(secret.key)
   // The plan the server says the runtime is on (adding: the first plan, as an unchosen one reads).
   const startPlan = mode === 'add' ? (r.presets[0]?.name ?? CUSTOM) : (r.plan?.name ?? CUSTOM)
@@ -171,7 +172,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
         : undefined,
     }}>
       {field => <field.TextField label={secret.label} type="password" autoComplete="off" spellCheck={false}
-        placeholder={keySet ? 'Saved · type to replace' : undefined}
+        placeholder={keySet ? SECRET_KEPT : undefined}
         help={keySet ? undefined : secret.help || undefined} />}
     </form.AppField>}
 
@@ -193,17 +194,13 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
       </div>}
     </fieldset>}
 
-    {advanced.length > 0 && <details className="group rounded-lg border border-line" open={advanced.some(s => !!r.values[s.key]) || undefined}>
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-[12.5px] font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
-        <ChevronRight aria-hidden className="size-3.5 transition-transform duration-150 ease-out group-open:rotate-90 motion-reduce:transition-none" />Advanced
-      </summary>
-      <div className="space-y-3 border-t border-line px-3 py-3">
-        {advanced.map(s => <form.AppField key={s.key} name={s.key} validators={{ onChange: ({ value }) => fieldError(s, value) }}>
-          {field => <field.TextField label={s.label} optional={s.optional} autoComplete="off" spellCheck={false} placeholder={s.default}
-            help={s.rekey && secret && keySet ? `${s.help} Changing it needs the ${secret.label} again.` : s.help || undefined} />}
-        </form.AppField>)}
-      </div>
-    </details>}
+    {advanced.length > 0 && <MoreOptions open={advanced.some(s => !!r.values[s.key])}>
+      {advanced.map(s => <form.AppField key={s.key} name={s.key} validators={{ onChange: ({ value }) => fieldError(s, value) }}>
+        {field => <field.TextField label={s.label} optional={s.optional} autoComplete="off" spellCheck={false} placeholder={s.default}
+          type={s.kind === 'url' ? 'url' : 'text'} className={s.kind === 'text' ? undefined : 'font-mono text-[12.5px]'}
+          help={s.rekey && secret && keySet ? `${s.help} Changing it needs the ${secret.label} again.` : s.help || undefined} />}
+      </form.AppField>)}
+    </MoreOptions>}
 
     <div className="flex flex-wrap items-center justify-end gap-2">
       {onCancel && <Button variant="ghost" onClick={onCancel}>Cancel</Button>}
@@ -272,5 +269,6 @@ function fieldError(s: RuntimeSetting, value: string) {
   if (!v) return undefined
   // The server's own pattern (runtime.base.HOSTNAME); it checks again.
   if (s.kind === 'hostname' && s.pattern && !new RegExp(`^(?:${s.pattern})\\.?$`, 'i').test(v)) return 'Enter a host name such as e2b.app.'
+  if (s.kind === 'url') return urlError(v)
   return undefined
 }

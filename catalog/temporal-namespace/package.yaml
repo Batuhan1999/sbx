@@ -12,11 +12,13 @@ requires:
       address: TEMPORAL_SERVER_ADDRESS
 inputs:
   address:
+    advanced: true
     label: Server address
-    help: The frontend, host:port. Blank uses the connected Temporal server's.
+    help: "Blank: the connected server's."
     required: false
   retention:
-    help: How long finished workflow histories are kept, such as 72h.
+    advanced: true
+    help: "Such as 72h."
     default: 72h
 outputs:
   address: {}

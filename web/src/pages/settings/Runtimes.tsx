@@ -4,7 +4,7 @@ import { Link } from 'react-router'
 import { useAvailableRuntimes, useEndpoints, useMe, useRuntimes } from '@/api/queries'
 import type { AvailableRuntime, Blocker, Endpoints, RuntimeChange, SandboxRuntime } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
+import { DetailText, EmptyState, ErrorState, QueryView, SkeletonRows } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/ui/primitives'
 import { limitsText } from '@/lib/format'
@@ -24,12 +24,11 @@ export function Runtimes() {
   const byKind = Object.fromEntries((available.data ?? []).map(a => [a.kind, a]))
   const addable = (available.data ?? []).filter(a => !a.enabled && !a.host && a.can_run)
   return <Panel id="runtimes" title="Sandbox runtimes" bodyClassName="p-0"
-    description="Where sandboxes run. New sandboxes use the default unless their repository picks another."
     actions={admin && addable.length > 0 && !adding ? <Button size="sm" disabled={flow.busy} onClick={() => setAdding(true)}>Add runtime</Button> : undefined}>
     {admin && <ChangeStatus flow={flow} className="border-b border-line px-4 py-3" />}
     {adding && <AddRuntime choices={addable} flow={flow} onClose={() => setAdding(false)} />}
     <QueryView query={runtimes} inline loading={<SkeletonRows rows={1} />}>{d => d.runtimes.length === 0
-      ? <EmptyState title="No runtime yet">Add one to run sandboxes.</EmptyState>
+      ? <EmptyState title="No runtime yet" />
       : <RuntimeList runtimes={d.runtimes}>{r => <>
         {endpoints && !r.capabilities.private_networks && <Reaches endpoints={endpoints} />}
         {admin && byKind[r.kind] && <RuntimeActions r={r} a={byKind[r.kind]} flow={flow} />}
@@ -133,7 +132,7 @@ function RuntimeRow({ r, children }: { r: SandboxRuntime; children?: ReactNode }
       {r.default && <span className="text-[12px] text-muted">Default</span>}
       <ConnectionMark state={r.status.state} />
     </div>
-    <p className="mt-0.5 break-words text-[13px] text-muted">{runtimeLine(r)}</p>
+    <div className="mt-0.5 break-words text-[13px] text-muted"><DetailText text={runtimeLine(r)} /></div>
     {limits && <p className="mt-0.5 text-[12px] text-muted">{limits}</p>}
     {r.limit_hit && <p role="note" className="mt-1 break-words text-[12.5px]">{r.limit_hit.message.split(';')[0]}.</p>}
     {children}

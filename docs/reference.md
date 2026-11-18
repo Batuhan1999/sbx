@@ -100,8 +100,22 @@ is refused while the repository has sandboxes. The repository stays served
 and reads its default branch's `.sbx/` again, or needs a recipe; a template
 it no longer has a use for is deleted with it.
 
-`sbx recipe pr` publishes reviewed `.sbx` files as a draft pull request through
-the GitHub App.
+`sbx recipe pr` (admins) publishes reviewed `.sbx` files as a draft pull request through
+the GitHub App (`POST /api/repos/OWNER/NAME/setup-pr`; `--yes` skips the
+question, `--json` prints the API's answer). Each repository has one such pull
+request, on the branch `sbx/setup`: while it is open, publishing again adds a
+commit that makes its `.sbx/` the new files, and changes nothing when they are
+the same.
+
+A recipe installed with `sbx recipe apply` is committed on its own: once a
+sandbox comes up healthy from it (its `health:` URLs answer), the server
+publishes that recipe the same way, and does again after a later healthy
+launch from a changed recipe. When the GitHub App is not connected, not
+installed on the repository, or may not push or open pull requests there, the
+server records why instead. `sbx recipe pr --status` (admins; `GET
+/api/repos/OWNER/NAME/setup-pr`) prints the pull request's link or that reason,
+and exits 1 on the reason; `sbx repo status` (`recipe_pr`), the repository's
+readiness (the `recipe_pr` step) and the web app's checklist show the same.
 
 ## Environment and secrets
 
@@ -172,6 +186,88 @@ Apps with their own secret loader keep using it through their own identity; sbx
 does not copy that source into its store. For AWS, see
 [AWS role access](../catalog/aws-role/README.md).
 
+### Asking the owner for keys
+
+An agent that needs keys only a person has (a runtime provider's API key, the
+DNS token for the certificate, a connector's token, a repository's secret)
+asks for them with a key request instead of having them pasted into a file or
+a chat. The owner gets a link to a page on the server, signs in, and pastes
+each key once; each goes straight into the store where it is used, through
+the same code as the setting it belongs to, and is never shown again. The
+page works only for a signed-in admin (an installation without sign-in can't
+use it), never by its link alone.
+
+```sh
+sbx secrets request [--wait [--timeout SECONDS]] [--expires 24h] [--note TEXT] [--help-url TARGET=URL ...] [--json] \
+  TARGET LABEL [TARGET LABEL ...]
+sbx secrets status ID [--wait [--timeout SECONDS]] [--json]
+sbx secrets ls [--json]
+sbx secrets cancel ID [--json]
+sbx secrets submit ID [TARGET ...]     # the keys yourself, one line of stdin each
+```
+
+For example:
+
+```sh
+sbx secrets request --wait \
+  runtime:boat "Boat API key" \
+  dns:cloudflare "Cloudflare DNS token" \
+  connector:amp "Amp provider token" \
+  repo:owner/app:APP_API_TOKEN "The app's API token" \
+  repo:owner/app:BOAT_API_KEY=from:runtime:boat "Boat key for the app"
+```
+
+Each key is a `TARGET LABEL` pair; the label is what the page shows (empty:
+sbx names it). Targets:
+
+| Target | Where the key goes | Checked with |
+| --- | --- | --- |
+| `runtime:KIND[:KEY]` | A runtime's secret setting (`KEY` defaults to its API key), as [from the web app](#from-the-web-app): the runtime is added on its first plan when it is not enabled yet (as `sbx runtimes add`), else its key is replaced. The runtime keys of one save are one change the host applies, then it restarts sbx-control (below). | The provider, with the runtime's own checks. |
+| `dns:cloudflare` | The Cloudflare API token the certificate's DNS-01 challenge uses (`sbx setup address --dns cloudflare` then needs no `--secret`). | Cloudflare's API (`/user/tokens/verify`, or listing the zones for an account token). |
+| `connector:KIND[:FIELD]` | An extension's secret field (`FIELD` defaults to its first secret one), through its own connect with its other settings unchanged. | The connector's connect. |
+| `repo:OWNER/NAME:VAR` | A trusted repository's value `VAR`, as `sbx env set` stores it (always secret, its audience kept when it was set before), delivered to its sandboxes. | |
+| `repo:OWNER/NAME:VAR=from:SOURCE` | The same, with a key the server already holds instead of a paste: `SOURCE` is `runtime:KIND[:KEY]`, `dns:cloudflare` or `repo:OWNER/NAME:VAR`, held now or asked for in the same request (then the pasted value is used for both). | |
+
+A target the server can't take is refused when the request is made: an
+unknown runtime or one on this server (install.sh's), a setting that is no
+secret, a repository that is not trusted, a key to reuse that the server does
+not hold. Each item links to a guide (`docs/howto/<topic>.md` on GitHub for
+the built-in runtimes, Cloudflare and Amp; `--help-url TARGET=https://...`
+names another).
+
+`sbx secrets request` prints the page's URL (`https://LOGIN-HOST/keys/ID`) on
+stdout; give it to the owner. A request expires after `--expires` (5m to 7d;
+default 24h) and is done once every key is in; it never holds or returns a
+value, only which keys are in. The page saves the keys pasted so far: one
+that is refused (the provider says no) shows why under its field and stays to
+be pasted again; the rest are kept.
+
+The runtime keys of one save, for any number of runtimes, become one queued
+runtime change: each is checked by its provider first, then the host applies
+them in order (each on its own: one the host refuses leaves the others made),
+regenerates nginx and restarts sbx-control once. Such an item counts as in
+once it is queued; `runtime_changes` (and each runtime item's `applied`) says
+where the host is: `queued`, `applying`, `restarting` (made; sbx-control is
+restarting to use it), `done`, `failed` (with the host's message) or
+`unknown` (the host's record no longer has it), `none` without runtime keys.
+Only while another runtime change is being applied (from Settings, say) is a
+runtime key refused, to be saved again once that is done.
+
+`--wait` (on `request` or `status`) follows the request until every key is in
+and the host has applied its runtime keys and restarted, so the agent can use
+them at once. It exits non-zero when the request expires or is cancelled,
+when the host did not apply a runtime key (naming why), or after `--timeout`
+seconds (default: when it expires, plus 10 minutes for the runtime keys).
+`status` without `--wait` exits non-zero in those cases too. With
+`--wait --json`, the URL goes to stderr and the final request to stdout. The
+page follows the same progress after the last key is saved.
+
+During the first-run setup, an agent with the [setup link](#the-first-run-setup-without-a-browser)
+(`SBX_SETUP_LINK` or `--link-file`) may make, follow and cancel requests; the
+owner creates the admin account first (`sbx setup admin`) and submits
+signed in. `sbx secrets submit` is the page's action for an admin at a
+terminal: each key on stdin, never the command line.
+
 ## Services
 
 A service is a per-sandbox resource made by a catalog package, usually on a
@@ -196,7 +292,7 @@ key is refused when it is installed.
 connection saved on this server. A managed server's connection has the
 server's name (`dev-pg` from `sbx-admin server up dev-pg`). `sbx catalog
 show PACKAGE` lists the saved connections a slot can take (to admins), as do
-`sbx-admin catalog connections` and the web app's **Extensions** page. With
+`sbx-admin catalog connections` and the web app's **Services** page. With
 one saved connection of the slot's kind, `connections:` can be left out. A
 name the server doesn't have stops the launch, and the error names the ones it
 has.
@@ -932,13 +1028,13 @@ or API answer holds its value, and the web app shows a set secret only as
 
 | Route | What |
 | --- | --- |
-| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `edit_blocker` (why the web app can't add or change it now: `{code, message, sandboxes}`, `code` one of `host`, `local_store`, `needs_domain`; `null` when it can), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text` or `int`, `optional`, `limit`), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `remove_blocker` (why it can't be removed now: `code` one of `host`, `last_runtime`, `unlisted`, `has_sandboxes` with the sandboxes named; `null` when it can be), `limit_hit`. |
+| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `edit_blocker` (why the web app can't add or change it now: `{code, message, sandboxes}`, `code` one of `host`, `local_store`, `needs_domain`; `null` when it can), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text`, `int` (with `min`, `max`, `step`, `unit`), `hostname` (with its `pattern`) or `url`, `optional`, `limit`, `rekey`, `hidden`: an operator's setting the web app's form leaves out), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `remove_blocker` (why it can't be removed now: `code` one of `host`, `last_runtime`, `unlisted`, `has_sandboxes` with the sandboxes named; `null` when it can be), `limit_hit`. |
 | `POST /api/runtimes` | `{"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": "...", ...}}`: add a provider's runtime. `plan` (optional) is a preset's name or `custom`: the server sets the limits the plan fixes and refuses values for them; the ones it leaves adjustable start at the plan's values unless given. 202 with the change's state. |
 | `PUT /api/runtimes/KIND` | `{"plan": "pro", "values": {...}}`: change an enabled provider's settings; a secret left out or empty keeps its value, another empty value goes back to its default. With `plan`, its limits as when adding, the adjustable ones keeping their values now. |
 | `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
 | `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. 200, done and `unchanged`, for the default already. |
 | `GET /api/runtimes/change` | The last change, as above. |
-| `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
+| `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime, help_url}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
 
 All of them are for admins, and for the first-run setup link's token while
 the setup is open. `settings` also carry an int's `min`, `max`, `step` and
@@ -959,7 +1055,7 @@ sbx runtimes set e2b-cloud --plan custom --set E2B_CLOUD_MAX_SANDBOXES=50
 sbx runtimes set e2b-cloud --secret E2B_CLOUD_API_KEY < new-key-file
 sbx runtimes default e2b-cloud
 sbx runtimes remove e2b-cloud
-sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail and fix; exit 1 when one fails
+sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail, fix and how-to page; exit 1 when one fails
 ```
 
 - `--plan` takes a plan's values from `sbx runtimes available` (`hobby`,
@@ -1003,10 +1099,14 @@ before it has its own.
 export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/setup#t=TOKEN
 sbx setup status [--json]                      # each step, done or to do
 sbx setup address --domain sbx.example.com --email ops@example.com   # or: --ip; waits for HTTPS
+sbx setup admin ops@example.com < password-file
 sbx setup runtime available
 sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
-sbx setup admin ops@example.com < password-file
-sbx setup finish --admin ops@example.com < password-file
+sbx setup agents                               # the coding agents offered
+sbx setup agents amp claude                    # or: sbx setup agents none
+sbx login                                      # once the admin exists: the browser signs them in
+sbx setup finish                               # as the admin sbx login signed in: no password
+sbx setup finish --admin ops@example.com < password-file   # or with the link and that admin's password
 ```
 
 Each uses `Authorization: Setup <token>`. `address --domain` takes the DNS
@@ -1014,10 +1114,24 @@ provider's credentials with `--secret` (`cloudflare_api_token`, ...) and waits
 until the certificate works; `runtime add` takes the flags of `sbx runtimes
 add` and waits through the restart; `admin` makes the first admin's own
 account (their email and password, as the wizard's admin step does; password
-sign-in), and `finish --admin` signs in with that account's password (`POST
-/api/setup/complete` with `{"email", "password"}`, for a client without a
-browser session). The link stops working once the
-setup is finished; then `sbx login`.
+sign-in). Once that account exists, the desktop CLI's installer
+(`/install`) and `sbx login` work while the setup is still open, and `finish`
+without `--admin` finishes as that signed-in admin (`POST /api/setup/complete`
+with its `Authorization: Bearer` token; another person's token is 403). `finish
+--admin` instead signs in with that account's password (`POST
+/api/setup/complete` with `{"email", "password"}`, for a client with only the
+setup link). The link stops working once the setup is finished.
+
+`agents` (`PUT /api/setup/agents` with `{"agents": ["amp", ...]}`; `[]` for
+none) records the coding agents every template is built with: the extensions
+that set `choosable`, which `GET /api/setup` lists under `agents`. The setup
+can't finish until it is chosen, and **no template builds before the setup is
+finished**: not the scheduler, not a runtime just added, not `install.sh`'s
+`--if-stale` builds. Finishing starts the first builds, so they already carry
+each chosen agent's layer (Amp's, before its provider token is added) instead
+of rebuilding everything once the agent is enabled. An installation that was
+set up before this step counts as having chosen. After the setup, agents are
+turned on and off under Extensions (`sbx extensions`).
 
 ### No runtime yet
 
@@ -1072,6 +1186,13 @@ again on the other one.
 - `GET /api/setup/checks`, the first-run wizard's, names the runtime each
   check is about (`runtime`, `null` for the server's own). The wizard and
   `GET /api/runtimes` take the setup link's token.
+- A check about something the owner sets up outside sbx (DNS records, the
+  Cloudflare token, a provider's API key or plan, the GitHub App, the Amp
+  provider) carries `help_url`, the [how-to page](howto/) for it on GitHub
+  (`""` otherwise), wherever checks appear: `POST /api/connections/KIND/test`,
+  a refusal's `checks`, the runtime and setup checks, and the repository
+  checklist's `github` step. `sbx-admin doctor`, `sbx runtimes test` and the
+  CLI's refusals print it under a failed check, and the web app links it.
 - On the host, `sbx-admin runtime list` (`--json` as `GET /api/runtimes`
   answers) shows the enabled runtimes, and `sbx-admin runtime verify [KIND]`
   (the default when no kind is given) checks one end to end: it creates a
@@ -1211,6 +1332,9 @@ building or has no room), with `Retry-After` when waiting helps.
 | `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
 | `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default`, `POST /api/runtimes/KIND/test` | admin, and the first-run setup link | `sbx runtimes available \| add \| set \| remove \| default \| test`: add, change, remove a runtime, choose the default, run its checks; changes are checked, then applied by the host ([from the web app](#from-the-web-app)). |
+| `GET /api/connections`, `PUT /api/connections/KIND`, `DELETE /api/connections/KIND` | admin, and the first-run setup link (not `DELETE`) | `sbx extensions [ls \| set KIND \| disconnect KIND]`: the Extensions page. `PUT` body `{"values": {"FIELD": "VALUE"}}`, tested before it is saved (400 with the failed checks). For an extension, the answer has `rebuilds`: `{"runtimes": {"KIND": N}, "keys": {"KIND": ["default", ...]}, "building", "message"}`, the templates whose plan the change moved, which start building at once once the setup is finished. Existing sandboxes keep the templates they started from; new ones start from the current ones until the rebuilds finish. `--wait` follows `GET /api/templates` until they are built and exits non-zero when one fails. |
+| `GET /api/templates` | admin | `sbx templates`: `{"blocked", "runtimes": {"KIND": [{"key", "phase", "status", "template", "error"}]}}`, every template sandboxes start from on each enabled runtime; `phase` is `current`, `stale` (to build), `building`, `stuck` (failed on the plan of now, with `error`) or `unplanned`; `blocked` says why nothing builds yet (the setup is not finished). |
+| `PUT /api/setup/agents` | the first-run setup link, or an admin, until the setup is finished (then 409) | `sbx setup agents`: body `{"agents": ["KIND", ...]}`; the coding agents every template is built with ([the setup without a browser](#the-first-run-setup-without-a-browser)); 400 for one not offered. |
 | `GET /api/endpoints` | admin | `sbx endpoints`: `{"endpoints": [{"name", "address", "kind": "managed-server" or "internal", "server", "server_kind", "target", "repos", "state": "on" or "applying" or "failed", "message", "used_by"}], "candidates": [{"server", "kind", "address", "target"}], "domain", "needed", "applying", "failure"}`. `repos`: who may use it (an internal host's grants; the repositories attached to a managed server); `used_by`: the repositories whose sandboxes hold its certificate, for which `DELETE` is refused; candidates are the managed servers without an endpoint; `needed` says an enabled runtime's sandboxes don't reach this host's private network; `applying` that a change is not applied yet, `failure` why the last one failed ([endpoints](#endpoints)). |
 | `POST /api/endpoints/NAME/repos`, `DELETE /api/endpoints/NAME/repos/OWNER/REPO` | admin | `sbx endpoints grant \| revoke`: body `{"repo": "OWNER/REPO"}`; one repository's grant of an internal host's endpoint, under the endpoints' lock; answers the endpoint. A revoke makes the endpoint's CA anew ([what it cuts](#endpoints)); 404 for a repository without a grant, 400 for a managed server's endpoint. |
 | `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add \| rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories, as one change (the web app's list; 400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
@@ -1236,6 +1360,10 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/users`, `POST /api/users` | admin | The people (email, admin, whether they have a password, last sign-in, API tokens); `POST` with `{"email": "...", "admin": false}` adds one and answers a one-time `link` to set their password, good for 7 days. `sbx-admin user ls`, `user add`. |
 | `PUT /api/users/EMAIL`, `POST /api/users/EMAIL/link`, `DELETE /api/users/EMAIL` | admin | `{"admin": true}` makes them an admin (400 for the last admin); a new set-password link (the older one stops working); remove them, ending their sessions and API tokens (not yourself). |
 | `POST /api/me/password` | anyone signed in with a password | `{"current": "...", "password": "..."}` changes your password and signs you out everywhere else. |
+| `POST /api/secret-requests` | admin, and the first-run setup link | `sbx secrets request`: body `{"items": [{"target": "runtime:boat", "label": "Boat API key", "help_url": "https://..."}], "expires_in": 86400, "note": "..."}` (`expires_in` in seconds, 300 to 604800, default 86400; `label`, `help_url`, `note` optional); 201 with the request as `GET` answers it. 400 for a target the server can't take ([targets](#asking-the-owner-for-keys)). |
+| `GET /api/secret-requests`, `GET /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets ls \| status`: `{"requests": [...]}`, or one: `{"id", "url", "state": "pending" or "completed" or "cancelled" or "expired", "created_by", "created_at", "expires_at", "note", "finished_at", "finished_by", "remaining", "runtime_changes": {"state", "message"}, "items": [{"target", "label", "help_url", "what", "hint", "reuse", "reuse_from", "done", "done_at", "done_by", "applied": {"state", "message"} or null}]}` (`runtime_changes`: where the host is with the runtime keys, [above](#asking-the-owner-for-keys)); targets come back complete (`runtime:boat:BOAT_API_KEY`). Never a value. |
+| `DELETE /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets cancel`; 409 once it is not pending. |
+| `POST /api/secret-requests/ID/submit` | admin, signed in (a session or their token; not the setup link, and refused without sign-in) | The keys page and `sbx secrets submit`: body `{"values": {"TARGET": "VALUE"}}`; each pasted key, and each item that reuses a held key, is stored where it goes. `{"request", "ok", "results": [{"target", "ok", "error"}]}`; a refused item stays pending. 400 for nothing to save or a target the request does not ask for, 409 once it is not pending. `GET /keys/ID` redirects to the page. |
 | `GET /api/updates`, `POST /api/updates`, `POST /api/updates/check` | admin | The installed release, the newer ones with their notes, and the last upgrade with its steps and progress; `POST` with `{"tag": "v0.3.0"}`, the newest release, [installs it](#operating-the-host): 400 for any other tag, 409 while an upgrade runs. `check` asks GitHub now. |
 
 ## Operating the host

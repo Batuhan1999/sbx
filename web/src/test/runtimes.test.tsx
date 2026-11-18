@@ -78,6 +78,7 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'More options' }))   // the runtime is rarely changed
     const select = await screen.findByLabelText('Runtime')
     await waitFor(() => expect(select.textContent).toBe('Repository’s choice (Hosted runtime)'))
     await user.type(screen.getByLabelText(/Branch/), 'login')
@@ -93,6 +94,7 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'More options' }))
     await waitFor(() => expect(screen.getByLabelText('Runtime').textContent).toBe('Installation default (E2B Embed)'))
     await choose(user, screen.getByLabelText('Runtime'), /^Hosted runtime/)
     await user.type(screen.getByLabelText(/Branch/), 'login')
@@ -117,8 +119,9 @@ describe('with several runtimes', () => {
 })
 
 const SETUP = {
-  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' }, { step: 'runtime', done: true, optional: false, summary: 'E2B Embed' }],
-  signed_in: false, email: null, can_complete: false, host: { address: '203.0.113.7' },
+  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' }, { step: 'runtime', done: true, optional: false, summary: 'E2B Embed' }, { step: 'agents', done: false, optional: false, summary: 'not chosen yet' }],
+  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  agents: [{ kind: 'claude', title: 'Claude Code', chosen: false }, { kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'ip', domain: '', url: 'https://203.0.113.7', certificate: '', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 }
@@ -135,10 +138,13 @@ describe('first-run setup', () => {
     const list = await screen.findByRole('list', { name: 'Sandbox runtimes' })
     const embed = within(list).getByText('E2B Embed').closest('li')!
     expect(embed.textContent).toContain('On this server')
-    expect(await within(embed).findByText('KVM is available')).toBeTruthy()
+    // Passed checks fold under a count; only a failed one shows with its fix.
+    expect(await within(embed).findByRole('button', { name: 'All 1 passed' })).toBeTruthy()
+    expect(within(embed).queryByText('KVM is available')).toBeNull()
     expect(within(list).getByText('Hosted runtime').closest('li')!.textContent).toContain('The API key was refused')
     expect(within(list).queryByText('Infisical answers')).toBeNull()
-    expect(screen.getByText('Infisical answers')).toBeTruthy()
+    await userEvent.click(within(embed).getByRole('button', { name: 'All 1 passed' }))
+    expect(within(embed).getByText('KVM is available')).toBeTruthy()
     const fetchInit = (vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/runtimes')![1] ?? {}) as RequestInit
     expect((fetchInit.headers as Record<string, string>).authorization).toBe('Setup one-time-token')
     expect(calls.some(c => c.url === '/api/runtimes')).toBe(true)
@@ -148,11 +154,37 @@ describe('first-run setup', () => {
     setSetupToken('one-time-token')  // the setup link's token: GET /api/runtimes takes a sign-in, so it answers 401
     const calls = stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': () => ({ status: 401, body: { detail: 'sign in' } }) })
     renderApp(<SetupPage />, '/app/setup')
-    expect(await screen.findByText('KVM is available')).toBeTruthy()
+    await userEvent.click(await screen.findByRole('button', { name: 'All 2 passed' }))
+    expect(screen.getByText('KVM is available')).toBeTruthy()
     await waitFor(() => expect(calls.some(c => c.url === '/api/runtimes')).toBe(true))
     expect(screen.queryByText('Sandbox runtimes')).toBeNull()
     expect(screen.getByText('Infisical answers')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('asks for the coding agents before finishing, and sends them first', async () => {
+    setSetupToken('one-time-token')
+    const calls = stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': ONE,
+      'PUT /api/setup/agents': { ...SETUP, agents: [SETUP.agents[0], { ...SETUP.agents[1], chosen: true }] },
+      'POST /api/setup/complete': { ...SETUP, complete: true } })
+    renderApp(<SetupPage />, '/app/setup')
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('checkbox', { name: 'Amp' }))
+    await waitFor(() => expect((screen.getByRole('button', { name: /Finish setup/ }) as HTMLButtonElement).disabled).toBe(false))
+    await user.click(screen.getByRole('button', { name: /Finish setup/ }))
+    expect(await screen.findByText('The server is ready')).toBeTruthy()
+    const writes = calls.filter(c => c.method !== 'GET')
+    expect(writes.map(c => c.url)).toEqual(['/api/setup/agents', '/api/setup/complete'])
+    expect(writes[0].body).toEqual({ agents: ['amp'] })
+  })
+
+  it('creates the owner’s account before the runtime and the agents', async () => {
+    setSetupToken('one-time-token')
+    const fresh = { ...SETUP, signed_in: false, email: null, steps: SETUP.steps.map(s => s.step === 'sign_in' || s.step === 'runtime' ? { ...s, done: false } : s) }
+    stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': fresh, 'GET /api/runtimes': ONE })
+    renderApp(<SetupPage />, '/app/setup')
+    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Coding agents/ })).toHaveProperty('disabled', true)
   })
 })
 

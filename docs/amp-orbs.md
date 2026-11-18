@@ -35,17 +35,18 @@ plug in is described in [extensions](extensions.md#agent-connectors).
    [acceptance checklist](agent-install.md#acceptance-checklist). Amp uses the
    same recipe, services and variables; there is no separate Amp configuration
    for them.
-2. In Amp **Settings → Orbs**, add a self-hosted provider and turn **Repository
+2. In Amp **Settings → Orbs**, add a self-hosted provider (step by step, and
+   from the Amp CLI: [how-to](howto/amp.md)) and turn **Repository
    Setup** off: sbx puts the checkout at `/home/user/workspace/repo`, linked to
    the recipe's workdir, with renewable git credentials.
-3. In sbx **Extensions → Coding agents → Amp**, paste the provider token, choose a
-   default repository if you like, and enable it. The token goes into the secret
-   store; saving installs the host CLI if missing and starts `sbx-amp`. On the
+3. In sbx **Extensions**, on **Amp**, paste the provider token and
+   save; saving turns Amp on and **Disconnect** turns it off. The token goes into
+   the secret store; saving installs the host CLI if missing and starts `sbx-amp`. On the
    host you can do the same without putting the token in a command line:
 
    ```sh
    read -r -s AMP_TOKEN
-   printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=- enabled=true repo=owner/repository
+   printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=-
    unset AMP_TOKEN
    ```
 
@@ -67,7 +68,7 @@ repository from the orb type:
 - `sbx-admin amp routes` lists every trusted repository with a recipe and its
   orb type name (a slug of `owner/repo`).
 - A thread with an orb type runs that repository. Without one, it runs the
-  connector's default repository, or the only configured repository.
+  only configured repository; with several, choose the orb type in Amp.
 - An ambiguous or unknown route fails before any service is created; an existing
   orb keeps its route.
 - Orb sandboxes belong to the installation's first administrator, because the

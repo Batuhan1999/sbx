@@ -7,7 +7,7 @@ description: >
 inputs:
   address:
     label: Frontend address
-    help: The frontend, host:7233.
+    help: "host:7233"
     required: true
 check: |
   command -v temporal >/dev/null || { echo "the temporal CLI is not installed on this host"; exit 1; }

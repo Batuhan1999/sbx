@@ -1,4 +1,4 @@
-import { Blocks, Boxes, FolderGit2, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from 'lucide-react'
+import { Blocks, Boxes, Database, FolderGit2, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useMe } from '@/api/queries'
@@ -12,6 +12,7 @@ import { UpdateNotice } from './UpdateNotice'
 const NAV = [
   { to: '/app/repos', label: 'Repositories', icon: FolderGit2, key: 'r' },
   { to: '/app/sandboxes', label: 'Sandboxes', icon: Boxes, key: 's' },
+  { to: '/app/services', label: 'Services', icon: Database, key: 'v', admin: true },
   { to: '/app/extensions', label: 'Extensions', icon: Blocks, key: 'e', admin: true },
   { to: '/app/settings', label: 'Settings', icon: Settings, key: 't', admin: true },
 ]

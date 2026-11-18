@@ -28,6 +28,7 @@ import threading
 import urllib.parse
 import urllib.request
 
+from ... import howto
 from ..base import HOSTNAME, Backend, Capabilities, Failed, Limits, TokenPlace
 from .account import Account
 from .build import Builds
@@ -40,6 +41,7 @@ from .previews import COOKIE, HOSTED_DOMAIN, RESERVED_PORTS, Previews
 class Boat(Sandboxes, Builds, Previews, Account, Backend):
     kind = KIND
     title = "Boat"
+    help_url = howto.BOAT_KEY
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)
     ingress_cleared = ()
     ports = RESERVED_PORTS

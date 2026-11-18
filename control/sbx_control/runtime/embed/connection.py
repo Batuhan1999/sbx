@@ -29,7 +29,7 @@ def status() -> Status:
     full = room.get("known") and room["slots_free"] < 1
     state = "attention" if facts.get("disk_percent", 0) >= 85 or full else "connected"
     summary = f"E2B Embed · {running} running" + (" · full" if full else "") + (f" · disk {facts['disk_percent']}%" if "disk_percent" in facts else "")
-    return Status(KIND, TITLE, state, summary, facts, (Field("api", "API", value=env.get("E2B_API_URL", "")),), ("test",))
+    return Status(KIND, TITLE, state, summary, facts, (Field("api", "API", value=env.get("E2B_API_URL", ""), kind="url"),), ("test",))
 
 
 def test() -> list[Check]:

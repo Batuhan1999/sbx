@@ -25,14 +25,16 @@ class Store(Connection):
             state = "connected" if identity else "attention"
             summary = "Infisical · live updates from its UI" if identity else "Infisical · no machine identity"
             facts["project"] = s.project
-        fields = (Field("mode", "Mode", value=s.mode, help=", ".join(MODES)),
-                  Field("port", "Infisical port", value=str(s.port), help=f"on this host: {s.url}"),
+        fields = (Field("mode", "Mode", value=s.mode, kind="choice", options=tuple((m, m.capitalize()) for m in MODES),
+                        help="Moving between stores: sbx-admin store enable"),
+                  Field("port", "Infisical port", value=str(s.port), kind="int", min=1, max=65535, advanced=True,
+                        help=f"On this host: {s.url}"),
                   Field("project", "Project id", value=s.project),
                   Field("environment", "Environment", value=s.environment),
                   Field("client_id", "Machine identity client id", secret=True, set=client_id.set),
                   Field("client_secret", "Machine identity client secret", secret=True, set=client.set),
                   Field("webhook_token", "Webhook token", secret=True, set=vault.facts(vault.INFISICAL_WEBHOOK_TOKEN).set,
-                        help="signing key for https://<login>/webhooks/infisical; made automatically"))
+                        hidden=True))
         return Status(self.kind, self.title, state, summary, facts, fields, ("connect", "test"))
 
     def test(self, values: dict | None = None) -> list[Check]:

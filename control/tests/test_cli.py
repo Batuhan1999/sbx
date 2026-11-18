@@ -266,6 +266,43 @@ class CliTests(unittest.TestCase):
         self.assertIn("cannot reach", str(code))
         self.assertNotIn("unknown", str(code))
 
+    def test_recipe_pr_prints_the_link_or_why_it_could_not_open_it(self):
+        recipe = self.home / "checkout/.sbx"
+        recipe.mkdir(parents=True)
+        (recipe / "sbx.yaml").write_text("previews: {web: 3000}\n")
+        (recipe / "setup").write_text("#!/bin/sh\n")
+        (recipe / "setup").chmod(0o755)
+        pr = {"number": 3, "url": "https://github.com/owner/app/pull/3", "state": "open", "draft": True,
+              "branch": "sbx/setup", "changed": True, "recipe_sha256": "abc"}
+        self.routes[("POST", "/api/repos/owner/app/setup-pr")] = lambda q, body: pr
+        code, out, err = self.run_cli("recipe", "pr", str(recipe.parent), "--repo", "owner/app", "--yes")
+        self.assertEqual((code, out), (0, "https://github.com/owner/app/pull/3 (draft)\n"), err)
+        self.assertEqual(self.control.calls[-1][3]["executable"], [".sbx/setup"])
+        code, out, err = self.run_cli("recipe", "pr", str(recipe.parent), "--repo", "owner/app", "--yes", "--json")
+        self.assertEqual(json.loads(out)["url"], pr["url"])
+
+        problem = "The server's GitHub App may not push to owner/app or open pull requests there: give it access."
+        self.routes[("GET", "/api/repos/owner/app/setup-pr")] = lambda q, body: {
+            "available": True, "pull_request": None, "record": {"number": None, "url": None, "problem": problem}}
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--repo", "owner/app")
+        self.assertEqual((code, out), (1, f"not published: {problem}\n"))
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--json", "--repo", "owner/app")
+        self.assertEqual((code, json.loads(out)["record"]["problem"]), (1, problem))
+        self.routes[("GET", "/api/repos/owner/app/setup-pr")] = lambda q, body: {
+            "available": True, "pull_request": {**pr, "state": "merged"}, "record": {**pr, "problem": None}}
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--repo", "owner/app")
+        self.assertEqual((code, out), (0, "https://github.com/owner/app/pull/3 (merged)\n"))
+
+    def test_repo_status_shows_the_recipe_pr_and_prints_json(self):
+        info = {"repo": "owner/app", "trust": "trusted", "recipe_pr": {
+            "number": 3, "url": "https://github.com/owner/app/pull/3", "state": "open", "draft": False,
+            "problem": None, "current": False}}
+        self.routes[("GET", "/api/repos/owner/app")] = lambda q, body: info
+        code, out, err = self.run_cli("repo", "status", "--repo", "owner/app")
+        self.assertIn("recipe_pr        https://github.com/owner/app/pull/3 (open); the recipe changed since", out)
+        code, out, err = self.run_cli("repo", "status", "--repo", "owner/app", "--json")
+        self.assertEqual(json.loads(out), info)
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}
@@ -709,6 +746,15 @@ class RuntimeCliTests(CliTests):
         self.assertEqual(code, 1)
         self.assertIn("ok  E2B Cloud API: answers; 3 template names", out)
         self.assertIn("NO  Base template: its last build failed: boom — build it again", out)
+        self.assertNotIn("how to:", out)   # no page for it
+        checks[0] = {**checks[0], "ok": False, "detail": "AuthenticationException: 401",
+                     "help_url": "https://github.com/o/sbx/blob/main/docs/howto/e2b.md#api-key"}
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud")
+        self.assertIn("NO  E2B Cloud API: AuthenticationException: 401\n    how to: "
+                      "https://github.com/o/sbx/blob/main/docs/howto/e2b.md#api-key", out)
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud", "--json")
+        self.assertEqual(json.loads(out)["checks"][0]["help_url"], checks[0]["help_url"])
+        checks[0] = {**checks[0], "ok": True}
         self.routes[("POST", "/api/runtimes/e2b-cloud/test")] = lambda q, body: {"kind": "e2b-cloud", "ok": True, "checks": checks[:1]}
         code, out, err = self.run_cli("runtimes", "test", "e2b-cloud", "--json")
         self.assertEqual((code, json.loads(out)["ok"]), (0, True))
@@ -893,13 +939,24 @@ class SetupCliTests(CliTests):
         self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
         code, out, err = self.run_cli("setup", "finish", "--admin", "ada@example.com", stdin="test-only-password\n")
         self.assertEqual(code, 0, err)
-        self.assertIn("Next: sbx login", out)
+        self.assertIn("if not signed in yet: sbx login", out)
         sent = {(c[0], c[1]): c[3] for c in self.control.calls}
         self.assertEqual(sent[("POST", "/api/setup/admin")], {"email": "ada@example.com", "password": "test-only-password"})
         self.assertEqual(sent[("POST", "/api/setup/complete")], {"email": "ada@example.com", "password": "test-only-password"})
         self.assertEqual(sent[("POST", "/api/runtimes")]["values"]["E2B_CLOUD_API_KEY"], CLOUD_KEY)
         self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
         self.assertNotIn("one-time-token", out + err)
+
+    def test_a_refused_domain_names_each_failed_check_and_its_how_to(self):
+        page = "https://github.com/o/sbx/blob/main/docs/howto/cloudflare.md#dns-records"
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (400, {"detail": {
+            "message": "Check the DNS records and certificate settings below.",
+            "checks": [{"name": "*.sbx.example.com resolves", "ok": False, "detail": "no address", "help_url": page},
+                       {"name": "delegation", "ok": False, "detail": "no NS record yet", "help_url": ""}]}})
+        code, out, err = self.run_cli("setup", "address", "--domain", "sbx.example.com", "--email", "a@example.com",
+                                      "--insecure")
+        self.assertEqual(code, "sbx-control: Check the DNS records and certificate settings below.; "
+                               f"*.sbx.example.com resolves: no address (how to: {page}); delegation: no NS record yet")
 
     def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
         self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]
@@ -934,6 +991,262 @@ class SetupCliTests(CliTests):
             self.assertEqual("add --insecure" in said, hint)
         with patch.dict(os.environ, {"SBX_SETUP_LINK": f"https://127.0.0.1:{port}/setup#t=x"}):
             self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
+
+    def test_finish_as_the_admin_sbx_login_signed_in_needs_no_password(self):
+        self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
+        def finish():
+            before = len(self.control.calls)
+            code, out, err = self.run_cli("setup", "finish")
+            self.assertEqual(code, 0, err)
+            self.assertIn("set up: https://203.0.113.7", out)
+            made = [c for c in self.control.calls[before:] if c[1] == "/api/setup/complete"]
+            self.assertEqual(len(made), 1)
+            return made[0]
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):   # neither the link nor a password
+            call = finish()
+        self.assertEqual((call[3], call[4]), (None, "Bearer sbx_test"))
+        self.assertEqual(finish()[4], "Bearer sbx_test")        # the link names this server too: still signed in
+        with patch.object(self.cli, "keychain_get", return_value=None):   # not signed in: the setup link
+            self.assertEqual(finish()[4], "Setup one-time-token")
+
+    def test_the_coding_agents_are_chosen_before_finishing(self):
+        self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
+                                {"kind": "amp", "title": "Amp", "chosen": False}]
+        code, out, err = self.run_cli("setup", "agents")
+        self.assertEqual(code, 0, err)
+        self.assertIn("amp          Amp", out)
+
+        def choose(q, body):
+            self.state["steps"].append({"step": "agents", "done": True, "summary": ", ".join(body["agents"]) or "none"})
+            return self.state
+        self.routes[("PUT", "/api/setup/agents")] = choose
+        code, out, err = self.run_cli("setup", "agents", "amp", "claude")
+        self.assertEqual(code, 0, err)
+        self.assertIn("coding agents: amp, claude", out)
+        self.assertEqual(self.control.calls[-1][3], {"agents": ["amp", "claude"]})
+        self.run_cli("setup", "agents", "none")
+        self.assertEqual(self.control.calls[-1][3], {"agents": []})
+        self.routes[("PUT", "/api/setup/agents")] = lambda q, body: (400, {"detail": "no coding agent nope here"})
+        code, _, _ = self.run_cli("setup", "agents", "nope")
+        self.assertEqual(code, "sbx-control: no coding agent nope here")
+
+
+AMP = {"kind": "amp", "title": "Amp", "group": "agent", "state": "off", "summary": "Provider stopped",
+       "display": [], "facts": {}, "actions": ["connect", "test", "disconnect"],
+       "fields": [{"name": "provider_token", "label": "Orb provider token", "secret": True, "set": False},
+                  {"name": "repo", "label": "Default repository", "value": ""},
+                  {"name": "enabled", "label": "Enabled", "value": "false"}]}
+REBUILDS = {"runtimes": {"embed": 1, "boat": 1}, "keys": {"embed": ["default"], "boat": ["default"]},
+            "building": True, "message": "2 templates rebuild (E2B Embed: 1, Boat: 1), about 10 minutes each."}
+
+
+def templates(phase, boat_phase=None, error=None):
+    def row(at):
+        return {"key": "default", "phase": at, "status": "failed" if at == "stuck" else "built",
+                "template": "default-0123abcd", "error": error if at == "stuck" else None}
+    return {"blocked": "", "runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
+                                        "boat": [row(boat_phase or phase)]}}
+
+
+class ExtensionCliTests(CliTests):
+    """sbx extensions: the Extensions page for agents, and --wait for the rebuilds a change starts."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.routes[("GET", "/api/connections")] = lambda q, body: {"connections": [AMP]}
+        self.routes[("PUT", "/api/connections/amp")] = lambda q, body: {**AMP, "state": "connected",
+                                                                         "summary": "Provider running", "rebuilds": REBUILDS}
+
+    def polls(self, *answers):
+        found = list(answers)
+        self.routes[("GET", "/api/templates")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_set_says_what_rebuilds_and_waits_for_it(self):
+        # The first poll meets sbx-control restarting: tried again, the change itself is not sent again.
+        self.polls((503, b"restarting"), templates("stale"), templates("building", "current"), templates("current"))
+        code, out, err = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--secret", "provider_token",
+                                      "--wait", stdin="aop_live_test-only-value\n")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 templates rebuild (E2B Embed: 1, Boat: 1)", out)
+        self.assertIn("the templates are rebuilt", out)
+        self.assertIn("rebuilding templates: 0 of 2 built", err)
+        self.assertIn("rebuilding templates: 1 of 2 built", err)
+        put = next(c for c in self.control.calls if c[0] == "PUT")
+        self.assertEqual(put[3], {"values": {"enabled": "true", "provider_token": "aop_live_test-only-value"}})
+        self.assertNotIn("aop_live_test-only-value", out + err)
+        self.assertEqual(sum(c[0] == "PUT" for c in self.control.calls), 1)
+
+    def test_a_failed_rebuild_exits_non_zero(self):
+        self.polls(templates("stale"), templates("stuck", "current", error="apt-get failed"))
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--wait")
+        self.assertEqual(code, "the default template failed on embed: apt-get failed")
+
+    def test_without_wait_or_rebuilds_it_returns_at_once(self):
+        code, out, err = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["rebuilds"]["runtimes"], {"embed": 1, "boat": 1})
+        self.assertFalse(any(c[1] == "/api/templates" for c in self.control.calls))
+        self.routes[("DELETE", "/api/connections/amp")] = lambda q, body: {
+            **AMP, "rebuilds": {"runtimes": {}, "keys": {}, "building": False, "message": "No template changes; "
+                                "nothing rebuilds."}}
+        code, out, err = self.run_cli("extensions", "disconnect", "amp", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("nothing rebuilds", out)
+        self.assertFalse(any(c[1] == "/api/templates" for c in self.control.calls))
+
+    def test_secrets_never_come_from_argv_and_fields_are_checked(self):
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "provider_token=aop_live_x")
+        self.assertIn("--secret provider_token reads it from stdin", code)
+        self.assertFalse(any(c[0] == "PUT" for c in self.control.calls))   # nothing sent
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "colour=blue")
+        self.assertIn("has no field colour", code)
+        code, _, _ = self.run_cli("extensions", "set", "nope")
+        self.assertIn("there is no extension nope", code)
+
+    def test_ls_and_templates(self):
+        code, out, err = self.run_cli("extensions")
+        self.assertEqual((code, out), (0, "amp            off            Provider stopped\n"), err)
+        self.polls(templates("stuck", error="apt-get failed"))
+        code, out, err = self.run_cli("templates")
+        self.assertEqual(code, 0, err)
+        self.assertIn("embed      default                          stuck      default-0123abcd  (apt-get failed)", out)
+
+
+def key_request(state="pending", done=(), **over):
+    """A key request as GET /api/secret-requests/ID answers it."""
+    items = [{"target": "runtime:boat:BOAT_API_KEY", "label": "Boat API key", "reuse": None},
+             {"target": "dns:cloudflare", "label": "Cloudflare DNS token", "reuse": None},
+             {"target": "repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY", "label": "Boat key for the app",
+              "reuse": "runtime:boat:BOAT_API_KEY"}]
+    items = [{**i, "done": n in done, "help_url": "", "what": "", "hint": ""} for n, i in enumerate(items)]
+    return {"id": "req12345", "url": "https://app.sbx.example.com/keys/req12345", "state": state,
+            "expires_at": "2099-01-01T00:00:00Z", "created_by": "ada@example.com", "items": items,
+            "remaining": sum(1 for i in items if not i["done"]), **over}
+
+
+class SecretsCliTests(CliTests):
+    """sbx secrets: the agent asks for keys and waits; the owner's keys go on stdin, never argv."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.enterContext(patch.dict(os.environ, {"SBX_SETUP_LINK": ""}))   # never one this shell has set
+        self.routes[("POST", "/api/secret-requests")] = lambda q, body: (201, key_request())
+
+    def polls(self, *answers):
+        found = iter(answers)
+        last = answers[-1]
+        self.routes[("GET", "/api/secret-requests/req12345")] = lambda q, body: next(found, last)
+
+    def test_request_sends_each_target_with_its_label_and_prints_the_page(self):
+        code, out, err = self.run_cli("secrets", "request", "runtime:boat", "Boat API key", "dns:cloudflare",
+                                      "Cloudflare DNS token", "--expires", "2h", "--note", "for the first sandbox",
+                                      "--help-url", "dns:cloudflare=https://example.com/howto")
+        self.assertEqual((code, out), (0, "https://app.sbx.example.com/keys/req12345\n"), err)
+        self.assertIn("sbx secrets status req12345 --wait", err)
+        method, path, _, body, authorization = self.control.calls[-1]
+        self.assertEqual((method, path, authorization), ("POST", "/api/secret-requests", "Bearer sbx_test"))
+        self.assertEqual(body, {"items": [{"target": "runtime:boat", "label": "Boat API key"},
+                                          {"target": "dns:cloudflare", "label": "Cloudflare DNS token",
+                                           "help_url": "https://example.com/howto"}],
+                                "expires_in": 7200, "note": "for the first sandbox"})
+        code, out, err = self.run_cli("secrets", "request", "runtime:boat", "--json")
+        self.assertIn("each target with its label", str(code))
+        code, out, err = self.run_cli("secrets", "request", "dns:cloudflare", "x", "--expires", "soon")
+        self.assertIn("a duration", str(code))
+
+    def test_request_wait_follows_until_every_key_is_in(self):
+        self.polls(key_request(done=(0,)), (502, b"restarting"), key_request("completed", done=(0, 1, 2)))
+        code, out, err = self.run_cli("secrets", "request", "--wait", "--json", "runtime:boat", "Boat API key")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["state"], "completed")      # only the final answer on stdout
+        self.assertIn("https://app.sbx.example.com/keys/req12345", err)
+        self.assertIn("waiting for the owner: 0/3 keys in", err)
+        self.assertIn("waiting for the owner: 1/3 keys in", err)
+
+    def test_wait_follows_the_runtime_keys_until_the_server_applied_them(self):
+        def applying(state, message=""):
+            return key_request("completed", done=(0, 1, 2), runtime_changes={"state": state, "message": message})
+        self.polls(applying("queued"), applying("applying"), (502, b"restarting"), applying("restarting"),
+                   applying("done", "Boat (boat) is enabled"))
+        code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the runtime keys are queued for the server", err)
+        self.assertIn("sbx-control is restarting", err)
+        self.polls(applying("applying"), applying("failed", "boat was not changed: Boat API: 401 key revoked"))
+        code, out, err = self.run_cli("secrets", "request", "--wait", "runtime:boat", "Boat API key")
+        self.assertIn("did not apply the runtime keys: boat was not changed: Boat API: 401 key revoked", str(code))
+        code, out, err = self.run_cli("secrets", "status", "req12345")   # no --wait: said, and non-zero
+        self.assertEqual(code, 1)
+        # A runtime key in early that the server refused: said at once, not after the other keys come.
+        self.polls(key_request(done=(0,), runtime_changes={"state": "failed", "message": "Boat API: 401 key revoked"}))
+        code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+        self.assertIn("did not apply the runtime keys: Boat API: 401 key revoked", str(code))
+
+    def test_wait_exits_non_zero_when_the_request_expires_or_is_cancelled(self):
+        for state in ("expired", "cancelled"):
+            with self.subTest(state):
+                self.polls(key_request(state))
+                code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+                self.assertIn(f"is {state}", str(code))
+                self.polls(key_request(), key_request(state))
+                code, out, err = self.run_cli("secrets", "request", "--wait", "dns:cloudflare", "DNS token")
+                self.assertIn(f"is {state}", str(code))
+        self.polls(key_request(done=(0,)))
+        code, out, err = self.run_cli("secrets", "status", "req12345")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1/3 keys in", out)
+        self.assertIn("in  runtime:boat:BOAT_API_KEY", out)
+
+    def test_submit_reads_each_key_from_stdin_and_fails_when_one_is_refused(self):
+        self.polls(key_request())
+        results = {"ok": False, "request": key_request(done=(0, 2)), "results": [
+            {"target": "runtime:boat:BOAT_API_KEY", "ok": True, "error": ""},
+            {"target": "dns:cloudflare", "ok": False, "error": "Cloudflare refused the token"},
+            {"target": "repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY", "ok": True, "error": ""}]}
+        self.routes[("POST", "/api/secret-requests/req12345/submit")] = lambda q, body: results
+        code, out, err = self.run_cli("secrets", "submit", "req12345", stdin="test-only-boat\ntest-only-dns\n")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.control.calls[-1][3], {"values": {"runtime:boat:BOAT_API_KEY": "test-only-boat",
+                                                                "dns:cloudflare": "test-only-dns"}})
+        self.assertIn("NO  dns:cloudflare: Cloudflare refused the token", out)
+        self.assertNotIn("test-only", out + err)
+        posts = sum(c[0] == "POST" for c in self.control.calls)
+        code, out, err = self.run_cli("secrets", "submit", "req12345", "dns:cloudflare", stdin="")
+        self.assertIn("no value for dns:cloudflare", str(code))
+        self.assertEqual(sum(c[0] == "POST" for c in self.control.calls), posts)   # nothing submitted
+
+    def test_ls_and_cancel(self):
+        self.routes[("GET", "/api/secret-requests")] = lambda q, body: {"requests": [key_request()]}
+        self.routes[("DELETE", "/api/secret-requests/req12345")] = lambda q, body: key_request("cancelled")
+        code, out, err = self.run_cli("secrets", "ls")
+        self.assertIn("req12345  pending   0/3 in", out)
+        code, out, err = self.run_cli("secrets", "cancel", "req12345", "--json")
+        self.assertEqual((code, json.loads(out)["state"]), (0, "cancelled"))
+        self.routes[("DELETE", "/api/secret-requests/req12345")] = lambda q, body: (409, {"detail": "the request is completed already"})
+        self.assertIn("completed already", str(self.run_cli("secrets", "cancel", "req12345")[0]))
+
+    def test_a_setup_link_stands_in_for_the_session_while_the_server_is_set_up(self):
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"{self.control.url}/setup#t=one-time-token"}):
+            code, out, err = self.run_cli("secrets", "request", "dns:cloudflare", "DNS token")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.control.calls[-1][4], "Setup one-time-token")
+        # Submitting is the signed-in admin's, even with the link still set: the server refuses the link there.
+        self.polls(key_request())
+        self.routes[("POST", "/api/secret-requests/req12345/submit")] = lambda q, body: {
+            "ok": True, "request": key_request(), "results": []}
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"{self.control.url}/setup#t=one-time-token"}):
+            code, out, err = self.run_cli("secrets", "submit", "req12345", "dns:cloudflare", stdin="test-only-dns\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c[4] for c in self.control.calls[-2:]], ["Bearer sbx_test", "Bearer sbx_test"])
+
+    def test_no_token_goes_to_a_plain_http_server_other_than_this_machine(self):
+        before = len(self.control.calls)
+        for base in ("http://203.0.113.7", ""):
+            with self.subTest(base), self.assertRaises(self.cli.Refused):
+                self.cli.Client(base).request("GET", "/api/me")
+        self.assertEqual(len(self.control.calls), before)
 
 
 class CliApiTests(Server):

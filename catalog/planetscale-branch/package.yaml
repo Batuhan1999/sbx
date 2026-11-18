@@ -20,14 +20,14 @@ requires:
 inputs:
   parent:
     label: Parent branch
-    help: Existing parent branch name; its schema and data are not copied
     default: main
   region:
+    advanced: true
     default: ''
-    description: Region slug; empty uses the parent's region
+    help: "Blank: the parent's region."
   sslrootcert:
+    hidden: true
     label: CA bundle path
-    help: The CA bundle inside the sandbox; change it for custom images. system works with native libpq only.
     default: /etc/ssl/certs/ca-certificates.crt
 outputs:
   url: { sensitive: true }

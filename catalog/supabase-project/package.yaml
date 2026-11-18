@@ -12,11 +12,11 @@ inputs:
   access_token:
     required: true
     secret: true
-    help: A personal access token of an account that can manage the project's branches.
+    help: "One that can manage the project's branches."
   project:
     label: Project ref
     required: true
-    help: The project's reference ID, from its dashboard URL or Project Settings.
+    help: "From the dashboard URL or Project Settings."
 check: |
   python3 - <<'CHECK'
   import json, os, sys

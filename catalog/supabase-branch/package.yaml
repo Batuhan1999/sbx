@@ -15,7 +15,7 @@ inputs:
   with_data:
     label: Copy data
     default: 'false'
-    help: Copy the project's data into each branch, not only its schema. Supabase allows this on some plans only.
+    help: "Not only the schema; some Supabase plans only."
 outputs:
   url: { sensitive: true }
   host: {}

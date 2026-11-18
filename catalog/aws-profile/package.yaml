@@ -12,7 +12,7 @@ requires:
 inputs:
   profile:
     label: Profile name
-    help: The AWS profile name the repository expects, for example dev.
+    help: "The profile name the repository expects."
     default: sbx
 outputs:
   profile: {}

@@ -167,7 +167,7 @@ def test(kind: str) -> list:
     own checks (its provider answers with the stored key), its limits, its
     base template (built, building or failed) and, when its checks pass and
     the base is built, whether its sandboxes reach this server. Each
-    {name, ok, detail, fix, runtime}; Refused for a runtime not enabled."""
+    {name, ok, detail, fix, runtime, help_url}; Refused for a runtime not enabled."""
     from . import reachability, template_builds, templates
     from .connections.base import Check
     if kind not in runtime.enabled():
@@ -175,7 +175,8 @@ def test(kind: str) -> list:
     try:
         found = list(runtime.test(kind))
     except Exception as error:   # the backend's checks themselves failed: that is the answer
-        found = [Check(f"{runtime.title(kind)} API", False, f"{type(error).__name__}: {error}", runtime=kind)]
+        found = [Check(f"{runtime.title(kind)} API", False, f"{type(error).__name__}: {error}", runtime=kind,
+                       help_url=_help_url(kind))]
     try:
         limits = runtime.limits(kind).known()
         found.append(Check("Limits", True, ", ".join(f"{k}={v}" for k, v in limits.items()) or "none stated",
@@ -190,11 +191,22 @@ def test(kind: str) -> list:
         found.append(Check("Base template", False, f"its last build failed: {(row or {}).get('error') or '?'}",
                            f"build it again: sbx-admin jobs run template@{kind}:{templates.BASE}", runtime=kind))
     else:
-        found.append(Check("Base template", True, "building" if build == "building" else "not built yet; the "
-                           "scheduler builds it within minutes", runtime=kind))
+        from . import setup
+        blocked = build != "building" and setup.templates_blocked()
+        found.append(Check("Base template", True, "building" if build == "building" else
+                           f"not built yet; {blocked}" if blocked else
+                           "not built yet; the scheduler builds it within minutes", runtime=kind))
     if build == "built" and all(c.ok for c in found):
         found.append(reachability.check(kind))
-    return [{"name": c.name, "ok": c.ok, "detail": c.detail, "fix": c.fix, "runtime": c.runtime or kind} for c in found]
+    return [{"name": c.name, "ok": c.ok, "detail": c.detail, "fix": c.fix, "runtime": c.runtime or kind,
+             "help_url": c.help_url} for c in found]
+
+
+def _help_url(kind: str) -> str:
+    try:
+        return runtime.get(kind).help_url
+    except Exception:   # the backend itself is what failed
+        return ""
 
 
 # sbx-admin runtime verify

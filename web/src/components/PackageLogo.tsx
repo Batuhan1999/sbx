@@ -3,6 +3,7 @@ import type { PackageInput } from '@/api/types'
 import type { FieldControls } from '@/components/form'
 import { inputLabel, isToggle, sentence, summary } from '@/lib/packages'
 import { cn } from '@/lib/utils'
+import { emailError, numberError, urlError } from '@/lib/validation'
 import { LinkedText } from '@/components/LinkedText'
 
 /** A catalog package's own logo (a data: URL of the SVG its package.yaml names), else the
@@ -66,6 +67,18 @@ export function PackageInputControl({ field, name, input, placeholder, note }: {
     </field.SelectField>
   }
   if (isToggle(input)) return <field.ToggleField label={label} help={help} />
-  return <field.TextField label={label} help={help} optional={!input.required} type={input.secret ? 'password' : 'text'}
-    placeholder={placeholder} autoComplete="off" spellCheck={false} />
+  const common = { label, help, optional: !input.required, placeholder, autoComplete: 'off', spellCheck: false }
+  if (input.type === 'number' || input.type === 'integer') return <field.NumberField {...common} min={input.min} max={input.max}
+    step={input.type === 'integer' ? 1 : 'any'} />
+  return <field.TextField {...common} type={input.secret ? 'password' : input.type === 'email' ? 'email' : input.type === 'url' ? 'url' : 'text'} />
+}
+
+/** What is wrong with a package input's value before it is sent (the server checks again). */
+export function packageInputError(input: PackageInput, value: string): string | undefined {
+  const v = (value ?? '').trim()
+  if (!v) return undefined
+  if (input.type === 'number' || input.type === 'integer') return numberError(v, { min: input.min, max: input.max, integer: input.type === 'integer' })
+  if (input.type === 'email') return emailError(v)
+  if (input.type === 'url') return urlError(v)
+  return undefined
 }

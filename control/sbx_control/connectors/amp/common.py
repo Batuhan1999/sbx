@@ -26,7 +26,7 @@ class JobError(ValueError):
 class Settings(settings.ExtensionSection):
     applies = (APPLY,)
     enabled: bool = False
-    repo: str = ""                  # the repo an orb runs when its type names none
+    chosen: bool = False            # chosen in the setup: in every template before the token is added
     # The Amp CLI release templates and the host install (AMP_VERSION for
     # ampcode.com/install.sh, which checks the release's sha256): in the
     # install command, so a new one changes the templates' fingerprint.
@@ -56,15 +56,6 @@ class Settings(settings.ExtensionSection):
         value = value.strip()
         if not re.fullmatch(r"[0-9][0-9A-Za-z.+-]*", value):
             raise ValueError("an Amp CLI release, such as 0.0.1794600035-g3776ae")
-        return value
-
-    @field_validator("repo")
-    @classmethod
-    def _repo(cls, value: str) -> str:
-        value = value.strip().lower()
-        if value and (not settings.REPO_RE.fullmatch(value) or "*" in value
-                      or any(p in (".", "..") for p in value.split("/"))):
-            raise ValueError("enter a GitHub owner/repository")
         return value
 
 

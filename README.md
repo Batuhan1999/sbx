@@ -63,6 +63,12 @@ What the agent reads along the way, if you want the details yourself:
 - [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md) and
   [Extensions](docs/extensions.md): optional agent connectors, and how to add
   your own connector or catalog package.
+- [Your first-run setup](docs/howto/setup.md): what the owner sees when
+  their agent sends the setup link and the keys page.
+- How-to pages for what you set up outside sbx: [Cloudflare DNS and
+  token](docs/howto/cloudflare.md), [E2B Cloud](docs/howto/e2b.md) and
+  [Boat](docs/howto/boat.md) API keys, the [GitHub App](docs/howto/github.md)
+  and an [Amp orb provider](docs/howto/amp.md).
 
 ## How it is built
 
@@ -116,7 +122,7 @@ Running them at E2B Cloud or Boat (any small VPS, no KVM):
   plan's limits (E2B Hobby: one hour before a sandbox pauses, renewed while
   it is used; 8 vCPUs, 8 GiB, 10 GiB disk each; 10 at once). Boat's trial
   saves no snapshots, and sbx's templates are snapshots: use a paid plan.
-- A domain: the provider's sandboxes call the server back at `login.D` on 443
+- A domain: the provider's sandboxes call the server back at `app.D` on 443
   (repository bundles, git credentials). They reach managed servers and
   private hosts only through [endpoints](docs/reference.md#endpoints).
 

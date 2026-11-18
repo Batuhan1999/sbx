@@ -13,7 +13,7 @@ import fcntl
 import json
 
 from .. import paths, recipes, secret_store, state
-from . import NAME_RE, MissingConnection, Package, PackageError, check, get
+from . import NAME_RE, MissingConnection, Package, PackageError, _text, check, get
 from . import resolve as resolve_package
 
 
@@ -140,7 +140,7 @@ def merged(repo: str, *, values: bool = True) -> list:
         uses = rec.get("package") or decl.get("uses")
         if not uses:
             continue
-        with_ = {**{k: str(v) for k, v in (decl.get("with") or {}).items()}, **(rec.get("inputs") or {})}
+        with_ = {**{k: _text(v) for k, v in (decl.get("with") or {}).items()}, **(rec.get("inputs") or {})}
         chosen = {**dict(decl.get("connections") or {}), **(rec.get("connections") or {})}
         origin = "both" if decl and rec else "sbx.yaml" if decl else "here"
         out.append((key, uses, with_, chosen, bool(rec.get("disabled")), origin, rec))
@@ -217,7 +217,7 @@ def attach(repo: str, name: str, key: str | None, inputs: dict, chosen: dict, *,
     # back to what sbx.yaml gives it, else its default. The check sees what merged() will give the scripts.
     cleared = {k for k, v in inputs.items() if v == "" and not package.secret(k)}
     use = (recipes.load(repo).spec.get("services") or {}).get(key)
-    recipe = {k: str(v) for k, v in ((use.get("with") if isinstance(use, dict) else None) or {}).items()}
+    recipe = {k: _text(v) for k, v in ((use.get("with") if isinstance(use, dict) else None) or {}).items()}
     saved = (declared[6].get("inputs") or {}) if declared else {}
     values = package.with_defaults({**recipe, **{k: v for k, v in saved.items() if k not in cleared}, **given}, key)
     bind(package, {**(declared[3] if declared else {}), **chosen}, key)

@@ -148,7 +148,7 @@ describe('Settings → Sandbox runtimes', () => {
     expect(row.textContent).toContain('Hobby · up to 10 at once')
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
-    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('Saved · type to replace')
+    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('set · leave empty to keep')
     expect(within(form).getByRole('radio', { name: /Hobby/ })).toHaveProperty('checked', true)
     expect(within(form).queryByRole('slider')).toBeNull()                 // Hobby fixes every limit
     await user.click(within(form).getByRole('radio', { name: /Pro/ }))
@@ -178,10 +178,11 @@ describe('Settings → Sandbox runtimes', () => {
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     expect(within(form).getByRole('radio', { name: /Custom/ })).toHaveProperty('checked', true)
     expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100')   // 200 by hand in runtime.env: the slider's top
-    const advanced = within(form).getByText('Advanced').closest('details')!
-    expect(advanced.open).toBe(false)                                   // the domain is out of the way
-    await user.click(within(form).getByText('Advanced'))
-    expect(within(advanced).getByText(/Changing it needs the API key again./)).toBeTruthy()
+    const more = within(form).getByRole('button', { name: 'More options' })
+    expect(more.getAttribute('aria-expanded')).toBe('false')            // the domain is out of the way
+    expect(within(form).queryByLabelText(/Domain/)).toBeNull()
+    await user.click(more)
+    expect(within(form).getByText(/Changing it needs the API key again./)).toBeTruthy()
     await user.type(within(form).getByLabelText(/Domain/), 'e2b.example.com')
     await user.click(within(form).getByRole('button', { name: 'Save' }))
     expect(await within(form).findByText('Enter the API key again to change the domain.')).toBeTruthy()
@@ -234,9 +235,11 @@ describe('Settings → Sandbox runtimes', () => {
 
 const SETUP = (runtimeDone: boolean) => ({
   complete: false,
-  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' },
-    { step: 'runtime', done: runtimeDone, optional: false, summary: '' }],
-  signed_in: false, email: null, can_complete: false, host: { address: '203.0.113.7' },
+  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' },
+    { step: 'runtime', done: runtimeDone, optional: false, summary: '' }, { step: 'agents', done: false, optional: false, summary: '' }],
+  // The owner created their account first: the keys and choices follow it.
+  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  agents: [{ kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'domain', domain: 'sbx.example.com', url: 'https://sbx.example.com', certificate: 'delegated', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 })
@@ -270,8 +273,8 @@ describe('first-run setup without a runtime', () => {
     await user.type(screen.getByLabelText('API key'), 'test-only-key')
     await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
     expect(await screen.findByText('Applying…')).toBeTruthy()
-    // Applied: on to the admin step, the new runtime listed with the server's checks.
-    expect(await screen.findByRole('heading', { name: 'Who runs this server?' }, { timeout: 10000 })).toBeTruthy()
+    // Applied: on to the coding agents, the new runtime listed with the server's checks.
+    expect(await screen.findByRole('heading', { name: 'Which coding agents does your team use?' }, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect(screen.getByRole('list', { name: 'Sandbox runtimes' }).textContent).toContain('E2B Cloud'))
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
     expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })

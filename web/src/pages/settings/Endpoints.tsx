@@ -44,7 +44,7 @@ export function Endpoints() {
   if (!shown) return null
   return <div ref={box} tabIndex={-1} className="scroll-mt-16 rounded-lg outline-none lg:scroll-mt-4">
     <Panel id="endpoints" title="Shared servers" bodyClassName="p-0"
-      description={`Let sandboxes at ${providers.length ? listText(providers) : 'a provider'} reach your servers.`}
+      description={providers.length ? `For sandboxes at ${listText(providers)}.` : undefined}
       actions={d.domain && !adding ? <Button size="sm" onClick={() => setAdding(true)}>Share a server</Button> : undefined}>
       {!d.domain && <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <p className="min-w-0 flex-1 basis-48 text-[13px] text-muted">Set a domain first.</p>
@@ -265,7 +265,6 @@ function Confirm({ pending, onBack, onDone }: { pending: Pending; onBack: () => 
     <p className="mono break-all rounded-lg border border-line bg-sunken px-3 py-2.5 text-[14px] font-medium text-ink" data-testid="endpoint-address">{pending.address}</p>
     <div className="space-y-1 text-[13px]">
       <p className="break-words text-ink">Reachable over the internet, only by sandboxes of {pending.repos ? listText(pending.repos) : `repositories ${pending.name} is attached to`}.</p>
-      <p className="text-muted">Each sandbox has its own certificate, and the service's login still applies.</p>
     </div>
     <ErrorState compact error={error} />
     <div className="flex justify-end gap-2">

@@ -1,14 +1,13 @@
 import { Link } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useCatalog, useSharedConnections } from '@/api/queries'
-import type { Attachment, CatalogPackage } from '@/api/types'
-import { PackageHeading, PackageInputControl } from '@/components/PackageLogo'
-import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
+import type { Attachment, CatalogPackage, PackageInput } from '@/api/types'
+import { PackageHeading, PackageInputControl, packageInputError } from '@/components/PackageLogo'
+import { AppForm, MoreOptions, SECRET_KEPT, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { EmptyState, ErrorState, QueryView } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { article } from '@/lib/packages'
 import { keyError, required } from '@/lib/validation'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { toast } from 'sonner'
 
 /** A package's settings for one repository: new, or an attachment it already has. */
@@ -33,7 +32,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
     package: entry.name, key: v.key, inputs: Object.fromEntries(Object.entries(v.inputs).filter(([n, x]) => x !== '' || !entry.inputs[n]?.secret)),
     connections: Object.fromEntries(Object.entries(v.connections).filter(([, x]) => x)), check: true,
   }), keys.env(repo), keys.readiness(repo), keys.repos, keys.catalog)
-  const inputs = Object.entries(entry.inputs)
+  const inputs = Object.entries(entry.inputs).filter(([, i]) => !i.hidden)
   const form = useAppForm({
     defaultValues: {
       key: attachment?.key ?? entry.name.split('/').pop()!.replace(/[^a-z0-9_-]/g, '-'),
@@ -44,6 +43,15 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
   })
   const submitting = useStore(form.store, s => s.isSubmitting)
   const titleOf = (kind: string) => catalog.data?.find(p => p.name === kind)?.title ?? kind
+  const main = inputs.filter(([, i]) => !i.advanced)
+  const advanced = inputs.filter(([, i]) => i.advanced)
+  const renderInput = ([n, i]: [string, PackageInput]) => {
+    const set = attachment?.secret_inputs[n]
+    return <form.AppField key={n} name={`inputs.${n}`} validators={{ onChange: ({ value }) => (i.required && !set && !i.default && !attachment?.inputs[n] ? required(value ?? '') : undefined) ?? packageInputError(i, value) }}>
+      {field => <PackageInputControl field={field} name={n} input={i} placeholder={i.secret && set ? SECRET_KEPT : i.default ?? ''}
+        note={!i.agent && i.secret ? 'Hidden from the coding agent.' : undefined} />}
+    </form.AppField>
+  }
   return <AppForm form={form} className="space-y-4">
     {!attachment && !bare && <PackageHeading logo={entry.logo} title={entry.title} description={entry.description} docs={entry.docs} docsLabel={`${entry.title} docs`} />}
     {Object.entries(entry.requires).map(([slot, need]) => {
@@ -55,29 +63,25 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
       </div>
       if (shared.isSuccess && options.length === 0) return <div key={slot} className="text-[12.5px]">
         <p className="mb-1 font-medium">{title}</p>
-        <p className="text-muted">None connected yet. <Link className="text-accent hover:underline" to="/app/extensions#connections" state={{ connect: need.kind }}>Connect {article(title)}</Link> first; then each sandbox gets its own {entry.title} on it.</p>
+        <p className="text-muted">None connected yet. <Link className="text-accent hover:underline" to="/app/services" state={{ connect: need.kind }}>Connect {article(title)}</Link> first.</p>
       </div>
+      // One connection to choose from: the server takes it when none is named, so there is nothing to pick.
+      const current = attachment?.connections[slot] ?? ''
+      if (shared.isSuccess && options.length === 1 && (current === '' || current === options[0].key)) return null
       return <form.AppField key={slot} name={`connections.${slot}`}>
-        {field => <field.SelectField label={title} help={`Each sandbox gets its own ${entry.title} on it.`}>
-          <option value="">{options.length === 1 ? `${options[0].key} (the only one)` : 'Choose…'}</option>
+        {field => <field.SelectField label={title}>
+          <option value="">Choose…</option>
           {options.map(s => <option key={s.key} value={s.key}>{s.key}</option>)}
         </field.SelectField>}
       </form.AppField>
     })}
-    {inputs.map(([n, i]) => {
-      const set = attachment?.secret_inputs[n]
-      return <form.AppField key={n} name={`inputs.${n}`} validators={{ onChange: ({ value }) => i.required && !set && !i.default && !attachment?.inputs[n] ? required(value ?? '') : undefined }}>
-        {field => <PackageInputControl field={field} name={n} input={i} placeholder={i.secret && set ? 'Saved; leave empty to keep it' : i.default ?? ''}
-          note={!i.agent && i.secret ? 'Hidden from the coding agent.' : undefined} />}
-      </form.AppField>
-    })}
-    {!attachment && <Collapsible>
-      <CollapsibleTrigger className="w-auto text-[12.5px]">Name in the recipe</CollapsibleTrigger>
-      <CollapsibleContent><div className="mt-2"><form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
-        {field => <field.TextField label="Name" help="How the recipe refers to it. Add the same package again under another name for a second one." className="font-mono" autoComplete="off" spellCheck={false} />}
-      </form.AppField></div></CollapsibleContent>
-    </Collapsible>}
-    {entry.checks && <p className="text-[12px] text-muted">Checked before it’s saved.</p>}
+    {main.map(renderInput)}
+    {(advanced.length > 0 || !attachment) && <MoreOptions open={advanced.some(([n, i]) => !i.secret && (attachment?.inputs[n] ?? '') !== '' && attachment?.inputs[n] !== i.default)}>
+      {advanced.map(renderInput)}
+      {!attachment && <form.AppField name="key" validators={{ onChange: ({ value }) => keyError(value) }}>
+        {field => <field.TextField label="Name in the recipe" className="font-mono" autoComplete="off" spellCheck={false} />}
+      </form.AppField>}
+    </MoreOptions>}
     <div className="flex justify-between gap-2">
       {onBack ? <Button variant="ghost" disabled={submitting} onClick={onBack}>Back</Button> : <span />}
       <div className="flex gap-2"><Button variant="ghost" onClick={onCancel ?? onDone}>Cancel</Button><SubmitButton form={form}>{attachment ? 'Save' : 'Add'}</SubmitButton></div>

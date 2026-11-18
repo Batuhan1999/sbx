@@ -35,7 +35,7 @@ export default function SetPasswordPage() {
     <AppForm form={form} className="space-y-4">
       <input type="email" autoComplete="username" value={link.data.email} readOnly hidden />
       <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>
-        {field => <field.TextField label="New password" type="password" autoComplete="new-password" autoFocus help="At least 8 characters." />}
+        {field => <field.TextField label="New password" type="password" autoComplete="new-password" autoFocus placeholder="8+ characters" />}
       </form.AppField>
       <form.AppField name="confirm" validators={{ onChangeListenTo: ['password'], onChange: ({ value, fieldApi }) => !value ? 'Repeat the password.' : value !== fieldApi.form.getFieldValue('password') ? 'The passwords differ.' : undefined }}>
         {field => <field.TextField label="Repeat password" type="password" autoComplete="new-password" />}

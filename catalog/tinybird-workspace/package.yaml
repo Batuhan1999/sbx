@@ -8,17 +8,18 @@ description: >
 docs: https://www.tinybird.co/docs/forward/core-concepts/branches
 inputs:
   url:
+    type: url
     label: API URL
-    help: The workspace region's HTTPS API base URL
+    help: "Your region's API URL."
     default: https://api.tinybird.co
   workspace:
     label: Workspace ID
-    help: The main workspace ID, available from tb workspace current or the Tinybird API
+    help: "From tb workspace current."
     required: true
   token:
     required: true
     secret: true
-    help: Workspace admin token with permission to create and delete branches; not a branch token
+    help: "A workspace admin token, not a branch token."
 check: |
   python3 - <<'CHECK'
   import json, os, sys

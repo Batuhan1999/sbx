@@ -13,8 +13,10 @@ requires:
   account: { kind: openrouter-account, expose: { management_key: OPENROUTER_MANAGEMENT_KEY } }
 inputs:
   limit:
+    type: number
+    min: 0
     label: Credit limit (USD)
-    help: What each sandbox's key may spend, for example 5. There is no unlimited key.
+    help: "Per sandbox, for example 5."
     required: true
   limit_reset:
     label: Limit resets
@@ -23,11 +25,10 @@ inputs:
       daily: Daily
       weekly: Weekly
       monthly: Monthly
-    help: Resets happen at midnight UTC.
     default: ""
   include_byok_in_limit:
+    advanced: true
     label: Count BYOK usage toward the limit
-    help: Usage on the account's own provider keys (BYOK) counts against the same limit.
     default: "true"
 outputs:
   key: { sensitive: true }

@@ -28,7 +28,7 @@ LIMITS = (
 )
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From Boat's dashboard: API keys (boat_…)."),
-    SettingField(API_URL_KEY, "API URL", default=DEFAULT_API_URL, optional=True, rekey=True,
+    SettingField(API_URL_KEY, "API URL", default=DEFAULT_API_URL, optional=True, kind="url", rekey=True, hidden=True,
                  help="Only for another Boat API."),
     SettingField(ORG_KEY, "Organization", optional=True, help="Bill an organization's wallet instead of yours."),
     *limit_settings(LIMITS),
