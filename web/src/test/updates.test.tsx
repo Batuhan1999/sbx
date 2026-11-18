@@ -57,11 +57,11 @@ describe('parseNotes', () => {
       '<!-- Release notes generated using configuration in .github/release.yml at v0.2.0 -->',
       "## What's Changed", '### Changes', '* Faster previews by @someone in https://github.com/o/sbx/pull/14', '',
       '**Full Changelog**: https://github.com/o/sbx/compare/v0.1.0...v0.2.0', '',
-      '## Rollback', '- Only if needed.',
+      '## Rollback', '- Only if needed.', '### Steps', '- Stop first.',
     ].join('\n'))
     expect(notes.steps).toEqual([{ text: '1. Back up the state.' }, { text: '2. Restart the service.' },
       { text: '<!-- Release notes generated example -->', code: true }])
-    expect(notes.sections.map(s => [s.title, s.generated])).toEqual([['Changes', true], ['Rollback', false]])
+    expect(notes.sections.map(s => [s.title, s.generated, s.depth])).toEqual([['Changes', true, 2], ['Rollback', false, 1], ['Steps', false, 2]])
   })
 
   it('keeps the release\'s own headings, paragraphs and groups apart from the generated list', () => {

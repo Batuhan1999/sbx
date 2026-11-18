@@ -54,9 +54,9 @@ export function parseNotes(text: string): ReleaseNotes {
     }
     if (fence) { fence.push(raw.trimEnd()); continue }
     if (!line) { blank = true; continue }
-    if (line === GENERATED_MARK) { generated = true; blank = true; continue }
+    if (line === GENERATED_MARK) { generated = true; open.length = 0; blank = true; continue }
     const compare = COMPARE.exec(line)
-    if (compare) { notes.compare = compare[1]; generated = false; blank = true; continue }
+    if (compare) { notes.compare = compare[1]; generated = false; open.length = 0; blank = true; continue }   // GitHub's headings are no one's parents
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading) {
       const level = heading[1].length, title = heading[2].trim()
