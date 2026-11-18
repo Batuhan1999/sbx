@@ -25,7 +25,8 @@ sbx-admin setup-infer >/dev/null || status=$?
 case "$status" in
   0) ;;
   3)
-    # One link with a new one-time token (the one before stops working); its
+    # The onboarding link: the current one-time token while it works (a rerun
+    # keeps the page the owner has open), else a new one; its
     # last line is the link, on this terminal only.
     found=$(cd "$here" && venv/bin/python -m sbx_control.setup onboarding) || die "could not make the onboarding link (above)"
     link="" trusted="" domain=""

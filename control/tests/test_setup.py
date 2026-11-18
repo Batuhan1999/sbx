@@ -135,13 +135,18 @@ class SetupTests(Server):
         self.choose_agents()
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
 
-    def test_the_onboarding_link_opens_the_setup_page_with_a_new_one_time_token(self):
+    def test_the_onboarding_link_opens_the_setup_page_and_a_rerun_keeps_it(self):
         self.ip_expiry.return_value = None
         found = self.setup.onboarding()
         self.assertTrue(found["link"].startswith("https://203.0.113.10/app/setup#t="))
         token = found["link"].split("#t=", 1)[1]
         self.assertTrue(self.setup.token_ok(token))
-        self.assertFalse(self.setup.token_ok(self.token))   # the one before stops working
+        self.assertEqual(token, self.token)                  # the page the owner has open keeps working
+        self.assertEqual(self.setup.onboarding()["link"], found["link"])   # an installer rerun prints the same
+        self.setup.revoke_token()
+        fresh = self.setup.onboarding()["link"].split("#t=", 1)[1]   # none left: a new one
+        self.assertTrue(self.setup.token_ok(fresh))
+        token = fresh
         self.assertEqual((found["trusted"], found["domain"]), (False, ""))
         self.headers = {"Authorization": f"Setup {token}"}
         self.ip_expiry.return_value = datetime.now(timezone.utc) + timedelta(hours=160)

@@ -154,13 +154,13 @@ def link(token: str | None = None, address: str = "") -> str:
 
 def onboarding() -> dict:
     """install.sh's last line while the setup is open (install-report.sh):
-    the onboarding link with a new one-time token (the previous one stops
-    working), and whether the browser trusts the certificate it opens on.
+    the onboarding link with the current one-time token while it works (a
+    rerun keeps the page the owner has open), else a new one, and whether the browser trusts the certificate it opens on.
     Shown on the installer's terminal only, never written to a file."""
     from .connections import domain
     if complete():
         raise RuntimeError("the setup is complete")
-    return {"link": link(mint_token()), "trusted": domain.certificate_ready(),
+    return {"link": link(current_token() or mint_token()), "trusted": domain.certificate_ready(),
             "domain": settings.current().domain.name}
 
 
