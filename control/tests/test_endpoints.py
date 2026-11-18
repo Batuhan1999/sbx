@@ -670,7 +670,8 @@ class RouteTests(Setup, Installation):
         # now, not only those its config named, so a newer grant's bundle stays.
         sandbox, issued = self.endpoints.sandbox, []
         real = sandbox._issue
-        moved = iter(["issued", "moved", "moved", "moved"])   # issued at one, a grant moves it, then still
+        # Read before the endpoints, then a grant moves it before the issue: issued again for all.
+        moved = iter(["seen", "moved", "moved", "moved", "moved"])
         with provider(self.runtime), \
                 patch.object(sandbox, "_issue", lambda *a, **kw: issued.append(a[3:]) or real(*a, **kw)), \
                 patch.object(sandbox, "generation", lambda: next(moved)), \

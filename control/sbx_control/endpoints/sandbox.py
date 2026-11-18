@@ -260,6 +260,7 @@ class Layer(sandbox_layers.SandboxLayer):
         its certificates issued and written, the forwarder running. A sandbox
         that may use none holds none."""
         from .. import sandbox_runtime
+        seen = generation()   # before the endpoints are read: a grant after it is caught below
         found, mine = self._routes(write), write.of(self)
         if not found.rows:
             with lock():
@@ -271,7 +272,7 @@ class Layer(sandbox_layers.SandboxLayer):
         only = {r.name for r in found.rows}
         # Again (after a grant or revoke meanwhile): every endpoint the repo may use now, so a
         # bundle another delivery wrote for a grant newer than this write's config is kept.
-        _write_current(sbx, *_issue(write.name, write.repo, write.kind, only),
+        _write_current(sbx, seen, _issue(write.name, write.repo, write.kind, only)[1],
                        lambda: _issue(write.name, write.repo, write.kind))
         sandbox_runtime.ship_guest(sbx)
         ensure_forwarder(sbx)
