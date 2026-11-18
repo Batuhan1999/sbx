@@ -95,7 +95,8 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
     hidden = set(settings.current().sandboxes.agent_hidden) | set(hidden)
     exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k not in hidden)
     exports += "".join(f"if [ -r {RUN}/{f} ]; then . {RUN}/{f}; fi\n" for f in layer.sources)
-    app_exports = f". {RUN}/env\n" + "".join(
+    # Sourced: a failed load of env stops it there, not with the app-only values alone.
+    app_exports = f". {RUN}/env || return 1\n" + "".join(
         f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k in hidden)
     staging = f"{RUN}/.runtime-staging"
     ext = f"{staging}/ext"
@@ -186,7 +187,11 @@ def restore_runtime(sbx, info, start_app: bool = True) -> bool:
             if pending[1]:   # owed before the new env is in place, should writing it fail part way
                 delivery.restart_required(name, mark=True)
             core._refresh_env(sbx, info, False)
-            if pending[1]:
+            # An update that asked for a restart while it ran may be in what it wrote: owed too.
+            after = delivery.pending(name)
+            if after and after[1] and not pending[1]:
+                delivery.restart_required(name, mark=True)
+            if pending[1] or (after and after[1]):
                 return True
         elif pending and paused:
             _, restart, revision = pending

@@ -234,8 +234,13 @@ def sbx_env(name: str, slug: str, a: recipes.App, owner: str = "", branch: str =
 def run_in(sbx, script, timeout=60, env=f"{RUN}/env", env_required=False):
     """Run with the sandbox's env as SSH shells and agents see it, or with
     the app's (env=f"{RUN}/app-env", which adds the provider keys).
-    env_required: fail, without running script, when env can't be loaded."""
-    load = f". {env} || {{ echo 'sbx: {env} could not be loaded' >&2; exit 1; }}; " if env_required else f". {env}; "
+    env_required: fail, without running script, when env can't be loaded,
+    nor a file it sources unconditionally (app-env's env): in an app-env
+    written before it returned on that failure, a failed . went on to the
+    exports after it."""
+    fail = "{ echo \"sbx: $f could not be loaded\" >&2; exit 1; }"
+    load = (f"for f in {env} $(sed -n 's#^\\. \\(/[^ ;|]*\\).*#\\1#p' {env} 2>/dev/null); "
+            f"do test -r \"$f\" || {fail}; done; f={env}; . {env} || {fail}; ") if env_required else f". {env}; "
     return sbx.commands.run(f"bash -c {shlex.quote(load + script)}", timeout=timeout)
 
 
@@ -628,13 +633,9 @@ def attach(name: str, why: str, *, info=None, run_app: bool = True, wait: bool =
 def _attach(name, why, info, run_app, wait):
     if not info:
         raise SandboxError(f"no sbx-{name}")
-    if runtime_state(info) == "running" and _paused_by_us(name, info):
-        # A provider's listing can lag its pause by seconds (E2B): sbx's own record wins, so this
-        # is a resume (the app restarted when the recipe asks, the certificates pushed), not a
-        # connect that wakes the VM unseen.
-        info = dataclasses.replace(info, state="paused") if dataclasses.is_dataclass(info) else copy.copy(info)
-        if not dataclasses.is_dataclass(info):
-            info.state = "paused"
+    # A resume (the app restarted when the recipe asks, the certificates pushed), not a connect
+    # that wakes the VM unseen.
+    info = _as_sbx_left_it(name, info)
     if runtime_state(info) == "paused":
         return _resume(name, why, info, run_app, wait)
     sbx, info = connect(name, why, info)
@@ -644,6 +645,18 @@ def _attach(name, why, info, run_app, wait):
         else:
             lifecycle.in_background(name, "restart", lambda operation: restart(name, operation))
     return sbx, info
+
+
+def _as_sbx_left_it(name: str, info):
+    """info, paused when sbx paused this VM but the listing still says running: a provider's
+    listing can lag its pause by seconds (E2B), so sbx's own record wins."""
+    if not (runtime_state(info) == "running" and _paused_by_us(name, info)):
+        return info
+    if dataclasses.is_dataclass(info):
+        return dataclasses.replace(info, state="paused")
+    info = copy.copy(info)
+    info.state = "paused"
+    return info
 
 
 def _paused_by_us(name: str, info) -> bool:
@@ -1000,6 +1013,7 @@ def run_cleanup(name: str, info, operation=None) -> dict | None:
         outcome = {"error": ".sbx/cleanup is not executable, so it did not run"}
         state.event(name, "cleanup skipped", outcome["error"])
         return outcome
+    info = _as_sbx_left_it(name, info)   # so restore_runtime puts a paused VM's env back
     paused = runtime_state(info) == "paused"
     try:
         sbx, info = connect(name, "to run .sbx/cleanup before it is deleted", info)
@@ -1044,16 +1058,39 @@ def _cleanup_output(output: str, info, used: dict | None) -> str:
     if used is None:
         return "(hidden: the env it ran with could not be read, or sources a login sbx cannot mask)"
     masked = mask(output, info, used)
-    meta = info.metadata or {}
     try:
-        # Every scope's, unmerged: a shadowed value can still reach the env, under its own name or another.
-        pairs = variables.secret_pairs(app_of(info).repo, meta.get("owner", ""))
+        short = _short_secrets(info, used)
     except Exception:
         return "(hidden: the values to mask in it could not be read)"
-    short = {v for name, value in pairs for v in (value, used.get(name, "")) if 0 < len(v) < 6}
     if any(v in masked for v in short):
         return "(hidden: it may hold a secret too short to mask)"
     return masked
+
+
+def _short_secrets(info, used: dict) -> set:
+    """The values under 6 characters (mask() leaves those) the hook may hold
+    from a secret: each the sandbox is granted, and what it ran with under a
+    name that holds one, the secret's own or one its env sets from it (an
+    alias), also a value rotated since. Only what the sandbox was given: an
+    untrusted one gets no stored secret."""
+    a = app_of(info)
+    meta = info.metadata or {}
+    if not (a.repo and settings.trust(a.repo) == "trusted"):
+        return set()
+    derived, referenced = set(), set()
+    for layer in [a.spec.get("env") or {}, *variables.installation_layers(a.repo)]:
+        for key, value in layer.items():
+            names = {m.group(4) for m in ENV_REF.finditer(value) if m.group(1)} if isinstance(value, str) else set()
+            if names:
+                derived.add(key)
+                referenced |= names
+    granted = variables.granted_secrets(a.repo, meta.get("owner", ""), audience(meta), referenced)
+    platform_values = platform.credentials().all
+    granted += [(name, platform_values[name]) for name in referenced
+                if isinstance(platform_values.get(name), str) and name not in {n for n, _ in granted}]
+    derived |= {name for name, _ in granted}
+    values = [v for _, v in granted] + [used.get(key, "") for key in derived]
+    return {v for v in values if isinstance(v, str) and 0 < len(v) < 6}
 
 
 def _pause_vm(info):

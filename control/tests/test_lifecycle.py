@@ -657,14 +657,15 @@ class LifecycleTests(Installation):
         cleanup.assert_called_once_with("fixture")
         self.assertEqual(self.lifecycle.get("fixture")["phase"], "deleted")
 
-    def cleanup_recipe(self, script="#!/bin/sh\necho released\n", executable=True):
-        """The fixture's recipe with a .sbx/cleanup."""
+    def cleanup_recipe(self, script="#!/bin/sh\necho released\n", executable=True, env=None):
+        """The fixture's recipe with a .sbx/cleanup (and env: its sbx.yaml's env)."""
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (folder / "sbx.yaml").write_text("previews: {'': 3000}\n")
         if script is not None:
             (folder / "cleanup").write_text(script)
             (folder / "cleanup").chmod(0o755 if executable else 0o644)
-        recipe = self.recipes.App("owner/repo", folder, {"previews": {"": 3000}, "workdir": "/home/user/repo"})
+        recipe = self.recipes.App("owner/repo", folder, {"previews": {"": 3000}, "workdir": "/home/user/repo",
+                                                         **({"env": env} if env else {})})
         self.enterContext(patch.object(self.recipes, "load", return_value=recipe))
         return recipe
 
@@ -870,8 +871,9 @@ class LifecycleTests(Installation):
     def test_a_short_secret_rotated_since_is_withheld_from_cleanup_output(self):
         self.healthy()
         self.cleanup_recipe()
-        with patch.object(self.core.variables, "secret_pairs", return_value=[("PIN", "n3w9")]):
-            response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n", env="export PIN=0ld7\n"))
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "n3w9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n", env="export PIN=0ld7\n"))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("too short to mask", response.json()["cleanup"]["output"])
         self.assertNotIn("0ld7", response.text)
@@ -879,11 +881,36 @@ class LifecycleTests(Installation):
     def test_cleanup_output_holding_a_short_secret_is_withheld(self):
         self.healthy()
         self.cleanup_recipe()
-        with patch.object(self.core.variables, "secret_pairs", return_value=[("PIN", "k3y9")]):
-            response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n"))
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "k3y9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n"))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn("k3y9", response.text)
         self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_a_short_secret_rotated_since_under_an_alias_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe(env={"SERVICE_PIN": "${secret:PIN}"})
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "n3w9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n",
+                                                              app_env="export SERVICE_PIN=0ld7\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+        self.assertNotIn("0ld7", response.text)
+        self.assertNotIn("0ld7", str(self.state.events("fixture")))
+
+    def test_an_installation_secret_the_sandbox_was_not_given_does_not_change_its_output(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.core.variables.put(None, "PIN", "k3y9", "test")   # named by no env the sandbox gets
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="code k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["output"], "code k3y9\n")
+
+    def trusted(self):
+        self.enterContext(patch.object(self.core.settings, "trust", return_value="trusted"))
 
     def test_mask_hides_everything_when_the_recipe_cannot_be_read(self):
         with patch.object(self.recipes, "load", side_effect=ValueError("bad yaml")):
@@ -945,9 +972,34 @@ class LifecycleTests(Installation):
         self.assertIn("could not be loaded", result.stderr)
         self.assertFalse(marker.exists())
 
+    def test_cleanup_does_not_run_when_the_env_the_app_env_sources_cannot_be_loaded(self):
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        marker = folder / "ran"
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        # env is missing: as an app-env from before writes it, and as one written now
+        for first in (f". {folder}/env\n", f". {folder}/env || return 1\n"):
+            (folder / "app-env").write_text(first + "export APP_ONLY=1\n")
+            result = self.core.run_in(Local(), f"touch {marker}", env=f"{folder}/app-env", env_required=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"{folder}/env could not be loaded", result.stderr)
+            self.assertFalse(marker.exists())
+        (folder / "env").write_text("export SHARED=1\n")   # readable: the hook runs
+        result = self.core.run_in(Local(), f"touch {marker}", env=f"{folder}/app-env", env_required=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+
     def test_a_shadowed_short_installation_secret_is_still_withheld(self):
         self.healthy()
         self.cleanup_recipe()
+        self.trusted()
+        self.enterContext(patch.object(self.core.variables, "installation_layers",
+                                       return_value=[{"SERVICE_PIN": "${secret:PIN}"}]))
         self.core.variables.put(None, "PIN", "k3y9", "test")
         self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
         response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n",
@@ -959,6 +1011,7 @@ class LifecycleTests(Installation):
     def test_a_short_repo_secret_under_an_alias_shadowed_by_a_personal_one_is_withheld(self):
         self.healthy()
         self.cleanup_recipe()
+        self.trusted()
         self.core.variables.put("owner/repo", "PIN", "r3p9", "test")
         self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
         response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with r3p9\n",
@@ -980,6 +1033,42 @@ class LifecycleTests(Installation):
         self.assertFalse(refresh.call_args.args[2])          # no restart
         self.assertIsNotNone(delivery.pending("fixture"))    # still owed, should the delete fail
         self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_a_restart_requested_while_cleanup_refreshes_the_env_is_owed(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], False)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+
+        def refresh(sbx, info, restart):   # a second update, asking for a restart, lands as it reads the store
+            delivery.queue("fixture", ["OTHER"], True)
+            return {"restarted": False}
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", side_effect=refresh):
+            self.assertTrue(self.core.restore_runtime(self.CleanupVM(), paused, start_app=False))
+        self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_a_cleanup_refresh_with_no_restart_requested_owes_none(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], False)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", return_value={"restarted": False}):
+            self.core.restore_runtime(self.CleanupVM(), paused, start_app=False)
+        self.assertFalse(delivery.restart_required("fixture"))
+
+    def test_cleanup_treats_a_vm_sbx_just_paused_as_paused(self):
+        self.healthy()
+        self.cleanup_recipe()
+        seen = []
+        with patch.object(self.core, "_paused_by_us", return_value=True), \
+                patch.object(self.core, "restore_runtime",
+                             side_effect=lambda sbx, info, **kw: seen.append(info.state) or False):
+            response, *_ = self.deleting(self.info, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.info.state, "running")   # the listing's record is left alone
+        self.assertEqual(seen, ["paused"])
 
     def test_the_keeper_runs_the_cleanup_of_a_long_paused_sandbox_it_deletes(self):
         from datetime import datetime

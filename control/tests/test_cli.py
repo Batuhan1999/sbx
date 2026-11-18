@@ -246,6 +246,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("sbx ls", str(code))
         self.assertNotIn("deleted\n", out)
 
+    def test_down_with_a_dropped_reply_says_the_outcome_is_unknown_and_never_resends(self):
+        import http.client
+        import urllib.error
+        sent = []
+        def dropped(*args, **kwargs):
+            sent.append(args)
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        with patch.object(self.cli.Client, "request", dropped):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("unknown", str(code))
+        self.assertIn("sbx ls", str(code))
+        self.assertEqual(len(sent), 1)
+        def unreachable(*args, **kwargs):
+            raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+        with patch.object(self.cli.Client, "request", unreachable):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("cannot reach", str(code))
+        self.assertNotIn("unknown", str(code))
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}

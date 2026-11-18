@@ -9,6 +9,7 @@ import argparse
 import base64
 import getpass
 import hashlib
+import http.client
 import http.server
 import io
 import json
@@ -106,14 +107,15 @@ class Client:
 
     def api(self, method, path, body=None, raw=False, timeout=600, late=None):
         """request(), exiting with the refusal or why the server could not be reached (request() itself
-        raises OSError, which follow() retries while sbx-control restarts); with late, when no answer
-        came within timeout."""
+        raises OSError, which follow() retries while sbx-control restarts); with late, when the request
+        was sent but no answer came (a timeout or a dropped connection): never sent again."""
         try:
             return self.request(method, path, body, raw, timeout)
         except Refused as error:
             sys.exit(str(error))
-        except OSError as error:
-            if late and isinstance(error, TimeoutError):
+        except (OSError, http.client.HTTPException) as error:
+            # urlopen wraps a failure to connect or send in URLError; one while waiting for the reply is raw.
+            if late and not isinstance(error, urllib.error.URLError):
                 sys.exit(late)
             reason = getattr(error, "reason", None) or error
             hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
@@ -917,7 +919,8 @@ def down(args):
     # The server answers once its cleanup ran: a paused sandbox's resume (a
     # provider's can take up to 25 minutes) and the hook's 5 come first.
     result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS,
-                 late=f"no answer from sbx-control within {DOWN_TIMEOUT_SECONDS // 60} minutes, so whether "
+                 late=f"no answer from sbx-control (none within {DOWN_TIMEOUT_SECONDS // 60} minutes, or the "
+                      f"connection closed before it), so whether "
                       f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
     forget_host(args.name)
     if args.json:
