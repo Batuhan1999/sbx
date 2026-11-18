@@ -206,9 +206,10 @@ export function AppForm({ form, children, ...props }: Omit<ComponentProps<'form'
   </form>
 }
 
-export function SubmitButton({ form, busy, ...props }: Omit<ButtonProps, 'form'> & { form: AnyFormApi }) {
+/** formId: the <form>'s id, when the button sits outside it (a footer); without it the button must be inside. */
+export function SubmitButton({ form, formId, busy, ...props }: Omit<ButtonProps, 'form'> & { form: AnyFormApi; formId?: string }) {
   const submitting = useStore(form.store, s => s.isSubmitting)
-  return <Button variant="primary" {...props} type="submit" busy={busy || submitting} />
+  return <Button variant="primary" {...props} form={formId} type="submit" busy={busy || submitting} />
 }
 
 /** What a saved secret's empty field says. */
