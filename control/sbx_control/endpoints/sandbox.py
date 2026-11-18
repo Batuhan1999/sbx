@@ -269,8 +269,10 @@ class Layer(sandbox_layers.SandboxLayer):
         with lock():
             certs.bind(write.name, write.repo, mine["credential"])
         only = {r.name for r in found.rows}
+        # Again (after a grant or revoke meanwhile): every endpoint the repo may use now, so a
+        # bundle another delivery wrote for a grant newer than this write's config is kept.
         _write_current(sbx, *_issue(write.name, write.repo, write.kind, only),
-                       lambda: _issue(write.name, write.repo, write.kind, only))
+                       lambda: _issue(write.name, write.repo, write.kind))
         sandbox_runtime.ship_guest(sbx)
         ensure_forwarder(sbx)
 

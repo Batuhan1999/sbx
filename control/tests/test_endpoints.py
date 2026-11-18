@@ -666,6 +666,17 @@ class RouteTests(Setup, Installation):
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
         self.assertIn(f"{self.endpoints.sandbox.RENEWED}/.push/temporal.bundle.pem", written)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.endpoints.describe()))
+        # A grant or revoke during the write: it is issued again for every endpoint the repo may use
+        # now, not only those its config named, so a newer grant's bundle stays.
+        sandbox, issued = self.endpoints.sandbox, []
+        real = sandbox._issue
+        moved = iter(["issued", "moved", "moved", "moved"])   # issued at one, a grant moves it, then still
+        with provider(self.runtime), \
+                patch.object(sandbox, "_issue", lambda *a, **kw: issued.append(a[3:]) or real(*a, **kw)), \
+                patch.object(sandbox, "generation", lambda: next(moved)), \
+                patch.object(sandbox, "_staging", return_value=".push"):
+            self.endpoints.LAYER.after_write(write, vm)
+        self.assertEqual(issued, [({"dev-pg", "temporal"},), ()])
 
     def test_a_public_repo_may_use_what_it_was_granted_and_nothing_else(self):
         with provider(self.runtime):
