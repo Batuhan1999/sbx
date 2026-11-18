@@ -167,7 +167,7 @@ class IdentityTests(unittest.TestCase):
         restarted = []
         with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", kept), \
                 patch.object(sbx_guest, "restart_listener", lambda: restarted.append(True)), \
-                patch.object(sbx_guest, "serves", lambda expected: expected == ["ssh-ed25519", "ours-ed25519"]):
+                patch.object(sbx_guest, "serves", lambda expected, timeout=3: expected == ["ssh-ed25519", "ours-ed25519"]):
             self.host_keys(ssh, "ours")
             sbx_guest.keep_host_keys()
             self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o700)
@@ -199,7 +199,7 @@ class IdentityTests(unittest.TestCase):
                         patch.object(sbx_guest, "IDENTITY_LOCK", root / "identity.lock"), \
                         patch.object(sbx_guest.os, "geteuid", return_value=0), \
                         patch.object(sbx_guest, "restart_listener", lambda: (restarted.append(True), live.append(True))), \
-                        patch.object(sbx_guest, "serves", lambda expected: expected == ours and live[-1]):
+                        patch.object(sbx_guest, "serves", lambda expected, timeout=3: expected == ours and live[-1]):
                     sbx_guest.identity("a" * 32, 22)
                 self.assertEqual(restarted, restarts)
                 self.assertTrue((kept / "ssh_host_ed25519_key.pub").exists())
@@ -306,7 +306,7 @@ class IdentityTests(unittest.TestCase):
         served = {}
         hangs = [keyscan_hangs]
 
-        def serves(expected):
+        def serves(expected, timeout=3):
             if hangs[0]:
                 hangs[0] -= 1
                 raise subprocess.TimeoutExpired("ssh-keyscan", 3)
@@ -374,6 +374,25 @@ class IdentityTests(unittest.TestCase):
         root = self.listener_root()
         self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458], keyscan_hangs=1),
                          [(1458, signal.SIGHUP)])
+
+    def test_a_key_scan_that_times_out_in_the_last_check_is_looked_at_again(self):
+        """The replacement's first scan and the final check's first scan time
+        out: the identity still becomes ready once a scan shows the fresh key."""
+        root = self.listener_root()
+        self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458], keyscan_hangs=2),
+                         [(1458, signal.SIGHUP)])
+
+    def test_a_healthy_listener_found_after_the_session_check_is_not_restarted(self):
+        """sshd from a replaced binary, replaced by a healthy one by the runtime
+        while sessions were looked for: the healthy one is kept, not signalled."""
+        root = self.listener_root()
+        (root / "460").mkdir()
+        (root / "460" / "exe").symlink_to("/usr/sbin/sshd (deleted)")
+        restarted = []
+        with self.listeners(460, 456), \
+                patch.object(sbx_guest, "restart_listener", lambda **kw: restarted.append(kw)):
+            self.assertEqual(sbx_guest.settled_listener(60, lambda: None), (456, 1456))
+        self.assertEqual(restarted, [])
 
     def test_replacements_that_keep_exiting_stop_at_the_deadline(self):
         """Every replacement sshd is gone before its signal: recovery gives up

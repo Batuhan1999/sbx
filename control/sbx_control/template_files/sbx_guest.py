@@ -433,7 +433,11 @@ def settled_listener(deadline, unwatched):
                 # from the binary there now.
                 restarted = True
                 unwatched()
-                if deadline > time.monotonic():
+                # Looked at again: the runtime may have put a healthy sshd
+                # there meanwhile, which is left running.
+                pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+                if (deadline > time.monotonic()
+                        and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
                     restart_listener(timeout=deadline - time.monotonic())
                     pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
             handle = os.pidfd_open(pid)
@@ -531,16 +535,21 @@ def identity(workspace, ssh_port):
                 os.close(handle)
             if not reloaded and time.monotonic() >= deadline - KEYS_SECONDS:
                 raise GuestError("workspace SSH listener kept restarting while it took its fresh identity")
-        if not wait_until(lambda: serves(expected), max(1, deadline - time.monotonic())):
+        def adopted():
+            try:   # each scan bounded by what is left; one that times out is looked at again
+                return serves(expected, timeout=max(0.1, min(3, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                return False
+        if not wait_until(adopted, max(1, deadline - time.monotonic())):
             raise GuestError("workspace SSH listener did not adopt its fresh identity")
         keep_host_keys()
         write_json(IDENTITY, {"workspace_id": workspace, "phase": "ready", "ed25519_public": expected})
 
 
-def serves(expected):
+def serves(expected, timeout=3):
     """Whether sshd on this machine answers with the ed25519 key expected."""
     scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", "ed25519", "127.0.0.1"],
-                             capture_output=True, text=True, timeout=3)
+                             capture_output=True, text=True, timeout=timeout)
     return any(line.split()[1:3] == expected for line in scanned.stdout.splitlines() if not line.startswith("#"))
 
 

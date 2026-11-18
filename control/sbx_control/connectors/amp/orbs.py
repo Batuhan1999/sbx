@@ -75,12 +75,17 @@ def dispatch(env: dict):
                 raise JobError("application preparation is still running; retry pause")
             time.sleep(0.5)
             current = lifecycle.get(sandbox_name(job["ORB_ID"]))
-    with httpx.Client(timeout=max(1, 270 - (time.monotonic() - started)), trust_env=False) as client:
+    # A spawn may confirm its bootstrap started (STARTED_PROBE) after the rest of its work.
+    with httpx.Client(timeout=max(1, 270 + STARTED_PROBE - (time.monotonic() - started)),
+                      trust_env=False) as client:
         response = client.post(f"http://127.0.0.1:{platform.CONTROL_PORT}/internal/amp/jobs", json=job)
         if response.status_code == 400:
             raise JobError(response.json()["detail"])
         response.raise_for_status()
         return response.json()
+
+
+STARTED_PROBE = 60   # seconds a spawn waits for its bootstrap to say it started
 
 
 def sandbox_name(orb_id: str) -> str:
@@ -212,9 +217,11 @@ def discard(name: str, orb_id: str, before: dict | None = None):
 
 def start_orb(name: str, info, job: dict, retry_preparation: bool = False, fresh: bool = False) -> dict:
     """The orb's sandbox running, with Amp's bootstrap started in it. A fresh
-    one is deleted again when this fails (handle_job)."""
+    one is deleted again when this fails, and its app is started only once
+    this succeeds (handle_job)."""
     try:
-        sandbox = core.attach(name, "for its Amp thread", info=info, run_app=not retry_preparation, ready=True)
+        sandbox = core.attach(name, "for its Amp thread", info=info, run_app=not (retry_preparation or fresh),
+                               ready=True)
     except core.NotReady as error:
         raise JobError(f"{error} (sbx-admin amp build)") from None
     if retry_preparation:
@@ -244,7 +251,7 @@ def start_orb(name: str, info, job: dict, retry_preparation: bool = False, fresh
     # A runtime may return from spawn before the command has run: a helper
     # that fails before it starts Amp shows here, within seconds.
     try:
-        sandbox.sbx.commands.run(f"python3 {helper} --started {launch}", user="user", timeout=60)
+        sandbox.sbx.commands.run(f"python3 {helper} --started {launch}", user="user", timeout=STARTED_PROBE)
     except runtime.CommandFailed:
         # The log may hold the token, so it stays in the sandbox; a fresh one is deleted with it.
         where = "" if fresh else f" (see {platform.RUN}/amp-bootstrap.log there)"

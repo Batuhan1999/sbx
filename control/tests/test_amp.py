@@ -6,7 +6,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 
 from support import Server
@@ -432,6 +432,25 @@ sudo() {
         self.items.clear()
         self.assertEqual(self.amp_job({"ORB_OPERATION": "delete", "ORB_ID": self.env["ORB_ID"]}).status_code, 200)
 
+    def test_amp_fresh_attach_leaves_the_app_until_the_bootstrap_has_started(self):
+        """A fresh attach that rebuilds the runtime must not start the app
+        before the bootstrap probe; preparation follows a probe that passed."""
+        self.amp_fixture()
+        from sbx_control import core, sandboxes
+        order = Mock()
+        attach = core.attach
+        guest = self.sdk.connect.return_value
+        guest.commands.run.side_effect = lambda *a, **k: order.probe()
+
+        def attached(*args, **kwargs):
+            order.attach(run_app=kwargs["run_app"])
+            return attach(*args, **kwargs)
+        with patch.object(core, "attach", side_effect=attached), \
+                patch.object(sandboxes, "restart", side_effect=lambda *a, **k: order.prepare()):
+            self.assertEqual(self.amp_job(self.env).status_code, 200)
+        self.assertEqual(order.mock_calls[0], call.attach(run_app=False))
+        self.assertEqual([c[0] for c in order.mock_calls][-2:], ["probe", "prepare"])
+
     def test_amp_spawn_that_fails_in_its_vm_deletes_it_before_preparing_the_app(self):
         self.amp_fixture()
         from sbx_control import core
@@ -569,6 +588,12 @@ sudo() {
                                "AMP_ORB_PROVIDER_TOKEN": "test-only-provider", "E2B_API_KEY": "test-only-runtime"})
         body = client.__enter__.return_value.post.call_args.kwargs["json"]
         self.assertEqual(set(body), {"ORB_ID", "ORB_OPERATION", "ORB_TOKEN"})
+
+    def test_amp_dispatch_waits_out_a_slow_spawn_s_bootstrap_probe(self):
+        from sbx_control.connectors.amp import orbs as amp_orbs
+        with patch.object(amp_orbs.httpx, "Client", return_value=MagicMock()) as client:
+            amp_orbs.dispatch({"ORB_ID": "test", "ORB_OPERATION": "spawn", "ORB_TOKEN": "test-only-token"})
+        self.assertGreater(client.call_args.kwargs["timeout"], 270 + amp_orbs.STARTED_PROBE - 5)
 
     def test_amp_dispatch_error_does_not_print_http_request(self):
         from sbx_control.connectors.amp import orbs as amp_orbs
