@@ -32,6 +32,7 @@ export const routes = [
       { path: 'sandboxes', lazy: page(() => import('@/pages/sandboxes/SandboxesPage')) },
       { path: 'sandboxes/new', lazy: page(() => import('@/pages/sandboxes/NewSandboxPage')) },
       { path: 'sandboxes/:name', lazy: page(() => import('@/pages/sandboxes/SandboxPage')) },
+      { path: 'services', lazy: page(() => import('@/pages/services/ServicesPage')) },
       { path: 'extensions', lazy: page(() => import('@/pages/extensions/ExtensionsPage')) },
       { path: 'settings', element: <Navigate to="/app/settings/general" replace /> },
       { path: 'settings/:section', lazy: page(() => import('@/pages/settings/SettingsPage')) },

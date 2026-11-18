@@ -63,7 +63,7 @@ export function AttachForm({ repo, entry, attachment, onDone, onBack, onCancel, 
       </div>
       if (shared.isSuccess && options.length === 0) return <div key={slot} className="text-[12.5px]">
         <p className="mb-1 font-medium">{title}</p>
-        <p className="text-muted">None connected yet. <Link className="text-accent hover:underline" to="/app/extensions" state={{ connect: need.kind }}>Connect {article(title)}</Link> first.</p>
+        <p className="text-muted">None connected yet. <Link className="text-accent hover:underline" to="/app/services" state={{ connect: need.kind }}>Connect {article(title)}</Link> first.</p>
       </div>
       // One connection to choose from: the server takes it when none is named, so there is nothing to pick.
       const current = attachment?.connections[slot] ?? ''

@@ -98,7 +98,7 @@ function AttachmentRow({ a, repo, admin, catalog, shared }: {
       </div>
       <StateBadge tone={state.tone} label={state.label} />
       <div className="flex items-center gap-1.5">
-        {fix && note.connect ? <LinkButton size="sm" variant="primary" to="/app/extensions" state={{ connect: note.connect }}>Connect</LinkButton>
+        {fix && note.connect ? <LinkButton size="sm" variant="primary" to="/app/services" state={{ connect: note.connect }}>Connect</LinkButton>
           : fix ? <Button size="sm" variant="primary" onClick={() => setEditing(true)}>{a.state === 'needs_connection' ? 'Choose' : 'Set up'}</Button>
           : admin && configurable && a.state !== 'disabled' ? <Button size="sm" onClick={() => setEditing(true)}><Settings2 />Edit</Button> : null}
         {!a.project && (a.state === 'ready' || a.state === 'check_failed') && <Button size="sm" busy={check.isPending} onClick={() => check.mutate()}><ShieldCheck />Test</Button>}

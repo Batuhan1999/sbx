@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { Connection } from '@/api/types'
 import ExtensionsPage from '@/pages/extensions/ExtensionsPage'
+import ServicesPage from '@/pages/services/ServicesPage'
 import { webAddresses } from '@/components/LinkedText'
 import { AttachForm } from '@/components/AttachForm'
 import { inputLabel, sentence, summary, suggestKey } from '@/lib/packages'
@@ -39,7 +40,7 @@ const menu = async (user: ReturnType<typeof userEvent.setup>, label: string, ite
 describe('the Add group', () => {
   it('offers each connection package not connected yet as a tile with its logo, and no per-sandbox packages', async () => {
     stubApi(base({ 'GET /api/catalog': CATALOG }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const add = await group('Add')
     const tile = (await add.findByText('Postgres server')).closest('li')!
     expect(tile.querySelector('img')?.getAttribute('src')).toBe(LOGO)
@@ -50,7 +51,7 @@ describe('the Add group', () => {
 
   it('connects a package from its dialog, which holds its description, and closes when saved', async () => {
     const calls = stubApi(base({ 'GET /api/catalog': CATALOG, 'POST /api/catalog/connections': { key: 'postgres' } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
     const dialog = await screen.findByRole('dialog')
@@ -63,7 +64,7 @@ describe('the Add group', () => {
 
   it('asks for inputs by label, offers choices as a list and yes or no as a switch, the name under More options', async () => {
     const calls = stubApi(base({ 'POST /api/catalog/connections': { key: 'openrouter' } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Add OpenRouter account' }))
     const dialog = await screen.findByRole('dialog')
@@ -86,7 +87,7 @@ describe('the Add group', () => {
 
   it('checks a number input before sending it', async () => {
     const calls = stubApi(base({ 'GET /api/catalog': { packages: [{ ...SERVER, inputs: { budget: { required: true, secret: false, agent: true, help: '', type: 'integer', min: 20, label: 'Budget' } } }], problems: [] } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
     const dialog = await screen.findByRole('dialog')
@@ -101,7 +102,7 @@ describe('the Add group', () => {
 
   it('shows its address as a link in a field\'s help', async () => {
     stubApi(base({ 'GET /api/catalog': { packages: [{ ...ACCOUNT, inputs: { management_key: { required: true, secret: true, agent: true, help: 'a key from openrouter.ai/settings/keys' } } }, KEY], problems: [] } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     await userEvent.click(await screen.findByRole('button', { name: 'Add OpenRouter account' }))
     const dialog = await screen.findByRole('dialog')
     expect((await within(dialog).findByRole('link', { name: 'openrouter.ai/settings/keys' })).getAttribute('href')).toBe('https://openrouter.ai/settings/keys')
@@ -111,7 +112,7 @@ describe('the Add group', () => {
 describe('the Connected group', () => {
   it('lists a connected package there, not under Add, quiet while it works', async () => {
     stubApi(base({ 'GET /api/catalog/connections': { connections: [{ ...SAVED, used_by: ['acme/app:openrouter'] }] } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const connected = await group('Connected')
     const row = (await connected.findByText('OpenRouter account')).closest('li')!
     expect(within(row).getByRole('link', { name: 'acme/app' }).getAttribute('href')).toBe('/app/repos/acme/app/packages')
@@ -122,7 +123,7 @@ describe('the Connected group', () => {
   it('edits a connection: the saved values filled in, a secret left empty kept, the name fixed', async () => {
     const saved = { ...SAVED, inputs: { management_key: '(set)', region: 'us', verify: 'false' } }
     const calls = stubApi(base({ 'GET /api/catalog/connections': { connections: [saved] }, 'POST /api/catalog/connections': saved }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await menu(user, 'Actions for openrouter', 'Edit')
     const dialog = await screen.findByRole('dialog')
@@ -141,14 +142,14 @@ describe('the Connected group', () => {
 
   it('says a connection cannot connect when its check failed', async () => {
     stubApi(base({ 'GET /api/catalog/connections': { connections: [{ ...SAVED, check_status: 'failed' }] } }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const row = (await (await group('Connected')).findByText('OpenRouter account')).closest('li')!
     expect(within(row).getByText('Can’t connect')).toBeTruthy()
   })
 
   it('adds another connection of the same package, refusing a name that is taken', async () => {
     const calls = stubApi(base({ 'GET /api/catalog/connections': { connections: [SAVED] }, 'POST /api/catalog/connections': {} }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await menu(user, 'Actions for openrouter', 'Add another')
     const dialog = await screen.findByRole('dialog')
@@ -170,7 +171,7 @@ describe('the Connected group', () => {
       'GET /api/repos': { repos: [{ repo: 'acme/app', trust: 'trusted' }, { repo: 'acme/api', trust: 'trusted' }, { repo: 'oss/lib', trust: 'public' }] },
       'POST /api/repos/acme/api/attachments': { attachment: {} },
     }))
-    renderApp(<ExtensionsPage />)
+    renderApp(<ServicesPage />)
     const user = userEvent.setup()
     await menu(user, 'Actions for openrouter', 'Use in a repository')
     const dialog = await screen.findByRole('dialog')
@@ -190,17 +191,20 @@ const agent = (kind: string, title: string, state: Connection['state'], extra: P
 })
 
 describe('agents and GitHub', () => {
-  it('lists a chosen agent without its key as connected, asking for the key; one not chosen under Add', async () => {
+  it('lists every agent with its state: one chosen without its key asks for it, one not set up offers Set up', async () => {
     stubApi(base({ 'GET /api/connections': { connections: [
       agent('amp', 'Amp', 'not_connected', { facts: { chosen: true }, summary: 'In every template; needs its provider token' }),
-      agent('claude-code', 'Claude Code', 'not_connected'),
+      agent('claude-code', 'Claude Code', 'off'),
     ] } }))
     renderApp(<ExtensionsPage />)
-    const connected = await group('Connected')
-    const amp = (await connected.findByText('Amp')).closest('li')!
+    const agents = await group('Coding agents')
+    const amp = (await agents.findByText('Amp')).closest('li')!
     expect(within(amp).getByText('Needs its key')).toBeTruthy()
     expect(within(amp).getByRole('button', { name: 'Add key' })).toBeTruthy()
-    expect((await group('Add')).getByRole('button', { name: 'Add Claude Code' })).toBeTruthy()
+    const claude = (await agents.findByText('Claude Code')).closest('li')!
+    expect(within(claude).getByText('Not set up')).toBeTruthy()
+    expect(within(claude).getByRole('button', { name: 'Set up' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Add' })).toBeNull()   // services have their own page
   })
 
   it('offers no Edit for a connector with nothing a person changes', async () => {
@@ -214,14 +218,14 @@ describe('agents and GitHub', () => {
     expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull()
   })
 
-  it('creates the GitHub App from its Add dialog, the organization optional', async () => {
+  it('creates the GitHub App from its Set up dialog, the organization optional', async () => {
     const github: Connection = { kind: 'github', title: 'GitHub', group: 'platform', state: 'not_connected', summary: 'No App yet', display: [], facts: {},
       actions: ['connect', 'test', 'disconnect'], fields: [{ name: 'id', label: 'App ID', secret: false, set: false, value: '', help: '', kind: 'int' }] }
     const calls = stubApi(base({ 'GET /api/connections': { connections: [github] }, 'POST /api/connections/github/manifest': { action_url: 'https://github.com/settings/apps/new', manifest: '{}' } }))
     const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
     renderApp(<ExtensionsPage />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add GitHub' }))
+    await user.click(within((await screen.findByText('GitHub', { selector: 'span' })).closest('li')!).getByRole('button', { name: 'Set up' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).queryByLabelText('App ID')).toBeNull()
     await user.click(within(dialog).getByRole('button', { name: /Create on GitHub/ }))
