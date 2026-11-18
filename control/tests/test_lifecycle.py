@@ -1285,10 +1285,14 @@ class LifecycleTests(Installation):
         from sbx_control import contributions
         def run(_sandbox, command, **kwargs):
             return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
-        for command, ready in (("command -v sh && echo noise && true", True), ("echo noise && false", False)):
-            with self.subTest(command=command):
-                connector = Mock(contribution=Mock(return_value=contributions.Contribution(
-                    "fixture", ready=contributions.Check(command))))
+        cases = [(command, ready, where) for command, ready in (("command -v sh && echo noise && true", True),
+                                                                 ("echo noise && false", False))
+                 for where in ("contribution", "base_contribution")]   # Amp's is in the base
+        for command, ready, where in cases:
+            with self.subTest(command=command, where=where):
+                connector = Mock(contribution=Mock(return_value=None), base_contribution=Mock(return_value=None))
+                getattr(connector, where).return_value = contributions.Contribution(
+                    "fixture", ready=contributions.Check(command))
                 with patch.object(self.core.extensions, "connector_of", return_value=connector), \
                         patch.object(self.core, "target_of"), patch.object(self.core, "run_in", side_effect=run):
                     if ready:

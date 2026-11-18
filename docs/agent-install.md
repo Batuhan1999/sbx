@@ -244,7 +244,9 @@ your machine to sbx's secret store over HTTPS and never passes through the
 server's shell.
 
 The install takes several minutes on a provider host and 30 minutes or more
-with Embed (images, then the base templates). Start it detached on the
+with Embed (images, then the base templates). Until the server has an
+address (`--domain`, or the one step 5 chooses), its base templates wait
+(`WAITING` in the log) and then build by themselves. Start it detached on the
 server, so a dropped connection or a tool timeout can't stop it:
 
 ```sh

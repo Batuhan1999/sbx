@@ -1,6 +1,7 @@
 """The Amp connector: Amp's self-hosted orb provider runs threads in
 sandboxes of their own. A paused orb is never deleted for its age: its disk
-is its thread's state."""
+is its thread's state. Amp's CLI and desktop tools are in the base template
+of every installation, enabled or not, so enabling Amp rebuilds nothing."""
 from __future__ import annotations
 
 import contextlib
@@ -19,13 +20,17 @@ from pydantic import ValidationError
 from ... import core, extensions, host, paths, settings, vault
 from ...connections.base import Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
+from . import registry
 from .common import CLI, KIND, Settings, TOKEN
 
-# Amp's desktop tools come from its orb image, pinned so a template's
+# Amp's desktop tools come from its orb image, pinned so the base template's
 # fingerprint (the artifact's label) changes when the image does.
 IMAGE = ("us-central1-docker.pkg.dev/amp-prod-0/amp-orb/amp-orb"
          "@sha256:199463fbe20651217164c887ba5178cb5c79607b51ed96e639649580b9593b67")
 TOOLS = "sbx-amp-tools"
+TOOLS_DIR = "opt/amp-wayland"          # in IMAGE
+TOOLS_LIMIT = 64 * 1024 * 1024         # bytes of the gzipped tarball a template build is served
+TOOLS_FILES_LIMIT = 256 * 1024 * 1024  # bytes of its files, as read from the registry
 CHECKPOINTS = pathlib.Path(__file__).parent / "checkpoints"
 SCHEMA = """
 create table if not exists amp_snapshots (
@@ -69,7 +74,7 @@ def tools_runtime() -> str | None:
     return runtime.able("image_import")
 
 
-def no_tools_runtime() -> str:
+def no_tools_runtime(problem: str = "") -> str:
     from ... import runtime
     importers = []
     for kind in runtime.kinds():
@@ -80,9 +85,10 @@ def no_tools_runtime() -> str:
         if backend.capabilities.image_import:
             importers.append(backend.title)
     which = f" ({', '.join(importers)})" if importers else ""
-    return ("Amp's desktop tools come from its container image, and no enabled sandbox runtime builds templates from "
-            f"one. Enable a runtime that does{which} and build again: the tools are then kept on this host for "
-            "every runtime.")
+    why = f"could not be read from its registry ({problem})" if problem else "come from its container image"
+    return (f"Amp's desktop tools {why}, and no enabled sandbox runtime builds templates from one. Let this host "
+            f"reach {IMAGE.partition('/')[0]} over HTTPS, or enable a runtime that builds from images{which}, and "
+            "build again: the tools are then kept on this host for every runtime.")
 
 
 # What a template's READY check runs from the tools: a tarball without them
@@ -107,18 +113,18 @@ def tools_valid(data: bytes) -> bool:
 
 def wayland_tools() -> bytes:
     """The tarball of /opt/amp-wayland from IMAGE: the host's copy for its
-    digest, else (or when that copy is damaged) fetched once on a runtime
-    that imports images and kept, dropping the copies of other digests."""
+    digest, else (or when that copy is damaged) fetched once and kept,
+    dropping the copies of other digests. Read from the image's registry,
+    or, when that fails, fetched on a runtime that imports images."""
     found = cached_tools()
     found.parent.mkdir(parents=True, exist_ok=True)
     with (found.parent / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)   # builds on several runtimes fetch once
         data = found.read_bytes() if found.is_file() else b""
         if not tools_valid(data):
-            kind = tools_runtime()
-            if kind is None:
-                raise RuntimeError(no_tools_runtime())
-            data = _fetch_tools(kind)
+            data = _fetch_tools_anywhere()
+            if len(data) > TOOLS_LIMIT:
+                raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
             if not tools_valid(data):
                 raise RuntimeError(f"the desktop tools fetched from {IMAGE} are not a gzipped amp-wayland tarball")
             partial = found.with_name(found.name + ".partial")
@@ -128,6 +134,23 @@ def wayland_tools() -> bytes:
             if other not in (found, found.parent / ".lock"):
                 other.unlink(missing_ok=True)
     return data
+
+
+def _fetch_tools_anywhere() -> bytes:
+    """From the registry; on a runtime that imports images when that fails."""
+    try:
+        data = registry.extract(IMAGE, TOOLS_DIR, limit=TOOLS_FILES_LIMIT)
+        if tools_valid(data):
+            return data
+        problem = "the image's amp-wayland lacks the desktop tools"
+    except Exception as error:   # unreachable, refused or malformed: a runtime may still fetch it
+        problem = f"{type(error).__name__}: {error}"
+    kind = tools_runtime()
+    if kind is None:
+        raise RuntimeError(no_tools_runtime(problem))
+    with contextlib.suppress(OSError):   # a diagnostic only
+        print(f"amp: desktop tools not read from the registry ({problem}); fetching them on {kind}", flush=True)
+    return _fetch_tools(kind)
 
 
 def _fetch_tools(kind: str) -> bytes:
@@ -157,8 +180,6 @@ def _fetch_tools(kind: str) -> bytes:
                 raise
             with contextlib.suppress(OSError):   # a diagnostic only: it must cost neither the tools nor the error
                 print(f"could not delete the {name} template on {kind}: {error}", flush=True)
-    if len(data) > 64 * 1024 * 1024:
-        raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
 
 
@@ -195,9 +216,9 @@ class Amp(extensions.Connector):
     def ready(self) -> Ready:
         return Ready(READY)
 
-    def contribution(self, target) -> Contribution | None:
-        if not self.settings().enabled:
-            return None
+    def base_contribution(self) -> Contribution:
+        """In every installation's base template, enabled or not: only a new
+        pinned CLI release or image digest changes it."""
         return Contribution(
             "amp",
             template=TemplateLayer(
@@ -273,7 +294,7 @@ class Amp(extensions.Connector):
             Field("repo", "Default repository", value=amp.repo,
                   help="owner/repository; with multiple repos, Amp orb types use the routes shown by sbx-admin amp routes"),
             Field("enabled", "Enabled", value="true" if amp.enabled else "false",
-                  help="Enabled, Amp is in every template; templates rebuild by themselves"),
+                  help="Runs the provider; Amp is in every template either way, so this rebuilds nothing"),
         ), ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:
@@ -297,9 +318,10 @@ class Amp(extensions.Connector):
             return Check("desktop tools", True, "kept on this host")
         kind = tools_runtime()
         if kind is None:
-            return Check("desktop tools", False, "no enabled runtime builds from container images", no_tools_runtime())
+            return Check("desktop tools", True, "read from Amp's registry at the next base template build")
         from ... import runtime
-        return Check("desktop tools", True, f"fetched on {runtime.title(kind)} at the next template build")
+        return Check("desktop tools", True, "read from Amp's registry at the next base template build, "
+                                            f"or fetched on {runtime.title(kind)} if that fails")
 
     def connect(self, values: dict, *, by: str) -> Status:
         amp = self.settings().model_dump()

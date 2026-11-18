@@ -288,7 +288,7 @@ def provider():
 
 
 def build(repo: str | None):
-    """Amp's layer is in every template while the connector is enabled."""
+    """Build now the templates the routed repos start from (each has Amp: it is in the base)."""
     from ... import runtimes, template_builds
     selected = [repo] if repo else [r["repo"] for r in routes()]
     if not selected:

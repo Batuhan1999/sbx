@@ -1,7 +1,8 @@
 """Sandbox templates: what goes into one (a plan) and building it on the runtime.
 
-A template is three layers: the platform layer (the base template), the
-extensions' contributions, and the recipe (a repo's .sbx/Dockerfile, its
+A template is three layers: the platform layer (the base template, with
+what extensions build into every installation's base), the extensions'
+contributions, and the recipe (a repo's .sbx/Dockerfile, its
 checkout and .sbx/build when its sbx.yaml asks for a prebuilt template;
 else the default layer). The runtime sizes a VM by the template it starts
 from, so every template is built at the size of its sandboxes.
@@ -177,11 +178,14 @@ class Plan:
         return f"{slug(self.key)}-{self.fingerprint[:8]}"
 
 
-def plan(key: str, extras: list) -> Plan:
+def plan(key: str, extras: list, base_extras: list = ()) -> Plan:
     """The template for key (BASE, a default key or a repo with one of its
     own: its recipe's when sbx.yaml asks for one, else the default layer),
-    with the extensions' contributions extras."""
-    base = Plan(BASE, _digest("platform", base_steps(), platform.START))
+    with the extensions' contributions extras, on the base template with
+    what every extension builds into it whatever its settings (base_extras)."""
+    base_extras = tuple(c for c in base_extras if c.template or c.ready)
+    layers = (contributions.fingerprint(base_extras),) if base_extras else ()
+    base = Plan(BASE, _digest("platform", base_steps(), platform.START, *layers), contributions=base_extras)
     if key == BASE:
         return base
     extras = tuple(c for c in extras if c.template or c.ready)
@@ -238,14 +242,30 @@ def contribute(t: runtime.TemplateSpec, extras, served: list) -> runtime.Templat
         for artifact in layer.artifacts:
             token, path = serve_bytes(artifact.produce())
             served.append((token, path))
-            t = t.run_cmd(f"mkdir -p {shlex.quote(artifact.into)} && {fetch(token)} "
-                          f"| tar -xz -C {shlex.quote(artifact.into)}")
+            # To a file: a retried download must not reach tar twice.
+            t = t.run_cmd(f"mkdir -p {shlex.quote(artifact.into)} && {fetch(token, retry=True)} -o /tmp/sbx-artifact "
+                          f"&& tar -xzf /tmp/sbx-artifact -C {shlex.quote(artifact.into)} && rm /tmp/sbx-artifact")
         for command in layer.root:
             t = t.run_cmd(command)
         t = t.set_user("user")
         for command in layer.user:
             t = t.run_cmd(command)
     return t.set_user("user")
+
+
+def serves_files(p: Plan) -> bool:
+    """Whether p's build fetches files this server serves it (an extension's
+    artifact), so it needs an address the builder can reach (bundle_origin)."""
+    return any(c.template.artifacts for c in p.contributions if c.template)
+
+
+def with_contributions(t: runtime.TemplateSpec, extras, served: list) -> runtime.TemplateSpec:
+    """Their template layers, then their ready checks, which fail the build."""
+    t = contribute(t, extras, served)
+    for c in extras:
+        if c.ready:
+            t = t.run_cmd(c.ready.command)
+    return t
 
 
 def recipe_layer(t: runtime.TemplateSpec, a: recipes.App, fetch: str) -> runtime.TemplateSpec:
@@ -322,6 +342,8 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
     try:
         if p.base is None:
             t = base_template()
+            if p.contributions:
+                t = with_contributions(t, p.contributions, served).set_workdir(platform.HOME)
         else:
             t = runtime.TemplateSpec().from_template(base or runtime.template_name(p.base.name, kind))
             if p.recipe:
@@ -332,11 +354,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
                 for command in DEFAULT_STEPS:
                     t = t.run_cmd(command)
             workdir = p.recipe.workdir if p.recipe else platform.HOME
-            t = contribute(t, p.contributions, served)
-            for c in p.contributions:
-                if c.ready:
-                    t = t.run_cmd(c.ready.command)
-            t = t.set_workdir(workdir)
+            t = with_contributions(t, p.contributions, served).set_workdir(workdir)
         own_desktop = runtime.desktop(kind) == "sbx"   # a runtime with its own desktop keeps its ports
         t = t.set_start_cmd(platform.start(own_desktop), platform.ready_port(own_desktop))
         hidden = [token for token, _ in served]
@@ -352,12 +370,15 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
             path.unlink(missing_ok=True)
 
 
-def fetch(token: str) -> str:
+def fetch(token: str, retry: bool = False) -> str:
     """The curl that downloads what this control serves a build under token.
     The token travels in a header, so no access log records it. A build
     trusts only public CAs, so a self-signed certificate (--dns none) is
-    pinned by its key."""
-    command = f"curl -fsSL -H {shlex.quote(f'{TOKEN_HEADER}: {token}')} {shlex.quote(bundle_origin() + '/bundles')}"
+    pinned by its key. retry: for a few minutes while the server does not
+    answer (its certificate still being issued)."""
+    again = "--retry 12 --retry-delay 15 --retry-all-errors " if retry else ""
+    command = (f"curl -fsSL {again}-H {shlex.quote(f'{TOKEN_HEADER}: {token}')} "
+               f"{shlex.quote(bundle_origin() + '/bundles')}")
     pin = pinned_key()
     return f"{command} {pin}" if pin else command
 

@@ -67,6 +67,13 @@ on every runtime the repository uses, and set what it depends on.
 | Node | 22.22.2 in `/usr/local/bin` (base template) | a runtime's image can put another first on `PATH` (Boat's showed Node 24) | install the version the repository pins (`.nvmrc`, `engines`) in `.sbx/setup` or the template, and check `node -v` |
 | Disk | at least `disk_mb` (8 GiB) free after the template build | the runtime gives more: E2B Cloud its plan's disk (Hobby 10 GiB, Pro 20 GiB), Boat its machine's (51 GB and up) | `resources.disk_mb`, then check `df -h /` |
 
+Every template carries the base template's contents, which include Amp's CLI,
+desktop tools and packages (about 0.6 to 0.7 GB) whether Amp is enabled or not.
+On E2B Embed `disk_mb` is free space after the build, so the default 8 GiB still
+holds; on a runtime with a fixed disk (an E2B Cloud plan, a Boat machine) that
+space comes out of what the sandbox has free, so check `df -h /` there rather
+than trusting `disk_mb`.
+
 ## Find the size
 
 1. Start without a size. Run the app's real workload (setup, the start
@@ -113,7 +120,8 @@ the other way round.
   grow as sandboxes write; watch the free space.
 
 A safe number of sandboxes does not follow from RAM alone: count CPU
-concurrency, the host reserve, shared-service growth, disk space and the disk
+concurrency, the host reserve, shared-service growth, disk space (each
+template, the base's contents included, is stored on the host) and the disk
 that paused sandboxes keep. Keep the number of simultaneous builds separate
 from the number of idle development sandboxes.
 
