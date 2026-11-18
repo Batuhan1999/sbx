@@ -43,7 +43,7 @@ class CredentialProcessTests(unittest.TestCase):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(cls.cert), str(key))
         cls.server.socket = context.wrap_socket(cls.server.socket, server_side=True)
-        thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         cls.addClassCleanup(cls.server.server_close)
         cls.addClassCleanup(cls.server.shutdown)

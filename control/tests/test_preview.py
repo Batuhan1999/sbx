@@ -36,7 +36,7 @@ class PreviewTests(unittest.TestCase):
         self.backend = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Backend)
         self.preview = PreviewServer(0, "test-sandbox", 4319, upstream=self.backend.server_address)
         for server in (self.backend, self.preview):
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
             self.addCleanup(server.server_close)
             self.addCleanup(server.shutdown)
 
@@ -70,7 +70,7 @@ class PreviewTests(unittest.TestCase):
     def preserving_preview(self):
         preview = PreviewServer(0, "test-sandbox", 4319, upstream=self.backend.server_address,
                                 preserve_host=True)
-        threading.Thread(target=preview.serve_forever, daemon=True).start()
+        threading.Thread(target=preview.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(preview.server_close)
         self.addCleanup(preview.shutdown)
         return preview

@@ -987,7 +987,7 @@ class ForwarderTests(Setup, Installation):
             def log_message(self, *args):
                 pass
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Callback)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         renew = {"sandbox": "box", "credential": self.credential("box"), "url": f"http://127.0.0.1:{server.server_address[1]}/certs"}
@@ -1019,7 +1019,7 @@ class ForwarderTests(Setup, Installation):
             def log_message(self, *args):
                 pass
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Callback)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/certs", asked
