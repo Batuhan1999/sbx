@@ -149,6 +149,13 @@ class CliTests(unittest.TestCase):
         code, out, err = self.run_cli("sandbox", "prepare", "try")
         self.assertIn("setup exited 1", str(code))
         self.assertEqual(out, "")
+        # The failure event says why: the command, its exit code, the end of its output.
+        self.routes[("GET", "/api/sandboxes/try/detail")] = lambda q, body: {"events": [
+            {"kind": "prepare failed", "detail": "`.sbx/setup` was killed (exit code 137: out of memory?)"},
+            {"kind": "create failed", "detail": "older"}]}
+        code, out, err = self.run_cli("sandbox", "prepare", "try")
+        self.assertIn("setup exited 1\n`.sbx/setup` was killed (exit code 137: out of memory?)\nfix it", str(code))
+        self.assertNotIn("older", str(code))
 
     def test_lifecycle_operations_print_only_the_sandboxs_json_on_stdout(self):
         phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"}, SANDBOX["lifecycle"]])

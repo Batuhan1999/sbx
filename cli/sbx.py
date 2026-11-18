@@ -434,13 +434,24 @@ def failed(info):
                                          or record.get("application") == "failed")
 
 
+def cause(name):
+    """Why the sandbox's last operation failed, as its newest failure event
+    says (the command, its exit code, the end of its output); "" when none."""
+    try:
+        events = request("GET", f"/api/sandboxes/{name}/detail").get("events") or []
+    except (Refused, OSError):
+        return ""
+    return next((e["detail"] for e in events if e["kind"].endswith(" failed") and e["detail"]), "")
+
+
 def wait_for(name, timeout):
     """Follow the sandbox's operation until it finishes (the server holds
     each request until the phase changes); exit 1 when it failed."""
     def verdict(info):
         record = info.get("lifecycle") or {}
+        why = cause(name) if failed(info) else ""
         return f"  {(record.get('phase') or 'unknown').replace('_', ' ')}", (
-            f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n"
+            f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n{why + chr(10) if why else ''}"
             f"fix it, then `sbx sandbox prepare {name}`; `sbx logs {name}` follows the app"
             if failed(info) else not record.get("active"))
     return follow(lambda: api("GET", f"/api/sandboxes/{name}?wait=30", timeout=90), verdict, timeout, interval=0,
