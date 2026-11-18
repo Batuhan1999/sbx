@@ -792,6 +792,16 @@ class WorkspaceTests(Server):
         self.assertIn(key, template_builds.stale())
         self.assertIn((runtime.default(), key), template_builds.interrupted())
         self.assertEqual(template_builds.first_wait(), template_builds.RESUME_SECONDS)
+        served, default = template_builds.keys, runtime.default()
+
+        def keys(kind=None):
+            if kind == 'boat':
+                raise OSError('unreadable')
+            return served(kind)
+        # One runtime whose served templates can't be read doesn't hide another's cut-off build.
+        with patch.object(runtime, 'enabled', return_value=['boat', default]), \
+                patch.object(template_builds, 'keys', side_effect=keys):
+            self.assertEqual(template_builds.interrupted(), [(default, key)])
         with patch('sbx_control.templates.build'):
             template_builds.build_now(key)  # retryable
         self.assertEqual(template_builds.first_wait(), template_builds.CHECK_SECONDS)

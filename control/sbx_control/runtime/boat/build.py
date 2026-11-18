@@ -58,16 +58,19 @@ class Builds:
         name = saved_name(name)
         deadline = time.monotonic() + seconds
         while True:
+            if time.monotonic() > deadline:
+                raise Timeout(f"Boat was still saving an earlier {name} after {int(seconds)} s")
             try:
                 self.call(lambda: self.api().save_saved_snapshot(
                     SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)), sandbox_id=sandbox_id)
                 break
             except BoatError as error:
-                # 409 while an earlier save under this name runs (a build a restart cut off,
-                # whose builder Boat still saves): wait for it to settle, then save this one.
-                if error.status != 409 or time.monotonic() > deadline or \
-                        self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot.status != "saving":
+                # save_in_progress: an earlier save under this name runs (a build a restart cut
+                # off, whose builder Boat still saves): wait for it to settle, then save this one.
+                if error.code != "save_in_progress":
                     raise
+            time.sleep(POLL_SECONDS)
+            while time.monotonic() <= deadline and self._saving(name):
                 time.sleep(POLL_SECONDS)
         while True:
             found = self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot
@@ -78,6 +81,15 @@ class Builds:
             if time.monotonic() > deadline:
                 raise Timeout(f"Boat was still saving {name} after {int(seconds)} s")
             time.sleep(POLL_SECONDS)
+
+    def _saving(self, name: str) -> bool:
+        """Whether Boat is still saving the saved snapshot name."""
+        try:
+            return self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot.status == "saving"
+        except BoatError as error:
+            if error.gone():
+                return False
+            raise
 
     def snapshot(self, sandbox_id, name):
         self._refuse_on_trial()

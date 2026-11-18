@@ -519,6 +519,44 @@ class Backend(unittest.TestCase):
         self.assertEqual(self.fake.saved["cache"]["sourceSandboxId"], handle.sandbox_id)   # saved again, its own
         self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls), 2)
 
+    def test_a_save_saves_again_when_the_earlier_save_settled_first_and_raises_other_conflicts(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "ready", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")   # settled by the time of the look
+        self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(self.fake.saved["cache"]["sourceSandboxId"], handle.sandbox_id)
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/saved-snapshots", 409, "snapshot_name_taken")
+        with self.assertRaises(BoatError) as raised:
+            self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(raised.exception.code, "snapshot_name_taken")
+        self.assertEqual([(m, p) for m, p, _, _ in self.fake.calls[before:]], [("POST", "/saved-snapshots")])
+
+    def test_no_save_is_sent_again_past_its_deadline(self):
+        import types
+        from sbx_control.runtime.base import Timeout
+        build = self.boat_module.build
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "saving", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")
+        clock = [0.0]
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock[0],
+                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        before = len(self.fake.calls)
+        with patch.object(build, "time", fake_time), self.assertRaises(Timeout):
+            self.backend._save(handle.sandbox_id, "cache", seconds=1)
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls[before:]), 1)
+
+    def test_a_body_nested_past_the_decoders_limit_is_unreadable(self):
+        import types
+        from sbx_control.runtime.boat import errors
+        answer = types.SimpleNamespace(body="[" * 200000, status=502)
+        self.assertEqual(errors.code(answer), "")
+        self.assertTrue(errors._transient(answer))
+
     def test_a_create_is_not_sent_again_on_a_strange_error_and_odd_details_are_read(self):
         from sbx_control.runtime.boat.errors import BoatError
         before = len(self.fake.calls)

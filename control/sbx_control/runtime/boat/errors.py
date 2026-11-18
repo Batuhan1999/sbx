@@ -37,7 +37,7 @@ class BoatError(Failed):
 def _parsed(error):
     try:
         return json.loads(getattr(error, "body", None) or "{}")
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):   # nested past the decoder's limit: unreadable too
         return {}
 
 
@@ -140,8 +140,10 @@ def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, 
     answer the SDK could not read) is sent again, TRANSIENT_TRIES times at most,
     counted apart from Boat's retries. Those resends are bounded by their count,
     not by a caller's deadline: a caller polling until a deadline (_save,
-    _ready, _settle) may wait up to (TRANSIENT_TRIES - 1) * POLL_SECONDS past
-    it, and gets the BoatError, not its Timeout, when they all fail."""
+    _ready, _settle) can overrun it by its last poll's sleep, the request
+    times, Boat-directed retries (up to retry_seconds) and the resends' own
+    sleeps ((TRANSIENT_TRIES - 1) * POLL_SECONDS), and gets the BoatError, not
+    its Timeout (Busy for _settle), when they all fail."""
     deadline = time.monotonic() + retry_seconds
     tries = 0   # sends that failed transiently
     while True:

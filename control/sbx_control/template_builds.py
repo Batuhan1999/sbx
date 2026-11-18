@@ -280,9 +280,13 @@ def interrupted() -> list:
     more is left to prune."""
     found = []
     for kind in runtime.enabled():
-        with db() as conn:
-            rows = _rows(conn, kind)
-        served = set(keys(kind))
+        try:
+            with db() as conn:
+                rows = _rows(conn, kind)
+            served = set(keys(kind))
+        except Exception as error:   # one runtime's error must not hide the others' cut-off builds
+            print(f"template scheduler{_on(kind)}: {error!r}", flush=True)
+            continue
         found += [(kind, key) for key, row in rows.items()
                   if key in served and status(key, row, kind) == "interrupted"]
     return found

@@ -497,8 +497,8 @@ the repository's readiness shows the template as not built meanwhile. After a
 failed build the 503 names the failure and nothing restarts it on its own. A
 build that a restart of sbx-control cut off (its process is gone) is not a
 failure: it shows as `interrupted`. The scheduler looks for such builds 30
-seconds after sbx-control starts and builds them again when it can, after any
-build ahead of them.
+seconds after sbx-control starts and builds again those of templates it still
+serves when it can, after any build ahead of them.
 
 A build starts only when the host has room for it, and is refused before
 anything starts otherwise, saying what is missing (`POST
@@ -555,8 +555,8 @@ size; its resources snapshot reports `allocation_below_recipe`.
 
 Build one now with `sbx template build` in a checkout (`--repo owner/repo`
 elsewhere, `--wait` to follow it) or `POST /api/repos/OWNER/NAME/template`;
-`sbx template status` and `GET` on the same route report `building`, `built` or
-`failed` and whether it is stale. `sbx repo connect --prebuild` scaffolds a
+`sbx template status` and `GET` on the same route report `building`, `built`,
+`failed` or `interrupted` and whether it is stale. `sbx repo connect --prebuild` scaffolds a
 starting point.
 
 A template never contains credentials or a sandbox's mutable data. The checkout
