@@ -904,11 +904,16 @@ def push(args):
     print(f"pushed {branch} to sbx-{args.name}")
 
 
+DOWN_TIMEOUT_SECONDS = 45 * 60
+
+
 def down(args):
     """Delete the sandbox. The recipe's .sbx/cleanup runs first, on the
     server; what it printed goes to stderr. Its failure does not stop the
     delete, so it is a warning, not the exit status (--json has it all)."""
-    result = api("DELETE", f"/api/sandboxes/{args.name}") or {}
+    # The server answers once its cleanup ran: a paused sandbox's resume (a
+    # provider's can take up to 25 minutes) and the hook's 5 come first.
+    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS) or {}
     forget_host(args.name)
     if args.json:
         print(json.dumps(result))

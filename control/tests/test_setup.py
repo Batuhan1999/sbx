@@ -160,7 +160,9 @@ class SetupTests(Server):
         self.app.app.middleware_stack = None
         self.choose_ip()
         self.create_admin()
-        self.client.post("/api/setup/complete", headers=self.headers)
+        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
         self.assertEqual(self.password_login("operator%40example.com"), 200)
         name = platform.session_cookie()
         self.assertRegex(name, r"^sbx_session_[0-9a-f]{12}$")

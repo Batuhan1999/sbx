@@ -160,11 +160,13 @@ def runtime_values(info, write: sandbox_layers.Write | None = None) -> tuple[dic
     return envs, hidden, layer
 
 
-def restore_runtime(sbx, info) -> bool:
+def restore_runtime(sbx, info, start_app: bool = True) -> bool:
     """When the runtime had no room for a pause snapshot, it boots the
     sandbox again from its disk, and its tmpfs comes back empty: put the env,
     key and git credential back from what sbx-control keeps. True when it
-    had to, or the recipe requests an app restart after resume."""
+    had to, or the recipe requests an app restart after resume. start_app
+    False (a delete's cleanup): queued env changes are written but the app
+    is not restarted for them, and they stay queued, as owing a restart."""
     from . import core
     meta = info.metadata if isinstance(info.metadata, dict) else {}
     try:
@@ -180,7 +182,12 @@ def restore_runtime(sbx, info) -> bool:
         paused = core.runtime_state(info) == "paused"
         name = meta.get("sbx")
         pending = delivery.pending(name) if isinstance(name, str) and name else None
-        if pending and paused:
+        if pending and paused and not start_app:
+            core._refresh_env(sbx, info, False)
+            if pending[1]:
+                delivery.restart_required(name, mark=True)
+                return True
+        elif pending and paused:
             _, restart, revision = pending
             delivered = core._refresh_env(sbx, info, restart)
             delivery.acknowledge(name, revision)
@@ -202,8 +209,19 @@ def restore_runtime(sbx, info) -> bool:
 
 
 def written_env(sbx) -> dict:
-    text = sbx.commands.run(f"cat {RUN}/env; echo {ENV_SPLIT}; cat {RUN}/app-env 2>/dev/null || true",
-                            timeout=30).stdout
+    return _exports(sbx.commands.run(f"cat {RUN}/env; echo {ENV_SPLIT}; cat {RUN}/app-env 2>/dev/null || true",
+                                     timeout=30).stdout)
+
+
+def app_env_values(sbx) -> dict | None:
+    """The values only the app gets, as the sandbox holds them now; None when they can't be read."""
+    try:
+        return _exports(sbx.commands.run(f"test ! -e {RUN}/app-env || cat {RUN}/app-env", timeout=30).stdout)
+    except Exception:
+        return None
+
+
+def _exports(text: str) -> dict:
     # Whole-file tokens: a quoted value may span lines (a key file's).
     tokens, out = shlex.split(text), {}
     for word, pair in zip(tokens, tokens[1:]):
@@ -229,13 +247,24 @@ def write_env(sbx, info, restart, operation):
     return {"changed": differs, "restarted": must_restart}
 
 
+def _script_dir(a: recipes.App) -> str:
+    """Shell that sets d to where app_script takes the recipe's scripts from."""
+    return f"d={APP_SCRIPTS}" if a.operator else f"d=.sbx; [ -d .sbx ] || d={APP_SCRIPTS}"
+
+
+def has_app_script(sbx, script: str, a: recipes.App) -> bool:
+    """Whether app_script would run script: it skips one that is missing or not executable where it looks."""
+    command = (f"cd {shlex.quote(a.workdir)} && {{ {_script_dir(a)}; }} "
+               f'&& {{ [ ! -x "$d/{script}" ] || echo present; }}')
+    return sbx.commands.run(command, timeout=30).stdout.strip() == "present"
+
+
 def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None):
     """Run one of the recipe's scripts: the shipped copy when it is the
     operator's, else the checkout's .sbx/ (a branch may change its scripts)."""
     from . import core
-    source = f"d={APP_SCRIPTS}" if a.operator else f"d=.sbx; [ -d .sbx ] || d={APP_SCRIPTS}"
     scope = f"export {sbx_guest.START_SCOPE}={shlex.quote(process_scope)}; " if process_scope else ""
-    command = (f"cd {shlex.quote(a.workdir)} && {{ {source}; }} "
+    command = (f"cd {shlex.quote(a.workdir)} && {{ {_script_dir(a)}; }} "
                f"&& {{ {scope}true; }} "
                f'&& {{ [ ! -x "$d/{script}" ] || "$d/{script}"; }}')
     if operation and script == "setup":

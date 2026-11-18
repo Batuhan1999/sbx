@@ -39,13 +39,21 @@ when the checkout has a `.sbx/` and the recipe is not the operator's.
   event, and the sandbox is deleted anyway. Make it safe to repeat and quick.
 - A paused sandbox is resumed to run it, so a long-paused sandbox still
   releases what it holds; if the resume fails, the failure is recorded and the
-  sandbox is deleted without it.
-- What it printed (its last 4000 characters, with the sandbox's values
-  masked) is in the delete's answer as `cleanup: {exit_code, output}` or
-  `cleanup: {error}` (`null` without a hook), in the `cleanup ran` or `cleanup
-  failed` event, and in sbx-control's log. `sbx down` prints it to stderr and
-  warns when it failed, still exiting 0 because the sandbox is gone; `sbx down
-  --json` prints the whole answer.
+  sandbox is deleted without it. A resume for cleanup puts the env back but
+  does not start the app, and on a runtime whose resumes are cold boots the
+  app is then not running: cleanup must not depend on the app (its local
+  admin endpoint, say). Call the outside service directly.
+- A hook sbx cannot run is not reported as a success: a `sbx.yaml` it cannot
+  read is a `cleanup failed` event, and a checkout whose `.sbx/` has no
+  executable `cleanup` a `cleanup skipped` one, with `cleanup: {error}`.
+- What it printed is in the delete's answer as `cleanup: {exit_code,
+  output}` or `cleanup: {error}` (`null` without a hook), with its last 4000
+  characters; the `cleanup ran` or `cleanup failed` event and sbx-control's
+  log get its last 1500. The sandbox's values, and the app env it ran with,
+  are masked; the output is withheld when it holds a secret too short to mask.
+  `sbx down` prints it to stderr and warns when it failed, still exiting 0
+  because the sandbox is gone; `sbx down --json` prints the whole answer, so
+  use the answer for the longer diagnostic.
 - A sandbox whose VM is already gone runs no cleanup.
 
 ### sbx.yaml

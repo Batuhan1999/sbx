@@ -682,14 +682,21 @@ class LifecycleTests(Installation):
     class CleanupVM(FakeVM):
         """A VM whose .sbx/cleanup prints or fails as told; it records the commands that ran it."""
 
-        def __init__(self, exit_code=0, output="released\n"):
+        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env=""):
             super().__init__()
             self.exit_code, self.output, self.ran = exit_code, output, []
+            self.has_hook, self.app_env = has_hook, app_env
 
         def run(self, command, **kwargs):
             from sbx_control import runtime
             if "test -f /run/sbx/env" in command:
                 return done("ok")
+            if "echo present" in command:
+                return done("present" if self.has_hook else "")
+            if command.startswith("test ! -e /run/sbx/app-env"):
+                if self.app_env is None:
+                    raise runtime.CommandFailed(stdout="", stderr="unreadable", exit_code=1)
+                return done(self.app_env)
             if '"$d/cleanup"' in command:
                 self.ran.append(("cleanup", command, kwargs.get("timeout")))
                 if self.exit_code:
@@ -768,6 +775,107 @@ class LifecycleTests(Installation):
         self.assertIn("not executable", response.json()["cleanup"]["error"])
         connected.assert_not_called()
         self.assertIn("cleanup skipped", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_an_unreadable_recipe_is_a_failed_cleanup_not_a_missing_one(self):
+        self.healthy()
+        self.cleanup_recipe()
+        with patch.object(self.recipes, "load", side_effect=ValueError("bad yaml")):
+            response, kill, order, connected = self.deleting(self.info, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"],
+                         {"error": "the recipe's sbx.yaml could not be read, so .sbx/cleanup did not run"})
+        connected.assert_not_called()
+        kill.assert_called_once_with("fixture-vm")
+        self.assertIn("cleanup failed", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_a_checkout_without_the_hook_is_reported_as_skipped(self):
+        self.healthy()
+        self.cleanup_recipe()
+        response, kill, order, _ = self.deleting(self.info, self.CleanupVM(has_hook=False))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("did not run", response.json()["cleanup"]["error"])
+        self.assertEqual(order, [("kill", "fixture-vm")])
+        kinds = [kind for _, kind, _, _ in self.state.events("fixture")]
+        self.assertIn("cleanup skipped", kinds)
+        self.assertNotIn("cleanup ran", kinds)
+
+    def test_the_hook_check_looks_where_the_hook_would_run(self):
+        from sbx_control import sandbox_runtime
+        shipped = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        marker = shipped / "ran"
+        (shipped / "cleanup").write_text(f"#!/bin/sh\ntouch {marker}\n")
+        (shipped / "cleanup").chmod(0o755)
+        checkout = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (checkout / ".sbx").mkdir()
+        recipe = self.recipes.App("owner/repo", shipped, {"workdir": str(checkout)})
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        with patch.object(sandbox_runtime, "APP_SCRIPTS", str(shipped)):
+            vm = Local()
+            # The checkout's .sbx/ governs, and has no cleanup: neither checked nor run.
+            self.assertFalse(sandbox_runtime.has_app_script(vm, "cleanup", recipe))
+            with patch.object(self.core, "run_in", side_effect=lambda sbx, command, **_: vm.run(command)):
+                sandbox_runtime.app_script(vm, "cleanup", recipe)
+            self.assertFalse(marker.exists())
+            (checkout / ".sbx" / "cleanup").write_text(f"#!/bin/sh\ntouch {marker}\n")
+            (checkout / ".sbx" / "cleanup").chmod(0o755)
+            self.assertTrue(sandbox_runtime.has_app_script(vm, "cleanup", recipe))
+
+    def test_cleanup_output_is_masked_with_the_env_the_hook_ran_with(self):
+        self.healthy()
+        self.cleanup_recipe()
+        vm = self.CleanupVM(output="token old-app-secret-1\n", app_env="export APP_TOKEN=old-app-secret-1\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertNotIn("old-app-secret-1", response.text)
+        self.assertNotIn("old-app-secret-1", str(self.state.events("fixture")))
+        # When the env it ran with can't be read, only its exit status is told.
+        self.assertNotIn("old-app-secret-1", self.core._cleanup_output("token old-app-secret-1", self.info, None))
+
+    def test_cleanup_output_holding_a_short_secret_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        with patch.object(self.core.variables, "secret_values", return_value={"PIN": "k3y9"}):
+            response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n"))
+        self.assertNotIn("k3y9", response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_mask_hides_everything_when_the_recipe_cannot_be_read(self):
+        with patch.object(self.recipes, "load", side_effect=ValueError("bad yaml")):
+            self.assertIn("hidden", self.core.mask("a secret", self.info))
+
+    def test_a_resume_for_cleanup_that_needs_the_app_started_invalidates_it(self):
+        self.healthy()
+        self.cleanup_recipe()
+
+        def fail(vm_id):
+            raise RuntimeError("the runtime refused the kill")
+        with patch.object(self.core, "find", return_value=self.info), \
+                patch.object(self.core.runtime, "connect", return_value=self.CleanupVM()), \
+                patch.object(self.core, "restore_runtime", return_value=True) as restore, \
+                patch.object(self.core.runtime, "kill", side_effect=fail), \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]):
+            with self.assertRaises(RuntimeError):
+                self.core.delete("fixture")
+        self.assertEqual(restore.call_args.kwargs, {"start_app": False})
+        self.assertNotEqual(self.lifecycle.get("fixture")["application"], "healthy")
+
+    def test_a_restore_for_cleanup_writes_queued_env_without_restarting_and_keeps_it_queued(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], True)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", return_value={"restarted": False}) as refresh:
+            self.assertTrue(self.core.restore_runtime(self.CleanupVM(), paused, start_app=False))
+        refresh.assert_called_once()
+        self.assertFalse(refresh.call_args.args[2])          # no restart
+        self.assertIsNotNone(delivery.pending("fixture"))    # still owed, should the delete fail
+        self.assertTrue(delivery.restart_required("fixture"))
 
     def test_the_keeper_runs_the_cleanup_of_a_long_paused_sandbox_it_deletes(self):
         from datetime import datetime

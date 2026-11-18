@@ -19,8 +19,9 @@ import uuid
 from . import (addressing, contributions, extensions, ip_previews, lifecycle, paths, platform, recipes,
                runtime, sandbox_layers, secret_store, settings, state, variables)
 # The runtime's half (sandbox_runtime): writing it, putting it back, the guest helper, the recipe's scripts.
-from .sandbox_runtime import (ENV_SPLIT, GUEST, GUEST_SOURCE, SETUP_LOCK, _envs, app_script,  # noqa: F401
-                              ensure_started, guest, initialize_ssh_identity, restore_runtime, runtime_layer,
+from .sandbox_runtime import (ENV_SPLIT, GUEST, GUEST_SOURCE, SETUP_LOCK, _envs, app_env_values,  # noqa: F401
+                              app_script, ensure_started, guest, has_app_script, initialize_ssh_identity,
+                              restore_runtime, runtime_layer,
                               runtime_values, ship_guest, write_env, write_runtime, written_env)
 from .template_files import sbx_guest
 
@@ -718,21 +719,24 @@ def _run_app(sbx, info, operation=None, *, setup: bool = False, finish: bool = F
         operation.advance(lifecycle.started(bool(a.health)), finish=finish)
 
 
-def mask(text: str, info) -> str:
+def mask(text: str, info, used: dict | None = None) -> str:
     """text (a sandbox's logs, an error from it) with every value the
     sandbox gets hidden, for whoever may view it: the platform's, the
     installation's, its repo's for its kind, its owner's own, the ones it
-    generated (${random:}) and the env extensions add to its runtime. When
-    those can't be read, none of text is shown."""
-    meta, a = info.metadata or {}, app_of(info)
+    generated (${random:}) and the env extensions add to its runtime, and
+    used: values read from the sandbox itself. When those can't be read,
+    none of text is shown."""
+    meta = info.metadata or {}
     name = meta.get("sbx", "")
     try:
+        a = app_of(info)
         trusted = settings.trust(a.repo) == "trusted"
         known = dict(variables.generated(name)) if name else {}
         if trusted:
             known.update(variables.for_sandbox(a.repo, audience(meta), meta.get("owner", ""))[0])
         target = extensions.Target(repo=a.repo, name=name, trusted=trusted, connector=meta.get("connector", ""))
         known.update(contributions.merged_runtime(extensions.contributions_for(target)).env)
+        known.update(used or {})
         return variables.mask(text, a.repo, known)
     except Exception as error:
         return f"(hidden: the values to mask in it could not be read: {type(error).__name__})"
@@ -960,7 +964,7 @@ def _delete(name, slug, operation):
     info, cleanup = find(name), None
     if info:
         lifecycle.assert_binding(name, info.sandbox_id)
-        cleanup = run_cleanup(name, info)
+        cleanup = run_cleanup(name, info, operation)
         runtime.kill(info.sandbox_id)  # connect would resume a paused one first
         slug = slug_of(info)
     operation.advance("deleting", runtime="missing")
@@ -972,18 +976,21 @@ def _delete(name, slug, operation):
     return cleanup
 
 
-def run_cleanup(name: str, info) -> dict | None:
+def run_cleanup(name: str, info, operation=None) -> dict | None:
     """The recipe's .sbx/cleanup in the sandbox, before its VM is deleted:
     for what the app made outside the sandbox (a webhook, a cloud resource).
     It runs from the workdir with the app's env, like setup; a paused sandbox
-    is resumed for it. Best effort: a failure, a timeout
-    (CLEANUP_TIMEOUT_SECONDS) or a resume that fails is recorded as the
-    sandbox's event and never stops the delete. None when the recipe sbx reads
-    has no cleanup; else {"exit_code", "output"} or {"error"}, masked."""
+    is resumed for it, its env put back but its app not started. Best
+    effort: a failure, a timeout (CLEANUP_TIMEOUT_SECONDS), a hook the
+    sandbox's checkout lacks or a resume that fails is recorded as the
+    sandbox's event and never stops the delete. None when the recipe sbx
+    reads has no cleanup; else {"exit_code", "output"} or {"error"}, masked."""
     try:
         a = app_of(info)
-    except Exception:   # a repository no longer served: no recipe to read
-        return None
+    except Exception:   # its sbx.yaml is there but can't be read: whether it has a hook is unknown
+        outcome = {"error": "the recipe's sbx.yaml could not be read, so .sbx/cleanup did not run"}
+        state.event(name, "cleanup failed", f"{outcome['error']}; deleting the sandbox anyway")
+        return outcome
     hook = a.dir / "cleanup"
     if not (a.has_recipe and hook.is_file()):
         return None
@@ -994,14 +1001,21 @@ def run_cleanup(name: str, info) -> dict | None:
     paused = runtime_state(info) == "paused"
     try:
         sbx, info = connect(name, "to run .sbx/cleanup before it is deleted", info)
-        restore_runtime(sbx, info)   # a sandbox booted from its disk gets its env back
+        # A sandbox booted from its disk gets its env back; its app, which the delete stops, is not started.
+        if restore_runtime(sbx, info, start_app=False) and operation:
+            operation.invalidate_application()
         recipes.ship(sbx, a, APP_SCRIPTS)
+        if not has_app_script(sbx, "cleanup", a):
+            outcome = {"error": "the sandbox's checkout has a .sbx/ without an executable cleanup, so it did not run"}
+            state.event(name, "cleanup skipped", outcome["error"])
+            return outcome
+        used = app_env_values(sbx)   # what the hook gets, should the store have changed since
         try:
             result = app_script(sbx, "cleanup", a, env=f"{RUN}/app-env", timeout=CLEANUP_TIMEOUT_SECONDS)
         except runtime.CommandFailed as failed:
             result = failed
         output = "".join(filter(None, (result.stdout, result.stderr)))
-        outcome = {"exit_code": result.exit_code, "output": mask(output, info)[-CLEANUP_OUTPUT_CHARS:]}
+        outcome = {"exit_code": result.exit_code, "output": _cleanup_output(output, info, used)[-CLEANUP_OUTPUT_CHARS:]}
     except Exception as error:
         why = f"{'resuming the sandbox or ' if paused else ''}running it failed: {error}"
         outcome = {"error": mask(why, info)[-CLEANUP_OUTPUT_CHARS:]}
@@ -1012,6 +1026,24 @@ def run_cleanup(name: str, info) -> dict | None:
         state.event(name, "cleanup ran" if outcome["exit_code"] == 0 else "cleanup failed",
                     f"exit {outcome['exit_code']}" + (f": {tail}" if tail else ""))
     return outcome
+
+
+def _cleanup_output(output: str, info, used: dict | None) -> str:
+    """The hook's output masked with the values it ran with as well; none of
+    it when those can't be read, or when it holds a secret too short for
+    mask() to hide."""
+    if used is None:
+        return "(hidden: the env it ran with could not be read to mask its output)"
+    masked = mask(output, info, used)
+    meta = info.metadata or {}
+    try:
+        secret = variables.secret_values(app_of(info).repo, meta.get("owner", ""))
+    except Exception:
+        return "(hidden: the values to mask in it could not be read)"
+    short = {v for v in (*secret.values(), *(used[k] for k in secret if k in used)) if 0 < len(v) < 6}
+    if any(v in masked for v in short):
+        return "(hidden: it may hold a secret too short to mask)"
+    return masked
 
 
 def _pause_vm(info):
