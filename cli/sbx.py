@@ -9,6 +9,7 @@ import argparse
 import base64
 import getpass
 import hashlib
+import http.client
 import http.server
 import io
 import json
@@ -104,14 +105,18 @@ class Client:
                               "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
-    def api(self, method, path, body=None, raw=False, timeout=600):
+    def api(self, method, path, body=None, raw=False, timeout=600, late=None):
         """request(), exiting with the refusal or why the server could not be reached (request() itself
-        raises OSError, which follow() retries while sbx-control restarts)."""
+        raises OSError, which follow() retries while sbx-control restarts); with late, when the request
+        was sent but no answer came (a timeout or a dropped connection): never sent again."""
         try:
             return self.request(method, path, body, raw, timeout)
         except Refused as error:
             sys.exit(str(error))
-        except OSError as error:
+        except (OSError, http.client.HTTPException) as error:
+            # urlopen wraps a failure to connect or send in URLError; one while waiting for the reply is raw.
+            if late and not isinstance(error, urllib.error.URLError):
+                sys.exit(late)
             reason = getattr(error, "reason", None) or error
             hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
             sys.exit(f"cannot reach {self.base}: {reason}{hint}")
@@ -121,8 +126,8 @@ def request(method, path, body=None, raw=False, timeout=600):
     return Client(CONTROL).request(method, path, body, raw, timeout)
 
 
-def api(method, path, body=None, raw=False, timeout=600):
-    return Client(CONTROL).api(method, path, body, raw, timeout)
+def api(method, path, body=None, raw=False, timeout=600, late=None):
+    return Client(CONTROL).api(method, path, body, raw, timeout, late)
 
 
 def note(text):
@@ -904,9 +909,30 @@ def push(args):
     print(f"pushed {branch} to sbx-{args.name}")
 
 
+DOWN_TIMEOUT_SECONDS = 45 * 60
+
+
 def down(args):
-    api("DELETE", f"/api/sandboxes/{args.name}")
+    """Delete the sandbox. The recipe's .sbx/cleanup runs first, on the
+    server; what it printed goes to stderr. Its failure does not stop the
+    delete, so it is a warning, not the exit status (--json has it all)."""
+    # The server answers once its cleanup ran: a paused sandbox's resume (a
+    # provider's can take up to 25 minutes) and the hook's 5 come first.
+    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS,
+                 late=f"no answer from sbx-control (none within {DOWN_TIMEOUT_SECONDS // 60} minutes, or the "
+                      f"connection closed before it), so whether "
+                      f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
     forget_host(args.name)
+    if args.json:
+        print(json.dumps(result))
+        return
+    cleanup = result.get("cleanup")
+    if cleanup:
+        if cleanup.get("output", "").strip():
+            note(cleanup["output"].rstrip())
+        if cleanup.get("error") or cleanup.get("exit_code"):
+            why = cleanup.get("error") or f"it exited with {cleanup['exit_code']}"
+            note(f"warning: .sbx/cleanup failed ({why}); the sandbox was deleted anyway")
     print(f"sbx-{args.name} deleted")
 
 
@@ -1479,8 +1505,10 @@ def parser():
     s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (their own password on stdin)")
     s.add_argument("--admin", metavar="EMAIL")
     s.add_argument("--json", action="store_true")
-    p = command("down", down, "delete the sandbox and what was provisioned for it")
+    p = command("down", down, "delete the sandbox and what was provisioned for it, after the recipe's "
+                ".sbx/cleanup")
     p.add_argument("name")
+    p.add_argument("--json", action="store_true", help="the server's answer, with what .sbx/cleanup did")
     p = command("ls", ls, "your sandboxes")
     p.add_argument("--json", action="store_true")
     p = command("urls", urls_cmd, "a sandbox's preview links, and ports servers listen on")

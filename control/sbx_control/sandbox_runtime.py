@@ -95,7 +95,8 @@ def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer,
     hidden = set(settings.current().sandboxes.agent_hidden) | set(hidden)
     exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k not in hidden)
     exports += "".join(f"if [ -r {RUN}/{f} ]; then . {RUN}/{f}; fi\n" for f in layer.sources)
-    app_exports = f". {RUN}/env\n" + "".join(
+    # Sourced: a failed load of env stops it there, not with the app-only values alone.
+    app_exports = f". {RUN}/env || return 1\n" + "".join(
         f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k in hidden)
     staging = f"{RUN}/.runtime-staging"
     ext = f"{staging}/ext"
@@ -160,11 +161,13 @@ def runtime_values(info, write: sandbox_layers.Write | None = None) -> tuple[dic
     return envs, hidden, layer
 
 
-def restore_runtime(sbx, info) -> bool:
+def restore_runtime(sbx, info, start_app: bool = True) -> bool:
     """When the runtime had no room for a pause snapshot, it boots the
     sandbox again from its disk, and its tmpfs comes back empty: put the env,
     key and git credential back from what sbx-control keeps. True when it
-    had to, or the recipe requests an app restart after resume."""
+    had to, or the recipe requests an app restart after resume. start_app
+    False (a delete's cleanup): queued env changes are written but the app
+    is not restarted for them, and they stay queued, as owing a restart."""
     from . import core
     meta = info.metadata if isinstance(info.metadata, dict) else {}
     try:
@@ -180,7 +183,17 @@ def restore_runtime(sbx, info) -> bool:
         paused = core.runtime_state(info) == "paused"
         name = meta.get("sbx")
         pending = delivery.pending(name) if isinstance(name, str) and name else None
-        if pending and paused:
+        if pending and paused and not start_app:
+            if pending[1]:   # owed before the new env is in place, should writing it fail part way
+                delivery.restart_required(name, mark=True)
+            core._refresh_env(sbx, info, False)
+            # An update that asked for a restart while it ran may be in what it wrote: owed too.
+            after = delivery.pending(name)
+            if after and after[1] and not pending[1]:
+                delivery.restart_required(name, mark=True)
+            if pending[1] or (after and after[1]):
+                return True
+        elif pending and paused:
             _, restart, revision = pending
             delivered = core._refresh_env(sbx, info, restart)
             delivery.acknowledge(name, revision)
@@ -202,8 +215,26 @@ def restore_runtime(sbx, info) -> bool:
 
 
 def written_env(sbx) -> dict:
-    text = sbx.commands.run(f"cat {RUN}/env; echo {ENV_SPLIT}; cat {RUN}/app-env 2>/dev/null || true",
-                            timeout=30).stdout
+    return _exports(sbx.commands.run(f"cat {RUN}/env; echo {ENV_SPLIT}; cat {RUN}/app-env 2>/dev/null || true",
+                                     timeout=30).stdout)
+
+
+def app_env_values(sbx) -> dict | None:
+    """The values the app gets (app-env sources env), as the sandbox holds them now; None when they can't be
+    read, or when env sources a file that is there (an agent's login): sbx does not hold its values to mask."""
+    try:
+        text = sbx.commands.run(f"cat {RUN}/env && echo && {{ test ! -e {RUN}/app-env || cat {RUN}/app-env; }}",
+                                timeout=30).stdout
+        sourced = sorted(set(re.findall(rf"\. {re.escape(RUN)}/([\w.-]+)", text)) - {"env", "app-env"})
+        if sourced and sbx.commands.run("; ".join(f"test -r {RUN}/{f} && echo {f}" for f in sourced) + "; true",
+                                        timeout=30).stdout.split():
+            return None
+        return _exports(text)
+    except Exception:
+        return None
+
+
+def _exports(text: str) -> dict:
     # Whole-file tokens: a quoted value may span lines (a key file's).
     tokens, out = shlex.split(text), {}
     for word, pair in zip(tokens, tokens[1:]):
@@ -229,13 +260,25 @@ def write_env(sbx, info, restart, operation):
     return {"changed": differs, "restarted": must_restart}
 
 
-def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None):
+def _script_dir(a: recipes.App) -> str:
+    """Shell that sets d to where app_script takes the recipe's scripts from."""
+    return f"d={APP_SCRIPTS}" if a.operator else f"d=.sbx; [ -d .sbx ] || d={APP_SCRIPTS}"
+
+
+def has_app_script(sbx, script: str, a: recipes.App) -> bool:
+    """Whether app_script would run script: it skips one that is missing or not executable where it looks."""
+    command = (f"cd {shlex.quote(a.workdir)} && {{ {_script_dir(a)}; }} "
+               f'&& {{ [ ! -x "$d/{script}" ] || echo present; }}')
+    return sbx.commands.run(command, timeout=30).stdout.strip() == "present"
+
+
+def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None,
+               env_required=False):
     """Run one of the recipe's scripts: the shipped copy when it is the
     operator's, else the checkout's .sbx/ (a branch may change its scripts)."""
     from . import core
-    source = f"d={APP_SCRIPTS}" if a.operator else f"d=.sbx; [ -d .sbx ] || d={APP_SCRIPTS}"
     scope = f"export {sbx_guest.START_SCOPE}={shlex.quote(process_scope)}; " if process_scope else ""
-    command = (f"cd {shlex.quote(a.workdir)} && {{ {source}; }} "
+    command = (f"cd {shlex.quote(a.workdir)} && {{ {_script_dir(a)}; }} "
                f"&& {{ {scope}true; }} "
                f'&& {{ [ ! -x "$d/{script}" ] || "$d/{script}"; }}')
     if operation and script == "setup":
@@ -243,7 +286,7 @@ def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, o
         command = f"umask 077; exec > {sbx_guest.SETUP_LOG} 2>&1; " + command
         command = f"flock -n {shlex.quote(SETUP_LOCK)} bash -c {shlex.quote(command)}"
     try:
-        return core.run_in(sbx, command, timeout=timeout, env=env)
+        return core.run_in(sbx, command, timeout=timeout, env=env, env_required=env_required)
     except runtime.CommandFailed as error:
         if not (operation and script == "setup"):
             raise
