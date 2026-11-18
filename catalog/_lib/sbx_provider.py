@@ -25,9 +25,11 @@ Shell scripts get the name from `python3 ./sbx_provider.py name [-|_]`.
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import time
 from urllib.error import HTTPError
@@ -38,6 +40,21 @@ PREFIX = 'sbx'
 RESOURCE_ID = re.compile(r'[a-z][a-z0-9-]{1,30}')
 OUTPUT_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 USER_AGENT = 'sbx'
+
+
+# Shared address space (RFC 6598): Tailscale and other private overlays.
+SHARED = ipaddress.ip_network('100.64.0.0/10')
+
+
+def private_host(host):
+    """Whether every address host resolves to is loopback, private or on a
+    private overlay: a network where plain HTTP is the admin's choice."""
+    try:
+        found = {info[4][0].split('%')[0] for info in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError):
+        return False
+    return bool(found) and all(ipaddress.ip_address(a).is_private or ipaddress.ip_address(a) in SHARED
+                               for a in found)
 
 
 class ProviderError(ValueError):

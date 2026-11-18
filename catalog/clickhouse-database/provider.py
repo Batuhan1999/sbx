@@ -19,6 +19,9 @@ def run(action):
     endpoint = urlsplit(url)
     if endpoint.scheme not in ('http', 'https') or not endpoint.hostname or endpoint.fragment:
         raise sbx.ProviderError('ClickHouse URL must be an HTTP(S) endpoint')
+    if endpoint.scheme == 'http' and not sbx.private_host(endpoint.hostname):
+        raise sbx.ProviderError('ClickHouse URL must use https:// unless it reaches a private address: '
+                                'plain HTTP would send the password unencrypted')
     password = sbx.env('CH_PASSWORD', '')
     credentials = base64.b64encode(f"{sbx.env('CH_USER')}:{password}".encode()).decode()
 

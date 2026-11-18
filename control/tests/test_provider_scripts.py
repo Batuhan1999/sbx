@@ -69,10 +69,22 @@ class ClickHouseTests(ScriptCase):
         self.assertEqual(parse_qs(parsed.query)['session_timeout'], ['10'])
         self.assertEqual(values['url'], values['http_url'])
 
+    def test_plain_http_to_a_public_address_is_refused_before_any_request(self):
+        provider = load('clickhouse-database')
+        for url in ('http://8.8.8.8:8123', 'http://[2606:4700::1111]:8123', 'http://unresolvable.invalid:8123'):
+            with self.subTest(url=url), patch.dict(os.environ, {'CH_URL': url}), \
+                    patch.object(sbx_provider, 'urlopen') as query:
+                with self.assertRaisesRegex(sbx_provider.ProviderError, 'must use https://'):
+                    provider.run('create')
+                query.assert_not_called()
+        for url in ('http://127.0.0.1:8123', 'http://172.29.50.11:8123', 'http://100.101.1.2:8123', 'http://[fd00::5]:8123'):
+            with self.subTest(url=url):
+                self.assertTrue(sbx_provider.private_host(urlsplit(url).hostname))
+
     def test_shared_engines_and_views_are_refused_before_creating_resource(self):
         provider = load('clickhouse-database')
         for engine in ('ReplicatedMergeTree', 'SharedMergeTree', 'View', 'MaterializedView', 'PostgreSQL'):
-            with self.subTest(engine=engine), patch.dict(os.environ, {'CH_URL': 'http://host:8123', 'INPUT_MODE': 'clone', 'INPUT_TEMPLATE': 'seed'}), \
+            with self.subTest(engine=engine), patch.dict(os.environ, {'CH_URL': 'http://10.0.0.5:8123', 'INPUT_MODE': 'clone', 'INPUT_TEMPLATE': 'seed'}), \
                     patch.object(sbx_provider, 'urlopen', side_effect=[io.BytesIO(b'1\n'), io.BytesIO(json.dumps({'name': 'table', 'engine': engine}).encode())]) as query:
                 with self.assertRaisesRegex(ValueError, 'unsupported'):
                     provider.run('create')

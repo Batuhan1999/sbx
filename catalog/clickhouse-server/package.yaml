@@ -9,7 +9,7 @@ inputs:
   url:
     type: url
     label: URL
-    help: "Such as http://host:8123"
+    help: "Such as https://host:8443; http:// only on a private network, such as http://10.0.0.5:8123"
     required: true
   user:
     help: "One that can create databases and users."
@@ -19,7 +19,7 @@ inputs:
     required: false
 check: |
   python3 - <<'CHECK'
-  import base64, os, sys
+  import base64, ipaddress, os, socket, sys
   from urllib.parse import urlsplit
   from urllib.request import Request, urlopen
   try:
@@ -27,6 +27,19 @@ check: |
       parsed = urlsplit(endpoint)
       if parsed.scheme not in ('http', 'https') or not parsed.hostname:
           raise ValueError('invalid endpoint')
+  except Exception:
+      sys.exit('ClickHouse URL must be an HTTP(S) endpoint')
+  if parsed.scheme == 'http':
+      # The password goes in every request: plain HTTP only where every address is private or loopback.
+      try:
+          found = {info[4][0].split('%')[0] for info in socket.getaddrinfo(parsed.hostname, None)}
+      except (OSError, UnicodeError):
+          found = set()
+      shared = ipaddress.ip_network('100.64.0.0/10')   # Tailscale and other private overlays
+      if not found or not all(ipaddress.ip_address(a).is_private or ipaddress.ip_address(a) in shared for a in found):
+          sys.exit('ClickHouse URL must use https:// unless it reaches a private address; '
+                   'plain HTTP would send the password unencrypted')
+  try:
       credentials = base64.b64encode((os.environ['INPUT_USER'] + ':' + os.environ.get('INPUT_PASSWORD', '')).encode()).decode()
       request = Request(endpoint, data=b'SELECT 1', headers={'Authorization': 'Basic ' + credentials})
       with urlopen(request, timeout=10) as response:
