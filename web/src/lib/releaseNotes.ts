@@ -58,7 +58,12 @@ export function parseNotes(text: string): ReleaseNotes {
     const compare = COMPARE.exec(line)
     if (compare) {
       notes.compare = compare[1]
-      if (generated) { generated = false; open.length = 0 }   // GitHub's headings are no one's parents
+      if (generated) {   // what follows is the release's again: no parent, its own (untitled) section
+        generated = false
+        open.length = 0
+        section = { title: '', level: 0, depth: 0, breaking: false, generated: false, items: [] }
+        notes.sections.push(section)
+      }
       blank = true
       continue
     }

@@ -157,6 +157,7 @@ function ReleaseCard({ release }: { release: Release }) {
 /** GitHub's categories as small labels; the release's own headings as headings
  * below the card's h3, by depth. */
 function SectionTitle({ section: s }: { section: NoteSection }) {
+  if (!s.title) return null
   if (s.generated)
     return <h4 className={cn('text-[12px] font-medium uppercase tracking-wide', s.breaking ? 'text-warn' : 'text-muted')}>{s.title}</h4>
   const tone = s.breaking ? 'text-warn' : undefined
