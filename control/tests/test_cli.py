@@ -256,12 +256,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execv.call_args.args[1][-1], "wss://8081-bx-5f3f8tnb7k.sbx.example")
 
     def test_the_tunnel_says_what_to_do_when_the_bridge_names_no_sandbox_or_refuses(self):
-        for answer, words in (((404, None), "`sbx open NAME ssh` points its SSH config at it again"),
+        for answer, words in (((404, None), "`sbx down NAME && sbx up NAME`"),
                               ((302, None), "`sbx login` again"),
                               ((502, None), "runtime reports an error"),
                               ((503, "2"), "still not ready")):
             with self.subTest(answer=answer), patch.object(self.cli, "bridge_status", return_value=answer), \
-                    patch.object(self.cli, "SSH_REACH_SECONDS", 0), patch.object(self.cli.time, "sleep"), \
+                    patch.object(self.cli, "SSH_REACH_SECONDS", 0.05), patch.object(self.cli.time, "sleep"), \
                     patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
                     patch.object(self.cli.os, "execv") as execv:
                 with self.assertRaises(SystemExit) as exit:
@@ -323,6 +323,37 @@ class CliTests(unittest.TestCase):
         self.assertIn("tunnel %h wss://8081-bx-5f3f8tnb7k.sbx.example\n", conf)
         self.assertNotIn("bx_", conf)
         self.assertIn("  HostKeyAlias sbx-try\n", conf)   # the rest as `sbx up` wrote it
+
+    def test_open_also_refreshes_the_copy_ssh_config_apps_made(self):
+        self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-old.sbx.example", "host_key": "k"})
+        self.assertEqual(self.run_cli("ssh-config", "--apps")[0], 0)
+        self.cli.refresh_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example"})
+        copied = self.cli.SSH_CONFIG.read_text()
+        self.assertIn("tunnel %h wss://8081-new.sbx.example\n", copied)
+        self.assertNotIn("8081-old", copied)
+
+    def test_the_tunnel_gives_the_last_probe_only_the_time_left(self):
+        clock = iter([0, 119.5, 119.8, 119.8, 120])   # deadline, probe timeout, after it, the sleep, after it
+        with patch.object(self.cli, "bridge_status", return_value=(503, "2")) as status, \
+                patch.object(self.cli.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(self.cli.time, "sleep"), patch.object(self.cli.os, "execv") as execv, \
+                patch.object(self.cli, "websocat", return_value="/bin/websocat"):
+            with self.assertRaises(SystemExit) as exit:
+                self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="wss://8081-vm1.sbx.example"))
+        self.assertIn("still not ready", str(exit.exception.code))
+        self.assertAlmostEqual(status.call_args.kwargs["timeout"], 0.5)
+        execv.assert_not_called()
+
+    def test_the_tunnel_reads_only_nonnegative_integer_retry_after(self):
+        for retry, wait in (("3", 3.0), ("60", 10.0), ("0", 0.0), ("-1", 2.0), ("1.5", 2.0), ("nan", 2.0), ("²", 2.0)):
+            answers = iter([(503, retry), (101, None)])
+            with self.subTest(retry=retry), \
+                    patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)), \
+                    patch.object(self.cli.time, "sleep") as sleep, \
+                    patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
+                    patch.object(self.cli.os, "execv"):
+                self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="wss://8081-vm1.sbx.example"))
+            self.assertEqual(sleep.call_args.args[0], wait)
 
     def test_env_set_never_echoes_a_value_unless_plain(self):
         self.routes[("PUT", "/api/repos/owner/app/env/TOKEN")] = lambda q, body: {"secret": body["secret"] is not False}

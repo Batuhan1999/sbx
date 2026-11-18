@@ -393,14 +393,20 @@ def bridge_ready(host, url, token):
     (a sign-in, 403) or whose VM failed (502) exits with what to do. Anything else is websocat's to
     meet. host: the sandbox, as ssh's %h names it."""
     deadline, said = time.monotonic() + SSH_REACH_SECONDS, False
+    late = f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it"
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:   # no probe after the budget, and none outlasting it
+            sys.exit(late)
         try:
-            status, retry = bridge_status(url, token, timeout=max(deadline - time.monotonic(), 1))
+            status, retry = bridge_status(url, token, timeout=remaining)
         except (OSError, http.client.HTTPException) as error:
             sys.exit(f"{host}: the SSH bridge at {url} did not answer: {error}")
         if status == 404:
-            sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If it was deleted or "
-                     f"recreated, `sbx open NAME ssh` points its SSH config at it again (`sbx up NAME` if it is gone)")
+            sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If its address changed, "
+                     f"`sbx open NAME ssh` points its SSH config at it again (`sbx up NAME` if it is gone). If ssh "
+                     f"then reports a changed host key, it was recreated: only the `sbx up` that made it received "
+                     f"its key, so use that Mac, or `sbx down NAME && sbx up NAME` to make one this Mac trusts")
         if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
             sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
                      f"not your sandbox")
@@ -408,16 +414,14 @@ def bridge_ready(host, url, token):
             sys.exit(f"{host}: the sandbox's runtime reports an error; `sbx ls` shows it, restart or delete it in sbx")
         if status != 503:
             return
-        late = f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it"
         if time.monotonic() >= deadline:
             sys.exit(late)
         if not said:
             note(f"{host}: waiting for the sandbox to be ready ...")
             said = True
-        try:
-            wait = min(float(retry or 2), 10)
-        except ValueError:   # an HTTP date
-            wait = 2.0
+        retry = (retry or "").strip()
+        # Delay-seconds only: an HTTP date, a negative or any other value waits 2 s.
+        wait = float(min(int(retry), 10)) if retry.isascii() and retry.isdigit() else 2.0
         time.sleep(min(wait, max(deadline - time.monotonic(), 0)))
         if time.monotonic() >= deadline:   # no probe after the budget
             sys.exit(late)
@@ -583,6 +587,10 @@ def refresh_host(name, info):
     fresh = re.sub(r"^(  ProxyCommand .* tunnel %h ).*$", lambda m: m.group(1) + info["ssh_url"], text, flags=re.M)
     if fresh != text:
         conf.write_text(fresh)
+        # The copy `sbx ssh-config --apps` made for GUI apps, if there is one.
+        copied = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
+        if text.rstrip("\n") in copied:
+            SSH_CONFIG.write_text(copied.replace(text.rstrip("\n"), fresh.rstrip("\n")))
 
 
 def open_tool(name, tool):

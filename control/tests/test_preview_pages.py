@@ -424,6 +424,13 @@ class SshBridge(GateCase):
         self.assertEqual(response.headers["x-sbx-upstream"], self.runtime.upstream_host(8081, sandbox_id))
         self.assertEqual(self.bridge(sandbox_id, self.other).headers.get("x-sbx-page"), "forbidden")   # owner only
 
+    def test_a_sandbox_id_that_starts_with_an_escape_is_reached_through_the_gate(self):
+        self.fake.id_prefix = "_x_"
+        sandbox_id = self.add("memos-b")
+        response = self.bridge(sandbox_id)
+        self.assertEqual(response.status_code, 200, response.headers)
+        self.assertEqual(response.headers["x-sbx-upstream"], self.runtime.upstream_host(8081, sandbox_id))
+
     def test_a_detected_preview_on_the_raw_host_is_reached_too(self):
         from sbx_control import addressing
         self.fake.id_prefix = "bx_"
@@ -474,3 +481,15 @@ class SshBridge(GateCase):
         self.runtime.connect(self.vm)
         self.gate.sandbox_owner(self.vm, fresh=True)
         self.assertEqual(self.bridge(self.vm).status_code, 200)   # running: through during the app's restart
+
+    def test_the_bridge_looks_again_once_the_restart_records_the_vm_resumed(self):
+        from sbx_control import core, lifecycle
+        self.runtime.pause(self.vm)
+        self.gate.sandbox_owner(self.vm, fresh=True)
+        lifecycle.observe("memos-a", self.vm, "paused")
+        lifecycle.begin("memos-a", "restart").advance("starting_app")
+        self.runtime.connect(self.vm)
+        lifecycle.observe("memos-a", self.vm, "running")   # what core.connect records; the listing still says paused
+        with patch.object(core, "attach") as attach:
+            self.assertEqual(self.bridge(self.vm).status_code, 200)
+        attach.assert_not_called()
