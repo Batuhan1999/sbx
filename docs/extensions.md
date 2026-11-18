@@ -47,7 +47,15 @@ A template is the platform layer, the template layers of every enabled
 extension, and the repository's recipe. Their digest is the template's
 fingerprint, so enabling a connector or changing a pinned version makes
 templates stale and they are rebuilt ([templates](reference.md#templates)). An
-extension never adds steps to the template builder itself.
+extension never adds steps to the template builder itself. Saving or
+disconnecting an extension answers how many templates that rebuilds on each
+runtime (`rebuilds`; `sbx extensions set KIND --wait` waits for them).
+
+A connector with `choosable = True` is offered in the first-run setup's
+coding-agents step, before any template is built. `choose(on, by=...)` records
+the choice in its own settings, so its `contribution` already has its template
+layer for the first build even when its own key comes later (Amp: its
+`chosen` setting; Claude Code's CLI is in every template anyway).
 
 ## Agent connectors
 

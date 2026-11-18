@@ -234,9 +234,11 @@ describe('Settings → Sandbox runtimes', () => {
 
 const SETUP = (runtimeDone: boolean) => ({
   complete: false,
-  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' },
-    { step: 'runtime', done: runtimeDone, optional: false, summary: '' }],
-  signed_in: false, email: null, can_complete: false, host: { address: '203.0.113.7' },
+  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' },
+    { step: 'runtime', done: runtimeDone, optional: false, summary: '' }, { step: 'agents', done: false, optional: false, summary: '' }],
+  // The owner created their account first: the keys and choices follow it.
+  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  agents: [{ kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'domain', domain: 'sbx.example.com', url: 'https://sbx.example.com', certificate: 'delegated', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 })
@@ -270,8 +272,8 @@ describe('first-run setup without a runtime', () => {
     await user.type(screen.getByLabelText('API key'), 'test-only-key')
     await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
     expect(await screen.findByText('Applying…')).toBeTruthy()
-    // Applied: on to the admin step, the new runtime listed with the server's checks.
-    expect(await screen.findByRole('heading', { name: 'Who runs this server?' }, { timeout: 10000 })).toBeTruthy()
+    // Applied: on to the coding agents, the new runtime listed with the server's checks.
+    expect(await screen.findByRole('heading', { name: 'Which coding agents does your team use?' }, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect(screen.getByRole('list', { name: 'Sandbox runtimes' }).textContent).toContain('E2B Cloud'))
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
     expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })

@@ -9,6 +9,7 @@ import { CopyCommand } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { ErrorState, Loading } from '@/components/states'
 import { AnchorButton, Button, LinkButton } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Facts, Spinner } from '@/components/ui/primitives'
 import { RadioCard, RadioGroup } from '@/components/ui/radio-group'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -19,7 +20,7 @@ import { Checks } from '../extensions/ConnectionCard'
 import { ChangeStatus, RuntimeSettingsForm, useRuntimeChangeFlow } from '../settings/RuntimeForms'
 import { blockedText, RuntimeChoices, RuntimeList } from '../settings/Runtimes'
 
-type Step = 'address' | 'runtime' | 'admin'
+type Step = 'address' | 'admin' | 'runtime' | 'agents'
 
 function goToLink(s: SetupState) {
   const target = new URL(s.link)
@@ -41,7 +42,10 @@ export default function SetupPage() {
   }, [s?.complete, qc])
   const addressDone = !!s?.steps.find(x => x.step === 'address')?.done
   const runtimeDone = !!s?.steps.find(x => x.step === 'runtime')?.done
-  const current: Step = step ?? (!addressDone ? 'address' : !runtimeDone ? 'runtime' : 'admin')
+  // The owner's own account first: once signed in (or nobody signs in), the keys and choices follow.
+  const adminDone = !!s && (s.signed_in || (s.open_access && !!s.steps.find(x => x.step === 'sign_in')?.done))
+  const agentsDone = !!s?.steps.find(x => x.step === 'agents')?.done
+  const current: Step = step ?? (!addressDone ? 'address' : !adminDone ? 'admin' : !runtimeDone ? 'runtime' : 'agents')
   useEffect(() => {   // a runtime was added: the lists name it
     if (runtimeDone) void qc.invalidateQueries({ queryKey: keys.runtimes })
   }, [runtimeDone, qc])
@@ -55,16 +59,19 @@ export default function SetupPage() {
         : setup.error ? <NoToken error={setup.error} retry={() => setup.refetch()} />
         : s!.complete ? <Done s={s!} />
         : <>
-          <ol aria-label="Setup progress" className="mb-8 flex items-center gap-3 text-[13px]">
+          <ol aria-label="Setup progress" className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px]">
             <StepPill n={1} label="Server address" active={current === 'address'} done={addressDone} onClick={() => setStep('address')} />
-            <span aria-hidden className="h-px w-8 bg-line" />
-            <StepPill n={2} label="Sandbox runtime" active={current === 'runtime'} done={runtimeDone} onClick={addressDone ? () => setStep('runtime') : undefined} />
-            <span aria-hidden className="h-px w-8 bg-line" />
-            <StepPill n={3} label="Admin access" active={current === 'admin'} done={s!.signed_in} onClick={addressDone && runtimeDone ? () => setStep('admin') : undefined} />
+            <span aria-hidden className="h-px w-6 bg-line" />
+            <StepPill n={2} label="Your account" active={current === 'admin'} done={adminDone} onClick={addressDone ? () => setStep('admin') : undefined} />
+            <span aria-hidden className="h-px w-6 bg-line" />
+            <StepPill n={3} label="Sandbox runtime" active={current === 'runtime'} done={runtimeDone} onClick={addressDone && adminDone ? () => setStep('runtime') : undefined} />
+            <span aria-hidden className="h-px w-6 bg-line" />
+            <StepPill n={4} label="Coding agents" active={current === 'agents'} done={agentsDone} onClick={addressDone && adminDone && runtimeDone ? () => setStep('agents') : undefined} />
           </ol>
-          {current === 'address' ? <AddressStep s={s!} onNext={() => setStep(runtimeDone ? 'admin' : 'runtime')} />
-            : current === 'runtime' ? <RuntimeStep done={runtimeDone} onBack={() => setStep('address')} onNext={() => setStep('admin')} />
-            : <AdminStep s={s!} runtimeDone={runtimeDone} onBack={() => setStep('runtime')} />}
+          {current === 'address' ? <AddressStep s={s!} onNext={() => setStep(adminDone ? 'runtime' : 'admin')} />
+            : current === 'admin' ? <AdminStep s={s!} onBack={() => setStep('address')} onNext={() => setStep(runtimeDone ? 'agents' : 'runtime')} />
+            : current === 'runtime' ? <RuntimeStep done={runtimeDone} onBack={() => setStep('admin')} onAddress={() => setStep('address')} onNext={() => setStep('agents')} />
+            : <AgentsStep s={s!} runtimeDone={runtimeDone} onBack={() => setStep('runtime')} />}
         </>}
     </main>
   </div>
@@ -165,7 +172,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
 
 /** Where sandboxes run: with none enabled, the runtimes to choose from and the chosen one's settings;
  * adding it is applied by the host (sbx-control restarts) and this step follows it. With one or more, read-only. */
-function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => void; onNext: () => void }) {
+function RuntimeStep({ done, onBack, onAddress, onNext }: { done: boolean; onBack: () => void; onAddress: () => void; onNext: () => void }) {
   const runtimes = useRuntimes()
   const available = useAvailableRuntimes(!done)
   const flow = useRuntimeChangeFlow()
@@ -186,7 +193,7 @@ function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => vo
         <ChangeStatus flow={flow} />
         {chosen && (chosen.edit_blocker ? !flow.busy && <div className="space-y-2">
           <ErrorState compact error={blockedText(chosen.edit_blocker, chosen.kind)} />
-          {chosen.edit_blocker.code === 'needs_domain' && <Button size="sm" onClick={onBack}><Globe />Choose a domain</Button>}
+          {chosen.edit_blocker.code === 'needs_domain' && <Button size="sm" onClick={onAddress}><Globe />Choose a domain</Button>}
         </div>
           // Hidden, not unmounted, while the host applies it: a change that fails keeps what was typed.
           : <div hidden={flow.busy}><RuntimeSettingsForm key={chosen.kind} runtime={chosen} mode="add" flow={flow} /></div>)}
@@ -199,33 +206,26 @@ function RuntimeStep({ done, onBack, onNext }: { done: boolean; onBack: () => vo
   </div>
 }
 
-function AdminStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boolean; onBack: () => void }) {
+/** The owner's own account, first: once signed in they can add the keys (a key page needs a sign-in) and choose. */
+function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; onNext: () => void }) {
   const qc = useQueryClient()
-  const checks = useSetupChecks()
-  const runtimes = useRuntimes()
   const existing = !!s.steps.find(x => x.step === 'sign_in')?.done  // someone can sign in already
-  const ready = s.signed_in || s.can_complete
-  const finish = async (admin?: { email: string; password: string }) => {
-    if (admin) await api.setup.admin(admin.email.trim(), admin.password)
-    const result = await api.setup.complete()
-    setSetupToken(null)
-    qc.setQueryData(keys.setup, result)
-  }
+  const ready = s.signed_in || (existing && s.open_access)
   const form = useAppForm({
     defaultValues: { email: '', password: '', confirm: '' },
-    onSubmit: async ({ value }) => { await finish(value); form.reset() },
+    onSubmit: async ({ value }) => {
+      qc.setQueryData(keys.setup, await api.setup.admin(value.email.trim(), value.password))
+      form.reset()
+      onNext()
+    },
   })
-  const submitting = useStore(form.store, st => st.isSubmitting)
-  const [error, setError] = useState<unknown>(null)
-  const [busy, setBusy] = useState(false)
-  const blocked = checks.isPending || !!checks.error || checks.data?.ok === false || !runtimeDone
   return <div className="space-y-6">
     <div>
-      <h1 className="text-[24px] font-semibold tracking-tight">Who runs this server?</h1>
-      <p className="mt-1.5 text-muted">{s.signed_in ? `Signed in as ${s.email}. Finish to start connecting repositories.`
-        : ready ? 'Access is already configured for this private network. Finish to start connecting repositories.'
-        : existing ? 'Admin access is configured. Sign in to finish.'
-        : 'The first admin signs in with an email and password. You can switch to single sign-on later in Settings.'}</p>
+      <h1 className="text-[24px] font-semibold tracking-tight">Create your account</h1>
+      <p className="mt-1.5 text-muted">{s.signed_in ? `Signed in as ${s.email}.`
+        : ready ? 'Access is already configured for this private network.'
+        : existing ? 'Admin access is configured. Sign in to continue.'
+        : 'You are the first admin. You sign in with this email and password; you can switch to single sign-on later in Settings.'}</p>
     </div>
     {!ready && !existing && <AppForm form={form} id="setup-admin" className="space-y-4">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Admin email" type="email" autoComplete="username" />}</form.AppField>
@@ -237,14 +237,58 @@ function AdminStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boo
       </div>
     </AppForm>}
     {!ready && existing && <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in to continue<ArrowRight /></AnchorButton>}
-    <ServerChecks checks={checks} runtimes={runtimes.data?.runtimes ?? []} />
-    {ready && <ErrorState error={error} compact />}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
-      {!ready && !existing && <Button variant="primary" type="submit" form="setup-admin" busy={submitting} disabled={blocked}>Finish setup<ArrowRight /></Button>}
-      {ready && <Button variant="primary" busy={busy} disabled={blocked} onClick={async () => { setBusy(true); setError(null); try { await finish() } catch (e) { setError(e) } finally { setBusy(false) } }}>Finish setup<ArrowRight /></Button>}
+      {!ready && !existing && <SubmitButton form={form}>Create account<ArrowRight /></SubmitButton>}
+      {ready && <Button variant="primary" onClick={onNext}>Continue<ArrowRight /></Button>}
     </div>
-    <p className="text-[12px] text-muted">Finishing disables the one-time setup link.</p>
+  </div>
+}
+
+/** The coding agents every template is built with, chosen before the first build so it needs no rebuild; then the
+ * server's checks and finishing, which starts the templates. An agent's own key can come later, under Extensions. */
+function AgentsStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boolean; onBack: () => void }) {
+  const qc = useQueryClient()
+  const checks = useSetupChecks()
+  const runtimes = useRuntimes()
+  const [chosen, setChosen] = useState<string[]>(() => s.agents.filter(a => a.chosen).map(a => a.kind))
+  const [error, setError] = useState<unknown>(null)
+  const [busy, setBusy] = useState(false)
+  const blocked = checks.isPending || !!checks.error || checks.data?.ok === false || !runtimeDone
+  const finish = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.setup.agents(chosen)
+      const result = await api.setup.complete()
+      setSetupToken(null)
+      qc.setQueryData(keys.setup, result)
+    } catch (e) {
+      setError(e)
+      void qc.invalidateQueries({ queryKey: keys.setup })
+    } finally { setBusy(false) }
+  }
+  return <div className="space-y-6">
+    <div>
+      <h1 className="text-[24px] font-semibold tracking-tight">Which coding agents does your team use?</h1>
+      <p className="mt-1.5 text-muted">Each one you choose goes into every sandbox template, which builds when you finish (about 10 minutes). Its own key can come later, under Extensions. Choosing none is fine.</p>
+    </div>
+    <ul aria-label="Coding agents" className="divide-y divide-line rounded-lg border border-line bg-panel">
+      {s.agents.map(a => <li key={a.kind}>
+        <label className="flex cursor-pointer items-center gap-3 px-4 py-3">
+          <Checkbox checked={chosen.includes(a.kind)} aria-label={a.title}
+            onCheckedChange={on => setChosen(c => on === true ? [...c, a.kind] : c.filter(k => k !== a.kind))} />
+          <span className="font-medium">{a.title}</span>
+        </label>
+      </li>)}
+    </ul>
+    <ServerChecks checks={checks} runtimes={runtimes.data?.runtimes ?? []} />
+    <ErrorState error={error} compact />
+    <div className="flex justify-between gap-3 border-t border-line pt-5">
+      <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
+      <Button variant="primary" busy={busy} disabled={blocked} onClick={finish}>Finish setup<ArrowRight /></Button>
+    </div>
+    <p className="text-[12px] text-muted">Finishing disables the one-time setup link and starts the template builds.</p>
   </div>
 }
 
@@ -274,7 +318,7 @@ function Done({ s }: { s: SetupState }) {
     <span className="grid size-10 place-items-center rounded-full bg-ok-soft text-ok"><Check className="size-5" /></span>
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">The server is ready</h1>
-      <p className="mt-1.5 text-muted">Next: connect GitHub and a repository, then hand its setup to your coding agent.</p>
+      <p className="mt-1.5 text-muted">The sandbox templates are building now (about 10 minutes the first time). Next: connect GitHub and a repository, then hand its setup to your coding agent.</p>
     </div>
     <Facts className="rounded-lg border border-line bg-panel p-4" items={[['Address', <span className="break-all font-mono text-[12.5px]">{s.access.url}</span>], ['Admin', s.email ?? s.admins.join(', ')], ['Setup link', 'Disabled']]} />
     <LinkButton variant="primary" to="/app/repos/new">Connect a repository<ArrowRight /></LinkButton>

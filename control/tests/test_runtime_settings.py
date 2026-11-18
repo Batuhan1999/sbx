@@ -137,7 +137,9 @@ class Web(TwoRuntimes, Server):
         self.assertFalse((self.root / "state/runtime-change.json").exists())   # the root side records
         busy = self.call("PUT", "/api/runtimes/default", {"kind": "fake"})
         self.assertEqual(busy.status_code, 409)                         # one change at a time
-        code, said = self.apply()
+        from sbx_control import setup
+        with patch.object(setup, "templates_blocked", return_value=""):   # set up: an added runtime builds now
+            code, said = self.apply()
         self.assertEqual(code, 0, said)
         self.assertFalse(self.request_file.exists())
         text = self.file.read_text()
@@ -731,6 +733,7 @@ class SetupWithoutABrowser(Server):
         from fastapi.testclient import TestClient
         self.choose_ip()
         self.create_admin()
+        self.choose_agents()
         fresh = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session cookie: an agent's CLI
         self.addCleanup(fresh.close)
         wrong = fresh.post("/api/setup/complete", headers=self.headers,

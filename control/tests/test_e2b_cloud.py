@@ -129,6 +129,7 @@ class TrafficToken(TwoRuntimes, Server):
 class RuntimeAdmin(Installation):
     """sbx-admin runtime add | remove | default on an Embed installation."""
     RUNTIME_ENV = RUNTIME
+    SET_UP = True
 
     def setUp(self):
         super().setUp()

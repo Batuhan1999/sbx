@@ -117,8 +117,9 @@ describe('with several runtimes', () => {
 })
 
 const SETUP = {
-  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' }, { step: 'runtime', done: true, optional: false, summary: 'E2B Embed' }],
-  signed_in: false, email: null, can_complete: false, host: { address: '203.0.113.7' },
+  complete: false, steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' }, { step: 'runtime', done: true, optional: false, summary: 'E2B Embed' }, { step: 'agents', done: false, optional: false, summary: 'not chosen yet' }],
+  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  agents: [{ kind: 'claude', title: 'Claude Code', chosen: false }, { kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'ip', domain: '', url: 'https://203.0.113.7', certificate: '', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 }
@@ -153,6 +154,31 @@ describe('first-run setup', () => {
     expect(screen.queryByText('Sandbox runtimes')).toBeNull()
     expect(screen.getByText('Infisical answers')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('asks for the coding agents before finishing, and sends them first', async () => {
+    setSetupToken('one-time-token')
+    const calls = stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': ONE,
+      'PUT /api/setup/agents': { ...SETUP, agents: [SETUP.agents[0], { ...SETUP.agents[1], chosen: true }] },
+      'POST /api/setup/complete': { ...SETUP, complete: true } })
+    renderApp(<SetupPage />, '/app/setup')
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('checkbox', { name: 'Amp' }))
+    await waitFor(() => expect((screen.getByRole('button', { name: /Finish setup/ }) as HTMLButtonElement).disabled).toBe(false))
+    await user.click(screen.getByRole('button', { name: /Finish setup/ }))
+    expect(await screen.findByText('The server is ready')).toBeTruthy()
+    const writes = calls.filter(c => c.method !== 'GET')
+    expect(writes.map(c => c.url)).toEqual(['/api/setup/agents', '/api/setup/complete'])
+    expect(writes[0].body).toEqual({ agents: ['amp'] })
+  })
+
+  it('creates the owner’s account before the runtime and the agents', async () => {
+    setSetupToken('one-time-token')
+    const fresh = { ...SETUP, signed_in: false, email: null, steps: SETUP.steps.map(s => s.step === 'sign_in' || s.step === 'runtime' ? { ...s, done: false } : s) }
+    stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': fresh, 'GET /api/runtimes': ONE })
+    renderApp(<SetupPage />, '/app/setup')
+    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Coding agents/ })).toHaveProperty('disabled', true)
   })
 })
 

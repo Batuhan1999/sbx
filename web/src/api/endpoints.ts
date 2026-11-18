@@ -1,7 +1,7 @@
 // Every route the web app calls, typed. Pages use these through queries.ts.
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
-  AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
+  AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, ConnectionChange, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
   RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
@@ -113,9 +113,9 @@ export const api = {
 
   connections: {
     list: () => get<{ connections: Connection[] }>('/api/connections'),
-    save: (kind: string, values: Record<string, string>) => put<Connection>(`/api/connections/${enc(kind)}`, { values }),
+    save: (kind: string, values: Record<string, string>) => put<ConnectionChange>(`/api/connections/${enc(kind)}`, { values }),
     test: (kind: string) => post<CheckResult>(`/api/connections/${enc(kind)}/test`),
-    disconnect: (kind: string) => del<Connection>(`/api/connections/${enc(kind)}`),
+    disconnect: (kind: string) => del<ConnectionChange>(`/api/connections/${enc(kind)}`),
     githubManifest: (owner: string, returnTo: '/app/repos/new' | '/app/extensions') =>
       post<{ action_url: string; manifest: string }>('/api/connections/github/manifest', { owner, return_to: returnTo }),
   },
@@ -125,6 +125,7 @@ export const api = {
     checks: () => get<CheckResult>('/api/setup/checks'),
     address: (address: string) => post<SetupState>('/api/setup/address', { address }),
     admin: (email: string, password: string) => post<SetupState>('/api/setup/admin', { email, password }),
+    agents: (agents: string[]) => put<SetupState>('/api/setup/agents', { agents }),
     complete: () => post<SetupState>('/api/setup/complete'),
   },
 

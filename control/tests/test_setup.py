@@ -65,7 +65,7 @@ class SetupTests(Server):
 
     def test_ip_setup_signs_in_and_retires_token_without_repo_connections(self):
         initial = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual([s["step"] for s in initial["steps"]], ["address", "sign_in", "runtime"])
+        self.assertEqual([s["step"] for s in initial["steps"]], ["address", "sign_in", "runtime", "agents"])
         self.assertFalse(initial["can_complete"])
         self.assertEqual(self.settings.current().sign_in.method, "password")
         self.assertEqual(self.settings.current().domain.acme, "delegated")
@@ -77,7 +77,8 @@ class SetupTests(Server):
         self.assertIn(self.settings.HostUnit.HOST_GUARD, effects)
         admin = self.create_admin()
         self.assertTrue(admin["signed_in"])
-        self.assertTrue(admin["can_complete"])
+        self.assertFalse(admin["can_complete"])   # the coding agents are not chosen yet
+        self.assertTrue(self.choose_agents()["can_complete"])
         # The setup header must not hide the session established on the same origin.
         self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
         done = self.client.post("/api/setup/complete", headers=self.headers)
@@ -105,6 +106,7 @@ class SetupTests(Server):
         from sbx_control.connections import Check
         self.choose_ip()
         self.create_admin()
+        self.choose_agents()
         self.runtime.return_value = [Check("Embed API", False, "Offline", "Restart the runtime.")]
         response = self.client.post("/api/setup/complete", headers=self.headers)
         self.assertEqual(response.status_code, 400)
@@ -131,6 +133,7 @@ class SetupTests(Server):
         from sbx_control import connections
         self.assertIn(f"valid until {self.ip_expiry.return_value:%Y-%m-%d}", connections.get("domain").status().summary)
         self.create_admin()
+        self.choose_agents()
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
 
     def test_validation_and_existing_admin_cannot_be_overwritten(self):
@@ -183,6 +186,7 @@ class SetupTests(Server):
             "email": "Operator@example.com", "password": "test-only-password-123"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.settings.current().access.admins, ("named@example.com", "operator@example.com"))
+        self.choose_agents()
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
         self.assertEqual(self.password_login("named%40example.com"), 401)  # no password of their own yet
         users.use_link(users.mint_link("named@example.com", by="test"), "test-only-password-123")

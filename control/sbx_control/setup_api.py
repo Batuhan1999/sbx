@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, SecretStr
 
-from . import auth, settings, setup, users
+from . import auth, settings, setup, template_scheduler, users
 from .connections import sign_in
 
 router = APIRouter()
@@ -17,10 +17,13 @@ _setup_lock = threading.Lock()
 # Until the first-run setup is complete (setup.py), this host serves the
 # setup and nothing else: there is no sign-in yet to protect the rest.
 SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/api/settings", "/api/catalog",
-              "/api/runtimes", "/api/secret-requests", "/keys/", "/connections/github", "/auth/")
+              "/api/runtimes", "/api/secret-requests", "/keys/", "/connections/github", "/auth/", "/cli/")
 # Open by exact path: the release string, which the setup's reachability
-# check fetches from inside a sandbox (reachability.PATH).
-SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout")
+# check fetches from inside a sandbox (reachability.PATH); the sign-in page
+# and sign-out; the desktop CLI's installer and `sbx login` (/cli/: a session
+# or a one-time code), so an agent signs in as the admin once the account
+# exists and finishes the setup itself; /api/me answers only a sign-in.
+SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me")
 
 
 async def setup_gate(request: Request, call_next):
@@ -115,6 +118,24 @@ def api_setup_admin(body: Admin, request: Request, who: str = Depends(setup_or_a
         return setup.state(email, request.url.hostname or "")
 
 
+class Agents(BaseModel):
+    agents: list[str] = []
+
+
+@router.put("/api/setup/agents")
+def api_setup_agents(body: Agents, request: Request, who: str = Depends(setup_or_admin)):
+    """The coding agents every template is built with (state()'s agents: the
+    ones offered; [] for none); their own keys may come later."""
+    if setup.complete():
+        raise HTTPException(409, "Server setup is complete. Turn coding agents on or off under Extensions "
+                                 "(sbx extensions).")
+    try:
+        setup.choose_agents(body.agents, by=_email(request, who) or who)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    return setup.state(_email(request, who), request.url.hostname or "")
+
+
 class Finish(BaseModel):
     """An admin's sign-in with their own password, for a client without a
     browser session (sbx setup finish --admin)."""
@@ -148,4 +169,5 @@ def api_setup_complete(request: Request, email: str | None = Depends(finishing_a
         raise HTTPException(400, {"message": "The server needs attention before setup can finish.",
                                   "checks": checks["checks"]})
     setup.mark_complete(email or who)
+    template_scheduler.kick()   # the first templates, with the chosen agents' layers, now
     return setup.state(email, request.url.hostname or "")
