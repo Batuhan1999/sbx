@@ -218,6 +218,23 @@ class CliTests(unittest.TestCase):
                                                                ".sbx/sbx.yaml": "previews: {web: 3000}\n"},
                                                      "executable": [".sbx/setup"]})
 
+    def test_down_shows_what_the_recipe_cleanup_printed_and_warns_when_it_failed(self):
+        answers = iter([{"deleted": "a", "cleanup": {"exit_code": 0, "output": "released the webhook\n"}},
+                        {"deleted": "a", "cleanup": {"exit_code": 2, "output": "half done\n"}},
+                        {"deleted": "a", "cleanup": {"error": "resuming the sandbox or running it failed: gone"}},
+                        {"deleted": "a", "cleanup": None}])
+        self.routes[("DELETE", "/api/sandboxes/a")] = lambda q, body: next(answers)
+        code, out, err = self.run_cli("down", "a")
+        self.assertEqual((code, out.strip(), err.strip()), (0, "sbx-a deleted", "released the webhook"))
+        code, out, err = self.run_cli("down", "a")
+        self.assertEqual(code, 0)   # the sandbox is gone; the failure is a warning
+        self.assertIn("half done", err)
+        self.assertIn("warning: .sbx/cleanup failed (it exited with 2)", err)
+        code, out, err = self.run_cli("down", "a")
+        self.assertIn("running it failed: gone", err)
+        code, out, err = self.run_cli("down", "a", "--json")
+        self.assertEqual((code, json.loads(out)), (0, {"deleted": "a", "cleanup": None}))
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}

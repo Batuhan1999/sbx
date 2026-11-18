@@ -905,8 +905,21 @@ def push(args):
 
 
 def down(args):
-    api("DELETE", f"/api/sandboxes/{args.name}")
+    """Delete the sandbox. The recipe's .sbx/cleanup runs first, on the
+    server; what it printed goes to stderr. Its failure does not stop the
+    delete, so it is a warning, not the exit status (--json has it all)."""
+    result = api("DELETE", f"/api/sandboxes/{args.name}") or {}
     forget_host(args.name)
+    if args.json:
+        print(json.dumps(result))
+        return
+    cleanup = result.get("cleanup")
+    if cleanup:
+        if cleanup.get("output", "").strip():
+            note(cleanup["output"].rstrip())
+        if cleanup.get("error") or cleanup.get("exit_code"):
+            why = cleanup.get("error") or f"it exited with {cleanup['exit_code']}"
+            note(f"warning: .sbx/cleanup failed ({why}); the sandbox was deleted anyway")
     print(f"sbx-{args.name} deleted")
 
 
@@ -1479,8 +1492,10 @@ def parser():
     s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (their own password on stdin)")
     s.add_argument("--admin", metavar="EMAIL")
     s.add_argument("--json", action="store_true")
-    p = command("down", down, "delete the sandbox and what was provisioned for it")
+    p = command("down", down, "delete the sandbox and what was provisioned for it, after the recipe's "
+                ".sbx/cleanup")
     p.add_argument("name")
+    p.add_argument("--json", action="store_true", help="the server's answer, with what .sbx/cleanup did")
     p = command("ls", ls, "your sandboxes")
     p.add_argument("--json", action="store_true")
     p = command("urls", urls_cmd, "a sandbox's preview links, and ports servers listen on")

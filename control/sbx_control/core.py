@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import fcntl
 import json
+import os
 import re
 import shlex
 import threading
@@ -51,6 +52,11 @@ class PauseRefused(SandboxError):
 # saving the sandbox's parent, say, or has no room for its snapshot. The
 # sandbox keeps running; retry.
 PAUSE_RETRY_SECONDS = (5, 15)
+# The recipe's .sbx/cleanup runs before a sandbox is deleted (run_cleanup):
+# this long at most, then the delete goes on without it. What it printed is
+# kept to its last characters.
+CLEANUP_TIMEOUT_SECONDS = 300
+CLEANUP_OUTPUT_CHARS = 4000
 
 
 def runtime_failure(error: BaseException) -> bool:
@@ -933,26 +939,28 @@ def _restart(name, operation):
     _bring_up(sbx, info, operation)
 
 
-def delete(name: str, slug: str | None = None):
-    """The VM and its services. slug: its preview host as registered, for
-    when the VM is gone already. A sandbox deleted already (no VM left) is
-    left as it is."""
+def delete(name: str, slug: str | None = None) -> dict | None:
+    """The VM and its services, after the recipe's .sbx/cleanup (run_cleanup:
+    its outcome, or None). slug: its preview host as registered, for when the
+    VM is gone already. A sandbox deleted already (no VM left) is left as it is."""
     current = lifecycle.get(valid_name(name))
     if current and current["phase"] == "deleted" and not current["active"]:
         info = find(name)  # the runtime lists a killed VM for a while
         if info:
             runtime.kill(info.sandbox_id)
-        return
+        return None
     with lifecycle.operation(name, "delete") as operation:
         operation.advance("deleting")
-        _delete(name, slug, operation)
+        cleanup = _delete(name, slug, operation)
         operation.advance("deleted", finish=True)
+    return cleanup
 
 
 def _delete(name, slug, operation):
-    info = find(name)
+    info, cleanup = find(name), None
     if info:
         lifecycle.assert_binding(name, info.sandbox_id)
+        cleanup = run_cleanup(name, info)
         runtime.kill(info.sandbox_id)  # connect would resume a paused one first
         slug = slug_of(info)
     operation.advance("deleting", runtime="missing")
@@ -961,6 +969,49 @@ def _delete(name, slug, operation):
         extensions.packages().release(name)
     finally:
         ip_previews.remove(slug or name)
+    return cleanup
+
+
+def run_cleanup(name: str, info) -> dict | None:
+    """The recipe's .sbx/cleanup in the sandbox, before its VM is deleted:
+    for what the app made outside the sandbox (a webhook, a cloud resource).
+    It runs from the workdir with the app's env, like setup; a paused sandbox
+    is resumed for it. Best effort: a failure, a timeout
+    (CLEANUP_TIMEOUT_SECONDS) or a resume that fails is recorded as the
+    sandbox's event and never stops the delete. None when the recipe sbx reads
+    has no cleanup; else {"exit_code", "output"} or {"error"}, masked."""
+    try:
+        a = app_of(info)
+    except Exception:   # a repository no longer served: no recipe to read
+        return None
+    hook = a.dir / "cleanup"
+    if not (a.has_recipe and hook.is_file()):
+        return None
+    if not os.access(hook, os.X_OK):
+        outcome = {"error": ".sbx/cleanup is not executable, so it did not run"}
+        state.event(name, "cleanup skipped", outcome["error"])
+        return outcome
+    paused = runtime_state(info) == "paused"
+    try:
+        sbx, info = connect(name, "to run .sbx/cleanup before it is deleted", info)
+        restore_runtime(sbx, info)   # a sandbox booted from its disk gets its env back
+        recipes.ship(sbx, a, APP_SCRIPTS)
+        try:
+            result = app_script(sbx, "cleanup", a, env=f"{RUN}/app-env", timeout=CLEANUP_TIMEOUT_SECONDS)
+        except runtime.CommandFailed as failed:
+            result = failed
+        output = "".join(filter(None, (result.stdout, result.stderr)))
+        outcome = {"exit_code": result.exit_code, "output": mask(output, info)[-CLEANUP_OUTPUT_CHARS:]}
+    except Exception as error:
+        why = f"{'resuming the sandbox or ' if paused else ''}running it failed: {error}"
+        outcome = {"error": mask(why, info)[-CLEANUP_OUTPUT_CHARS:]}
+    if "error" in outcome:
+        state.event(name, "cleanup failed", f"{outcome['error']}; deleting the sandbox anyway")
+    else:
+        tail = outcome["output"].strip()[-1500:]
+        state.event(name, "cleanup ran" if outcome["exit_code"] == 0 else "cleanup failed",
+                    f"exit {outcome['exit_code']}" + (f": {tail}" if tail else ""))
+    return outcome
 
 
 def _pause_vm(info):

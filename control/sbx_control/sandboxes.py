@@ -171,16 +171,18 @@ def forget(name: str):
     unregister(name)
 
 
-def delete(name: str):
+def delete(name: str) -> dict | None:
     with core.sandbox_operation(name):
-        delete_locked(name)
+        return delete_locked(name)
 
 
-def delete_locked(name: str):
+def delete_locked(name: str) -> dict | None:
     """delete() for a caller that holds core.sandbox_operation(name): the VM,
-    its services and its row."""
-    core.delete(name, registered_slug(name))
+    its services and its row. Returns what the recipe's .sbx/cleanup did
+    (core.run_cleanup)."""
+    cleanup = core.delete(name, registered_slug(name))
     forget(name)
+    return cleanup
 
 
 def record_transition(info, vm: str):

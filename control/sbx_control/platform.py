@@ -5,6 +5,8 @@ every template runs.
 Nothing here runs at import. Each entry point (the server's lifespan, a host
 CLI) calls connect() once; code that needs the credentials later asks
 credentials()."""
+import hashlib
+import hmac
 from dataclasses import dataclass
 
 from . import state, vault
@@ -20,7 +22,6 @@ SSH_BRIDGE_PORT = 8081      # the CLI's SSH-over-WebSocket bridge (websocat in S
 PLATFORM_PORTS = frozenset({SSH_PORT, *VNC_PORTS, NOVNC_PORT, SSH_BRIDGE_PORT})
 # On the host:
 CONTROL_PORT = 8080         # sbx-control, on loopback behind nginx
-SESSION_COOKIE = "sbx_session"
 # The platform's tmpfs in the sandbox: env, keys, the shipped recipe, the
 # guest helper (core.ship_guest), what extensions write.
 RUN = "/run/sbx"
@@ -106,3 +107,12 @@ def credentials() -> Credentials:
 
 def session_key() -> str:
     return state.session_key()
+
+
+def session_cookie() -> str:
+    """The name of sbx's sign-in cookie: this installation's own, derived
+    from its session key, so an app in a sandbox that names its cookie
+    sbx_session (sbx itself, as a repository on sbx) keeps it through the
+    preview gateway, which strips exactly this one."""
+    tag = hmac.new(session_key().encode(), b"session cookie name", hashlib.sha256).hexdigest()[:12]
+    return f"sbx_session_{tag}"
