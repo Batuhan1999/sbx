@@ -107,3 +107,9 @@ class CommandName(unittest.TestCase):
         self.assertEqual(command_name("TOKEN='hunter2 more' false"), "false")
         self.assertEqual(command_name("bash -c 'export K=hunter2\nrun'"), "bash -c")
         self.assertNotIn("hunter2", str(CommandFailed(command="tool --api-key hunter2 go", exit_code=2)))
+
+    def test_a_command_killed_with_137_says_it_may_have_run_out_of_memory(self):
+        from sbx_control.runtime.base import CommandFailed
+        self.assertEqual(str(CommandFailed(command=".sbx/setup", exit_code=137)),
+                         "`.sbx/setup` was killed (exit code 137: out of memory?)")
+        self.assertEqual(str(CommandFailed(command=".sbx/setup", exit_code=1)), "`.sbx/setup` exited with code 1")
