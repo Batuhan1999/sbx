@@ -370,6 +370,19 @@ class ExtensionTests(Installation):
         with self.assertRaises(recipes.RecipeError):
             recipes.App("owner/bad", Path("/unused"), {"resources": {"cpu": "4"}}).size
 
+    def test_a_recipe_dockerfile_runs_first_as_root_and_a_multi_stage_one_is_refused(self):
+        from sbx_control import recipes, runtime, templates
+        recipe = self.recipe("owner/app", "template: anything\n")
+        (recipe / "Dockerfile").write_text("RUN apt-get install -y jq\n")
+        (recipe / "build").write_text("#!/bin/sh\nmake\n")
+        with patch.object(recipes, "default_branch", return_value="main"):
+            steps = templates.recipe_layer(runtime.TemplateSpec(), recipes.load("owner/app"), "curl x").steps
+            self.assertEqual(steps[:3], [("user", "root"), ("workdir", "/"), ("dockerfile", "RUN apt-get install -y jq\n")])
+            self.assertEqual(steps[3], ("user", "user"))   # the checkout and .sbx/build, whatever USER it ended with
+            (recipe / "Dockerfile").write_text("FROM a\nRUN make\nFROM b\n")
+            with self.assertRaisesRegex(recipes.RecipeError, r"\.sbx/Dockerfile: .*multi-stage"):
+                templates.recipe_layer(runtime.TemplateSpec(), recipes.load("owner/app"), "curl x")
+
     def test_a_build_runs_contributions_and_their_ready_checks(self):
         from sbx_control import templates
         from sbx_control.contributions import Artifact, Check, Contribution, File, TemplateLayer
