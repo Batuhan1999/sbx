@@ -280,7 +280,9 @@ class Amp(extensions.Connector):
                   help="From Amp Settings → Orbs → Add Provider; stored in the secret vault"),
             Field("repo", "Default repository", value=amp.repo,
                   help="owner/repository; with multiple repos, Amp orb types use the routes shown by sbx-admin amp routes"),
-            Field("enabled", "Enabled", value="true" if amp.enabled else "false",
+            # Chosen in the setup counts as on: saving the card or the keys page with the
+            # token keeps Amp in the templates and starts its provider, instead of dropping it.
+            Field("enabled", "Enabled", value="true" if amp.enabled or amp.chosen else "false",
                   help="Enabled, Amp is in every template; templates rebuild by themselves"),
         ), ("connect", "test", "disconnect"))
 

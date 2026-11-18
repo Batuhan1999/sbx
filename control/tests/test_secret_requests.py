@@ -283,6 +283,16 @@ class Keys(TwoRuntimes, Server):
         self.assertEqual(vault.get(TOKEN), "aop_live_test-only-0123456789")
         self.assertFalse(extensions.get("amp").settings().enabled)   # saving the token did not turn Amp on
 
+    def test_amp_chosen_in_the_setup_stays_in_the_templates_and_turns_on_with_its_token(self):
+        from sbx_control import extensions
+        amp = extensions.get("amp")
+        amp.choose(True, by="test")   # the setup's coding agents step
+        self.assertEqual(next(f.value for f in amp.status().fields if f.name == "enabled"), "true")
+        found = self.ask(("connector:amp", "Amp provider token"))
+        self.assertTrue(self.submit(found["id"], {"connector:amp": "aop_live_test-only-0123456789"})["ok"])
+        self.assertTrue(amp.settings().enabled)   # the provider runs once its token is in
+        self.assertIsNotNone(amp.contribution(None))   # and its layer is still in every template
+
     def test_a_request_expires_or_is_cancelled_and_then_takes_nothing(self):
         found = self.ask(("dns:cloudflare", ""))
         cancelled = self.client.delete(f"/api/secret-requests/{found['id']}")
