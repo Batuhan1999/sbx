@@ -265,6 +265,8 @@ class Layer(sandbox_layers.SandboxLayer):
         seen = mine["generation"]   # from before the routes were first read for this write
         if not found.rows:
             with lock():
+                if generation() != seen:
+                    return   # a grant since: its delivery (a newer write) decides what the sandbox holds
                 certs.forget(write.name)
             sbx.commands.run(f"rm -rf {RENEWED}", timeout=30)
             return

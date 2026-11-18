@@ -677,6 +677,20 @@ class RouteTests(Setup, Installation):
             with patch.object(sandbox, "_issue", lambda *a, **kw: issued.append(a[3:]) or real(*a, **kw)):
                 self.endpoints.LAYER.after_write(later, vm)
         self.assertEqual(issued, [({"dev-pg", "temporal"},), ()])
+        # A write that read no endpoints, then the repo is granted one: it doesn't take back what
+        # the grant's delivery gives (the credential, the bundles).
+        self.register("lone", repo="fourth/repo")
+        lone = self.write(name="lone", repo="fourth/repo")
+        commands = []
+        bare = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: commands.append(c) or SimpleNamespace(stdout="")),
+                               files=vm.files)
+        with provider(self.runtime):
+            self.assertFalse(self.endpoints.LAYER.contribution(lone))   # nothing for it yet
+            self.endpoints.grant("temporal", "fourth/repo")
+            self.certs.bind("lone", "fourth/repo", "fixture-credential")   # what the grant's delivery bound
+            self.endpoints.LAYER.after_write(lone, bare)
+        self.assertEqual(self.certs.bound_repo("Bearer lone:fixture-credential"), "fourth/repo")
+        self.assertFalse(any("rm -rf" in c for c in commands))
 
     def test_a_public_repo_may_use_what_it_was_granted_and_nothing_else(self):
         with provider(self.runtime):
