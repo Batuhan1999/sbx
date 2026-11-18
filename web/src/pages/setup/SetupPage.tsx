@@ -8,7 +8,7 @@ import { keys, useAvailableRuntimes, useConnections, useSetup } from '@/api/quer
 import type { AvailableRuntime, Check as CheckT, SetupState } from '@/api/types'
 import { CopyCommand, useCopy } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
-import { ErrorState, Loading } from '@/components/states'
+import { DetailText, ErrorState, Loading } from '@/components/states'
 import { TemplateProgressLine } from '@/components/TemplateProgressLine'
 import { AnchorButton, Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/primitives'
@@ -218,7 +218,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
       <p className="text-[12.5px] text-muted">New records can take a few minutes to show up. Fix what’s listed, then check again.</p>
     </section>}
     <ErrorState error={error} />
-    {saved && (certificateError ? <ErrorState error={`Couldn’t get the certificate: ${certificateError}`} />
+    {saved && (certificateError ? <CertificateError error={certificateError} />
       : s.access.certificate_ready ? <Notice tone="ok">Certificate ready for {s.access.domain}.</Notice>
       : <Notice tone="busy">Records found. The certificate is on its way in the background; you can continue.</Notice>)}
     <Nav>
@@ -368,7 +368,7 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
         </form.AppField>
       </div>
     </fieldset></AppForm>}
-    {certificateError && <ErrorState error={`Couldn’t get the certificate for ${domain}: ${certificateError}`} />}
+    {certificateError && <CertificateError error={certificateError} domain={domain} />}
     <TemplateProgressLine />
     <ErrorState error={error} />
     <Nav onBack={onBack}>
@@ -424,5 +424,23 @@ function GitHubStep() {
       <Button variant="ghost" onClick={enter}>Skip for now</Button>
       <SubmitButton form={form} formId="setup-github"><Github />Create the app on GitHub</SubmitButton>
     </Nav>
+  </div>
+}
+
+/** Why the certificate failed, with the fix in plain sight: a closed port 53 says where to open it (the server's
+ * own probe: "port 53: ...; fix: ..."); anything else is Let's Encrypt's error, whose text is the detail. */
+export function CertificateError({ error, domain }: { error: string; domain?: string }) {
+  const port = /^port 53:\s*(.*?)(?:;\s*fix:\s*(.*))?$/s.exec(error.trim())
+  return <div role="alert" className="rounded-lg border border-bad/25 bg-bad-soft px-4 py-3 text-[13px]">
+    {port ? <>
+      <p className="font-medium text-bad">Port 53 is blocked</p>
+      <p className="mt-1">Nothing from outside reached this server on port 53, so it can’t answer the certificate’s DNS check{domain ? ` for ${domain}` : ''}.</p>
+      <p className="mt-1.5">Allow inbound <span className="font-medium">TCP and UDP port 53</span> in your provider’s firewall, then try again.</p>
+      {port[1] && <details className="mt-1.5 text-[12px] [&>summary]:cursor-pointer"><summary className="w-fit text-muted hover:text-ink">Details</summary>
+        <span className="mt-1 block break-words font-mono text-[11.5px] text-muted">{port[1]}</span></details>}
+    </> : <>
+      <p className="font-medium text-bad">Couldn’t get the certificate{domain ? ` for ${domain}` : ''}</p>
+      <p className="mt-1 break-words text-muted"><DetailText text={error} /></p>
+    </>}
   </div>
 }

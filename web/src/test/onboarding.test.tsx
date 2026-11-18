@@ -101,7 +101,9 @@ describe('server setup', () => {
     stubApi({ 'GET /api/setup': state([], {}, { ...SAVED, certificate_error: 'the challenge was not answered' }) })
     renderApp(<SetupPage />)
     await user.click(await screen.findByRole('button', { name: /Domain/ }))
-    expect((await screen.findByRole('alert')).textContent).toContain('Couldn’t get the certificate: the challenge was not answered')
+    const failed = (await screen.findByRole('alert')).textContent
+    expect(failed).toContain('Couldn’t get the certificate')
+    expect(failed).toContain('the challenge was not answered')
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Continue/ })).toBeTruthy()
   })
@@ -199,7 +201,9 @@ describe('the account waits for the certificate', () => {
       'GET /api/templates': TEMPLATES, 'PUT /api/connections/domain': { state: 'connected' },
     })
     renderApp(<SetupPage />)
-    expect((await screen.findByRole('alert')).textContent).toContain('Couldn’t get the certificate for sbx.example.com: the challenge was not answered')
+    const failed = (await screen.findByRole('alert')).textContent
+    expect(failed).toContain('Couldn’t get the certificate for sbx.example.com')
+    expect(failed).toContain('the challenge was not answered')
     expect(screen.queryByRole('button', { name: 'Create account and finish' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(calls.find(c => c.method === 'PUT')?.body).toEqual({ values: { name: 'sbx.example.com', address: '203.0.113.7', acme: 'delegated' } }))
@@ -251,5 +255,16 @@ describe('the ready dialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Look around' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(isMarkedReady()).toBe(false)
+  })
+})
+
+describe('a certificate that failed', () => {
+  it('names a blocked port 53 and where to open it', async () => {
+    const { CertificateError } = await import('@/pages/setup/SetupPage')
+    const { render } = await import('@testing-library/react')
+    const view = render(<CertificateError domain="sbx.example.com" error="port 53: no public resolver (1.1.1.1, 8.8.8.8) reached this server on port 53 within 5 s; fix: allow TCP and UDP port 53 in your provider's firewall" />)
+    const text = view.getByRole('alert').textContent ?? ''
+    expect(text).toContain('Port 53 is blocked')
+    expect(text).toContain('TCP and UDP port 53')
   })
 })
