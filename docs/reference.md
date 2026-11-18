@@ -543,9 +543,12 @@ A prebuilt template's recipe layer runs, in order:
    ignored: sandboxes start the app with `processes` and `start`. A second
    `FROM` (a multi-stage build), `COPY` and `ADD` are refused; fetch files
    with `RUN curl` or in `.sbx/build`. `ENV` and `ARG` values stay set for
-   the build's later steps. One exception: Boat does not replay the body of
-   a heredoc (`RUN <<EOF`), so put those commands in `.sbx/build` or a
-   plain `RUN` for a template that builds on Boat.
+   the build's later steps. One exception: Boat reads a heredoc
+   (`RUN <<EOF`) line by line. A body line that starts with an instruction
+   (`RUN`, `ENV`, `ARG`, `USER`, `WORKDIR`) is replayed as that build step,
+   one that starts with `COPY` or `ADD` fails the build, and the other lines
+   are skipped. For a template that builds on Boat, put those commands in
+   `.sbx/build` or a plain `RUN`.
 2. the checkout of the default branch at `workdir`, as `user`;
 3. `.sbx/build`, as `user` from `workdir`, whatever `USER` and `WORKDIR` the
    Dockerfile ended with.
