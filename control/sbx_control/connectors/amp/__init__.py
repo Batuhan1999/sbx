@@ -154,7 +154,11 @@ def _fetch_tools(kind: str) -> bytes:
         except Exception as error:   # a runtime's refusal must not cost the tools already read
             if primary is None and not (isinstance(error, RuntimeError) or _refused_by(kind, error)):
                 raise
-            print(f"could not delete the {name} template on {kind}: {error}", flush=True)
+            try:   # a diagnostic only: it must not replace the error this fetch ends with
+                print(f"could not delete the {name} template on {kind}: {error}", flush=True)
+            except OSError:
+                if primary is None:
+                    raise
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
