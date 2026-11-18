@@ -3,6 +3,7 @@ sandboxes of their own. A paused orb is never deleted for its age: its disk
 is its thread's state."""
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import gzip
 import io
@@ -154,11 +155,8 @@ def _fetch_tools(kind: str) -> bytes:
         except Exception as error:   # a runtime's refusal must not cost the tools already read
             if primary is None and not (isinstance(error, RuntimeError) or _refused_by(kind, error)):
                 raise
-            try:   # a diagnostic only: it must not replace the error this fetch ends with
+            with contextlib.suppress(OSError):   # a diagnostic only: it must cost neither the tools nor the error
                 print(f"could not delete the {name} template on {kind}: {error}", flush=True)
-            except OSError:
-                if primary is None:
-                    raise
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
@@ -288,11 +286,11 @@ class Amp(extensions.Connector):
 
     @staticmethod
     def _tools_check() -> Check:
-        if cached_tools().is_dir():   # a refill can't replace a directory with the archive
-            return Check("desktop tools", False, f"{cached_tools()} is a directory",
-                         f"move or remove {cached_tools()}; the next template build fetches the tools again")
         try:
             kept = cached_tools().read_bytes()
+        except IsADirectoryError:   # a refill can't replace a directory with the archive
+            return Check("desktop tools", False, f"{cached_tools()} is a directory",
+                         f"move or remove {cached_tools()}; the next template build fetches the tools again")
         except FileNotFoundError:   # never fetched, or cleared since
             kept = b""
         if tools_valid(kept):

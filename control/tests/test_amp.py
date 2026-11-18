@@ -529,6 +529,12 @@ class AmpToolsTests(Installation):
             self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
 
+    def test_an_unwritable_diagnostic_after_a_refused_delete_keeps_the_tools(self):
+        with patch.object(self.fake, "delete_template", side_effect=RuntimeError("HTTP 503")), \
+                patch("builtins.print", side_effect=BrokenPipeError):
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+
     def test_the_template_is_deleted_when_the_sandbox_cleanup_fails(self):
         with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
                 self.assertRaisesRegex(self.runtime.Failed, "kill refused"):
@@ -540,6 +546,12 @@ class AmpToolsTests(Installation):
         self.amp.cached_tools().mkdir(parents=True)
         self.addCleanup(self.amp.cached_tools().rmdir)
         check = self.amp.Amp._tools_check()
+        self.assertFalse(check.ok)
+        self.assertIn("is a directory", check.detail)
+
+    def test_a_directory_appearing_as_the_cache_is_read_gets_the_guidance(self):
+        with patch.object(Path, "read_bytes", side_effect=IsADirectoryError):
+            check = self.amp.Amp._tools_check()
         self.assertFalse(check.ok)
         self.assertIn("is a directory", check.detail)
 
