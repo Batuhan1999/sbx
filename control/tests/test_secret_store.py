@@ -563,8 +563,18 @@ class DeliveryTests(Server):
             else:
                 held.append(identity)
             return flock(fd, operation)
-        with patch.object(core, "refresh_env", side_effect=lambda name, restart: (
-                delivered.set(), {"changed": [], "restarted": False})[1]), \
+        blocked = []
+
+        def refresh(name, restart):   # delivery still holds the lock while it refreshes
+            with (core.paths.state_dir() / "locks" / f"sandbox-{name}.lock").open("a") as other:
+                try:
+                    flock(other, core.fcntl.LOCK_EX | core.fcntl.LOCK_NB)
+                    blocked.append(False)
+                except BlockingIOError:
+                    blocked.append(True)
+            delivered.set()
+            return {"changed": [], "restarted": False}
+        with patch.object(core, "refresh_env", side_effect=refresh), \
                 patch.object(core.fcntl, "flock", observed):
             try:
                 with core.sandbox_operation("delivery-test"):
@@ -580,6 +590,7 @@ class DeliveryTests(Server):
                     worker.join(5)
         self.assertFalse(worker.is_alive())
         self.assertTrue(delivered.is_set())
+        self.assertEqual(blocked, [True])
         self.assertIsNone(self.delivery.pending("delivery-test"))
 
     def test_a_value_the_sandbox_no_longer_gets_leaves_its_env(self):

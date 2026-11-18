@@ -89,7 +89,8 @@ running in the sandbox within 20 seconds of its launch; each launch carries a
 non-secret id, so a bootstrap an earlier spawn left running does not count. A spawn that resumed an
 existing orb's sandbox keeps it on failure, and the cleanup never touches a
 registration under the orb's name that it did not make itself. If the cleanup
-itself fails, the control service's log says so. A delete job
+itself fails, the control service's log says so, and the spawn's error tells
+Amp to delete the orb before it spawns again. A delete job
 (`ORB_OPERATION=delete`) uses the same path, so it fails for the same reason
 while the cause is there (the runtime not answering, say): fix what the log
 names, send the delete again

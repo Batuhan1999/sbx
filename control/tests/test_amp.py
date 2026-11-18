@@ -6,7 +6,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 from support import Server
@@ -448,7 +448,7 @@ sudo() {
         with patch.object(core, "attach", side_effect=attached), \
                 patch.object(sandboxes, "restart", side_effect=lambda *a, **k: order.prepare()):
             self.assertEqual(self.amp_job(self.env).status_code, 200)
-        self.assertEqual(order.mock_calls[0], call.attach(run_app=False))
+        self.assertEqual(tuple(order.mock_calls[0]), ("attach", (), {"run_app": False}))
         self.assertEqual([c[0] for c in order.mock_calls][-2:], ["probe", "prepare"])
 
     def test_amp_spawn_that_fails_in_its_vm_deletes_it_before_preparing_the_app(self):
@@ -541,16 +541,21 @@ sudo() {
     def test_amp_failed_cleanup_keeps_the_spawn_s_own_error(self):
         self.amp_fixture()
         from sbx_control import core
-        from sbx_control.connectors.amp import orbs as amp_orbs
+        from sbx_control.connectors.amp import api as amp_api
         launched = self.failing_bootstrap(RuntimeError("bootstrap did not start"))
         # The cleanup's error carries the token: it is never what is logged.
         with patch.object(core, "delete", side_effect=RuntimeError(f"runtime unreachable {self.env['ORB_TOKEN']}")), \
-                contextlib.redirect_stderr(io.StringIO()) as said:
-            with self.assertRaisesRegex(RuntimeError, "bootstrap did not start"):
-                amp_orbs.handle_job(self.env)
+                patch.object(amp_api.state, "event") as event, contextlib.redirect_stderr(io.StringIO()) as said:
+            response = self.amp_job(self.env)
         self.assertEqual(len(launched), 1)
         self.assertIn("ORB_OPERATION=delete", said.getvalue())
         self.assertNotIn(self.env["ORB_TOKEN"], said.getvalue())
+        # The spawn's own error stays in the server's log; Amp is told to delete the orb, never the cause's text.
+        self.assertIn('"RuntimeError"', event.call_args.args[2])
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ORB_OPERATION=delete", response.json()["detail"])
+        self.assertNotIn("bootstrap did not start", response.text)
+        self.assertNotIn(self.env["ORB_TOKEN"], response.text)
 
     def test_amp_bootstrap_failure_whose_cleanup_fails_does_not_claim_the_sandbox_was_deleted(self):
         self.amp_fixture()

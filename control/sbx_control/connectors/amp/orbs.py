@@ -179,9 +179,19 @@ def handle_job(env: dict) -> dict:
             raise JobError(f"{error}; " + ("the new sandbox was deleted, spawn again" if deleted else
                                            "its sandbox was not deleted: send ORB_OPERATION=delete for this orb, "
                                            "then spawn again")) from None
-        except Exception:
-            discard(name, orb_id, before)
+        except Exception as error:
+            if not discard(name, orb_id, before):
+                raise SpawnNotCleanedUp() from error
             raise
+
+
+class SpawnNotCleanedUp(Exception):
+    """A spawn failed and its sandbox could not be deleted again. The message
+    is fixed (never the cause's, which may carry a token): Amp is told to
+    delete the orb first; the cause stays in the server's own log."""
+
+    def __init__(self):
+        super().__init__("its sandbox was not deleted: send ORB_OPERATION=delete for this orb, then spawn again")
 
 
 class BootstrapNotStarted(JobError):
