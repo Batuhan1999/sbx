@@ -4,9 +4,11 @@ is its thread's state."""
 from __future__ import annotations
 
 import fcntl
+import io
 import os
 import pathlib
 import subprocess
+import tarfile
 import time
 
 from pydantic import ValidationError
@@ -61,7 +63,7 @@ def tools_runtime() -> str | None:
     """The enabled runtime that fetches the tools from IMAGE: one that builds
     from container images, the default when it does."""
     from ... import runtime
-    return next(iter(runtime.able("image_import")), None)
+    return runtime.able("image_import")
 
 
 def no_tools_runtime() -> str:
@@ -80,21 +82,31 @@ def no_tools_runtime() -> str:
             "every runtime.")
 
 
+def tools_valid(data: bytes) -> bool:
+    """Whether data is a whole gzipped tarball of amp-wayland."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            return "amp-wayland" in {name.split("/")[0] for name in tar.getnames()}
+    except (OSError, EOFError, tarfile.TarError):
+        return False
+
+
 def wayland_tools() -> bytes:
     """The tarball of /opt/amp-wayland from IMAGE: the host's copy for its
-    digest, else fetched once on a runtime that imports images and kept,
-    dropping the copies of other digests."""
+    digest, else (or when that copy is damaged) fetched once on a runtime
+    that imports images and kept, dropping the copies of other digests."""
     found = cached_tools()
     found.parent.mkdir(parents=True, exist_ok=True)
     with (found.parent / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)   # builds on several runtimes fetch once
-        if found.is_file():
-            data = found.read_bytes()
-        else:
+        data = found.read_bytes() if found.is_file() else b""
+        if not tools_valid(data):
             kind = tools_runtime()
             if kind is None:
                 raise RuntimeError(no_tools_runtime())
             data = _fetch_tools(kind)
+            if not tools_valid(data):
+                raise RuntimeError(f"the desktop tools fetched from {IMAGE} are not a gzipped amp-wayland tarball")
             partial = found.with_name(found.name + ".partial")
             partial.write_bytes(data)
             os.replace(partial, found)
@@ -106,22 +118,27 @@ def wayland_tools() -> bytes:
 
 def _fetch_tools(kind: str) -> bytes:
     from ... import runtime
+    name = runtime.template_name(TOOLS, kind)   # this installation's on a runtime several may share
     runtime.build_template(runtime.TemplateSpec().from_image(IMAGE).set_start_cmd("sleep infinity", "true"),
-                           alias=TOOLS, cpu=1, memory_mb=1024, disk_mb=1024, kind=kind)
+                           alias=name, cpu=1, memory_mb=1024, disk_mb=1024, kind=kind)
     vm = None
     try:
-        with core.reserve_capacity(1024, kind):
-            vm = runtime.create(TOOLS, timeout=180, metadata={"sbx_cache_build": TOOLS}, on_timeout="kill",
-                                kind=kind)
-        vm.commands.run("tar -C /opt -czf /tmp/sbx-amp-tools.tar.gz amp-wayland", timeout=60)
-        data = vm.files.read("/tmp/sbx-amp-tools.tar.gz", format="bytes")
+        try:
+            with core.reserve_capacity(1024, kind):
+                vm = runtime.create(name, timeout=180, metadata={"sbx_cache_build": TOOLS}, on_timeout="kill",
+                                    kind=kind)
+            vm.commands.run("tar -C /opt -czf /tmp/sbx-amp-tools.tar.gz amp-wayland", timeout=60)
+            data = vm.files.read("/tmp/sbx-amp-tools.tar.gz", format="bytes")
+        finally:
+            if vm is not None:
+                runtime.kill(vm.sandbox_id)
     finally:
-        if vm is not None:
-            runtime.kill(vm.sandbox_id)
         try:   # the host keeps the tools; the template would only hold the runtime's storage
-            runtime.delete_template(TOOLS, kind)
-        except runtime.Failed as error:
-            print(f"could not delete the {TOOLS} template on {kind}: {error}", flush=True)
+            runtime.delete_template(name, kind)
+        except Exception as error:   # a runtime's refusal must not cost the tools already read
+            if not (isinstance(error, RuntimeError) or runtime.failure(error)):
+                raise
+            print(f"could not delete the {name} template on {kind}: {error}", flush=True)
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
@@ -240,7 +257,7 @@ class Amp(extensions.Connector):
 
     @staticmethod
     def _tools_check() -> Check:
-        if cached_tools().is_file():
+        if cached_tools().is_file() and tools_valid(cached_tools().read_bytes()):
             return Check("desktop tools", True, "kept on this host")
         kind = tools_runtime()
         if kind is None:

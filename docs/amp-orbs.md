@@ -96,8 +96,11 @@ enabled runtime that can.
 The host keeps the tarball in `/var/lib/sbx/cache/amp-tools/<digest>.tar.gz`.
 Every later template build, on any runtime and Boat included, unpacks that
 copy instead of fetching again; when the pinned digest changes, the next build
-fetches the new image and removes the copies of other digests. Deleting the
-folder only makes the next build fetch again.
+fetches the new image and removes the copies of other digests. A copy that is
+empty or damaged is fetched again the same way. Clearing the folder only makes
+the next build fetch again, but do it only while no template build is running
+(a running build holds the folder's lock file), and on a host whose only
+runtime is Boat, enable a runtime that imports images first (see below).
 
 An installation whose only runtime is Boat therefore needs a runtime that
 imports images for the first fetch of each digest: enable E2B Cloud (or E2B

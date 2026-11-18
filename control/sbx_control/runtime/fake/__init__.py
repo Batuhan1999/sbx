@@ -83,7 +83,8 @@ class _Files:
         box = self._runtime._running(self._id)
         if path not in box.files:
             raise CommandFailed(f"{path}: no such file", exit_code=1)
-        return box.files[path].encode() if format == "bytes" else box.files[path]
+        data = box.files[path]
+        return (data if isinstance(data, bytes) else data.encode()) if format == "bytes" else data
 
 
 class _Handle:

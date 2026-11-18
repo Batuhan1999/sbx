@@ -416,6 +416,20 @@ sudo() {
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
 
 
+def _tarball() -> bytes:
+    import io
+    import tarfile
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        entry = tarfile.TarInfo("amp-wayland/bin/labwc")
+        entry.size = 4
+        tar.addfile(entry, io.BytesIO(b"\x7fELF"))
+    return out.getvalue()
+
+
+TARBALL = _tarball()
+
+
 class AmpToolsTests(Installation):
     """Amp's desktop tools come from its container image: fetched once on a
     runtime that imports images, whichever is the default, and kept on the
@@ -439,7 +453,7 @@ class AmpToolsTests(Installation):
 
         def tools(box, command):
             if command.startswith("tar -C /opt"):
-                box.files["/tmp/sbx-amp-tools.tar.gz"] = "amp-wayland tarball"
+                box.files["/tmp/sbx-amp-tools.tar.gz"] = TARBALL
             return None
 
         self.runtime, self.amp, self.boat, self.fake = runtime, amp, BoatLike(), Fake()
@@ -457,22 +471,22 @@ class AmpToolsTests(Installation):
     def test_a_default_runtime_without_image_import_fetches_on_one_that_has_it(self):
         self.assertEqual(self.amp.tools_runtime(), "fake")
         self.assertEqual(self.amp.Amp._tools_check().detail, "fetched on Fake runtime at the next template build")
-        self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual((self.fetches(self.fake), self.boat.ran, self.boat.boxes), (1, [], {}))
         self.assertEqual((self.fake.boxes, self.fake.built), ({}, {}))   # its builder and template are gone
-        self.assertEqual(self.amp.cached_tools().read_bytes(), b"amp-wayland tarball")
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
 
     def test_the_kept_tools_are_reused_and_other_digests_dropped(self):
         stale = self.amp.tools_cache() / "0000.tar.gz"
         stale.parent.mkdir(parents=True, exist_ok=True)
         stale.write_bytes(b"older image")
         self.amp.wayland_tools()
-        self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual(self.fetches(self.fake), 1)                  # the second build reused it
         self.assertFalse(stale.exists())
         self.assertEqual(self.amp.Amp._tools_check().detail, "kept on this host")
         with patch.object(self.runtime, "enabled", return_value=["boat"]):   # Boat alone builds from the copy
-            self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual(self.fetches(self.fake), 1)
 
     def test_no_runtime_that_imports_images_says_what_to_enable(self):
@@ -485,3 +499,43 @@ class AmpToolsTests(Installation):
         self.assertIn("Enable a runtime that does (E2B Embed, E2B Cloud", check.fix)
         self.assertEqual((self.boat.ran, self.boat.built), ([], {}))
         self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_damaged_kept_copy_is_fetched_again(self):
+        for damaged in (b"", TARBALL[:len(TARBALL) // 2]):
+            self.amp.cached_tools().parent.mkdir(parents=True, exist_ok=True)
+            self.amp.cached_tools().write_bytes(damaged)
+            self.assertFalse(self.amp.Amp._tools_check().detail == "kept on this host")
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+            self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 2)
+
+    def test_the_throwaway_template_is_this_installations(self):
+        names = []
+        build = self.fake.build_template
+        self.enterContext(patch.object(self.fake, "build_template",
+                                       side_effect=lambda spec, alias, **kw: names.append(alias) or build(spec, alias=alias, **kw)))
+        self.amp.wayland_tools()
+        self.assertEqual(names, [self.runtime.template_name(self.amp.TOOLS, "fake")])
+        self.assertNotEqual(names[0], self.amp.TOOLS)
+        self.assertEqual(self.fake.built, {})
+
+    def test_a_refused_template_delete_keeps_the_tools(self):
+        with patch.object(self.fake, "delete_template", side_effect=RuntimeError("HTTP 503")):
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+
+    def test_the_template_is_deleted_when_the_sandbox_cleanup_fails(self):
+        with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
+                self.assertRaisesRegex(self.runtime.Failed, "kill refused"):
+            self.amp.wayland_tools()
+        self.assertEqual(self.fake.built, {})
+        self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_default_that_imports_images_is_chosen_without_making_the_others(self):
+        self.enterContext(patch.object(self.runtime, "default", return_value="fake"))
+        self.runtime._backends.pop("boat")
+        with patch.object(self.runtime, "make", side_effect=ImportError("no boat package")) as make:
+            self.assertEqual(self.amp.tools_runtime(), "fake")
+            make.assert_not_called()
+            self.enterContext(patch.object(self.runtime, "default", return_value="boat"))
+            self.assertEqual(self.amp.tools_runtime(), "fake")   # a runtime that can't be made is passed over

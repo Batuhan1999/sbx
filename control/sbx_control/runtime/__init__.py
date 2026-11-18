@@ -690,13 +690,19 @@ def capabilities(kind: str | None = None) -> Capabilities:
     return get(kind).capabilities
 
 
-def able(capability: str) -> list[str]:
-    """The enabled kinds that have capability (a Capabilities field), the
-    default first."""
+def able(capability: str) -> str | None:
+    """The first enabled kind that has capability (a Capabilities field),
+    the default first; None when none has. Only the runtimes up to that one
+    are made, and one that can't be made here is passed over."""
     kinds_now = enabled()
     first = default() if kinds_now else None
-    ordered = [first, *(k for k in kinds_now if k != first)] if first else []
-    return [k for k in ordered if getattr(get(k).capabilities, capability)]
+    for kind in ([first, *(k for k in kinds_now if k != first)] if first else []):
+        try:
+            if getattr(get(kind).capabilities, capability):
+                return kind
+        except Exception as error:   # a runtime whose package or configuration fails here has nothing to offer
+            print(f"the {kind} runtime could not be asked for {capability}: {error}", flush=True)
+    return None
 
 
 def title(kind: str | None = None) -> str:
