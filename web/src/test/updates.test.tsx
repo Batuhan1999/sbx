@@ -57,7 +57,7 @@ describe('parseNotes', () => {
       '<!-- Release notes generated using configuration in .github/release.yml at v0.2.0 -->',
       "## What's Changed", '### Changes', '* Faster previews by @someone in https://github.com/o/sbx/pull/14', '',
       '**Full Changelog**: https://github.com/o/sbx/compare/v0.1.0...v0.2.0', '',
-      '## Rollback', '- Only if needed.', '### Steps', '- Stop first.',
+      '### Rollback', '- Only if needed.', '#### Steps', '- Stop first.',
     ].join('\n'))
     expect(notes.steps).toEqual([{ text: '1. Back up the state.' }, { text: '2. Restart the service.' },
       { text: '<!-- Release notes generated example -->', code: true }])

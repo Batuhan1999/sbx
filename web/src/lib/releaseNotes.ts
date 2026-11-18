@@ -56,7 +56,12 @@ export function parseNotes(text: string): ReleaseNotes {
     if (!line) { blank = true; continue }
     if (line === GENERATED_MARK) { generated = true; open.length = 0; blank = true; continue }
     const compare = COMPARE.exec(line)
-    if (compare) { notes.compare = compare[1]; generated = false; open.length = 0; blank = true; continue }   // GitHub's headings are no one's parents
+    if (compare) {
+      notes.compare = compare[1]
+      if (generated) { generated = false; open.length = 0 }   // GitHub's headings are no one's parents
+      blank = true
+      continue
+    }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading) {
       const level = heading[1].length, title = heading[2].trim()
