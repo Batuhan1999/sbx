@@ -98,7 +98,7 @@ def detected_urls(info) -> tuple[dict, list]:
     """(port-<n> -> link of each detected preview, every detected port with
     its link or loopback: true). The link is <slug>-<port> unless the app
     declares that suffix or another sandbox has it as its slug; then the raw
-    <port>-<id> host."""
+    <port>-<host id> host."""
     if settings.current().sandboxes.detected_previews == "off":
         return {}, []
     slug, a = core.slug_of(info), core.app_of(info)

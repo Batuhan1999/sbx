@@ -300,7 +300,7 @@ server's name, with `_` as `-`, unless `--name` gives one), its target an IP
 address and port (an internal host's within `network.internal_cidrs`). On
 443 an endpoint's name is routed before any preview, so it may be no host
 the installation has or may give a sandbox: not a reserved name, no
-sandbox's slug, `<slug>-<anything>` or `<port>-<id>`; a sandbox or branch
+sandbox's slug, `<slug>-<anything>` or `<port>-<host id>`; a sandbox or branch
 whose slug would collide with an endpoint is refused the same way. An
 internal host's endpoint whose target `network.internal_cidrs` no longer
 covers is `failed`, saying so, and is not routed until its range is back.
@@ -1082,7 +1082,12 @@ again on the other one.
 ## Previews
 
 With a domain, the main preview is `https://<sandbox>.<domain>` and the others
-`https://<sandbox>-<name>.<domain>`.
+`https://<sandbox>-<name>.<domain>`. A port is also reached on
+`<port>-<host id>.<domain>`, which names the VM rather than the sandbox: the
+CLI's SSH bridge (`sbx ssh-config`) and a detected preview whose readable
+name is taken. The host id is the runtime's sandbox id as a host name label:
+lowercase letters and digits as they are, every other byte as `-` and two
+hex digits (Boat's `bx_3f8tnb7k` is `bx-5f3f8tnb7k`).
 
 Without a domain, sbx assigns each sandbox and preview port a stable
 `https://<ip>:<port>` from TCP 21000–21255 (`network.ip_preview_first_port` and
@@ -1141,6 +1146,16 @@ itself answers (the runtime not reachable, a timeout) is the page too; every
 answer of the app's (401, 403, its own 502 or 504) reaches the client as it
 is. A non-HTML request (XHR, websocket, API client) that sbx answers gets
 the status and a JSON body (`{"error": "<state>", ...}`), never the page.
+The SSH bridge is the platform's, not the app's: it waits only while its VM
+is created, pauses or has its runtime restored by a resume, and answers while
+the app is set up, started or restarted (on a VM the restart is still
+resuming, it waits) and after the app or its setup failed. Once the sandbox
+is being deleted it answers 404, as for one already gone. `ssh sbx-NAME` (the
+CLI's tunnel) takes only a `wss://` bridge and, saying so, keeps probing it on
+a 503 or a 502 that is not sbx's failed page, for a budget of two minutes: no
+probe starts after it, though one in progress may finish a little later. It
+says what to do when the bridge names no sandbox of yours, asks for a
+sign-in or the sandbox failed.
 `/.sbx/status` is the one path sbx reserves on preview hosts: it needs a
 sign-in for every method, never wakes a sandbox, and tells someone who may
 not open the preview what it tells for an unknown name. A poll that lost
