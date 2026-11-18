@@ -811,6 +811,20 @@ class WorkspaceTests(Server):
         self.assertEqual(template_builds.first_wait(), template_builds.CHECK_SECONDS)
         self.assertEqual(template_builds.state(key)['status'], 'built')
 
+    def test_a_build_whose_pid_was_reused_reads_interrupted(self):
+        import os
+        from sbx_control import template_builds, templates
+        key = templates.DEFAULT
+        other = os.getppid()   # a live process that isn't this one
+        with patch.object(template_builds, '_birth', return_value='100'):
+            template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=other,
+                                        pid_birth='100')
+            self.assertEqual(template_builds.state(key)['status'], 'building')   # the build's own process
+        with patch.object(template_builds, '_birth', return_value='200'):   # the pid now names another process
+            self.assertEqual(template_builds.state(key)['status'], 'interrupted')
+        with patch.object(template_builds, '_birth', return_value=None):    # no /proc: the pid alone decides
+            self.assertEqual(template_builds.state(key)['status'], 'building')
+
 
 class MissingValuesTests(Server):
     """What a repo still needs: the repo page (secrets_missing) and its env

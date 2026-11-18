@@ -36,6 +36,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 from . import extensions, recipes, runtime, settings, templates
 from .state import Schema, columns, db, tables
@@ -45,7 +46,7 @@ CHECK_SECONDS = 300
 RESUME_SECONDS = 30  # how soon after a start the scheduler looks for what a restart cut off
 
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
-          "built_memory_mb")
+          "built_memory_mb", "pid_birth")
 # The machine: a build starts from any settled state and settles as built or
 # failed. A build whose process is gone (a restart of sbx-control cut it off)
 # reads as interrupted (status()), never stored: not a failure of its plan, so
@@ -184,16 +185,25 @@ def _utc() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 
-def _alive(pid) -> bool:
+def _birth(pid) -> str | None:
+    """When pid started (/proc/<pid>/stat field 22), or None where there is no
+    /proc. With the pid it names one process: a reused pid has another start."""
+    try:
+        return (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _alive(pid, birth=None) -> bool:
     if not pid:
         return False
     if pid == os.getpid():
         return False  # this process: only what it is running now (_running) counts
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+    return not birth or _birth(pid) in (birth, None)
 
 
 def status(key: str, row: dict | None, kind: str | None = None) -> str | None:
@@ -202,7 +212,7 @@ def status(key: str, row: dict | None, kind: str | None = None) -> str | None:
     (interrupted)."""
     if row is None:
         return None
-    if row["status"] == "building" and (_kind(kind), key) not in _running and not _alive(row["pid"]):
+    if row["status"] == "building" and (_kind(kind), key) not in _running and not _alive(row["pid"], row["pid_birth"]):
         return "interrupted"
     return row["status"]
 
@@ -527,7 +537,7 @@ def _begin(key: str, kind: str | None = None):
             if (_kind(kind), key) in _running:
                 raise ValueError
             _transition(key, "building", kind, started_at=_utc(), finished_at=None, error=None, fingerprint=None,
-                        pid=os.getpid())
+                        pid=os.getpid(), pid_birth=_birth(os.getpid()))
         except ValueError:  # here, or in another process
             raise RuntimeError(f"{key}'s template is already building") from None
         _running.add((_kind(kind), key))
@@ -883,6 +893,7 @@ def main(argv=None) -> int:
 TABLE = """create table if not exists template_builds (
     runtime text not null, repo text not null, status text not null, started_at text, finished_at text, error text,
     fingerprint text, built_fingerprint text, built_template text, pid integer, built_memory_mb integer,
+    pid_birth text,
     primary key (runtime, repo));"""
 
 
@@ -917,7 +928,7 @@ def _per_runtime(conn):
 # own template; repos whose default branch moved since their template's last build.
 SCHEMA = Schema(tables=TABLE + """
 create table if not exists template_moved (repo text primary key, since text not null default current_timestamp);
-""", upgrade=_per_runtime)
+""", columns=(("template_builds", "pid_birth", "text"),), upgrade=_per_runtime)
 
 
 if __name__ == "__main__":
