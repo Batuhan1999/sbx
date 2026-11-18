@@ -253,8 +253,11 @@ def recipe_layer(t: runtime.TemplateSpec, a: recipes.App, fetch: str) -> runtime
     dockerfile, build = a.text("Dockerfile"), a.text("build")
     if dockerfile and any(line.split()[:1] in (["COPY"], ["ADD"]) for line in dockerfile.upper().splitlines()):
         raise recipes.RecipeError(".sbx/Dockerfile: COPY and ADD are not supported; fetch files with RUN curl or in .sbx/build")
-    if dockerfile:
-        t = t.dockerfile(dockerfile)  # its FROM is ignored: templates start from the base
+    if dockerfile:   # as root in /, on every runtime; its FROM, CMD and ENTRYPOINT are ignored
+        try:
+            t = t.dockerfile(dockerfile)
+        except ValueError as error:
+            raise recipes.RecipeError(f".sbx/Dockerfile: {error}") from None
     workdir, branch = a.workdir, recipes.default_branch(a.repo)
     t = (
         t.set_user("user")

@@ -220,6 +220,57 @@ class Embed(unittest.TestCase):
                                  ("set_start_cmd", ("start", "port 6080"))])
 
 
+    def e2b_steps(self, spec):
+        from sbx_control.runtime import embed
+        steps = []
+
+        class Recorder:
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: (steps.append((name, args)), self)[1]
+        with patch("e2b.Template", return_value=Recorder()), \
+                patch("e2b.wait_for_port", side_effect=lambda port: f"port {port}"):
+            embed.template(spec)
+        return steps
+
+    def test_a_recipe_dockerfile_starts_as_root_with_or_without_a_from(self):
+        from sbx_control import runtime
+        for text in ("RUN apt-get install -y jq\nCMD [\"node\"]\n",
+                     "FROM node:20 AS app\nRUN apt-get install -y jq\nENTRYPOINT node\n"):
+            with self.subTest(text=text):
+                steps = self.e2b_steps(runtime.TemplateSpec().from_template("base-1").set_user("user")
+                                       .dockerfile(text).set_user("user").set_start_cmd("start", 6080))
+                self.assertEqual(steps[:4], [("from_template", ("base-1",)), ("set_user", ("user",)),
+                                             ("set_user", ("root",)), ("set_workdir", ("/",))])
+                at = steps.index(("run_cmd", ("apt-get install -y jq",)))
+                self.assertEqual([s for s in steps[:at] if s[0] == "set_user"][-1], ("set_user", ("root",)))
+                self.assertNotIn("from_image", [name for name, _ in steps])   # its FROM is not where it starts
+                self.assertEqual([s for s in steps if s[0] == "set_start_cmd"],
+                                 [("set_start_cmd", ("start", "port 6080"))])   # CMD/ENTRYPOINT: not the VMs'
+
+
+
+class RecipeDockerfile(unittest.TestCase):
+    """What every runtime gets of a Dockerfile (TemplateSpec.dockerfile)."""
+
+    def test_the_spec_starts_as_root_in_slash_and_drops_from_cmd_and_entrypoint(self):
+        from sbx_control.runtime import TemplateSpec
+        text = ("# syntax note\nARG V=1\nFROM ubuntu:24.04 AS x\nRUN apt-get update \\\n  # inside\n"
+                "  && apt-get install -y jq\nCMD [\"a\", \\\n  \"b\"]\nENTRYPOINT [\"c\"]\nUSER user\n")
+        self.assertEqual(TemplateSpec().dockerfile(text).steps, [
+            ("user", "root"), ("workdir", "/"),
+            ("dockerfile", "# syntax note\nARG V=1\nRUN apt-get update \\\n  # inside\n"
+                           "  && apt-get install -y jq\nUSER user\n")])
+
+    def test_heredoc_bodies_are_kept_as_written(self):
+        from sbx_control.runtime.dockerfile import instructions
+        text = "RUN <<EOF\nFROM is text here\nCMD too\nEOF\nRUN cat <<-'END' > /etc/x\n\tCMD x\n\tEND\nRUN tr a b <<<cmd\n"
+        self.assertEqual(instructions(text), text)
+
+    def test_a_second_from_is_refused(self):
+        from sbx_control.runtime import TemplateSpec
+        with self.assertRaisesRegex(ValueError, "multi-stage"):
+            TemplateSpec().dockerfile("FROM a AS build\nRUN make\nFROM b\nRUN true\n")
+
 
 class Limits(unittest.TestCase):
     """The core checks a runtime's limits before asking it, and says which

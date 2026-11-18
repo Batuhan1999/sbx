@@ -14,8 +14,8 @@ A repository's recipe is its `.sbx/` folder: `sbx.yaml` plus optional scripts.
 | `sbx.yaml` | | How the platform runs the repository (below). |
 | `setup` | before start, on create and prepare | Install dependencies, run migrations and development seeds. Must be executable and safe to repeat. |
 | `start` | after `processes` | For apps that need a start script: start servers detached and return; may print the main PID. |
-| `build` | in a template build | Prepare dependencies and caches for a prebuilt template. |
-| `Dockerfile` | in a template build | Extra OS layers for a prebuilt template. |
+| `build` | in a template build | Prepare dependencies and caches for a prebuilt template; self-contained (see [the recipe's build](#the-recipes-build)). |
+| `Dockerfile` | in a template build | Extra OS layers for a prebuilt template, as root (see [the recipe's build](#the-recipes-build)). |
 | `snapshot` | before a reusable snapshot | Remove the app's secrets and writable data from a copy ([Amp](amp-orbs.md#project-snapshots)). |
 | `services/<name>/` | per sandbox | A repository's own service package ([extensions](extensions.md#repository-packages)). |
 
@@ -472,13 +472,14 @@ A template is composed from three layers:
 
 1. the **platform layer**: the OS, SSH and its WebSocket bridge, the desktop,
    Node, Chromium and the start contract (the `sbx-base` template);
-2. **contributions** of the extensions: `gh` when GitHub is connected, each
+2. the **recipe**: `.sbx/Dockerfile`, the checkout and `.sbx/build` when
+   `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
+   template);
+3. **contributions** of the extensions: `gh` when GitHub is connected, each
    agent connector's CLI (Claude Code, Codex for `sbx open codex`), and the
    template layers of catalog packages a trusted repository attaches
-   ([extensions](extensions.md#contributions));
-3. the **recipe**: `.sbx/Dockerfile`, the checkout and `.sbx/build` when
-   `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
-   template).
+   ([extensions](extensions.md#contributions)). They are added after the
+   recipe, so `.sbx/Dockerfile` and `.sbx/build` cannot use them.
 
 The fingerprint covers all three layers; of the recipe, what the build
 reads: `.sbx/Dockerfile`, `.sbx/build`, `workdir` and the size. Editing
@@ -533,6 +534,34 @@ two hours old. `sbx template rm` (`DELETE /api/repos/OWNER/NAME/template`, or
 `default:<size>`, `sbx-base`) deletes a template's builds and its build
 record, a failed one's included; a repository whose recipe still asks for a
 template builds it again.
+
+### The recipe's build
+
+A prebuilt template's recipe layer runs, in order:
+
+1. `.sbx/Dockerfile`'s instructions, the same on every runtime: they start
+   as `root` in `/`, as a Dockerfile's do, so `RUN apt-get install ...` needs
+   no `USER root`, and `USER` and `WORKDIR` change that for the instructions
+   after them. `FROM` is optional and ignored: the template starts from the
+   layers before it, whatever image it names. `CMD` and `ENTRYPOINT` are
+   ignored: sandboxes start the app with `processes` and `start`. A second
+   `FROM` (a multi-stage build), `COPY` and `ADD` are refused; fetch files
+   with `RUN curl` or in `.sbx/build`. `ENV` and `ARG` values stay set for
+   the build's later steps. One exception: Boat reads a heredoc
+   (`RUN <<EOF`) line by line. A body line that starts with an instruction
+   (`RUN`, `ENV`, `ARG`, `USER`, `WORKDIR`) is replayed as that build step,
+   one that starts with `COPY` or `ADD` fails the build, and the other lines
+   are skipped. For a template that builds on Boat, put those commands in
+   `.sbx/build` or a plain `RUN`.
+2. the checkout of the default branch at `workdir`, as `user`;
+3. `.sbx/build`, as `user` from `workdir`, whatever `USER` and `WORKDIR` the
+   Dockerfile ended with.
+
+The build gets the Dockerfile and `.sbx/build` and nothing else of the
+recipe: `.sbx/build` runs as a copy, `/run/sbx/app` does not exist yet, and
+no other recipe file (a helper script, a config, a service package) is in
+the build. So `.sbx/build` must be self-contained: inline what it needs, or
+run what the checkout has, which the template's fingerprint does not cover.
 
 ### Sandbox size
 
@@ -733,8 +762,9 @@ How sbx runs on it:
   in a builder sandbox (from the parent template's saved snapshot, or Boat's
   own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused), saves it
   under the template's name and deletes the builder. A Dockerfile's `RUN`,
-  `ENV`, `WORKDIR`, `USER` and `ARG` replay; `COPY` and `ADD` are refused
-  (fetch the file in a `RUN`); `ENV` and `ARG` values expand `$VAR` and
+  `ENV`, `WORKDIR`, `USER` and `ARG` replay, starting as `root` in `/` as on
+  every runtime ([the recipe's build](#the-recipes-build)); `COPY` and `ADD`
+  are refused (fetch the file in a `RUN`); `ENV` and `ARG` values expand `$VAR` and
   `${VAR}` as Docker does, and comment lines inside a continued instruction
   are dropped. The start command becomes an enabled systemd unit, which
   Boat starts again when a resume boots a new machine. A builder is labelled with the

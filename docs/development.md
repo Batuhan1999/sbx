@@ -175,6 +175,10 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   readiness) no-op defaults, so a hosted backend inherits them and Embed
   (`host = True`) overrides them. Its docstring states the
   rule that a backend keeps no process-global configuration.
+  `TemplateSpec.dockerfile` makes a Dockerfile the same on every runtime
+  before a backend sees it: a `root` user and `/` workdir step, then the
+  text without `FROM`, `CMD` and `ENTRYPOINT` (`runtime/dockerfile.py`'s
+  `instructions`); a backend whose parser needs a `FROM` adds its own.
 - `control/sbx_control/runtime/__init__.py` is the registry and the one way
   in. The core and the extensions call `runtime.create`, `runtime.connect`,
   `runtime.sandboxes`, and so on, never a runtime's SDK. `kinds()` lists the
