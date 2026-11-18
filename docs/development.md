@@ -106,23 +106,26 @@ git fetch origin && git tag -a v0.2.0 origin/main -m "sbx v0.2.0"
 git push origin v0.2.0
 ```
 
+When an upgrade needs steps, or the release needs notes, write them in the
+tag's message below its first line, in place of the `-m` tag above and before
+the push. Put the message in a file: the title (`sbx v0.2.0`), a blank line,
+then the notes in Markdown:
+
+```sh
+git fetch origin && git tag -a --cleanup=verbatim v0.2.0 origin/main -F notes.md
+git push origin v0.2.0
+```
+
+Without `--cleanup=verbatim`, git drops every line that starts with `#`, so
+headings vanish.
+
 `.github/workflows/release.yml` runs the checks on the tag, builds the web
 app, then `sbx-v0.2.0.tar.gz` (the source tree with a `VERSION` file and the
 web app's bundle) and its `.sha256`, lays a release out from the unpacked
 archive with `control/release.sh` to check it, and publishes the GitHub
-release. Its notes list the titles of the
-PRs merged since the previous release (grouped by
-[`.github/release.yml`](../.github/release.yml)). When an upgrade needs steps,
-or the release needs notes, write them in the tag's message below its first
-line; they go above the list. Put the message in a file: the title
-(`sbx v0.2.0`), a blank line, then the notes in Markdown. Tag with it:
-
-```sh
-git tag -a --cleanup=verbatim v0.2.0 origin/main -F notes.md
-```
-
-Without `--cleanup=verbatim`, git drops every line that starts with `#`, so
-headings vanish. A tag with a
+release. Its notes are the tag's message below its first line, then the
+titles of the PRs merged since the previous release (grouped by
+[`.github/release.yml`](../.github/release.yml)). A tag with a
 suffix (`v0.2.0-rc.1`) publishes a pre-release to try on a test installation
 (one with `updates.prereleases` offers it in the web app); the next full
 release's notes still start from the release before it.
