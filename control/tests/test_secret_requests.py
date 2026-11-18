@@ -81,9 +81,9 @@ class Keys(TwoRuntimes, Server):
                           "repo:owner/app:E2B_API_KEY=from:runtime:e2b-cloud:E2B_CLOUD_API_KEY"])
         runtime_item, dns, reuse = found["items"]
         self.assertEqual(runtime_item["label"], "E2B key")
-        self.assertTrue(runtime_item["help_url"].endswith("/docs/howto/e2b.md"))
+        self.assertTrue(runtime_item["help_url"].endswith("/docs/howto/e2b.md#api-key"))
         self.assertEqual(dns["label"], "The Cloudflare API token for this server's certificate")
-        self.assertTrue(dns["help_url"].endswith("/docs/howto/cloudflare.md"))
+        self.assertTrue(dns["help_url"].endswith("/docs/howto/cloudflare.md#api-token"))
         self.assertEqual((reuse["reuse"], reuse["reuse_from"]),
                          ("runtime:e2b-cloud:E2B_CLOUD_API_KEY", "E2B Cloud's API key"))
         self.assertEqual(found["remaining"], 3)
@@ -273,7 +273,7 @@ class Keys(TwoRuntimes, Server):
     def test_a_connector_s_secret_goes_through_its_connect_and_its_settings_stay(self):
         found = self.ask(("connector:amp", "Amp provider token"))
         self.assertEqual(found["items"][0]["target"], "connector:amp:provider_token")
-        self.assertTrue(found["items"][0]["help_url"].endswith("/docs/howto/amp.md"))
+        self.assertTrue(found["items"][0]["help_url"].endswith("/docs/howto/amp.md#create-the-provider"))
         bad = self.submit(found["id"], {"connector:amp": "not-a-token"})
         self.assertIn("orb provider token", bad["results"][0]["error"])
         good = self.submit(found["id"], {"connector:amp:provider_token": "aop_live_test-only-0123456789"})
