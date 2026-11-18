@@ -254,7 +254,7 @@ def template(spec: TemplateSpec):
         elif what == "run":
             t = t.run_cmd(value)
         elif what == "dockerfile":
-            parse_dockerfile(value, t)
+            parse_dockerfile(f"FROM scratch\n{value}", t)   # E2B's parser needs one; the image it names is unused
         elif what == "start":
             command, ready = value
             t = t.set_start_cmd(command, wait_for_port(ready) if isinstance(ready, int) else ready)
