@@ -257,6 +257,29 @@ location @login { return 302 https://$login/login?next=https://\$host\$request_u
 $page_locations
 NGINX
 
+# What nginx serves for the domain: its own certificate once issued; until
+# then the IP's (or a self-signed one), so a certificate that is still pending
+# (a closed port 53, records spreading) never leaves the server without HTTPS.
+serving="$dir/letsencrypt/sbx-serving"
+install -d "$serving"
+point_serving() {
+  ln -sfn "../$1/fullchain.pem" "$serving/fullchain.pem"
+  ln -sfn "../$1/privkey.pem" "$serving/privkey.pem"
+}
+if [ -f "$dir/letsencrypt/live/$domain/fullchain.pem" ]; then
+  point_serving "live/$domain"
+elif [ "$ip_cert" != bootstrap ]; then
+  point_serving "live/$ip_cert"
+else
+  if [ ! -f "$dir/letsencrypt/live/bootstrap/fullchain.pem" ]; then
+    install -d "$dir/letsencrypt/live/bootstrap"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=sbx-setup" \
+      -keyout "$dir/letsencrypt/live/bootstrap/privkey.pem" -out "$dir/letsencrypt/live/bootstrap/fullchain.pem" 2>/dev/null
+  fi
+  point_serving live/bootstrap
+fi
+cert=/etc/letsencrypt/sbx-serving
+
 cat > "$dir/nginx/default.conf" <<NGINX
 proxy_cache_path /var/cache/nginx/gate keys_zone=gate:2m max_size=20m inactive=5m;
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
@@ -371,6 +394,9 @@ server {
 NGINX
 done
 
+# Serve now, on whatever certificate is there, before asking for the domain's.
+/usr/local/sbin/sbx-tls-nginx
+
 # The certificate: DNS-01 through the configured provider, or, with none, a
 # self-signed one for a first test (browsers warn, the sbx CLI refuses it).
 if [ "$dns" = none ]; then
@@ -381,6 +407,7 @@ if [ "$dns" = none ]; then
       -addext "subjectAltName=DNS:$domain,DNS:*.$domain" \
       -keyout "$live/privkey.pem" -out "$live/fullchain.pem" 2>/dev/null
   fi
+  point_serving "live/$domain"
   /usr/local/sbin/sbx-tls-nginx
   exit 0
 fi
@@ -450,6 +477,8 @@ if ! $issue \\
   exit 1
 fi
 rm -f $error
+ln -sfn ../live/$domain/fullchain.pem $serving/fullchain.pem
+ln -sfn ../live/$domain/privkey.pem $serving/privkey.pem
 /usr/local/sbin/sbx-tls-nginx
 [ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
 RENEW

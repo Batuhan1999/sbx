@@ -197,7 +197,10 @@ path.write_text(path.read_text().replace(before, after))
         self.assertEqual(result.returncode, 0, result.stderr)
         config = (self.root / "tls/nginx/default.conf").read_text()
         bootstrap = (self.root / "tls/nginx/bootstrap.conf").read_text()
-        self.assertIn("/live/sbx.example.com/fullchain.pem", config)
+        # nginx serves the stable sbx-serving path; once issued it leads to the domain's certificate.
+        self.assertIn("/etc/letsencrypt/sbx-serving/fullchain.pem", config)
+        self.assertEqual(os.readlink(self.root / "tls/letsencrypt/sbx-serving/fullchain.pem"),
+                         "../live/sbx.example.com/fullchain.pem")
         # Every HTTPS server listens behind the stream front on 443, with the client's address in the PROXY protocol.
         self.assertNotIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", config)
         self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", bootstrap)
@@ -267,6 +270,10 @@ path.write_text(path.read_text().replace(before, after))
         self.assertEqual(self.certbot_runs(), [])
         error = (self.root / "tls/certificate-error").read_text()
         self.assertIn("allow TCP and UDP port 53", error)
+        # Still served meanwhile: nginx starts on the certificate there is, not the domain's missing one.
+        self.assertNotEqual(os.readlink(self.root / "tls/letsencrypt/sbx-serving/fullchain.pem"),
+                            "../live/sbx.example.com/fullchain.pem")
+        self.assertTrue((self.root / "tls/letsencrypt/sbx-serving/fullchain.pem").exists())
         self.env["SBX_TEST_PROBE_FAIL"] = ""
         self.assertEqual(self.run_service().returncode, 0)   # Retry, once the port is open
         self.assertFalse((self.root / "tls/certificate-error").exists())
