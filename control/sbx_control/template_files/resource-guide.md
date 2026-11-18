@@ -63,7 +63,7 @@ on every runtime the repository uses, and set what it depends on.
 
 | | Default | Differs because | Set it |
 | --- | --- | --- | --- |
-| Swap | an 8 GiB swap file behind zswap (base template) | a runtime's image can bring its own (Boat's sandboxes showed 2 GiB); the base template replaces a smaller one | `resources.swap_mb` |
+| Swap | an 8 GiB swap file behind zswap (base template) | a runtime's image can bring its own (a Boat sandbox showed 2 GiB); set `swap_mb` to be sure | `resources.swap_mb` |
 | Node | 22.22.2 in `/usr/local/bin` (base template) | a runtime's image can put another first on `PATH` (Boat's showed Node 24) | install the version the repository pins (`.nvmrc`, `engines`) in `.sbx/setup` or the template, and check `node -v` |
 | Disk | at least `disk_mb` (8 GiB) free after the template build | the runtime gives more: E2B Cloud its plan's disk (Hobby 10 GiB, Pro 20 GiB), Boat its machine's (51 GB and up) | `resources.disk_mb`, then check `df -h /` |
 
