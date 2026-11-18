@@ -2,6 +2,7 @@
 set one up."""
 import json
 import pathlib
+import posixpath
 import re
 
 from . import addressing, catalog, env, github_app, paths, recipes, runtimes, settings, template_builds
@@ -9,6 +10,8 @@ from .catalog import attachments, connections
 
 BRIEFS = pathlib.Path(__file__).parent / "template_files"
 RESOURCE_GUIDE = BRIEFS / "resource-guide.md"
+# Where the docs the brief carries link to: the agent reading it has no sbx source.
+SOURCE = "https://github.com/Batuhan1999/sbx/blob/main"
 
 
 def render_brief(name: str, **values) -> str:
@@ -69,23 +72,35 @@ MADE = "How this recipe was made"
 def guides() -> list:
     """The canonical docs the setup brief carries after its steps: the
     worked examples (their index, and each one's MADE section, where it has
-    one), service selection, the acceptance checklist, the resource guide."""
+    one), service selection, the acceptance checklist, the resource guide;
+    their relative links point into the sbx repository on GitHub."""
     docs, examples = paths.shipped("docs"), paths.shipped("examples")
     parts = []
     if (examples / "README.md").is_file():
-        parts.append((examples / "README.md").read_text().strip())
+        parts.append(linked((examples / "README.md").read_text().strip(), "examples"))
     for readme in sorted(examples.glob("*/README.md")):
         text = readme.read_text()
         made = section(text, MADE)
         if made:
             title = re.search(r"^# (.+)$", text, re.M)
+            folder = f"examples/{readme.parent.name}"
             parts.append(f"# {MADE}: {title[1].strip() if title else readme.parent.name} "
-                         f"(examples/{readme.parent.name})\n\n{made}")
+                         f"({SOURCE}/{folder})\n\n{linked(made, folder)}")
     checklist = section((docs / "agent-install.md").read_text(), "Acceptance checklist")
     if not checklist:
         raise LookupError("docs/agent-install.md has no Acceptance checklist section")
-    return [*parts, (docs / "service-selection.md").read_text().strip(),
-            f"# Acceptance checklist\n\n{checklist}", RESOURCE_GUIDE.read_text().strip()]
+    return [*parts, linked((docs / "service-selection.md").read_text().strip(), "docs"),
+            f"# Acceptance checklist\n\n{linked(checklist, 'docs')}",
+            linked(RESOURCE_GUIDE.read_text().strip(), "control/sbx_control/template_files")]
+
+
+def linked(markdown: str, folder: str) -> str:
+    """markdown, whose relative links are relative to folder (in the sbx
+    repository), with those links on GitHub; anchors and URLs stay."""
+    def absolute(match):
+        path, _, anchor = match[1].partition("#")
+        return f"]({SOURCE}/{posixpath.normpath(posixpath.join(folder, path))}{'#' + anchor if anchor else ''})"
+    return re.sub(r"\]\((?![a-z][a-z0-9+.-]*:|#)([^)\s]+)\)", absolute, markdown)
 
 
 def section(markdown: str, heading: str) -> str:

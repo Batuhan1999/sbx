@@ -11,6 +11,18 @@ from unittest.mock import patch
 RUNTIME = "E2B_API_KEY=test-only\nE2B_API_URL=http://127.0.0.1:59999\n"
 
 
+def _builds_settled(seconds: float = 10.0) -> None:
+    """A template build a test started on a thread (template_builds.start) ends before the next test: one
+    still running would hold its key (_running) and write its row into the next test's tables."""
+    import time
+    from sbx_control import template_builds
+    deadline = time.monotonic() + seconds
+    while template_builds._running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if template_builds._running:
+        raise AssertionError(f"template builds still running after {seconds:g} s: {sorted(template_builds._running)}")
+
+
 class Installation(unittest.TestCase):
     """setUpClass makes the installation and migrates it; setUp empties the
     settings and what a test leaves in the tables named in RESET."""
@@ -20,7 +32,8 @@ class Installation(unittest.TestCase):
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
              "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
-             "runtime_requests", "users", "user_links")
+             "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials", "users",
+             "user_links")
 
     @classmethod
     def setUpClass(cls):
@@ -47,8 +60,10 @@ class Installation(unittest.TestCase):
 
     def setUp(self):
         from unittest.mock import patch
-        from sbx_control import recipes, settings, state, users
+        from sbx_control import recipes, runtime, settings, state, users
         users.forget()
+        self.enterContext(patch.dict(runtime._index, clear=True))   # which runtime saw which sandbox: per test
+        self.addCleanup(_builds_settled)
         # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
         self.remote_head = recipes.remote_head
         self.enterContext(patch.object(recipes, "remote_head", return_value=None))

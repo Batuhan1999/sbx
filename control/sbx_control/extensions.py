@@ -165,7 +165,7 @@ class Connector(Connection):
 
     def runtime_layer(self, kind: str):
         """What it adds to the services of the runtime of this kind
-        (Runtime.kind) on this host (runtime.RuntimeLayer), or None."""
+        (Backend.kind) on this host (runtime.RuntimeLayer), or None."""
         return None
 
     def on_restore(self, conn):

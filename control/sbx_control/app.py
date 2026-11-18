@@ -7,14 +7,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import (auth, catalog_api, connections_api, core, dist_api, env, extensions, gate, infisical_api, keeper,
+from . import (auth, catalog_api, connections_api, core, dist_api, endpoints_api, env, extensions, gate, infisical_api, keeper,
                lifecycle, platform, recipes, repo_onboarding, repos_api, runtime, runtimes_api, sandboxes_api, secret_store,
-               settings_api, setup_api, setup_pr, spa, state, template_builds, updates, users_api)
+               settings_api, setup_api, setup_pr, spa, state, template_builds, template_scheduler, updates,
+               users_api)
 
 # In the order they match: a path two routers could answer goes to the first;
 # the extensions' come after the platform's API and before the web app's.
 ROUTERS = (auth, sandboxes_api, env, infisical_api, gate, dist_api,
-           connections_api, catalog_api, setup_api, settings_api, users_api, repos_api, runtimes_api, updates)
+           connections_api, catalog_api, setup_api, settings_api, users_api, repos_api, runtimes_api, endpoints_api,
+           updates)
 LAST = (spa, repo_onboarding, setup_pr)
 # Outermost last (Starlette wraps each added middleware around the ones before).
 MIDDLEWARES = (setup_api.setup_gate, dist_api.version_header, spa.same_origin_writes)
@@ -24,9 +26,10 @@ MIDDLEWARES = (setup_api.setup_gate, dist_api.version_header, spa.same_origin_wr
 async def lifespan(_app):
     state.migrate()
     platform.connect()
+    secret_store.discard_released()
     lifecycle.recover_interrupted()
     stop = threading.Event()
-    for name, work in (("keeper", keeper.run), ("templates", template_builds.schedule),
+    for name, work in (("keeper", keeper.run), ("templates", template_scheduler.schedule),
                        ("infisical-poll", infisical_api.poll), ("updates", updates.watch)):
         threading.Thread(target=work, args=(stop,), name=name, daemon=True).start()
     extensions.start(stop)
@@ -44,12 +47,23 @@ async def unexpected(request: Request, error: Exception):
     traceback.print_exception(error)
     if core.runtime_failure(error):
         try:
-            title = runtime.title()
+            title = runtime.title(_runtime_of(request))
         except Exception:
             title = "none set up"
         return PlainTextResponse(f"the sandbox runtime ({title}) failed: {type(error).__name__}: {error}",
                                  status_code=503)
     return PlainTextResponse(f"sbx-control failed: {type(error).__name__}: {error}", status_code=500)
+
+
+def _runtime_of(request: Request) -> str | None:
+    """The runtime of the sandbox a request names (/api/sandboxes/NAME...),
+    as sbx recorded it; None (the default) for anything else."""
+    parts = request.url.path.strip("/").split("/")
+    if parts[:2] != ["api", "sandboxes"] or len(parts) < 3:
+        return None
+    from . import sandboxes
+    kind = (sandboxes.rows().get(parts[2]) or {}).get("runtime")
+    return kind if kind in runtime.enabled() else None
 
 
 def no_runtime(_request, error):

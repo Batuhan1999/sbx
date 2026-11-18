@@ -1,9 +1,7 @@
 """Two installations on one provider account: each sees, finds, prunes and
 deletes only its own sandboxes and templates. They share one hosted
 backend (the fake, as E2B Cloud's team would be shared) and differ only in
-their installation id. Sandboxes from before the id tag are this
-installation's when its own records know them by id."""
-import json
+their installation id."""
 from unittest.mock import patch
 
 from support import Installation
@@ -95,33 +93,6 @@ class TwoInstallations(SharedAccount):
         self.assertIn(stale_theirs, self.shared.built)                    # never another's
         self.assertEqual(template_builds.remove(templates.BASE, "fake")["deleted"], [mine])
         self.assertIn(theirs, self.shared.built)
-
-    def test_legacy_sandboxes_known_by_id_are_adopted_unknown_ones_ignored(self):
-        from sbx_control import core, state
-        known = self.shared.create("tpl", timeout=600, metadata={"sbx": "old"}).sandbox_id     # before the tag
-        unknown = self.shared.create("tpl", timeout=600, metadata={"sbx": "elsewhere"}).sandbox_id
-        with state.db() as conn:
-            conn.execute("insert into sandboxes (name, owner, branch, slug, runtime) values "
-                         "('old', 'me', 'main', 'old', 'fake')")
-            conn.execute("insert into sandbox_lifecycle (name, record) values ('old', ?)",
-                         (json.dumps({"sandbox_id": known, "phase": "running"}),))
-            conn.execute("delete from settings where key like 'runtime_legacy:%'")
-        tagged = self.runtime.create("tpl", timeout=600, metadata={"sbx": "new"}).sandbox_id
-        self.assertEqual(sorted(i.sandbox_id for i in core.sandboxes()), sorted([known, tagged]))
-        self.assertEqual(core.find("old").sandbox_id, known)
-        self.assertIsNone(core.find("elsewhere"))
-        self.assertEqual(self.runtime.info(known).sandbox_id, known)
-        with self.assertRaises(self.runtime.NotRunning):
-            self.runtime.info(unknown)
-        # Another installation adopts none of them.
-        self.as_installation(OTHER)
-        with patch.object(self.runtime, "_legacy", return_value=set()):
-            self.assertEqual([i.sandbox_id for i in core.sandboxes()], [])
-        # Once the legacy sandbox is gone, a full listing forgets it.
-        self.as_installation(ONE)
-        self.shared.kill(known)
-        core.sandboxes()
-        self.assertEqual(self.runtime._legacy("fake"), set())
 
     def test_a_runtime_on_this_host_keeps_its_names_and_lists_as_before(self):
         self.shared.host = True                       # one installation per host
@@ -229,21 +200,6 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         self.assertEqual(builds.status(templates.DEFAULT, builds.state_row(templates.DEFAULT, "fake"), "fake"),
                          "failed")
         return builds, templates, prefixed, legacy
-
-    def test_a_child_waits_for_its_base_under_the_name_planned_now(self):
-        builds, templates, prefixed, legacy = self.legacy_base()
-        # A create in that window: building (and it starts), not "its last build failed".
-        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
-            builds.template_for(None, "fake")
-        self.assertIn(f"the {templates.DEFAULT} template is building", str(refused.exception))
-        start.assert_called_once_with(templates.DEFAULT, "fake")
-        # The scheduler's round: the base first, then what starts from it.
-        self.assertEqual(builds.stale("fake")[:2], [templates.BASE, templates.DEFAULT])
-        builds.build_now(templates.DEFAULT, "fake")      # its own build makes the base first
-        self.assertEqual(builds.built(templates.BASE, "fake"), prefixed)
-        self.assertIn(prefixed, self.shared.built)
-        self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
-        self.assertEqual(builds.stale("fake"), [])
 
     def test_a_failure_with_its_base_current_stays_failed(self):
         import time

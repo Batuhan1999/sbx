@@ -40,7 +40,8 @@ def api_create(body: sandboxes.CreateSandbox, start_app: bool = True, email: str
     except Exception as error:
         # The runtime failed before a VM was made (none recorded): the same request may be sent again.
         if core.runtime_failure(error) and not (lifecycle.get(body.name) or {}).get("sandbox_id"):
-            title = runtime.title(body.runtime if body.runtime in runtime.enabled() else None)
+            chosen = (sandboxes.rows().get(body.name) or {}).get("runtime") or body.runtime
+            title = runtime.title(chosen if chosen in runtime.enabled() else None)
             raise HTTPException(503, f"the sandbox runtime ({title}) did not take the sandbox: {error}. It may still "
                                      "be starting (sbx-admin network apply and upgrades recreate it); try again in a "
                                      "minute", headers={"Retry-After": str(RUNTIME_RETRY_SECONDS)}) from error

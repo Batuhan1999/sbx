@@ -4,8 +4,8 @@ import { Dialog } from './ui/dialog'
 import { ErrorState } from './states'
 
 /** Opens from trigger, or controlled with open and onOpenChange (from a menu item). */
-export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger', open: controlled, onOpenChange }: {
-  trigger?: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'
+export function ConfirmDialog({ trigger, title, description, confirm, onConfirm, tone = 'danger', note = 'This cannot be undone.', open: controlled, onOpenChange }: {
+  trigger?: ReactNode; title: ReactNode; description: ReactNode; confirm: string; onConfirm: () => Promise<unknown>; tone?: 'danger' | 'primary'; note?: ReactNode
   open?: boolean; onOpenChange?: (open: boolean) => void
 }) {
   const [own, setOwn] = useState(false)
@@ -21,6 +21,6 @@ export function ConfirmDialog({ trigger, title, description, confirm, onConfirm,
         try { await onConfirm(); setOpen(false) } catch (e) { setError(e) } finally { setBusy(false) }
       }}>{confirm}</Button>
     </>}>
-    {error ? <ErrorState error={error} compact /> : <p className="text-[13px] text-muted">This cannot be undone.</p>}
+    {error ? <ErrorState error={error} compact /> : note ? <p className="text-[13px] text-muted">{note}</p> : null}
   </Dialog>
 }

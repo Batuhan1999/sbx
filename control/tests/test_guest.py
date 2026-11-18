@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -153,6 +154,55 @@ class IdentityTests(unittest.TestCase):
             for path in root.iterdir():
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644 if path.name.endswith(".pub") else 0o600)
 
+    def host_keys(self, folder: Path, tag: str):
+        folder.mkdir(exist_ok=True)
+        for kind in sbx_guest.HOST_KEYS:
+            (folder / f"ssh_host_{kind}_key").write_text(f"private {kind} {tag}\n")
+            (folder / f"ssh_host_{kind}_key.pub").write_text(f"ssh-{kind} {tag}-{kind} root@box\n")
+
+    def test_a_cold_boot_s_new_host_keys_give_way_to_the_workspace_s_own(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-guest-keys-")))
+        ssh, kept = root / "ssh", root / "kept"
+        restarted = []
+        with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", kept), \
+                patch.object(sbx_guest, "restart_listener", lambda: restarted.append(True)), \
+                patch.object(sbx_guest, "serves", lambda expected: expected == ["ssh-ed25519", "ours-ed25519"]):
+            self.host_keys(ssh, "ours")
+            sbx_guest.keep_host_keys()
+            self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o700)
+            self.host_keys(ssh, "boot")   # what the runtime's cold boot made
+            sbx_guest.restore_host_keys(["ssh-ed25519", "ours-ed25519"])
+            self.assertEqual((ssh / "ssh_host_rsa_key").read_text(), "private rsa ours\n")
+            self.assertEqual(stat.S_IMODE((ssh / "ssh_host_rsa_key").stat().st_mode), 0o600)
+            self.assertEqual(restarted, [True])
+            # Keys that are not the recorded identity are never put back.
+            self.host_keys(ssh, "boot")
+            with self.assertRaisesRegex(sbx_guest.GuestError, "identity changed after initialization"):
+                sbx_guest.restore_host_keys(["ssh-ed25519", "someone-else"])
+            shutil.rmtree(kept)
+            with self.assertRaisesRegex(sbx_guest.GuestError, "identity changed after initialization"):
+                sbx_guest.restore_host_keys(["ssh-ed25519", "ours-ed25519"])
+            self.assertEqual((ssh / "ssh_host_rsa_key").read_text(), "private rsa boot\n")
+
+    def test_a_ready_workspace_s_listener_is_brought_back_to_its_identity(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-guest-ready-")))
+        ssh, kept = root / "ssh", root / "kept"
+        self.host_keys(ssh, "ours")
+        ours = ["ssh-ed25519", "ours-ed25519"]
+        (root / "identity.json").write_text(json.dumps({"workspace_id": "a" * 32, "phase": "ready", "ed25519_public": ours}))
+        for listening, restarts in ((True, []), (False, [True])):
+            with self.subTest(listening=listening):
+                live, restarted = [listening], []
+                with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", kept), \
+                        patch.object(sbx_guest, "IDENTITY", root / "identity.json"), \
+                        patch.object(sbx_guest, "IDENTITY_LOCK", root / "identity.lock"), \
+                        patch.object(sbx_guest.os, "geteuid", return_value=0), \
+                        patch.object(sbx_guest, "restart_listener", lambda: (restarted.append(True), live.append(True))), \
+                        patch.object(sbx_guest, "serves", lambda expected: expected == ours and live[-1]):
+                    sbx_guest.identity("a" * 32, 22)
+                self.assertEqual(restarted, restarts)
+                self.assertTrue((kept / "ssh_host_ed25519_key.pub").exists())
+
     def test_ssh_listener_is_systemd_s_or_the_standalone_sshd(self):
         """A fake / (its /proc/1/comm and /run/sshd.pid) and a fake systemctl."""
         for init, managed, standalone, expected in [("systemd", "123", "456", 123), ("systemd", "0", "456", 456),
@@ -172,6 +222,56 @@ class IdentityTests(unittest.TestCase):
                     else:
                         self.assertEqual(sbx_guest.listener_pid(), expected)
 
+
+    def test_a_stopped_standalone_sshd_with_no_or_a_stale_pid_is_just_started(self):
+        for pid_file in (None, "", "999999\n", "456\n", "457\n"):   # 456, 457: pids other programs have now
+            with self.subTest(pid_file=pid_file), tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
+                root = Path(directory)
+                (root / "proc/1").mkdir(parents=True)
+                (root / "proc/1/comm").write_text("init\n")
+                if pid_file is not None:
+                    (root / "run").mkdir()
+                    (root / "run/sshd.pid").write_text(pid_file)
+                (root / "proc/456").mkdir()
+                (root / "proc/456/exe").symlink_to("/usr/bin/postgres")
+                (root / "proc/457").mkdir()
+                (root / "proc/457/exe").symlink_to("/usr/sbin/sshd-helper")
+
+                def pidfd_open(pid):
+                    if not (root / "proc" / str(pid)).exists():
+                        raise ProcessLookupError(pid)
+                    return 77
+                started, killed = [], []
+                with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
+                        patch.object(sbx_guest, "PROC", root / "proc"), \
+                        patch.object(sbx_guest.os, "pidfd_open", pidfd_open, create=True), \
+                        patch.object(sbx_guest.os, "close", lambda fd: None), \
+                        patch.object(sbx_guest.signal, "pidfd_send_signal", lambda fd, sig: killed.append(fd), create=True), \
+                        patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(a[0])), \
+                        patch.object(sbx_guest, "listener_alive", return_value=True):
+                    sbx_guest.restart_listener()
+                self.assertEqual((started, killed), ([["/usr/sbin/sshd"]], []))
+
+    def test_the_standalone_sshd_starts_again_only_once_the_old_one_has_let_go_of_the_port(self):
+        with tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
+            root = Path(directory)
+            for path, text in {"proc/1/comm": "init\n", "run/sshd.pid": "456\n"}.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(text)
+            (root / "proc/456").mkdir()
+            old = root / "proc/456/exe"
+            old.symlink_to("/usr/sbin/sshd")
+            started = []
+            with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
+                    patch.object(sbx_guest, "PROC", root / "proc"), \
+                    patch.object(sbx_guest.os, "pidfd_open", lambda pid: 77, create=True), \
+                    patch.object(sbx_guest.os, "close", lambda fd: None), \
+                    patch.object(sbx_guest.signal, "pidfd_send_signal", lambda fd, sig: threading.Timer(0.3, old.unlink).start(),
+                                 create=True), \
+                    patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(old.is_symlink())), \
+                    patch.object(sbx_guest, "listener_alive", return_value=True):
+                sbx_guest.restart_listener()
+            self.assertEqual(started, [False])
 
 @unittest.skipUnless(sys.platform == "linux", "sandbox process identities use Linux /proc")
 class ProcessTests(unittest.TestCase):

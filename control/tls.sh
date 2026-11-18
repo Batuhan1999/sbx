@@ -5,6 +5,11 @@
 #   <login_host>.<domain>  sbx-control: the login, the API, /install
 #   <service>.<domain>     the operator's services, behind the login
 #   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
+#   <endpoint>.<domain>    this host's private services for sandboxes on provider runtimes,
+#                          mutual TLS (sbx_control/endpoints)
+# All on 443: nginx's stream module owns it and picks by the TLS server name,
+# without decrypting, an endpoint's TLS server or the HTTPS server below, which
+# listens on loopback and takes the client's address from the PROXY protocol.
 # Every request to a service or a sandbox passes sbx-control's /gate first:
 # previews for anyone signed in, owner-only ports for their owner. nginx
 # removes the login cookie, and an sbx token, before a request reaches a
@@ -15,15 +20,26 @@ eval "$(venv/bin/python -m sbx_control.settings shell)"
 current=$(venv/bin/python -c 'from sbx_control import host; print(host.CURRENT)')
 # Where previews go: the ingress of the sandbox's runtime (Embed's client-proxy),
 # one upstream per enabled runtime, picked by the kind the gate names.
-upstreams=$(venv/bin/python -m sbx_control.ip_previews upstreams)
+upstreams=$(venv/bin/python -m sbx_control.preview_proxy upstreams)
 # An https ingress (a provider's): SNI with the sandbox's host, its certificate verified.
-upstream_tls=$(venv/bin/python -m sbx_control.ip_previews upstream-tls)
-# A runtime that answers its sandboxes' ports only with their token (E2B
-# Cloud's): the gate names it, nginx sends it to that runtime alone.
-upstream_token=$(venv/bin/python -m sbx_control.ip_previews upstream-token)
+upstream_tls=$(venv/bin/python -m sbx_control.preview_proxy upstream-tls)
+# A runtime that answers its sandboxes' ports only with their token in a
+# header (E2B Cloud's): the gate names it, nginx sends it to that runtime
+# alone (taken in the gated location, sent from @sandbox). A cookie runtime's
+# token (Boat's) is in the Cookie header the gate writes for every request.
+upstream_token_set=$(venv/bin/python -m sbx_control.preview_proxy upstream-token-set)
+upstream_token_send=$(venv/bin/python -m sbx_control.preview_proxy upstream-token-send)
 dir=/opt/sbx-tls
 install -d "$dir/letsencrypt" "$dir/nginx" /var/cache/sbx-gate
 cert="/etc/letsencrypt/live/$domain"
+# nginx's main configuration: the image's own, the client's address from the
+# PROXY protocol, and the stream block (sbx_control/tls_front.py; written in
+# place, the container mounts this file). The stream front on 443 always; the
+# endpoints' servers and CAs follow the records.
+venv/bin/python -m sbx_control.tls_front main-conf > "$dir/nginx.conf"
+venv/bin/python -m sbx_control.endpoints nginx "$dir/nginx"
+# Where every HTTPS server below listens: behind the stream front.
+https_listen=$(venv/bin/python -m sbx_control.tls_front https-listen)
 
 # nginx in its container, started once, then told to read its configuration
 # again: here and after every certificate a renewal script gets.
@@ -34,8 +50,16 @@ set -eu
 # first install, and both would find no container and create one.
 exec 9>$dir/nginx-start.lock
 flock 9
+# A container of an earlier layout (443 on the HTTPS server itself, no main
+# configuration of sbx's) is made again, once: a fresh start binds 443 to the
+# stream front, where a reload might not move it.
+if docker inspect sbx-tls-nginx >/dev/null 2>&1 &&
+    [ "\$(docker inspect -f '{{index .Config.Labels "sbx.nginx-layout"}}' sbx-tls-nginx)" != 2 ]; then
+  docker rm -f sbx-tls-nginx >/dev/null
+fi
 docker inspect sbx-tls-nginx >/dev/null 2>&1 || docker run -d --name sbx-tls-nginx --restart unless-stopped \\
-  --network host -v $dir/nginx:/etc/nginx/conf.d:ro -v $dir/letsencrypt:/etc/letsencrypt:ro \\
+  --label sbx.nginx-layout=2 --network host -v $dir/nginx.conf:/etc/nginx/nginx.conf:ro \\
+  -v $dir/nginx:/etc/nginx/conf.d:ro -v $dir/letsencrypt:/etc/letsencrypt:ro \\
   -v /var/cache/sbx-gate:/var/cache/nginx nginx:1.29-alpine >/dev/null || docker inspect sbx-tls-nginx >/dev/null
 docker exec sbx-tls-nginx nginx -t
 docker exec sbx-tls-nginx nginx -s reload
@@ -50,6 +74,7 @@ client_max_body_size 50m;
 include /etc/nginx/conf.d/extensions/*.locations;
 location /internal/ { return 404; }
 location = /gate { return 404; }
+location ^~ /gate/ { return 404; }
 location / {
   proxy_pass http://127.0.0.1:8080;
   proxy_http_version 1.1;
@@ -108,7 +133,7 @@ if [ -z "$domain" ]; then
   cat > "$dir/nginx/default.conf" <<NGINX
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
 server {
-  listen 443 ssl default_server;
+  listen $https_listen default_server;
   http2 on;
   server_name _;
   ssl_certificate /etc/letsencrypt/live/$ip_cert/fullchain.pem;
@@ -173,7 +198,7 @@ if [ -n "$bootstrap_address" ] && [ -f "$dir/letsencrypt/live/bootstrap/fullchai
   preview_default=""
   cat > "$bootstrap" <<NGINX
 server {
-  listen 443 ssl default_server;
+  listen $https_listen default_server;
   http2 on;
   server_name $bootstrap_address;
   ssl_certificate /etc/letsencrypt/live/$ip_cert/fullchain.pem;
@@ -185,6 +210,8 @@ else
   rm -f "$bootstrap"
 fi
 
+# sbx-control's preview page and its poll, for every preview host (preview_proxy).
+page_locations=$(venv/bin/python -m sbx_control.preview_proxy page-locations "$login")
 cat > "$dir/nginx/gate.inc" <<NGINX
 location = /_sbx_gate {
   internal;
@@ -199,25 +226,35 @@ location = /_sbx_gate {
   # A CORS preflight carries no credentials: the gate lets it through to a
   # declared preview, without a login, and names its runtime.
   proxy_set_header X-Original-Method \$sbx_method;
+  # A browser's navigation waits on the page until the app's port listens.
+  proxy_set_header X-Original-Upgrade \$http_upgrade;
+  proxy_set_header Accept \$http_accept;
   proxy_set_header Cookie \$http_cookie;
   proxy_set_header Authorization \$http_authorization;
+  # Its answer carries the Cookie header the upstream gets (X-Sbx-Upstream-Cookie).
+  # Room for that header; nginx needs the buffers to match its size.
+  proxy_buffer_size 16k;
+  proxy_buffers 4 16k;
   # nginx cannot purge an entry when a sandbox is deleted or its owner
   # changes: an allow lasts only a page load's burst of requests.
   proxy_cache gate;
   # An answer with a sandbox's traffic token is never written to the cache
-  # on disk; nginx still reads the token from it (auth_request_set).
-  proxy_no_cache \$upstream_http_x_sbx_upstream_token;
+  # on disk; nginx still reads the token from it (auth_request_set). Nor is
+  # one that names a page to wait on: the next request may find it running.
+  proxy_no_cache \$upstream_http_x_sbx_upstream_token \$upstream_http_x_sbx_wait;
   # The method first: an anonymous preflight's allow never answers a GET.
-  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$cookie_sbx_session|\$http_authorization";
+  proxy_cache_key "\$sbx_method|\$host|\$http_e2b_sandbox_id|\$http_e2b_sandbox_port|\$http_cookie|\$http_authorization|\$http_upgrade|\$http_accept";
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
 location @login { return 302 https://$login/auth/login?next=https://\$host\$request_uri; }
-location @denied {
-  default_type text/plain;
-  if (\$sbx_gone) { return 404 "Nothing here: the sandbox doesn't exist or is gone, or it doesn't expose this port.\n"; }
-  return 403 "Only the sandbox's owner may open this.\n";
-}
+# A preview link that is right from sbx's side always shows a page: what the
+# gate refused (a sandbox starting, waking, stopped, deleted, no access) and
+# what the sandbox's runtime could not answer (502, 504: the app not up yet)
+# go to sbx-control's page (preview_pages), which a browser sees as a page
+# that opens the app once it answers, and anything else as the status; the
+# page polls /.sbx/status on every preview host.
+$page_locations
 NGINX
 
 cat > "$dir/nginx/default.conf" <<NGINX
@@ -229,16 +266,11 @@ $upstreams
 # An sbx API token must not reach a sandbox either; an Authorization header the
 # gate did not use is the app's own (a JWT, Basic auth) and passes.
 map \$sbx_auth \$sandbox_authorization { bearer ""; default \$http_authorization; }
-map \$http_cookie \$sandbox_cookie {
-  "~^(?<before>.*?);\\s*sbx_session=[^;]*(?<after>.*)\$" "\$before\$after";
-  "~^sbx_session=[^;]*;?\\s*(?<after>.*)\$" "\$after";
-  default \$http_cookie;
-}
 ssl_certificate $cert/fullchain.pem;
 ssl_certificate_key $cert/privkey.pem;
 
 server {
-  listen 443 ssl;
+  listen $https_listen;
   http2 on;
   server_name $login;
   include /etc/nginx/conf.d/control.inc;
@@ -246,7 +278,7 @@ server {
 
 # Sandboxes: every other name under the domain.
 server {
-  listen 443 ssl $preview_default;
+  listen $https_listen $preview_default;
   http2 on;
   server_name $domain *.$domain;
   client_max_body_size 0;
@@ -259,11 +291,24 @@ server {
     auth_request_set \$sbx_auth \$upstream_http_x_sbx_auth;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
     auth_request_set \$sbx_runtime \$upstream_http_x_sbx_runtime;
+    # The Cookie header the gate wrote: the app's, without sbx's session.
+    auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;
+$upstream_token_set
     error_page 401 = @login;
     error_page 403 = @denied;
+    # Past the gate (try_files runs after auth_request), on to @sandbox: there
+    # nginx's own 502 or 504 becomes the page, while every answer of the
+    # app's (401, 403, 502, ...) stays the app's.
+    try_files /.sbx-no-such-file @sandbox;
+  }
+  location @sandbox {
     proxy_pass \$sbx_ingress;
 $upstream_tls
-$upstream_token
+$upstream_token_send
+    # Only what nginx itself answers (the app not reachable, a timeout):
+    # an app's own 502 or 504 reaches the client as the app sent it.
+    error_page 502 504 = @unavailable;
+    proxy_connect_timeout 15s;
     proxy_http_version 1.1;
     # The runtime routes on Host; the app learns the host the browser used
     # from X-Forwarded-Host (Rails, Django, Next.js and Phoenix read it).
@@ -271,7 +316,7 @@ $upstream_token
     proxy_set_header X-Forwarded-Host \$host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header Cookie \$sandbox_cookie;
+    proxy_set_header Cookie \$sbx_cookie;
     proxy_set_header Authorization \$sandbox_authorization;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
@@ -286,7 +331,7 @@ for service in $services; do
   cat >> "$dir/nginx/default.conf" <<NGINX
 
 server {
-  listen 443 ssl;
+  listen $https_listen;
   http2 on;
   server_name $name.$domain;
   client_max_body_size 50m;
@@ -295,13 +340,14 @@ server {
     set \$sbx_method \$request_method;
     auth_request /_sbx_gate;
     auth_request_set \$sbx_gone \$upstream_http_x_sbx_gone;
+    auth_request_set \$sbx_cookie \$upstream_http_x_sbx_upstream_cookie;
     error_page 401 = @login;
     error_page 403 = @denied;
     proxy_pass http://$upstream;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header Cookie \$sandbox_cookie;
+    proxy_set_header Cookie \$sbx_cookie;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
     proxy_buffering off;

@@ -14,6 +14,7 @@ import contextlib
 import fcntl
 import ipaddress
 import json
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -124,8 +125,18 @@ def attached_to(repo: str) -> list[str]:
         return []
     if not names:
         return []
-    bound = {key for att in attachments.effective(repo) for key in att["connections"].values()}
+    bound = {key for att in attachments.effective(repo) if not att.get("disabled")
+             for key in att["connections"].values()}
     return sorted(bound & names)
+
+
+def target(name: str) -> str | None:
+    """The managed server's address and port on its private network (what an
+    endpoint routes to), or None for no managed server of that name."""
+    found = _record(name)
+    if not found or not found[1].get("address"):
+        return None
+    return f"{found[1]['address']}:{DRIVERS[found[0].kind]['port']}"
 
 
 def networks() -> list[str]:
@@ -230,11 +241,12 @@ def up(name, kind, *, data_root=None, storage_gb=None):
     if settings.current().access.public_repos:
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
-    from . import runtime
-    if not any(runtime.capabilities(kind).private_networks for kind in runtime.enabled()):
+    from . import reach, runtime
+    if not reach.private_reachable():
         titles = ", ".join(runtime.title(kind) for kind in runtime.enabled())
         raise ValueError(f"sandboxes on {titles} can't reach this host's private network, so a managed "
-                         "server here would be out of their reach; use a hosted database instead")
+                         "server here would be out of their reach until it has an endpoint, which needs a domain: "
+                         "connect a domain first, or use a hosted database instead")
     with _lock():
         return _up(Server(name, kind), data_root, storage_gb)
 
@@ -324,6 +336,19 @@ def _matches(server: Server, details: dict, values: dict) -> bool:
         for m in details.get("Mounts", []))
 
 
+def _container_size(cpus: int = 4, memory_mb: int = 4096) -> tuple[int, int]:
+    """A managed server's CPU and memory cap: 4 CPUs and 4 GiB, or what a
+    smaller host has (Docker refuses more CPUs than the host has; half its
+    memory leaves room for sbx and the rest)."""
+    host_cpus = os.cpu_count() or 1
+    try:
+        with open("/proc/meminfo") as found:
+            total_mb = next(int(line.split()[1]) // 1024 for line in found if line.startswith("MemTotal:"))
+    except (OSError, StopIteration, ValueError):
+        total_mb = memory_mb * 2
+    return min(cpus, host_cpus), max(512, min(memory_mb, total_mb // 2))
+
+
 def _create_container(server: Server, values: dict):
     if server.kind == "postgres":
         env = {"POSTGRES_USER": ADMIN, "POSTGRES_PASSWORD": values["password"], "POSTGRES_DB": "postgres"}
@@ -343,8 +368,9 @@ def _create_container(server: Server, values: dict):
         extra, command = [], []
         mount = f"type=volume,src={server.volume},dst={server.data_path}"
         run = ["run", "-d", "--restart", "unless-stopped"]
+    cpus, memory_mb = _container_size()
     docker(*run, "--name", server.container, "--label", f"{LABEL}={server.name}",
-           "--network", NETWORK, "--ip", values["address"], "--memory", "4g", "--cpus", "4",
+           "--network", NETWORK, "--ip", values["address"], "--memory", f"{memory_mb}m", "--cpus", str(cpus),
            "--mount", mount, "--env-file", "/dev/stdin", *extra, server.image, *command,
            input="".join(f"{k}={v}\n" for k, v in env.items()))
 
@@ -408,6 +434,8 @@ def down(name, *, delete_data=False):
                 cow_storage.remove(server, values["storage"])
             elif not volume.returncode:
                 docker("volume", "rm", server.volume)
+            from . import endpoints
+            endpoints.forget_server(name)
             with state.db() as conn:
                 secret_store.delete_rows(conn, "managed_servers", "name = ?", (name,))
             if not networks():

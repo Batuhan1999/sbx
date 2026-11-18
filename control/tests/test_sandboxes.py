@@ -67,7 +67,7 @@ class WorkspaceTests(Server):
                 run.assert_not_called()
 
     def test_operator_recipe_scripts_override_the_checkout_but_imported_recipes_allow_branch_scripts(self):
-        from sbx_control import core, recipes
+        from sbx_control import core, recipes, sandbox_runtime
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             installed, checkout = root / 'installed', root / 'checkout'
@@ -81,7 +81,7 @@ class WorkspaceTests(Server):
                 return subprocess.run(['/bin/bash', '-c', command], capture_output=True, text=True, check=True)
             operator_root = root / 'operator'
             with patch('sbx_control.paths.apps', return_value=operator_root), \
-                    patch.object(core, 'APP_SCRIPTS', str(installed)), patch.object(core, 'run_in', side_effect=run):
+                    patch.object(sandbox_runtime, 'APP_SCRIPTS', str(installed)), patch.object(core, 'run_in', side_effect=run):
                 for source, expected in ((operator_root / 'owner/app/.sbx', 'installed'),
                                          (root / 'imported/owner/app/.sbx', 'checkout')):
                     with self.subTest(source=source):
@@ -128,14 +128,14 @@ class WorkspaceTests(Server):
         self.assertEqual(lifecycle.get("test-resume")["phase"], "app_ready")
 
     def test_preview_resume_restarts_the_app_before_forwarding(self):
-        from sbx_control import core, gate
+        from sbx_control import core, gate, waking
         vm = VM("preview-vm")
         info = self.resumable("preview-fixture", vm)
-        self.addCleanup(gate.forget_preview_resume, "preview-vm")
+        self.addCleanup(waking.forget_preview_resume, "preview-vm")
         with patch.object(core, "sandboxes", return_value=[info]), patch.object(core, "find", return_value=info), \
                 patch.object(core.runtime, "connect", return_value=vm), patch.object(core.time, "sleep"):
             gate.ensure_running("preview-vm")
-        self.assertTrue(gate.resumed_for_preview("preview-vm"))
+        self.assertTrue(waking.resumed_for_preview("preview-vm"))
         self.assertTrue(vm.shipped_before_started(self.START))
 
     def test_resource_probe_does_not_resume_a_paused_workspace(self):
@@ -239,6 +239,18 @@ class WorkspaceTests(Server):
             with self.assertRaises(core.SandboxError):
                 core.start_app(vm, app)
 
+    def test_a_health_failure_names_each_url_and_what_it_answered(self):
+        from sbx_control import core, recipes
+        app = recipes.App('owner/app', Path('/unused'), {'health': ['http://localhost:3000/', 'http://localhost:3001/'],
+                                                         'health_timeout': 30})
+        vm = VM(answer=lambda command: '502 000' if 'curl ' in command else None)
+        with patch.object(core.time, 'sleep'), patch.object(core.time, 'time', side_effect=[0, 0, 31]):
+            with self.assertRaises(core.SandboxError) as raised:
+                core.start_app(vm, app)
+        self.assertIn('after 30 s, http://localhost:3000/ answered 502, http://localhost:3001/ did not answer',
+                      str(raised.exception))
+        self.assertEqual(core.health_said(['http://x/'], ['200', 'exited'], 30), 'a process of the app exited')
+
     def test_unverified_workspace_is_not_reported_as_an_app_being_up(self):
         from sbx_control import lifecycle
         finished = {'operation': 'prepare', 'active': False, 'services_ready': True, 'runtime': 'running'}
@@ -264,14 +276,14 @@ class WorkspaceTests(Server):
 
     def test_ip_preview_gate_enforces_owner_strips_control_credentials_and_resumes(self):
         from urllib.parse import urlsplit
-        from sbx_control import auth, core, gate, ip_previews, recipes, routing
+        from sbx_control import auth, core, ip_previews, recipes, routing, waking
         self.repo_admin()
         app = recipes.App('owner/app', Path('/unused'), {'previews': {'': {'port': 3000, 'access': 'owner'}}})
         info = Mock(sandbox_id='vm-fixture', state='paused', metadata={
             'sbx': 'ip-gate-fixture', 'slug': 'ip-gate-fixture', 'owner': 'operator@example.com', 'repo': 'owner/app'})
         owner = auth.mint_token('operator@example.com', 'test')
         other = auth.mint_token('other@example.com', 'test')
-        self.addCleanup(gate.forget_preview_resume, 'vm-fixture')
+        self.addCleanup(waking.forget_preview_resume, 'vm-fixture')
         url = ip_previews.origin('ip-gate-fixture', 3000)
         headers = {'X-Original-Preview-Port': str(urlsplit(url).port), 'X-Original-Host': '203.0.113.10',
                    'X-Original-URI': '/login?one=1&two=2'}
@@ -293,12 +305,14 @@ class WorkspaceTests(Server):
                 'Cookie': 'app=a; sbx_session=first; other=b; sbx_session=second'})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.headers['x-sbx-upstream'], '3000-vm-fixture.e2b.sandboxes.internal')
-            self.assertEqual(response.headers['x-sbx-cookies'], 'app=a; other=b')
+            self.assertEqual(response.headers['x-sbx-upstream-cookie'], 'app=a; other=b')
             self.assertEqual(response.headers['x-sbx-auth'], 'bearer')
             resume.assert_called_once()
         ip_previews.remove('ip-gate-fixture')
-        response = self.client.get('/gate', headers=headers)
-        self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
+        response = self.client.get('/gate', headers=headers)   # signed out: the login, whatever is there
+        self.assertEqual(response.status_code, 401)
+        response = self.client.get('/gate', headers={**headers, 'Authorization': f'Bearer {owner}'})
+        self.assertEqual((response.status_code, response.headers.get('x-sbx-page')), (403, 'missing'))
 
     def test_a_deleted_sandbox_s_preview_is_gone(self):
         from sbx_control import auth, core, lifecycle, recipes
@@ -320,7 +334,7 @@ class WorkspaceTests(Server):
                     patch('sbx_control.catalog.resources.delete_all', return_value=[]):
                 core.delete('gone-fixture')
             response = self.client.get('/gate', headers=headers)  # the runtime still lists the VM
-        self.assertEqual((response.status_code, response.headers.get('x-sbx-gone')), (403, '1'))
+        self.assertEqual((response.status_code, response.headers.get('x-sbx-page')), (403, 'deleted'))
 
     def test_preview_origin_cannot_mutate_the_control_plane_using_its_shared_host_cookie(self):
         from sbx_control import sandboxes

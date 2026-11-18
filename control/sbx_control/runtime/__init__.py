@@ -22,29 +22,32 @@ import contextlib
 import dataclasses
 import importlib
 import importlib.metadata
-import shlex
 import threading
 
-from .base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Handle, HostSide, Info, Limits,
-                   LimitRefused, NoRoom, NotRunning, Preset, Runtime, RuntimeLayer, SettingField, Snapshot,
-                   TemplateGone, TemplateSpec, Timeout)
+from . import env_file
+from .env_file import ENABLED_KEY, listed
+from .base import (FAILED, PAUSED, RUNNING, Backend, Busy, Capabilities, CommandFailed, Failed, Handle, Info,
+                   LimitRefused, Limits, LimitSpec, NoRoom, NotRunning, Preset, RuntimeLayer, SettingField,
+                   Snapshot, TemplateGone, TemplateSpec, Timeout, TokenPlace)
+from .scoped import INSTALL_KEY, plain_name, scoped
 
-__all__ = ["PAUSED", "RUNNING", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle", "HostSide", "Info",
-           "Limits", "LimitRefused", "NoRoom", "NotRunning", "Preset", "Runtime", "RuntimeLayer", "SettingField",
-           "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "kinds", "enabled", "default", "get", "of"]
+__all__ = ["FAILED", "PAUSED", "RUNNING", "Backend", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle",
+           "Info", "Limits", "LimitSpec", "LimitRefused", "NoRoom", "NotRunning", "Preset",
+           "RuntimeLayer", "SettingField", "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "TokenPlace",
+           "INSTALL_KEY", "plain_name", "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
-BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud"}
-ENABLED_KEY, DEFAULT_KEY = "SBX_RUNTIMES", "SBX_RUNTIME_DEFAULT"
+BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud",
+           "boat": "sbx_control.runtime.boat:Boat"}
+DEFAULT_KEY = "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
-FALLBACK = "embed"   # what an installation without SBX_RUNTIMES runs on
 # The kind of everything recorded before an installation ran several
 # runtimes (sandboxes, template builds, Amp's caches): Embed was the only
 # runtime then, whatever the default is now. The migrations that tag those
 # rows use this, and no other core code names a runtime.
 LEGACY = "embed"
 
-_backends: dict = {}       # kind -> its backend, made once
+_backends: dict = {}       # kind -> its backend, made (and configured from runtime.env) once
 _index: dict = {}          # sandbox id -> kind, as the listings and creates saw it
 _config: dict = {"key": None, "value": None}
 _lock = threading.Lock()
@@ -70,8 +73,7 @@ def configuration() -> dict:
     """SBX_RUNTIMES and SBX_RUNTIME_DEFAULT as runtime.env has them: SBX_RUNTIMES
     None when the file has no such line (Embed alone, as before), "" when it
     names none; SBX_RUNTIME_DEFAULT "" when not set."""
-    from .. import paths
-    file = paths.runtime_env()
+    file = env_file.path()
     try:
         key = (str(file), file.stat().st_mtime_ns)
     except OSError:
@@ -79,19 +81,9 @@ def configuration() -> dict:
     if _config["key"] != key:
         found = {ENABLED_KEY: None, DEFAULT_KEY: ""}
         if key[1] is not None:
-            for line in file.read_text().splitlines():
-                name, sep, value = line.partition("=")
-                if sep and name.strip() in CONFIG_KEYS and not line.lstrip().startswith("#"):
-                    found[name.strip()] = (shlex.split(value) or [""])[0]
+            found.update(env_file.read(CONFIG_KEYS))
         _config.update(key=key, value=found)
     return _config["value"]
-
-
-def listed(value: str | None) -> list[str]:
-    """SBX_RUNTIMES's kinds, in order: None (no such line) is Embed alone."""
-    if value is None:
-        return [FALLBACK]
-    return list(dict.fromkeys(k.strip() for k in value.replace(" ", ",").split(",") if k.strip()))
 
 
 NO_RUNTIME = ("no sandbox runtime is set up: add one in Settings → Sandbox runtimes (or on the server: "
@@ -127,8 +119,11 @@ def default() -> str:
     return found or (kinds_now[0] if kinds_now else "")
 
 
-def get(kind: str | None = None) -> Runtime:
-    """The enabled runtime of this kind (None: the default); NoRuntime when none is enabled."""
+def get(kind: str | None = None):
+    """The enabled runtime of this kind (None: the default), a hosted one as
+    this installation sees it (scoped.Scoped); NoRuntime when none is
+    enabled. Made once, configured from runtime.env's values then
+    (configure: platform.connect hands every one its keys again)."""
     kind = kind or default()
     if not kind:
         raise NoRuntime()
@@ -137,18 +132,42 @@ def get(kind: str | None = None) -> Runtime:
                      f"{', '.join(enabled())})")
     with _lock:
         if kind not in _backends:
-            _backends[kind] = make(kind)
-        return _backends[kind]
+            backend = make(kind)
+            _configure_from_file(backend)
+            _backends[kind] = backend
+        return _view(_backends[kind])
 
 
-def make(kind: str) -> Runtime:
+_views: dict = {}   # id(backend) -> (backend, what get() hands out for it)
+
+
+def _view(backend: Backend):
+    """The backend as get() hands it out, the same object every time (scoped.scoped)."""
+    found = _views.get(id(backend))
+    if found is None or found[0] is not backend:
+        found = _views[id(backend)] = (backend, scoped(backend))
+    return found[1]
+
+
+def _configure_from_file(backend: Backend) -> None:
+    """Its settings as runtime.env has them, without its secret (which
+    platform.connect unseals and hands it): what its properties need
+    (nginx's configuration is written from them in processes that never
+    connect). A backend that needs its secret to configure stays as made."""
+    try:
+        backend.configure(env_file.read(tuple(k for k in backend.credential_keys if k != backend.secret_key)))
+    except SystemExit:
+        pass
+
+
+def make(kind: str) -> Backend:
     """A new, unconfigured backend of kind, enabled or not (sbx-admin runtime
     add checks one before enabling it); KeyError when no package provides it."""
     module, _, name = _references()[kind].partition(":")
     return getattr(importlib.import_module(module), name)()
 
 
-def backends() -> list[Runtime]:
+def backends() -> list:
     """The enabled runtimes, in order."""
     return [get(kind) for kind in enabled()]
 
@@ -157,33 +176,25 @@ class Unavailable(Failed):
     """The sandbox runs on a runtime that is not enabled (any more)."""
 
 
-def of(sandbox_id: str) -> Runtime:
-    """The runtime a sandbox runs on: from what the listings saw, else by
-    asking each enabled runtime. NotRunning (a Failed) when none has it;
+def of(sandbox_id: str):
+    """The runtime a sandbox runs on: from what the listings and creates
+    saw, else by asking each enabled runtime (a hosted one answers only for
+    this installation's). NotRunning (a Failed) when none has it;
     Unavailable when it was seen on a runtime that is not enabled now:
     another runtime never answers for it."""
     kinds_now = enabled()
     recorded = _index.get(sandbox_id)
-    if recorded and recorded not in kinds_now:
-        raise Unavailable(f"sandbox {sandbox_id} runs on the {recorded} runtime, which is not enabled here "
-                          f"({ENABLED_KEY}: {', '.join(kinds_now)})")
-    if len(kinds_now) == 1:
-        backend = get(kinds_now[0])
-        if _shared(backend) and sandbox_id not in _index:
-            # Seen in none of this installation's listings or creates: on an
-            # account other installations share, ask once whose it is.
-            if not _mine(backend, backend.info(sandbox_id)):
-                raise NotRunning(f"sandbox {sandbox_id} is another installation's")
-            _index[sandbox_id] = backend.kind
-        return backend
-    kind = _index.get(sandbox_id)
-    if kind in kinds_now:
-        return get(kind)
+    if recorded:
+        if recorded not in kinds_now:
+            raise Unavailable(f"sandbox {sandbox_id} runs on the {recorded} runtime, which is not enabled here "
+                              f"({ENABLED_KEY}: {', '.join(kinds_now)})")
+        return get(recorded)
+    if len(kinds_now) == 1 and (only := get(kinds_now[0])).host:
+        return only   # alone on this host, every sandbox there is this installation's
     failed = None
     for kind in kinds_now:
         try:
-            if not _mine(get(kind), get(kind).info(sandbox_id)):
-                continue   # another installation's, on a provider account they share
+            get(kind).info(sandbox_id)
         except NotRunning:
             continue
         except Exception as error:  # that runtime did not answer: it may be the one
@@ -221,20 +232,7 @@ def _tag(info: Info, kind: str) -> Info:
     return dataclasses.replace(info, runtime=kind)
 
 
-# This installation's own, on a provider account several may share
-#
-# Every sandbox sbx creates carries the installation's id in its metadata
-# (INSTALL_KEY). A runtime on this host (host: Embed) serves one
-# installation, so all of its sandboxes are this one's and its listings are
-# as before. A hosted runtime's are listed with the id as a metadata query
-# (the provider filters), so another installation's never show. Sandboxes
-# made before the tag (legacy) are this installation's when sbx's own
-# records know them by id: those ids are taken once per runtime
-# (_legacy), adopted while they exist, and forgotten once a full listing
-# no longer has them. Templates and snapshots on a hosted runtime are
-# named with the id's prefix (template_name) and listed by it.
-
-INSTALL_KEY = "sbx_install"
+# This installation's own (scoped.py)
 
 
 def installation_id() -> str:
@@ -245,88 +243,13 @@ def installation_id() -> str:
 def shared(kind: str | None = None) -> bool:
     """Whether the runtime of kind may be shared by several installations
     (it does not run on this host)."""
-    return _shared(get(kind))
-
-
-def _shared(backend) -> bool:
-    """Whether several installations may share the runtime's account: any
-    runtime that does not run on this host."""
-    return not getattr(backend, "host", False)
-
-
-def _mine(backend, info) -> bool:
-    """Whether a sandbox the runtime has is this installation's: tagged
-    with its id, or untagged on a runtime it does not share (or a legacy
-    one it knows by id)."""
-    tag = (info.metadata or {}).get(INSTALL_KEY)
-    if tag:
-        return tag == installation_id()
-    return not _shared(backend) or info.sandbox_id in _legacy(backend.kind)
-
-
-def _legacy_setting(kind: str):
-    from .. import state
-    return state.Setting(f"runtime_legacy:{kind}", encoded=True)
-
-
-def _legacy(kind: str) -> set:
-    """The ids of this installation's sandboxes on kind from before they
-    carried its id: the ones sbx's records knew when this was first asked."""
-    from .. import state
-    setting = _legacy_setting(kind)
-    found = setting.get()
-    if found is None:
-        try:
-            with state.db() as conn:
-                found = sorted({row[0] for row in conn.execute(
-                    "select json_extract(l.record, '$.sandbox_id') from sandboxes s join sandbox_lifecycle l "
-                    "on l.name = s.name where s.runtime = ? and json_extract(l.record, '$.phase') != 'deleted'",
-                    (kind,)) if row[0]})
-        except Exception:   # before the first migrate: nothing recorded
-            found = []
-        setting.set(found)
-    return set(found)
-
-
-def _listed(backend, metadata, states) -> list:
-    """The runtime's sandboxes that are this installation's (see above). A
-    full listing (no filter) is handed to the backend's optional
-    listed(sandbox_ids) hook: what it keeps per sandbox (a token) for one no
-    longer there goes, whoever ended it."""
-    found = _own(backend, metadata, states)
-    hook = getattr(backend, "listed", None)
-    if metadata is None and states is None and callable(hook):
-        hook({i.sandbox_id for i in found})
-    return found
-
-
-def _own(backend, metadata, states) -> list:
-    if not _shared(backend):
-        return backend.sandboxes(metadata, states)
-    mine = backend.sandboxes({**(metadata or {}), INSTALL_KEY: installation_id()}, states)
-    legacy = _legacy(backend.kind)
-    if not legacy:
-        return mine
-    every = backend.sandboxes(metadata, states)
-    untagged = {i.sandbox_id for i in every if not (i.metadata or {}).get(INSTALL_KEY)}
-    if metadata is None and states is None:   # a full listing: legacy ones it lacks are gone
-        _legacy_setting(backend.kind).set(sorted(legacy & untagged))
-    seen = {i.sandbox_id for i in mine}
-    return mine + [i for i in every if i.sandbox_id in legacy & untagged and i.sandbox_id not in seen]
+    return not get(kind).host
 
 
 def template_name(name: str, kind: str | None = None) -> str:
-    """The name a template or snapshot of sbx's has on the runtime of kind:
-    as is on a runtime on this host, else after this installation's prefix
-    (<8 hex>--, which no template slug has), so installations sharing a
-    provider account never collide or touch each other's."""
-    return name if not _shared(get(kind)) else f"{installation_id()[:8]}--{name}"
-
-
-def plain_name(name: str) -> str:
-    """A template name without an installation's prefix."""
-    head, sep, rest = name.partition("--")
-    return rest if sep and len(head) == 8 and all(c in "0123456789abcdef" for c in head) else name
+    """The name a template or snapshot of sbx's has on the runtime of kind
+    (Backend.template_name: prefixed on a hosted one)."""
+    return get(kind).template_name(name)
 
 
 # A sandbox's calls: its own runtime's
@@ -339,7 +262,7 @@ def create(template: str, *, timeout: int, envs: dict | None = None, metadata: d
     seconds until it pauses, within that runtime's limits().timeout_seconds.
     Its metadata carries this installation's id (INSTALL_KEY)."""
     backend = get(kind)
-    metadata = {**(metadata or {}), INSTALL_KEY: installation_id()}
+    metadata = {**(metadata or {}), INSTALL_KEY: installation_id()}   # every sandbox sbx makes, on any runtime
     with _limits_learned(backend):
         handle = backend.create(template, timeout=_capped(timeout, backend), envs=envs, metadata=metadata,
                                 deny_out=deny_out, on_timeout=on_timeout, auto_resume=auto_resume)
@@ -358,6 +281,11 @@ def connect(sandbox_id: str, *, timeout: int | None = None) -> Handle:
     backend = of(sandbox_id)
     with _limits_learned(backend):
         return backend.connect(sandbox_id, timeout=_capped(timeout, backend))
+
+
+def handle(sandbox_id: str) -> Handle:
+    """The running sandbox's handle without resuming or preparing it (Backend.handle)."""
+    return of(sandbox_id).handle(sandbox_id)
 
 
 class Listing(list):
@@ -379,7 +307,7 @@ class Incomplete(Failed):
 
 
 def sandboxes(metadata: dict | None = None, states=None, kind: str | None = None) -> Listing:
-    """This installation's sandboxes (_listed) on every enabled runtime (or
+    """This installation's sandboxes (scoped.py) on every enabled runtime (or
     on kind's) whose metadata has these
     values, each tagged with its runtime (Info.runtime); states: RUNNING and
     PAUSED, None for what each runtime lists by default. A runtime that does
@@ -394,13 +322,13 @@ def sandboxes(metadata: dict | None = None, states=None, kind: str | None = None
         return found
     for backend in chosen:
         try:
-            listed = _listed(backend, metadata, states)
+            listed = backend.sandboxes(metadata, states)
         except Exception as error:
-            if len(kinds_now) == 1:
-                raise
             print(f"runtime {backend.kind} did not list its sandboxes: {error!r}", flush=True)
             found.failed[backend.kind] = error
             continue
+        if metadata is None and states is None:   # a full listing: what it keeps of sandboxes gone goes
+            backend.listed({i.sandbox_id for i in listed})
         found += [_tag(info, backend.kind) for info in listed]
     if len(found.failed) == len(kinds_now):
         raise next(iter(found.failed.values()))
@@ -420,10 +348,7 @@ def complete(listing) -> list:
 def info(sandbox_id: str) -> Info:
     """NotRunning for a sandbox that is another installation's."""
     backend = of(sandbox_id)
-    found = backend.info(sandbox_id)
-    if not _mine(backend, found):
-        raise NotRunning(f"sandbox {sandbox_id} is another installation's")
-    return _tag(found, backend.kind)
+    return _tag(backend.info(sandbox_id), backend.kind)
 
 
 def kill(sandbox_id: str) -> bool:
@@ -449,7 +374,7 @@ def snapshot(sandbox_id: str, name: str) -> Snapshot:
     """A snapshot of the sandbox on its own runtime, which a new sandbox on
     that runtime can start from (Snapshot.runtime)."""
     backend = of(sandbox_id)
-    return dataclasses.replace(backend.snapshot(sandbox_id, template_name(name, backend.kind)), runtime=backend.kind)
+    return dataclasses.replace(backend.snapshot(sandbox_id, name), runtime=backend.kind)
 
 
 def delete_snapshot(snapshot_id: str, kind: str | None = None) -> None:
@@ -460,21 +385,37 @@ def upstream_host(port: int, sandbox_id: str) -> str:
     return of(sandbox_id).upstream_host(port, sandbox_id)
 
 
-def upstream_token(sandbox_id: str, kind: str | None = None, *, fetch: bool = True) -> tuple[str, str] | None:
-    """(header, token) nginx adds to a request for the sandbox's port, for a
-    runtime that answers its sandboxes' ports only with their own token
-    (Runtime.upstream_token_header); None for any other. kind: the sandbox's
-    runtime, when the caller knows it. Without fetch the token is only one
-    the backend kept ("" when none)."""
+def upstream_token(sandbox_id: str, port: int, kind: str | None = None, *,
+                   fetch: bool = True) -> tuple[TokenPlace, str] | None:
+    """(where, token) nginx adds to a request for the sandbox's port, for a
+    runtime that answers its sandboxes' ports only with a token
+    (Backend.upstream_token_at); None for any other runtime. kind: the
+    sandbox's runtime, when the caller knows it. Without fetch the token is
+    only one the backend kept ("" when none)."""
     backend = get(kind) if kind else of(sandbox_id)
-    header = getattr(backend, "upstream_token_header", None)
-    return (header, backend.upstream_token(sandbox_id, fetch=fetch)) if header else None
+    where = backend.upstream_token_at
+    return (where, backend.upstream_token(sandbox_id, port, fetch=fetch)) if where else None
 
 
-def upstream_token_headers() -> dict:
-    """kind -> the header each enabled runtime wants its sandboxes' token
-    in, for those that declare one (nginx's maps)."""
-    return {b.kind: b.upstream_token_header for b in backends() if getattr(b, "upstream_token_header", None)}
+def upstream_token_places() -> dict:
+    """kind -> where each enabled runtime that wants a token wants it (nginx's maps)."""
+    return {b.kind: b.upstream_token_at for b in backends() if b.upstream_token_at}
+
+
+def desktop(kind: str | None = None) -> str:
+    """Which desktop the runtime's sandboxes have: "sbx" (sbx's noVNC) or
+    "provider" (its own, opened through desktop_url)."""
+    return get(kind).desktop
+
+
+def desktop_url(sandbox_id: str) -> str:
+    """A fresh URL of the sandbox's desktop on a runtime with its own."""
+    return of(sandbox_id).desktop_url(sandbox_id)
+
+
+def cold_resume(kind: str | None = None) -> bool:
+    """Whether sbx treats every resume on the runtime as a cold boot (Backend.cold_resume)."""
+    return get(kind).cold_resume
 
 
 def snapshot_usage(sandbox_id: str) -> dict:
@@ -488,7 +429,7 @@ def snapshot_usage(sandbox_id: str) -> dict:
 
 def own_route(host: str, sandbox_id: str, port: str):
     """(kind, answer) of the enabled runtime whose own host this is
-    (Runtime.own_route: True or (port, sandbox_id)); None for any other host."""
+    (Backend.own_route: True or (port, sandbox_id)); None for any other host."""
     for backend in backends():
         found = backend.own_route(host, sandbox_id, port)
         if found is not None:
@@ -499,18 +440,14 @@ def own_route(host: str, sandbox_id: str, port: str):
 def preview(name: str, port: int | None, listen: int, *, preserve_host: bool = False) -> None:
     """sbx-admin preview, on the runtime of the sandbox named name; ValueError
     when that runtime has no local proxy."""
-    found = sandboxes({"sbx": name}) if len(enabled()) > 1 else []
-    backend = get(found[0].runtime) if found else get()
-    serve = getattr(backend, "preview", None)
-    if serve is None:
-        raise ValueError(f"{backend.title} has no loopback preview on this host; open the sandbox's preview URL instead")
-    serve(name, port, listen, preserve_host=preserve_host)
+    found = sandboxes({"sbx": name})
+    (get(found[0].runtime) if found else get()).preview(name, port, listen, preserve_host=preserve_host)
 
 
 # Limits, per runtime
 
 
-def _capped(seconds: int | None, backend: Runtime) -> int | None:
+def _capped(seconds: int | None, backend: Backend) -> int | None:
     """A timeout within the runtime's limit: the keeper extends it while
     the sandbox is used, so a shorter one only pauses an idle sandbox sooner.
     The limit is never below base.MIN_TIMEOUT_SECONDS, several renewals."""
@@ -534,7 +471,7 @@ def _limit_hit_setting(kind: str):
 
 def setting_for(backend, field: str):
     """The backend's SettingField that sets the Limits field (None when none does)."""
-    return next((s for s in getattr(backend, "settings", ()) if s.limit == field), None)
+    return next((s for s in backend.settings if s.limit == field), None)
 
 
 @contextlib.contextmanager
@@ -625,12 +562,7 @@ def build_template(spec: TemplateSpec, *, alias: str, cpu: int, memory_mb: int, 
 def templates(kind: str | None = None) -> list[tuple[str, str]]:
     """The runtime's templates that are this installation's: on a hosted
     runtime only those named with its prefix (template_name)."""
-    backend = get(kind)
-    found = backend.templates()
-    if not _shared(backend):
-        return found
-    prefix = template_name("", backend.kind)
-    return [(name, status) for name, status in found if name.startswith(prefix)]
+    return get(kind).templates()
 
 
 def delete_template(name: str, kind: str | None = None) -> bool:

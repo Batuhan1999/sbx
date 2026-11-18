@@ -376,7 +376,7 @@ class CatalogTests(Server):
         # The canonical guides follow the steps, read from the docs themselves.
         for heading in ("# Service selection", "# Acceptance checklist", "# Resource guide"):
             self.assertIn(f"\n{heading}\n", brief)
-        self.assertIn("Delete A (`sbx down A`)", brief)
+        self.assertIn("Delete A (`sbx down check-a`)", brief)
         self.assertNotIn("Record what you verified", brief.split("# Acceptance checklist")[0])
 
     def test_a_release_ships_the_docs_the_setup_brief_carries(self):
@@ -406,15 +406,22 @@ class CatalogTests(Server):
         (folder / "examples/plain").mkdir()
         (folder / "examples/README.md").write_text("# Examples\n\n- alpha: a database per sandbox\n")
         (folder / "examples/alpha/README.md").write_text(
-            "# Alpha\n\n## Run it\n\nsbx up\n\n## How this recipe was made\n\nIt chose postgres-clone.\n\n## Later\n\nnot this\n")
+            "# Alpha\n\n## Run it\n\nsbx up\n\n## How this recipe was made\n\nIt chose postgres-clone "
+            "([recipe](.sbx/), [services](../../docs/reference.md#services)).\n\n## Later\n\nnot this\n")
         (folder / "examples/plain/README.md").write_text("# Plain\n\n## Run it\n\nsbx up\n")
         real = paths.shipped
         with patch.object(paths, "shipped", lambda name: folder / name if name == "examples" else real(name)):
             guides = repos.guides()
         self.assertEqual([g.splitlines()[0] for g in guides],
-                         ["# Examples", "# How this recipe was made: Alpha (examples/alpha)", "# Service selection",
-                          "# Acceptance checklist", "# Resource guide"])
-        self.assertEqual(guides[1].split("\n\n", 1)[1], "It chose postgres-clone.")
+                         ["# Examples", f"# How this recipe was made: Alpha ({repos.SOURCE}/examples/alpha)",
+                          "# Service selection", "# Acceptance checklist", "# Resource guide"])
+        # The agent reading the brief has no sbx source: relative links go to GitHub, anchors and URLs stay.
+        self.assertEqual(guides[1].split("\n\n", 1)[1],
+                         f"It chose postgres-clone ([recipe]({repos.SOURCE}/examples/alpha/.sbx), "
+                         f"[services]({repos.SOURCE}/docs/reference.md#services)).")
+        self.assertEqual(repos.linked("[a](#x) [b](https://e.test/y) [c](reference.md)", "docs"),
+                         f"[a](#x) [b](https://e.test/y) [c]({repos.SOURCE}/docs/reference.md)")
+        self.assertNotRegex("\n".join(guides), r"\]\((?!https://|#)")
 
 
 class ManagedServerTests(Server):
@@ -511,3 +518,28 @@ class ManagedServerTests(Server):
                     self.cow.remove(self.hosted.Server("fixture", "postgres"), storage)
             self.assertTrue(image.exists())
 
+
+
+class ConnectionChoiceTests(Server):
+    def bind(self, chosen, keys):
+        from types import SimpleNamespace
+        from sbx_control.catalog import attachments
+        package = SimpleNamespace(requires={"server": {"kind": "postgres-server", "expose": {}}})
+        found = [{"key": k, "package": "postgres-server", "disabled": False, "inputs": {}} for k in keys]
+        with patch.object(attachments, "connections", return_value=found), \
+                patch.object(attachments, "connection", side_effect=lambda k: next(c for c in found if c["key"] == k)):
+            return attachments.bind(package, chosen, "service db")
+
+    def test_a_named_connection_the_server_lacks_is_said_so(self):
+        from sbx_control.catalog.attachments import MissingConnection
+        with self.assertRaises(MissingConnection) as refused:
+            self.bind({"server": "postgres"}, ["dev-pg"])
+        self.assertEqual(str(refused.exception), "service db: names the postgres-server connection postgres, which this "
+                         "server doesn't have (it has: dev-pg); name one with connections: {server: <key>}")
+
+    def test_one_connection_is_bound_by_itself_and_of_several_one_is_named(self):
+        from sbx_control.catalog.attachments import MissingConnection
+        self.assertEqual(self.bind({}, ["dev-pg"])[0], {"server": "dev-pg"})
+        self.assertEqual(self.bind({"server": "b"}, ["a", "b"])[0], {"server": "b"})
+        with self.assertRaisesRegex(MissingConnection, r"several postgres-server connections \(a, b\)"):
+            self.bind({}, ["a", "b"])

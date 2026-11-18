@@ -1,8 +1,8 @@
 // Every route the web app calls, typed. Pages use these through queries.ts.
 import { enc, postForm, repoPath as r, request } from './client'
 import type {
-  AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, EnvChange, EnvView,
-  RuntimeChange,
+  AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
+  RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
   SetupState, TemplateState, Updates, Audience, Users, PasswordLink,
@@ -21,11 +21,19 @@ export const api = {
   runtimeSettings: {
     available: () => get<AvailableRuntime[]>('/api/runtimes/available'),
     change: () => get<RuntimeChange>('/api/runtimes/change'),
-    add: (kind: string, values: Record<string, string>) => post<RuntimeChange>('/api/runtimes', { kind, values }),
-    /** A secret left out keeps its value. */
-    update: (kind: string, values: Record<string, string>) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, { values }),
+    add: (kind: string, body: RuntimeValues) => post<RuntimeChange>('/api/runtimes', { kind, ...body }),
+    /** A secret left out keeps its value; a plan sets its limits again. */
+    update: (kind: string, body: RuntimeValues) => put<RuntimeChange>(`/api/runtimes/${enc(kind)}`, body),
     remove: (kind: string) => del<RuntimeChange>(`/api/runtimes/${enc(kind)}`),
     setDefault: (kind: string) => put<RuntimeChange>('/api/runtimes/default', { kind }),
+  },
+  /** Admins: shared servers and internal hosts reachable from provider sandboxes; added and removed by the host (202). */
+  endpoints: {
+    list: () => get<Endpoints>('/api/endpoints'),
+    add: (body: AddEndpoint) => post<Endpoint>('/api/endpoints', body),
+    /** An internal host's repositories, replaced; refused (400) for a managed server's. */
+    setRepos: (name: string, repos: string[]) => put<Endpoint>(`/api/endpoints/${enc(name)}`, { repos }),
+    remove: (name: string) => del<unknown>(`/api/endpoints/${enc(name)}`),
   },
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
   /** A set-password link's person, while it is good. */

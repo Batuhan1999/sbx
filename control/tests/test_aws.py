@@ -240,6 +240,17 @@ class AwsTests(Server):
         self.assertTrue(any(f'AWS_CONFIG_FILE={FOLDER}/config' in content for content in files.values()))
         self.assertNotIn('fixture-aws-secret', ''.join(files.values()))
 
+    def test_a_cold_resume_no_runtime_lists_is_restored_by_the_default_s_rules(self):
+        from sbx_control import core, platform
+        self.aws_fixture()
+        sandbox = Mock(sandbox_id='aws-a-vm')
+        sandbox.commands.run.side_effect = lambda command, **kwargs: Mock(
+            stdout='ready' if command == platform.STARTED else '')
+        info = Mock(metadata={'sbx': 'aws-a', 'owner': 'operator@example.com', 'branch': 'main', 'repo': 'owner/awsapp'},
+                    state='running')
+        with patch.object(core.runtime, 'kind_of', side_effect=RuntimeError('no runtime lists it')):
+            self.assertTrue(core.restore_runtime(sandbox, info))
+
     def test_aws_profile_rename_revokes_only_its_capability_on_prepare(self):
         first, second = self.aws_fixture()
         self.attachments.attach('owner/awsapp', 'aws-profile', 'aws', {'profile': 'renamed'}, {'role': 'dev-aws'}, by='test')

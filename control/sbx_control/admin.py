@@ -32,6 +32,9 @@
   sbx-admin server exec NAME [--database DB] < seed.sql  import or prepare development base data
   sbx-admin server down NAME [--delete-data]     stop a managed server; optionally remove its owned data
   sbx-admin network apply           apply private service access before creating sandboxes
+  sbx-admin endpoint ls|add|rm|grant|revoke   private services for sandboxes on provider runtimes (as sbx
+                                     endpoints): add --server NAME | --name N --target HOST:PORT [--repo R];
+                                     rm NAME; grant|revoke NAME REPO
   sbx-admin store enable|status     initialize and move to the default Infisical store, or inspect delivery status
   sbx-admin sign-in password         password sign-in (a first install's): each admin without a password
                                      gets a generated one, printed once
@@ -116,9 +119,16 @@ def do_restore(path: pathlib.Path, key: str) -> int:
 
 
 def do_doctor() -> int:
-    from . import connections, extensions
+    from . import connections, extensions, platform
     optional = {c.kind for c in extensions.connectors()}
     bad = 0
+    try:
+        # Each runtime its keys as sbx-control hands them over at start: unsealed from runtime.env
+        # (vault.runtime), so a runtime whose key is a reference into the store reads as set.
+        platform.connect()
+    except SystemExit as error:   # a key missing, a kind no package provides: what to fix, then the rest
+        print(f"Sandbox runtime: not_connected · {error}")
+        bad += 1
     for status in connections.status_all():
         print(f"{status.title}: {status.state} · {status.summary}")
         if status.kind in optional and status.state in ("off", "not_connected"):
@@ -126,6 +136,13 @@ def do_doctor() -> int:
         for check in connections.get(status.kind).test():
             print(f"  {'ok ' if check.ok else 'NO '} {check.name}: {check.detail}" + (f" — {check.fix}" if not check.ok and check.fix else ""))
             bad += not check.ok
+    from . import endpoints
+    found = endpoints.describe()
+    if found["endpoints"]:
+        print(f"Endpoints: {len(found['endpoints'])} exposed to sandboxes on provider runtimes")
+        for line in endpoints.doctor_lines(found):
+            print(line)
+        bad += sum(e["state"] == "failed" for e in found["endpoints"])
     return 1 if bad else 0
 
 
@@ -248,71 +265,46 @@ def do_template(a) -> int:
     return 0
 
 
-def _apply_runtimes() -> None:
-    """What `runtime apply` does once runtime.env is checked: nginx's
-    upstreams are per enabled runtime (tls.sh), and sbx-control configures
-    each runtime at start (platform.connect): both again."""
-    from . import runtime, runtime_changes
-    kinds, first = runtime.enabled(), runtime.default()
-    runtime_changes.request_effects()
-    print(f"runtimes {', '.join(kinds) or 'none'}{f' (default {first})' if first else ''}: nginx is regenerated "
-          "and sbx-control restarts within seconds")
-
-
 def do_runtime_change(a) -> int:
-    """runtime add | remove | default: edit runtime.env, check the result the
-    way sbx-control will read it, and only then let go of the store
-    references it replaced; any failure puts the file back and drops the
-    references it made (runtime_changes.perform). Then apply it. Under the
-    lock a change from the web app takes, so neither undoes the other."""
-    from . import runtime_changes
+    """runtime add | remove | default: committed as a change from the web app
+    is (runtime_changes.commit), under the lock it takes, so neither undoes
+    the other; refused while one from the web app is queued (it would run
+    after). add reads the runtime's key from stdin."""
+    from . import host_requests, runtime, runtime_changes
     if not a.kind:
         print(f"runtime {a.action} KIND", file=sys.stderr)
         return 2
-    secret = sys.stdin.read().strip() if a.action == "add" else None
+    known = a.action == "add" and a.kind in runtime.kinds()   # an unknown kind: add says so
+    values = {runtime.make(a.kind).secret_key: sys.stdin.read().strip()} if known else {}
     try:
-        with runtime_changes.locked():
-            change = runtime_changes.perform(a.action, a.kind, secret)
+        with host_requests.lock(runtime_changes.KEY):
+            if host_requests.requested(runtime_changes.KEY):
+                raise runtime_changes.Busy("a runtime change from the web app is queued: apply it first "
+                                           "(sbx-admin runtime apply-pending), then try again")
+            runtime_changes.commit(a.action, a.kind, values)
     except (Exception, SystemExit) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    print(change.said)
-    _apply_runtimes()
-    if a.action == "add":
-        start_template_builds(a.kind)
     return 0
-
-
-def start_template_builds(kind: str) -> None:
-    """A runtime just added starts its base and default templates now, not
-    on the scheduler's next round; in a process of their own, so this
-    command returns."""
-    from . import runtime, template_builds, templates
-    title = runtime.title(kind)
-    try:
-        where, started = template_builds.start_detached(kind)
-    except Exception as error:
-        print(f"could not start the template builds on {title} ({error}); the scheduler starts them within "
-              f"minutes, or: sbx-admin jobs run template@{kind}:{templates.BASE}", file=sys.stderr)
-        return
-    if not started:
-        print(f"the {templates.BASE} and {templates.DEFAULT} builds on {title} are already running ({where}); "
-              f"`sbx-admin runtime verify {kind}` works once they're built")
-        return
-    print(f"building {templates.BASE} and {templates.DEFAULT} on {title} now (about 10 minutes the first time; "
-          f"{where}); `sbx-admin runtime verify {kind}` works once they're built")
 
 
 def do_runtime(a) -> int:
     from . import platform, runtime, runtime_changes, runtimes
     if a.action == "apply-pending":
         return runtime_changes.apply_pending()
-    if a.action != "add":   # add mends a runtime's missing key too
-        platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
-    if a.action in ("add", "remove", "default"):
+    # Nothing connected first: add mends a runtime's missing key, and remove takes one whose keys are
+    # missing (as from the web app); the change itself is checked as sbx-control will read it.
+    if a.action in ("add", "remove"):
+        return do_runtime_change(a)
+    platform.connect()   # an unknown kind, a default not enabled or a runtime's missing keys stop here
+    if a.action == "default":
         return do_runtime_change(a)
     if a.action == "apply":
-        _apply_runtimes()   # enabled() and default() are checked before anything is asked of the host
+        kinds, first = runtime.enabled(), runtime.default()   # checked before anything is asked of the host
+        # nginx's upstreams are per enabled runtime (tls.sh), and sbx-control configures each runtime at start.
+        settings.request_effects(settings.HostUnit.TLS, settings.HostUnit.CONTROL)
+        print(f"runtimes {', '.join(kinds) or 'none'}{f' (default {first})' if first else ''}: nginx is "
+              "regenerated and sbx-control restarts within seconds")
         return 0
     if a.action == "verify":
         if a.kind and a.kind not in runtime.enabled():
@@ -434,6 +426,14 @@ def main(argv: list) -> int:
     server_up.add_argument('--data-root', type=pathlib.Path, help='existing XFS root; otherwise create an owned XFS image')
     server_up.add_argument('--storage-gb', type=int, help='new Postgres XFS image size (default: 32 GiB)')
     sub.add_parser("network").add_argument("action", choices=["apply"])
+    endpoint = sub.add_parser("endpoint")
+    endpoint.add_argument("action", choices=["ls", "add", "rm", "grant", "revoke"])
+    endpoint.add_argument("name", nargs="?", help="rm, grant, revoke: the endpoint")
+    endpoint.add_argument("repo", nargs="?", help="grant, revoke: owner/name")
+    endpoint.add_argument("--repo", dest="repos", action="append", help="add: a repo that may use it (repeatable)")
+    endpoint.add_argument("--server", help="add: a managed server's endpoint")
+    endpoint.add_argument("--name", dest="endpoint_name", help="add: the endpoint's name")
+    endpoint.add_argument("--target", help="add: HOST:PORT within network.internal_cidrs")
     sub.add_parser('store').add_argument('action', choices=['enable', 'status'])
     sub.add_parser("sign-in").add_argument("method", choices=["password"])
     sub.add_parser("upgrade").add_argument("tag", nargs="?")
@@ -478,6 +478,27 @@ def main(argv: list) -> int:
         except (ValueError, RuntimeError, OSError) as error:
             print(str(error), file=sys.stderr)
             return 1
+    if a.cmd == "endpoint":
+        from . import endpoints
+        try:
+            if a.action == "ls":
+                result = endpoints.describe()
+            elif a.action == "add":
+                result = endpoints.add(server=a.server, name=a.endpoint_name, target=a.target, repos=a.repos,
+                                       by="sbx-admin")
+            elif a.action in ("grant", "revoke"):
+                if not a.name or not a.repo:
+                    p.error(f"endpoint {a.action} NAME REPO")
+                result = (endpoints.grant if a.action == "grant" else endpoints.revoke)(a.name, a.repo)
+            else:
+                if not a.name:
+                    p.error("endpoint rm NAME")
+                result = endpoints.remove(a.name)
+        except (ValueError, LookupError) as error:
+            print(str(error).strip("'\""), file=sys.stderr)
+            return 1
+        print(json.dumps(result))
+        return 0
     if a.cmd == "preview":
         from . import runtime
         if not 0 <= a.listen <= 65535 or (a.port is not None and not 1 <= a.port <= 65535):
@@ -533,7 +554,11 @@ def main(argv: list) -> int:
     if a.cmd == "jobs":
         from . import jobs
         if a.verb == "run":
-            print(jobs.run_now(a.id or ""))
+            try:
+                print(jobs.run_now(a.id or "", detached=True))
+            except RuntimeError as error:
+                print(str(error), file=sys.stderr)
+                return 1
             return 0
         for j in jobs.jobs():
             when = f"last {j.get('last') or '-'}, next {j.get('next') or j.get('schedule') or '-'}" if j.get("available") else "not on this host"

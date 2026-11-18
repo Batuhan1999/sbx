@@ -12,3 +12,4 @@ pwdlib[argon2]>=0.4  # people's password hashes (users.py)
 pyjwt>=2.8
 boto3>=1.35
 websockets>=15
+boat-sdk>=1.13  # the Boat runtime (runtime/boat), its only importer

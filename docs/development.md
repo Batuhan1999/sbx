@@ -149,17 +149,19 @@ The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
 runs commands and writes files in them, builds their templates, and is the
 last hop of a preview. Like the secret store, it is an installation's choice,
 not an extension. An installation enables one or more runtimes, and each
-sandbox runs on exactly one of them, chosen when it is created. Two are
-built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
+sandbox runs on exactly one of them, chosen when it is created. Three are
+built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
 
-- `control/sbx_control/runtime/base.py` is the interface: the `Runtime` and
-  `Handle` protocols, plain results (`Info`, whose `state` is `running` or
-  `paused` and whose `runtime` is its runtime's kind), the errors (`Failed`,
+- `control/sbx_control/runtime/base.py` is the interface: `Backend`, the
+  class a runtime subclasses, the `Handle` protocol, plain results (`Info`, whose `state` is `running` or
+  `paused`, or `failed` where the runtime has it, and whose `runtime` is its
+  runtime's kind), the errors (`Failed`,
   `CommandFailed`, `Timeout`, `Busy`, `NoRoom`, `NotRunning`), `Capabilities`,
   `Limits` and `TemplateSpec`. The contract has two parts: every backend
-  implements the compute part, and `HostSide` gives the host part (units,
-  commands, the host's guard, disk, capacity, readiness) no-op defaults, so a
-  hosted backend inherits it and Embed overrides it. Its docstring states the
+  implements the compute part (`Backend`'s abstract methods), and `Backend`
+  gives the host part (units, commands, the host's guard, disk, capacity,
+  readiness) no-op defaults, so a hosted backend inherits them and Embed
+  (`host = True`) overrides them. Its docstring states the
   rule that a backend keeps no process-global configuration.
 - `control/sbx_control/runtime/__init__.py` is the registry and the one way
   in. The core and the extensions call `runtime.create`, `runtime.connect`,
@@ -184,7 +186,19 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   each backend only its own `credential_keys`.
   `test_runtime.py` fails if any module outside `runtime/e2b/`,
   `runtime/embed/` and `runtime/e2b_cloud/` imports `e2b`, or any module
-  outside `runtime/` imports a backend package.
+  outside `runtime/` imports a backend package (so only `runtime/boat/`
+  imports `boat_sdk`).
+- Properties a backend declares instead of the core knowing it by name:
+  where its sandboxes' preview token goes (`upstream_token_at =
+  TokenPlace("header", name)`, a request header, or `TokenPlace("cookie",
+  name)`, a cookie appended to the app's own; `upstream_token(sandbox_id,
+  port, *, fetch=True)` returns it, per port where the provider has one per
+  port; with `fetch=False` it returns only a token the backend kept, "" when
+  none, and never asks the provider), which desktop its sandboxes have (`desktop`: `"sbx"`, sbx's
+  noVNC that `platform.start` runs, or `"provider"`, its own, opened through
+  `desktop_url`), and whether every resume is treated as a cold boot (`cold_resume`:
+  `core.restore_runtime` then re-ships `/run/sbx` and restarts the app).
+  `Backend` holds their defaults.
 - `control/sbx_control/runtime/e2b/` is the E2B SDK adapter the E2B-based
   backends share: `Compute`, the compute part of the contract over the SDK
   (create, connect, list, pause, snapshots, template builds and listings),
@@ -197,23 +211,68 @@ built in: E2B Embed on the host, and E2B Cloud (E2B's hosted sandboxes).
   nothing writes `E2B_*` into the process environment (`test_runtime.py`
   checks both).
 - `control/sbx_control/runtime/e2b_cloud/` is E2B Cloud: `Compute` with
-  `HostSide`'s no-op host part, its own keys (`E2B_CLOUD_*`), limits from
+  `Backend`'s no-op host part, its own keys (`E2B_CLOUD_*`), limits from
   them, an https `ingress` under the sandboxes' wildcard, and the traffic
-  token (`upstream_token_header`, `upstream_token`): kept from create and
+  token (`upstream_token_at`, a header, and `upstream_token`): kept from create and
   connect, fetched once with connect after a restart.
+- `control/sbx_control/runtime/boat/` is Boat, over `boat-sdk`: `Boat` with
+  `Backend`'s no-op host part, its keys (`BOAT_*`), plans and limits,
+  commands through Boat's API (env, user and workdir as a shell prefix; long
+  ones detached and polled), files (base64; signed URLs past 5 MiB; outside
+  `/home/user` and `/tmp` staged and moved), templates as saved snapshots
+  (`build_template` replays a `TemplateSpec` in a builder sandbox;
+  `dockerfile_steps` reads a Dockerfile's `RUN`, `ENV`, `WORKDIR`, `USER`,
+  `ARG`), pause as Boat's stop, a port exposed on its first preview request
+  (`upstream_token`), Boat's desktop, and its errors as sbx's (`call`,
+  `refused`). `tests/fake_boat.py` is a fake Boat API that stands in for the
+  SDK's HTTP client, so `test_boat.py` runs the real SDK's requests and
+  models.
 - `control/sbx_control/runtime/fake/` is an in-memory backend for the test
   suite: `test_runtimes.py` runs an installation with Embed (mocked) and it
   side by side, and `sbx-admin runtime verify` passes against it.
 - `control/sbx_control/runtimes.py` is the core's side of several runtimes:
   which one a new sandbox runs on (`choose`: the request's `runtime`, else the
   repo's setting from `PUT /api/repos/{repo}/runtime`, else the default,
-  refused with the reason when it is not enabled, when managed servers are
-  attached to the repo and it lacks `private_networks`, or when the recipe is
-  beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
+  refused with the reason when it is not enabled, when it lacks
+  `private_networks` and a private target the repo uses has no endpoint
+  (`endpoints.missing`), or when the recipe is beyond its limits), the runtimes a repo's sandboxes use (`used_by`, whose
   templates the scheduler builds), `GET /api/runtimes` and
   `/api/runtimes/available`, adding, changing and removing one (`add`,
   `remove`, `set_default`; `prepare` checks a change from the web app
   without writing), and `sbx-admin runtime verify [KIND]`.
+- `control/sbx_control/endpoints/` gives sandboxes on runtimes without
+  `private_networks` this host's private services: `model` (the records,
+  grants and an admin's changes; `/api/endpoints` is `endpoints_api.py`),
+  `access` (what a repo needs and may not use: the gate's `refusal`, the
+  recipe env's `advice`), `certs` (a CA per endpoint, the sandboxes'
+  24-hour client certificates, the forwarder's credential), `sandbox`
+  (`Routes`: a sandbox's values with the targets of the endpoints it may
+  use replaced by the forwarder's loopback address; the forwarder's config
+  and certificates), `nginx` (the stream servers and their root-side apply,
+  `sbx-apply endpoints`) and `status` (what the API and doctor say). The
+  forwarder itself is `sbx_guest.py forward`, standard library only.
+  `test_endpoints.py` covers them, the forwarder against local TLS servers
+  that each verify their own endpoint's CA.
+- `control/sbx_control/sandbox_layers.py`: features that take part in every
+  sandbox's runtime write and lifecycle without `core` or the keeper naming
+  them (`SandboxLayer`: `outputs`, `values`, `contribution`, `after_write`,
+  `on_resume`, `tick`, `round`, `ports`); endpoints is the first.
+  `sandbox_runtime.py` is core's runtime half: the guest helper, the start
+  contract, writing the runtime (and calling the layers after it), putting
+  it back after a cold boot, and the recipe's scripts.
+- `control/sbx_control/gate.py` and `preview_pages.py`: the gate decides
+  for every preview request (`_decide`: let through, login, a page or
+  nothing), resumes a paused sandbox without blocking nginx (`wake`), and
+  serves the page (`/gate/page`) and its poll (`/gate/status`, the preview
+  host's `/.sbx/status`) for every state a sandbox's app can't answer in.
+  nginx (`tls.sh`, `ip_previews.nginx`) passes the gate in `location /`,
+  proxies from `@sandbox` (reached by `try_files`, after `auth_request`) so
+  nginx's own 502 or 504 (not reachable, timed out; no `proxy_intercept_errors`)
+  becomes the page while every answer of the app's passes,
+  and sends refusals to `@denied`. `test_preview_pages.py` covers each state.
+  To try nginx itself, render `default.conf`, `gate.inc` and
+  `gate-page.inc` from `tls.sh`'s heredocs and run them in `nginx:1.29-alpine`
+  against a stand-in gate and ingress.
 - `control/sbx_control/runtime_changes.py` queues a change from the web app
   for the root side (`/run/sbx/apply/runtime-change`, a secret only as a
   store reference), applies it as root (`sbx-admin runtime apply-pending`,
@@ -227,8 +286,9 @@ the class, each one of its `credential_keys`:
 
 ```python
 from sbx_control.runtime import Preset, SettingField
+from sbx_control.runtime.base import Backend
 
-class Provider(Compute, HostSide):
+class Provider(Backend):
     credential_keys = ("PROVIDER_API_KEY", "PROVIDER_MAX_SANDBOXES")
     secret_key = "PROVIDER_API_KEY"
     settings = (
@@ -273,7 +333,7 @@ are where nginx sends a preview. It also names what it reads from
 `/etc/sbx/runtime.env` (`credential_keys`, and the `secret_key` that store
 enable seals) and what it can do (`capabilities`): `private_networks` (its
 sandboxes reach this host's private ranges) for `network.internal_cidrs` and
-managed servers, `egress_rules` (it applies each sandbox's `deny_out`) for
+managed servers (without it, only through endpoints), `egress_rules` (it applies each sandbox's `deny_out`) for
 `access.public_repos`, `snapshots` for Amp's project caches. Settings a
 runtime can't enforce are refused by the capability's name and not offered
 on the settings page (`reach.py`).
@@ -286,10 +346,11 @@ answers `X-Sbx-Runtime` beside `X-Sbx-Upstream`, and nginx (`tls.sh`,
 the kind to it (`ip_previews.runtime_upstreams`). An https ingress gets the
 sandbox's own host as SNI (the Host nginx sends), verified against the
 public CAs (`upstream_tls`). A runtime that answers a sandbox's ports only
-with that sandbox's token declares `upstream_token_header`: the gate adds
-`X-Sbx-Upstream-Token`, and nginx sends it in that header through a `map`
-from the kind that is empty for every other runtime (`upstream_token`), so
-another runtime never gets it and a browser's own value never passes. nginx
+with that sandbox's token declares where it goes (`upstream_token_at`, a
+header or a cookie): the gate adds `X-Sbx-Upstream-Token`, and nginx sends
+it in that header, or appends that cookie, through a `map` from the kind
+that is empty for every other runtime (`upstream_token`), so another runtime
+never gets it and a browser's own value never passes. nginx
 answers `/gate` itself with 404 on the public servers (`control.inc`).
 
 Two settings effects are the runtime's. `runtime-env` follows a domain
@@ -321,10 +382,11 @@ The built-in ones (`embed`: `sbx_control.runtime.embed:Embed`, `e2b-cloud`:
 `runtime/e2b/` (`Compute`) rather than calling the SDK itself. A kind that `SBX_RUNTIMES` enables but no
 package provides fails at start with the kinds that exist.
 
-The contract has two parts. Every backend implements the compute part of
-`Runtime`: its sandboxes, their templates, `limits` and `capabilities`. The
-host part (`host_units`, `guard_host`, `apply_host`, `apply_network`, `disk`,
-`collect_storage`, `jobs`, ...) has no-op defaults in `runtime.base.HostSide`;
+The contract has two parts. Every backend subclasses `runtime.base.Backend`
+and implements its compute part (the abstract methods): its sandboxes, their
+templates, `limits` and `capabilities`. The host part (`host_units`,
+`guard_host`, `apply_host`, `apply_network`, `disk`, `collect_storage`,
+`jobs`, ...) has no-op defaults in `Backend`;
 a backend with nothing on this host inherits it and implements nothing it does
 not have. Embed overrides it.
 
@@ -343,9 +405,11 @@ not have. Embed overrides it.
 Previews follow each sandbox's runtime: the gate returns its kind
 (`X-Sbx-Runtime`) next to `X-Sbx-Upstream`, and nginx has one `upstream` per
 enabled runtime. A provider that gates its sandboxes' ports with a
-per-sandbox token sets `upstream_token_header` and implements
-`upstream_token(sandbox_id)`; nginx then sends the token to that runtime
-only.
+per-sandbox token sets `upstream_token_at` (`TokenPlace("header", name)` or
+`TokenPlace("cookie", name)`) and implements `upstream_token(sandbox_id,
+port, *, fetch=True)`, which with `fetch=False` returns only a token it kept
+("" when none) and never asks the provider; nginx then sends the token to
+that runtime only.
 
 ### Embed's configuration
 

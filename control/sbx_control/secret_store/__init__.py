@@ -12,6 +12,7 @@ The store's own credentials (Infisical's machine identity and webhook key)
 are always local: BOOTSTRAP."""
 from __future__ import annotations
 
+import contextlib
 import json
 
 from .. import settings, state
@@ -87,6 +88,54 @@ def delete_rows(conn, table: str, where: str, params=()) -> int:
     return conn.execute(f"delete from {table} where {where}", params).rowcount
 
 
+_AFTER_ROLLBACKS = state.Setting("store_discard_after_rollbacks", encoded=True)
+
+
+def discard_after_rollbacks(conn, reference: str | None) -> None:
+    """For an upgrade's own changes to sbx.db: the payload stays while an
+    upgrade backup's copy of sbx.db names it, because rollback.sh restores that
+    copy and the release before reads it. discard_released() discards it later."""
+    if is_reference(reference):
+        _AFTER_ROLLBACKS.set(sorted({*_AFTER_ROLLBACKS.get([], conn=conn), reference}), conn=conn)
+
+
+def _backed_up_references() -> set | None:
+    """Every store reference the upgrade backups' copies of sbx.db hold; None
+    when a copy could not be read (nothing may be discarded then)."""
+    import sqlite3
+    from .. import paths
+    found = set()
+    for copy in (paths.state_dir() / "upgrade-backups").glob("*/sbx.db"):
+        try:
+            with contextlib.closing(sqlite3.connect(f"file:{copy}?mode=ro&immutable=1", uri=True)) as conn:
+                present = state.tables(conn)
+                for table, column in state.sealed_columns():
+                    if table in present:
+                        found |= {r[0] for r in conn.execute(f"select {column} from {table} where {column} is not null")}
+        except sqlite3.Error:
+            return None
+    return found
+
+
+def discard_released() -> None:
+    """Discards what discard_after_rollbacks() kept once no upgrade backup names it."""
+    queued = _AFTER_ROLLBACKS.get([])
+    named = _backed_up_references() if queued else None
+    if named is None:
+        return
+    kept = []
+    for reference in queued:
+        if reference in named:
+            kept.append(reference)
+            continue
+        try:
+            discard(reference)
+        except StoreError as error:   # the store did not answer: tried again on the next start
+            print(f"secret store: a payload kept for rollbacks was not discarded: {error}", flush=True)
+            kept.append(reference)
+    _AFTER_ROLLBACKS.set(kept)
+
+
 def references() -> list[str]:
     """Every reference sbx.db holds."""
     found = []
@@ -108,7 +157,8 @@ def moves(before, after) -> bool:
 
 @settings.check("store")
 def check_location(before, after):
-    if moves(before, after) and any(Infisical.owns(r) for r in references()):
+    held = references() + _AFTER_ROLLBACKS.get([])   # what a rollback would bring back too
+    if moves(before, after) and any(Infisical.owns(r) for r in held):
         raise ValueError("This Infisical store holds sealed values; restore or move them before changing it")
 
 

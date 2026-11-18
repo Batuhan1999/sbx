@@ -3,7 +3,7 @@
   /opt/sbx-control/releases/<id>/   a release (control/release.sh), with its own venv
   /opt/sbx-control/current          the active release (host-install.sh switches it)
   /usr/local/sbin/sbx-admin, sbx-apply, sbx-host-guard, and the runtime's
-  (runtime.Runtime.host_commands)    commands into the active release
+  (runtime.Backend.host_commands)    commands into the active release
 
 Every unit and command below runs the active release from CURRENT, so
 switching releases is one symlink and a restart. Host scripts (tls.sh,
@@ -285,31 +285,35 @@ def remove_stale_effects(found: list[Unit]):
         (directory / name).unlink()
 
 
-def apply(key: str) -> int:
-    """sbx-apply KEY, as root. The request goes first, so one made while
-    this runs triggers it again; an upgrade's names its release (updates.py),
-    a runtime change's holds the change (runtime_changes.py)."""
-    from . import paths, runtime
-    if key == "upgrade":
-        from . import updates
-        return updates.install_requested()
-    if key == "runtime-change":   # sbx-admin runtime apply-pending: the request holds the change
-        from . import runtime_changes
-        return runtime_changes.apply_pending()
-    (paths.run() / "apply" / key).unlink(missing_ok=True)
-    if key == "tls":
-        acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
-        write([acme])
-        _activate(acme)
-        return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
-    if key == "host-guard":
-        _systemctl("restart", "sbx-host-guard", check=True)
-    elif key == "control":
-        _systemctl("restart", "sbx-control", check=True)
-    elif runtime.apply_host(key):
-        pass   # a runtime's own
-    else:
-        from . import extensions
+def _tls(_payload) -> int:
+    acme = next(u for u in units() if u.name == "sbx-acme-dns.service")
+    write([acme])
+    _activate(acme)
+    return subprocess.call(["sh", "tls.sh"], cwd=CURRENT)
+
+
+def _restart(service: str):
+    def restart(_payload) -> int:
+        _systemctl("restart", service, check=True)
+        return 0
+    return restart
+
+
+def _effects() -> dict:
+    """The platform's effects by key: each takes the request's payload (an
+    upgrade's tag, a runtime change's JSON) and answers an exit code."""
+    from . import endpoints, runtime_changes, updates
+    return {"upgrade": updates.install_requested, "runtime-change": runtime_changes.apply_request,
+            "tls": _tls, "endpoints": lambda _payload: endpoints.apply_host(),
+            "host-guard": _restart("sbx-host-guard"), "control": _restart("sbx-control")}
+
+
+def _other(key: str):
+    """An effect of an enabled runtime's or an extension's host service, or none (2: unknown)."""
+    def other(_payload) -> int:
+        from . import extensions, runtime
+        if runtime.apply_host(key):
+            return 0
         names = {f"{s.name}.service" for s in extensions.host_services() if s.apply == key}
         if not names:
             print(f"unknown effect {key}", file=sys.stderr)
@@ -318,7 +322,15 @@ def apply(key: str) -> int:
         write(found)
         for unit in found:
             _activate(unit)
-    return 0
+        return 0
+    return other
+
+
+def apply(key: str) -> int:
+    """sbx-apply KEY, as root: the effect's handler, under its lock, its request taken first
+    (host_requests.run), so one made while this runs triggers it again."""
+    from . import host_requests
+    return host_requests.run(key, _effects().get(key) or _other(key))
 
 
 
@@ -428,6 +440,15 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
     saved_env = out / "runtime.env"
     runtime_env = (f"install -m 600 {q(str(saved_env))} {q(str(paths.runtime_env()))}\n"
                    if saved_env.exists() else "")
+    # nginx as that release writes it: its HTTPS server may own 443 itself, so
+    # this release's stream front goes, and that release's tls.sh makes the
+    # container afresh, in its own layout (an upgrade again makes it anew too).
+    nginx = paths.tls() / "nginx"
+    https = (f"rm -f {q(str(nginx))}/*.stream {q(str(nginx))}/endpoint-*-ca.pem\n"
+             f"docker rm -f sbx-tls-nginx >/dev/null 2>&1 || true\n"
+             f"(cd {q(str(previous))} && sh tls.sh) > /tmp/sbx-rollback-tls.log 2>&1 || "
+             f"echo \"nginx: tls.sh failed (/tmp/sbx-rollback-tls.log); run it again: cd {previous} && sh tls.sh\" >&2\n"
+             if previous else "")
     return (f"#!/bin/sh\n# Go back to the state before the upgrade backed up here: the release that was\n"
             f"# active, its unit files, sbx.db and runtime.env. Sandboxes and the runtime are left as they are.\n"
             f"set -eu\n"
@@ -439,7 +460,7 @@ def _rollback_script(out: pathlib.Path, previous: pathlib.Path | None, stopped: 
             # The upgrade may have disabled the release's effect paths (remove_stale_effects).
             f"for unit in {q(str(out / 'systemd'))}/sbx-apply-*.path; do\n"
             f"  [ ! -e \"$unit\" ] || systemctl enable -q --now \"$(basename \"$unit\")\" || true\ndone\n"
-            f"systemctl start {units}\n"
+            f"systemctl start {units}\n{https}"
             f"echo 'rolled back to {previous or 'the release before'}'\n")
 
 

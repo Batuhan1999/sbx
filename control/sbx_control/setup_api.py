@@ -122,20 +122,25 @@ class Finish(BaseModel):
     password: SecretStr
 
 
-@router.post("/api/setup/complete")
-def api_setup_complete(request: Request, body: Finish | None = None, who: str = Depends(setup_or_admin)):
+def finishing_admin(request: Request, body: Finish | None = None, who: str = Depends(setup_or_admin)) -> str | None:
+    """The admin who finishes: the session's, or one who gives their own password (Finish); None: nobody yet."""
     email = _email(request, who)
-    if not email and body is not None:
-        given = body.email.strip().lower()
-        checked = users.check_password(given, body.password.get_secret_value())   # the admin's own password
-        if checked is None or settings.current().sign_in.method != "password" or given not in settings.current().admins:
-            raise HTTPException(403, "The email or password is incorrect.")
-        email = given
+    if email or body is None:
+        return email
+    given = body.email.strip().lower()
+    s = settings.current()
+    if (users.check_password(given, body.password.get_secret_value()) is None or s.sign_in.method != "password"
+            or given not in s.admins):
+        raise HTTPException(403, "The email or password is incorrect.")
+    return given
+
+
+@router.post("/api/setup/complete")
+def api_setup_complete(request: Request, email: str | None = Depends(finishing_admin),
+                       who: str = Depends(setup_or_admin)):
     s = setup.state(email, request.url.hostname or "")
-    if not s["steps"][0]["done"] or not s["steps"][1]["done"]:
-        raise HTTPException(400, "Choose the server address and configure admin access first.")
-    if not s["steps"][2]["done"]:
-        raise HTTPException(400, "Add a sandbox runtime first: sandboxes need one to run on.")
+    if needed := setup.missing(s):
+        raise HTTPException(400, needed)
     if settings.current().sign_in.method != "none" and not email:
         raise HTTPException(400, "sign in with the method you chose; that makes you the first admin, then finish")
     checks = setup.readiness()

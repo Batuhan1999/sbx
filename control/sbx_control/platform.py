@@ -30,8 +30,10 @@ HOME = "/home/user"
 
 # Every template's start command, also run once at build before the snapshot.
 # The client's SSH ProxyCommand dials the websocat bridge through client-proxy.
-START = rf"""bash -c '
-if ! ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null | grep -q " ssh-ed25519 "; then
+# The transport (sshd, the SSH bridge) runs on every runtime; sbx's desktop
+# (Xvfb, x11vnc, noVNC on NOVNC_PORT) only where the runtime has none of its
+# own (Runtime.desktop "sbx"): a provider's desktop keeps its ports.
+_TRANSPORT = rf"""if ! ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null | grep -q " ssh-ed25519 "; then
   if [ "$(cat /proc/1/comm)" = systemd ]; then
     # Stop boot-time retries before creating keys; systemd owns /run/sshd.
     sudo systemctl stop ssh.socket ssh.service || exit 1
@@ -43,16 +45,35 @@ if ! ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null | grep -q " ssh-ed25519 "
   fi
 fi
 nohup websocat --binary --exit-on-eof ws-l:0.0.0.0:{SSH_BRIDGE_PORT} tcp:127.0.0.1:{SSH_PORT} >/tmp/websocat.log 2>&1 &
-nohup Xvfb :0 -screen 0 1600x1000x24 >/tmp/xvfb.log 2>&1 &
+"""
+_DESKTOP = rf"""nohup Xvfb :0 -screen 0 1600x1000x24 >/tmp/xvfb.log 2>&1 &
 sleep 1
 DISPLAY=:0 nohup openbox >/tmp/openbox.log 2>&1 &
 DISPLAY=:0 xsetroot -solid "#2e3440"
 nohup x11vnc -display :0 -forever -shared -nopw -localhost -rfbport {VNC_PORT} -quiet >/tmp/x11vnc.log 2>&1 &
 nohup websockify --web /opt/novnc {NOVNC_PORT} localhost:{VNC_PORT} >/tmp/novnc.log 2>&1 &
-sleep infinity'"""
-# Whether START's transport is up: what a cold-booted VM (booted from its disk) lacks.
-STARTED = ("ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null | grep -q ' ssh-ed25519 ' "
-           f"&& ss -Hltn 'sport = :{NOVNC_PORT}' | grep -q . && echo ready || true")
+"""
+_SSH_READY = "ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null | grep -q ' ssh-ed25519 '"
+
+
+def start(own_desktop: bool = True) -> str:
+    """The start command: the transport, and sbx's desktop unless the runtime has its own."""
+    return "bash -c '\n" + _TRANSPORT + (_DESKTOP if own_desktop else "") + "sleep infinity'"
+
+
+def started(own_desktop: bool = True) -> str:
+    """Whether start's transport (and sbx's desktop) is up: what a cold-booted VM lacks."""
+    port = NOVNC_PORT if own_desktop else SSH_BRIDGE_PORT
+    return f"{_SSH_READY} && ss -Hltn 'sport = :{port}' | grep -q . && echo ready || true"
+
+
+def ready_port(own_desktop: bool = True) -> int:
+    """The port whose listening says start is up (a template's start command's ready check)."""
+    return NOVNC_PORT if own_desktop else SSH_BRIDGE_PORT
+
+
+START = start()
+STARTED = started()
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 """E2B Cloud: E2B's hosted sandboxes, through the same SDK adapter as Embed
 (runtime.e2b) with the VMs at E2B instead of on this host. It has no host
-side (HostSide): no KVM, units, firewall, disk or capacity here, so a small
+side (Backend.host): no KVM, units, firewall, disk or capacity here, so a small
 server without /dev/kvm runs it.
 
 Its sandboxes call back to this installation's public address (template
@@ -16,42 +16,36 @@ would), and the gate hands it to nginx for this runtime's requests."""
 from __future__ import annotations
 
 import re
-import threading
-import time
 
-from ..base import HOSTNAME, Capabilities, Failed, HostSide, LimitRefused, Limits, Preset, SettingField
-from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute
+from ..base import HOSTNAME, Capabilities, Failed, LimitRefused, LimitSpec, Preset, SettingField, TokenPlace
+from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute, Handle
+from ..hosted import PerSandbox, hosted_status, limit_settings, limits_from, wrapped
 
 KIND = "e2b-cloud"
 API_KEY = "E2B_CLOUD_API_KEY"
 DOMAIN_KEY = "E2B_CLOUD_DOMAIN"
 TOKEN_HEADER = "e2b-traffic-access-token"
-# The limits, by Limits field: the runtime.env key that sets each and its
-# default, E2B's Hobby plan (a sandbox runs an hour before its timeout, up
-# to 8 vCPUs, 8 GiB and 10 GiB of disk; 10 at once): an installation that
-# never chose a plan is on Hobby (PRESETS).
-LIMITS = {"timeout_seconds": ("E2B_CLOUD_MAX_TIMEOUT", 3600), "cpu": ("E2B_CLOUD_MAX_CPU", 8),
-          "memory_mb": ("E2B_CLOUD_MAX_MEMORY_MB", 8192), "disk_mb": ("E2B_CLOUD_MAX_DISK_MB", 10240),
-          "sandboxes": ("E2B_CLOUD_MAX_SANDBOXES", 10)}
-# How each limit is shown and set in the web app: its label, unit and the
-# range its slider covers. Timeout, disk and sandboxes at once go up to what
-# E2B's plans publish (PRESETS: 24 h, 20 GiB, 100; the timeout no shorter
-# than base.MIN_TIMEOUT_SECONDS). vCPUs and memory start at E2B's 1 vCPU and
-# 1 GiB; Pro allows "8+" without a published number, so their range ends at
-# 32 vCPUs and 64 GiB, which is sbx's bound, not E2B's: a value E2B refuses
-# is said as E2B says it.
-LIMIT_FORM = {"timeout_seconds": ("Longest run", "seconds", 300, 86400, 300),
-              "cpu": ("vCPUs", "", 1, 32, 1),
-              "memory_mb": ("Memory", "MiB", 1024, 65536, 1024),
-              "disk_mb": ("Disk", "MiB", 1024, 20480, 1024),
-              "sandboxes": ("Sandboxes at once", "", 1, 100, 1)}
+# The limits: the runtime.env key that sets each and its default, E2B's
+# Hobby plan (a sandbox runs an hour before its timeout, up to 8 vCPUs,
+# 8 GiB and 10 GiB of disk; 10 at once): an installation that never chose a
+# plan is on Hobby (PRESETS). The web app's slider for each: timeout, disk
+# and sandboxes at once go up to what E2B's plans publish (PRESETS: 24 h,
+# 20 GiB, 100; the timeout no shorter than base.MIN_TIMEOUT_SECONDS). vCPUs
+# and memory start at E2B's 1 vCPU and 1 GiB; Pro allows "8+" without a
+# published number, so their range ends at 32 vCPUs and 64 GiB, which is
+# sbx's bound, not E2B's: a value E2B refuses is said as E2B says it.
+LIMITS = (
+    LimitSpec("timeout_seconds", "E2B_CLOUD_MAX_TIMEOUT", 3600, "Longest run", "seconds", 300, 86400, 300),
+    LimitSpec("cpu", "E2B_CLOUD_MAX_CPU", 8, "vCPUs", "", 1, 32, 1),
+    LimitSpec("memory_mb", "E2B_CLOUD_MAX_MEMORY_MB", 8192, "Memory", "MiB", 1024, 65536, 1024),
+    LimitSpec("disk_mb", "E2B_CLOUD_MAX_DISK_MB", 10240, "Disk", "MiB", 1024, 20480, 1024),
+    LimitSpec("sandboxes", "E2B_CLOUD_MAX_SANDBOXES", 10, "Sandboxes at once", "", 1, 100, 1),
+)
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
     SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True,
                  help="Only for a self-hosted E2B."),
-    *(SettingField(key, LIMIT_FORM[field][0], default=str(default), kind="int", limit=field, unit=LIMIT_FORM[field][1],
-                   min=LIMIT_FORM[field][2], max=LIMIT_FORM[field][3], step=LIMIT_FORM[field][4])
-      for field, (key, default) in LIMITS.items()),
+    *limit_settings(LIMITS),
 )
 # E2B's plans as limits, from https://e2b.dev/pricing and
 # https://e2b.dev/docs/sandbox-template/customize-cpu-ram (both read
@@ -63,33 +57,26 @@ SETTINGS = (
 # and RAM"), no published number, so they stay adjustable from 8 and 8 GiB.
 # LIMITS' defaults are Hobby's.
 _PLAN_SOURCE = "https://e2b.dev/pricing"
-PRESETS = (
-    Preset("hobby", "Hobby", {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8",
-                              "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "10240",
-                              "E2B_CLOUD_MAX_SANDBOXES": "10"}, _PLAN_SOURCE),
-    Preset("pro", "Pro", {"E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_CPU": "8",
-                          "E2B_CLOUD_MAX_MEMORY_MB": "8192", "E2B_CLOUD_MAX_DISK_MB": "20480",
-                          "E2B_CLOUD_MAX_SANDBOXES": "100"}, _PLAN_SOURCE,
-           adjustable=("E2B_CLOUD_MAX_CPU", "E2B_CLOUD_MAX_MEMORY_MB"),
+PRESETS = tuple(p.bound(LIMITS) for p in (
+    Preset("hobby", "Hobby", {"timeout_seconds": 3600, "cpu": 8, "memory_mb": 8192, "disk_mb": 10240,
+                              "sandboxes": 10}, _PLAN_SOURCE),
+    Preset("pro", "Pro", {"timeout_seconds": 86400, "cpu": 8, "memory_mb": 8192, "disk_mb": 20480,
+                          "sandboxes": 100}, _PLAN_SOURCE, adjustable=("cpu", "memory_mb"),
            note="E2B may allow more on Pro."),
-)
+))
 FETCH_RETRY_SECONDS = 15   # a failed token fetch answers from memory this long (an outage)
 INGRESS_NAME = "sbx-ingress"   # any name under the sandboxes' wildcard: the apex resolves elsewhere
 
 
-def _limits(secrets: dict) -> Limits:
-    found = {}
-    for field, (key, default) in LIMITS.items():
-        value = secrets.get(key) or default
-        try:
-            found[field] = int(value)
-        except (TypeError, ValueError):
-            raise SystemExit(f"{key}={value} in /etc/sbx/runtime.env is not a whole number") from None
-    try:
-        return Limits(**found, source="your E2B plan", keys={f: key for f, (key, _) in LIMITS.items()})
-    except ValueError as error:
-        raise SystemExit(f"{LIMITS['timeout_seconds'][0]} in /etc/sbx/runtime.env: {error}") from None
+def _limits(secrets: dict):
+    return limits_from(secrets, LIMITS, "your E2B plan")
 
+
+def _domain(found: str) -> str:
+    """E2B's domain, checked: it goes into nginx's upstream and the API's URL."""
+    if not HOSTNAME.fullmatch(found):
+        raise SystemExit(f"{DOMAIN_KEY}={found!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
+    return found
 
 
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
@@ -119,55 +106,40 @@ def refused_limit(error: BaseException, asked: dict) -> LimitRefused | None:
                         allowed=allowed)
 
 
-class Cloud(Compute, HostSide):
+class Cloud(Compute):
     kind = KIND
     title = "E2B Cloud"
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=True)
     ingress_cleared = ()
     ports = frozenset({ENVD_PORT})
-    credential_keys = (API_KEY, DOMAIN_KEY, *(key for key, _ in LIMITS.values()))
+    credential_keys = (API_KEY, DOMAIN_KEY, *(spec.key for spec in LIMITS))
     secret_key = API_KEY
     settings = SETTINGS
     presets = PRESETS
-    upstream_token_header = TOKEN_HEADER
+    upstream_token_at = TokenPlace("header", TOKEN_HEADER)
     # Explicit, not the E2B project's default: a sandbox's ports answer only
     # with its traffic token.
     network_defaults = {"allow_public_traffic": False}
 
     def __init__(self):
         super().__init__()
-        self._domain: str | None = None
+        self.domain = DEFAULT_DOMAIN
         self._limits = _limits({})
-        self._tokens: dict[str, str] = {}
-        self._locks: dict[str, threading.Lock] = {}   # one token fetch per sandbox at a time
-        self._locks_lock = threading.Lock()
-        self._failed: dict = {}   # sandbox id -> (when, the error) of a token fetch that failed
+        self._tokens: PerSandbox[str] = PerSandbox()
 
     # Its connection and where previews go
 
     def configure(self, secrets):
+        """Its connection from its keys; the domain and limits apply without
+        the API key (nginx's configuration is written from them), the key is
+        needed (SystemExit) for everything else (configured)."""
+        self.domain = _domain(secrets.get(DOMAIN_KEY) or DEFAULT_DOMAIN)
+        self._limits = _limits(secrets)
         key = secrets.get(API_KEY, "")
         if not key:
             raise SystemExit(f"missing platform secret: {API_KEY} (/etc/sbx/runtime.env), an API key from E2B's "
                              f"dashboard: sbx-admin runtime add {KIND} reads it from stdin")
-        domain = secrets.get(DOMAIN_KEY) or DEFAULT_DOMAIN
-        if not HOSTNAME.fullmatch(domain):   # it goes into nginx's upstream and the API's URL
-            raise SystemExit(f"{DOMAIN_KEY}={domain!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
-        self._domain = domain
-        self._limits = _limits(secrets)
-        self.connect_with(api_key=key, domain=self._domain, api_url=f"https://api.{self._domain}")
-
-    @property
-    def domain(self) -> str:
-        """E2B's domain: E2B_CLOUD_DOMAIN, else e2b.app. Read from runtime.env
-        before configure (nginx's configuration is written without it)."""
-        if self._domain is None:
-            from ... import vault
-            found = vault.runtime((DOMAIN_KEY,)).get(DOMAIN_KEY) or DEFAULT_DOMAIN
-            if not HOSTNAME.fullmatch(found):
-                raise SystemExit(f"{DOMAIN_KEY}={found!r} in /etc/sbx/runtime.env is not a host name such as e2b.app")
-            return found
-        return self._domain
+        self.connect_with(api_key=key, domain=self.domain, api_url=f"https://api.{self.domain}")
 
     @property
     def ingress(self) -> str:
@@ -182,26 +154,16 @@ class Cloud(Compute, HostSide):
     def upstream_host(self, port, sandbox_id):
         return f"{port}-{sandbox_id}.{self.domain}"
 
-    def own_route(self, host, sandbox_id, port):
-        return None
-
     def limits(self):
         return self._limits
 
     # The traffic token
 
     def _handle(self, sandbox):
-        handle = super()._handle(sandbox)
-        handle._on_kill = lambda: self._forget(handle.sandbox_id)
+        handle = Handle(sandbox, on_kill=lambda: self._tokens.drop(sandbox.sandbox_id))
         if handle.traffic_access_token:
-            self._tokens[handle.sandbox_id] = handle.traffic_access_token
+            self._tokens.put(handle.sandbox_id, handle.traffic_access_token)
         return handle
-
-    def _forget(self, sandbox_id):
-        self._tokens.pop(sandbox_id, None)
-        self._failed.pop(sandbox_id, None)
-        with self._locks_lock:
-            self._locks.pop(sandbox_id, None)
 
     def _limited(self, call, asked: dict):
         """call's result; a refusal for a limit of the plan as LimitRefused."""
@@ -236,50 +198,32 @@ class Cloud(Compute, HostSide):
                          "(private sandbox URLs) and the SDK version.")
         return handle
 
-    def upstream_token(self, sandbox_id, *, fetch=True):
-        """The sandbox's traffic token: as create or connect returned it,
-        else (after a restart, with fetch) from one connect, which resumes a
-        paused sandbox and leaves a running one's timeout as it is; one
-        fetch per sandbox at a time. "" without fetch when none is kept;
-        Failed when connect returns none either."""
-        if sandbox_id in self._tokens or not fetch:
+    def upstream_token(self, sandbox_id, port=0, *, fetch=True):
+        """The sandbox's traffic token (one for all its ports): as create or
+        connect returned it, else (after a restart, with fetch) from one
+        connect, which resumes a paused sandbox and leaves a running one's
+        timeout as it is; one fetch per sandbox at a time. "" without fetch
+        when none is kept; Failed when connect returns none either."""
+        if not fetch:
             return self._tokens.get(sandbox_id, "")
-        failed = self._failed.get(sandbox_id)
-        if failed and time.monotonic() - failed[0] < FETCH_RETRY_SECONDS:
-            raise failed[1]   # asked moments ago: not E2B again for every request of an outage
-        with self._locks_lock:
-            lock = self._locks.setdefault(sandbox_id, threading.Lock())
-        with lock:
-            if sandbox_id not in self._tokens:
-                failed = self._failed.get(sandbox_id)   # again: a caller waiting here met the same outage
-                if failed and time.monotonic() - failed[0] < FETCH_RETRY_SECONDS:
-                    raise failed[1]
-                try:
-                    self.connect(sandbox_id)
-                    if not self._tokens.get(sandbox_id):
-                        raise Failed(f"E2B Cloud returned no traffic access token for sandbox {sandbox_id}; its "
-                                     "previews are not served without one")
-                except Exception as error:
-                    raised = error if isinstance(error, Failed) else \
-                        Failed(f"E2B Cloud did not hand over sandbox {sandbox_id}'s token: {type(error).__name__}: "
-                               f"{error}")
-                    self._failed[sandbox_id] = (time.monotonic(), raised)
-                    raise raised from error
-        self._failed.pop(sandbox_id, None)
-        return self._tokens[sandbox_id]
+        return self._tokens.get_or_fetch(sandbox_id, lambda: self._fetch_token(sandbox_id), FETCH_RETRY_SECONDS)
+
+    def _fetch_token(self, sandbox_id: str) -> str:
+        try:
+            self.connect(sandbox_id)   # _handle keeps the token it returns
+        except Exception as error:
+            raise wrapped(error, f"E2B Cloud did not hand over sandbox {sandbox_id}'s token") from error
+        token = self._tokens.get(sandbox_id)
+        if not token:
+            raise Failed(f"E2B Cloud returned no traffic access token for sandbox {sandbox_id}; its previews are "
+                         "not served without one")
+        return token
 
     def listed(self, sandbox_ids: set) -> None:
-        """After a full listing (the registry's hook): forget what it kept of
-        sandboxes no longer there, whoever ended them."""
-        for kept in (self._tokens, self._failed):
-            for sandbox_id in [s for s in list(kept) if s not in sandbox_ids]:
-                kept.pop(sandbox_id, None)
-        with self._locks_lock:
-            for sandbox_id in [s for s in self._locks if s not in sandbox_ids and not self._locks[s].locked()]:
-                del self._locks[sandbox_id]
+        self._tokens.keep(sandbox_ids)
 
     def kill(self, sandbox_id):
-        self._forget(sandbox_id)
+        self._tokens.drop(sandbox_id)
         return super().kill(sandbox_id)
 
     # What the settings page and the first-run setup show
@@ -294,25 +238,11 @@ class Cloud(Compute, HostSide):
                       f"Add it: sbx-admin runtime add {KIND} (the key on stdin).")]
 
     def status(self):
-        from ...connections.base import Field, Status
-        if not self._connection.get("api_key"):
-            return Status("runtime", "Sandbox runtime", "not_connected", f"E2B Cloud: no {API_KEY} in runtime.env",
-                          {}, (), ("test",))
-        facts: dict = {"domain": self.domain}
-        try:
-            from ... import runtime   # this installation's sandboxes, not the whole E2B team's
-            running = len(runtime.sandboxes(None, [runtime.RUNNING], kind=self.kind))
-        except Exception as error:
-            return Status("runtime", "Sandbox runtime", "attention", f"E2B Cloud did not answer: {error}", facts,
-                          (), ("test",))
-        facts["running"] = running
-        most = self._limits.sandboxes
-        full = most is not None and running >= most
+        from ...connections.base import Field
         # The plan's limit is the E2B team's, which other installations on the same key share.
-        summary = (f"E2B Cloud · {running} running here" + (f" (the plan runs {most} at once per E2B team)"
-                                                             if most else "") + (" · full" if full else ""))
-        return Status("runtime", "Sandbox runtime", "attention" if full else "connected", summary, facts,
-                      (Field("domain", "Domain", value=self.domain),), ("test",))
+        return hosted_status(self, configured=bool(self._connection.get("api_key")), facts={"domain": self.domain},
+                             fields=(Field("domain", "Domain", value=self.domain),),
+                             limit_note=" (the plan runs {most} at once per E2B team)")
 
     def test(self):
         from ...connections.base import Check

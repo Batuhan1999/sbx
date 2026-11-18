@@ -1,5 +1,6 @@
 import { Globe, LogIn } from 'lucide-react'
-import { Navigate, useParams } from 'react-router'
+import { useEffect } from 'react'
+import { Navigate, useLocation, useParams } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useConnections, useMe, useSettings } from '@/api/queries'
 import type { Settings } from '@/api/types'
@@ -11,6 +12,7 @@ import { Panel } from '@/components/ui/primitives'
 import { Switch } from '@/components/ui/switch'
 import { useId } from 'react'
 import { ConnectionCard } from '../extensions/ConnectionCard'
+import { Endpoints } from './Endpoints'
 import { People } from './People'
 import { Runtimes } from './Runtimes'
 import { Updates } from './Updates'
@@ -37,13 +39,19 @@ function General() {
   const settings = useSettings()
   const domain = connections.data?.find(c => c.kind === 'domain')
   const signIn = connections.data?.find(c => c.kind === 'sign_in')
+  const { hash } = useLocation()
+  const hasDomain = !!domain
+  useEffect(() => {
+    if (hash === '#domain' && hasDomain) document.getElementById('domain')?.scrollIntoView({ block: 'start' })
+  }, [hash, hasDomain])
   return <div className="max-w-3xl space-y-4">
     {connections.error && <ErrorState error={connections.error} retry={() => connections.refetch()} />}
     {connections.isPending && <div className="rounded-lg border border-line bg-panel"><SkeletonRows rows={2} /></div>}
-    {domain && <ConnectionCard c={domain} icon={<Globe className="size-4" />} />}
+    {domain && <div id="domain" className="scroll-mt-16 lg:scroll-mt-4"><ConnectionCard c={domain} icon={<Globe className="size-4" />} /></div>}
     {signIn && <ConnectionCard c={signIn} icon={<LogIn className="size-4" />} />}
     <QueryView query={settings} loading={null}>{s => <SandboxDefaults key={s.revision} settings={s} />}</QueryView>
     <Runtimes />
+    <Endpoints />
   </div>
 }
 

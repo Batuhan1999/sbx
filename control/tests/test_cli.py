@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -148,6 +149,45 @@ class CliTests(unittest.TestCase):
         code, out, err = self.run_cli("sandbox", "prepare", "try")
         self.assertIn("setup exited 1", str(code))
         self.assertEqual(out, "")
+        # The failure event says why: the command, its exit code, the end of its output.
+        self.routes[("GET", "/api/sandboxes/try/detail")] = lambda q, body: {"events": [
+            {"kind": "prepare failed", "detail": "`.sbx/setup` was killed (exit code 137: out of memory?)"},
+            {"kind": "create failed", "detail": "older"}]}
+        code, out, err = self.run_cli("sandbox", "prepare", "try")
+        self.assertIn("setup exited 1\n`.sbx/setup` was killed (exit code 137: out of memory?)\nfix it", str(code))
+        self.assertNotIn("older", str(code))
+
+    def test_lifecycle_operations_print_only_the_sandboxs_json_on_stdout(self):
+        phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"}, SANDBOX["lifecycle"]])
+        self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: {**SANDBOX, "lifecycle": next(phases, SANDBOX["lifecycle"])}
+        for action in ("restart", "resume", "pause"):
+            self.routes[("POST", f"/api/sandboxes/try/{action}")] = lambda q, body: SANDBOX
+        progress = ""
+        for action in ("restart", "resume", "pause"):
+            with self.subTest(action=action):
+                code, out, err = self.run_cli("sandbox", action, "try")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["name"], "try")
+                progress += err
+        self.assertIn("starting app", progress)   # the progress lines, on stderr
+
+    def test_repo_brief_prints_the_servers_setup_brief(self):
+        self.routes[("GET", "/api/repos/owner/app/setup-brief")] = lambda q, body: b"# Set up owner/app\n"
+        code, out, err = self.run_cli("repo", "brief", "--repo", "owner/app")
+        self.assertEqual((code, out), (0, "# Set up owner/app\n\n"))
+
+    def test_catalog_show_lists_outputs_the_env_they_set_and_saved_connections(self):
+        self.routes[("GET", "/api/catalog/postgres-clone")] = lambda q, body: {
+            "title": "Postgres clone", "kind": "provision", "source": "builtin", "description": "A database per sandbox.",
+            "inputs": {}, "outputs": {"url": {"sensitive": True}, "host": {}}, "env": {"DATABASE_URL": "${outputs.url}"},
+            "requires": {"server": {"kind": "postgres-server", "expose": {"url": "PG_ADMIN_URL"}}}, "connections": []}
+        self.routes[("GET", "/api/catalog/postgres-server")] = lambda q, body: {"connections": [{"key": "dev-pg"}]}
+        code, out, err = self.run_cli("catalog", "show", "postgres-clone")
+        self.assertEqual(code, 0, err)
+        self.assertIn("output url (secret): ${services.KEY.url}", out)
+        self.assertIn("output host: ${services.KEY.host}", out)
+        self.assertIn("sets DATABASE_URL: ${outputs.url}", out)
+        self.assertIn("requires server: a postgres-server connection (url -> PG_ADMIN_URL); saved: dev-pg", out)
 
     def test_exec_sends_stdin_and_exits_with_the_scripts_code(self):
         self.routes[("POST", "/api/sandboxes/try/exec")] = lambda q, body: {
@@ -322,12 +362,13 @@ HOBBY = {"E2B_CLOUD_MAX_TIMEOUT": "3600", "E2B_CLOUD_MAX_CPU": "8", "E2B_CLOUD_M
 PRO = {**HOBBY, "E2B_CLOUD_MAX_TIMEOUT": "86400", "E2B_CLOUD_MAX_DISK_MB": "20480", "E2B_CLOUD_MAX_SANDBOXES": "100"}
 AVAILABLE = [
     {"kind": "embed", "title": "E2B Embed", "host": True, "enabled": False, "default": False, "can_run": False,
-     "why_not": "needs /dev/kvm", "managed_by": "install.sh", "not_editable": "set up by install.sh", "settings": [],
-     "presets": [], "values": {}, "secrets_set": [], "facts": {"kvm": False}, "sandboxes": [], "removable": "",
+     "why_not": "needs /dev/kvm", "managed_by": "install.sh", "settings": [],
+     "edit_blocker": {"code": "host", "message": "set up by install.sh", "sandboxes": []},
+     "presets": [], "values": {}, "secrets_set": [], "facts": {"kvm": False}, "sandboxes": [], "remove_blocker": None,
      "limit_hit": None, "plan": None},
     {"kind": "e2b-cloud", "title": "E2B Cloud", "host": False, "enabled": False, "default": False, "can_run": True,
-     "why_not": "", "managed_by": "", "not_editable": "", "values": {}, "secrets_set": [], "facts": {},
-     "sandboxes": [], "removable": "", "limit_hit": None, "plan": None,
+     "why_not": "", "managed_by": "", "edit_blocker": None, "values": {}, "secrets_set": [], "facts": {},
+     "sandboxes": [], "remove_blocker": None, "limit_hit": None, "plan": None,
      "settings": [{"key": "E2B_CLOUD_API_KEY", "label": "API key", "secret": True, "default": "", "unit": ""},
                   {"key": "E2B_CLOUD_DOMAIN", "label": "Domain", "secret": False, "default": "e2b.app", "unit": ""},
                   *({"key": key, "label": key, "secret": False, "default": value, "unit": "", "min": 1, "max": 99999}
@@ -378,18 +419,16 @@ class RuntimeCliTests(CliTests):
         self.assertEqual(out, "E2B Cloud (e2b-cloud) is enabled\n")
         self.assertIn("waiting for sbx-control to restart", err)
         posted = next(c for c in self.control.calls if c[0] == "POST")[3]
-        self.assertEqual(posted, {"kind": "e2b-cloud", "values": {**PRO, "E2B_CLOUD_MAX_CPU": "16",
-                                                                  "E2B_CLOUD_API_KEY": CLOUD_KEY}})
+        self.assertEqual(posted, {"kind": "e2b-cloud", "plan": "pro", "values": {"E2B_CLOUD_MAX_CPU": "16",
+                                                                                 "E2B_CLOUD_API_KEY": CLOUD_KEY}})
         self.assertNotIn(CLOUD_KEY, out + err)
         self.assertGreaterEqual(sum(c[1] == "/api/runtimes/change" for c in self.control.calls), 4)
 
-    def test_a_plan_s_fixed_limits_and_secrets_stay_off_the_command_line(self):
+    def test_secrets_stay_off_the_command_line_and_the_plan_is_the_server_s_to_check(self):
         for argv, said in (
-                (("--plan", "hobby", "--set", "E2B_CLOUD_MAX_CPU=16"), "the Hobby plan fixes E2B_CLOUD_MAX_CPU"),
-                (("--plan", "pro", "--set", "E2B_CLOUD_MAX_SANDBOXES=500"), "the Pro plan fixes E2B_CLOUD_MAX_SANDBOXES"),
                 (("--set", f"E2B_CLOUD_API_KEY={CLOUD_KEY}"), "is a secret: --secret E2B_CLOUD_API_KEY reads it from stdin"),
-                (("--set", "NOPE=1"), "has no setting NOPE"),
-                (("--plan", "enterprise"), "has no plan enterprise"),
+                (("--set", "NOPE"), "expected KEY=VALUE"),
+                (("--secret", "E2B_CLOUD_DOMAIN"), "E2B_CLOUD_DOMAIN is no secret of E2B Cloud"),
                 (("--secret", "E2B_CLOUD_API_KEY"), "no value for E2B_CLOUD_API_KEY on stdin")):
             with self.subTest(argv=argv):
                 code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", *argv)
@@ -401,7 +440,7 @@ class RuntimeCliTests(CliTests):
         code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "custom", "--set",
                                       "E2B_CLOUD_MAX_SANDBOXES=50")
         self.assertEqual(code, "sbx-control: set up the secret store first")
-        self.assertEqual(self.control.calls[-1][3], {"values": {"E2B_CLOUD_MAX_SANDBOXES": "50"}})
+        self.assertEqual(self.control.calls[-1][3], {"plan": "custom", "values": {"E2B_CLOUD_MAX_SANDBOXES": "50"}})
 
     def test_a_failed_change_exits_non_zero_with_why(self):
         self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
@@ -441,21 +480,19 @@ class RuntimeCliTests(CliTests):
             "status": {"state": "connected", "summary": "0 running"}}]}
         self.assertIn("E2B Cloud (Pro plan): 0 running", self.run_cli("runtimes")[1])
 
-    def test_add_without_a_plan_is_on_hobby_and_set_pro_keeps_the_vcpus_set(self):
+    def test_add_without_a_plan_is_on_hobby_and_set_without_one_sends_only_what_it_names(self):
         self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
         self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "change"))
         self.polls(change("done", message="ok"))
         code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
                                       stdin=CLOUD_KEY + "\n")
         self.assertEqual(code, 0, err)
-        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3]["values"],
-                         {**HOBBY, "E2B_CLOUD_API_KEY": CLOUD_KEY})
-        enabled = {**AVAILABLE[1], "enabled": True, "values": {**HOBBY, "E2B_CLOUD_MAX_CPU": "16"}}
-        self.routes[("GET", "/api/runtimes/available")] = lambda q, body: [AVAILABLE[0], enabled]
-        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--plan", "pro")
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3],
+                         {"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})
+        code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--set", "E2B_CLOUD_MAX_CPU=16")
         self.assertEqual(code, 0, err)
-        self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3]["values"],
-                         {**PRO, "E2B_CLOUD_MAX_CPU": "16"})   # Pro leaves vCPUs adjustable: the 16 set stays
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3],
+                         {"values": {"E2B_CLOUD_MAX_CPU": "16"}})       # set without --plan: the plan stays
 
     def test_waiting_retries_only_a_restart_and_json_prints_the_outcome(self):
         self.routes[("PUT", "/api/runtimes/default")] = lambda q, body: (202, change("queued", "default"))
@@ -477,6 +514,97 @@ SETUP_STATE = {"complete": False, "can_complete": False, "host": {"address": "20
                "steps": [{"step": "address", "done": False, "summary": "not chosen"},
                          {"step": "sign_in", "done": False, "summary": "none set yet"},
                          {"step": "runtime", "done": False, "summary": "no sandbox runtime is set up"}]}
+
+
+def endpoint(state, **more):
+    return {"name": "dev-pg", "address": "dev-pg.sbx.example.com", "kind": "managed-server", "server": "dev_pg",
+            "server_kind": "postgres", "target": "172.29.50.10:5432", "state": state, "message": "", "used_by": [],
+            **more}
+
+
+def endpoints(*found, applying=False, failure="", candidates=()):
+    return {"endpoints": list(found), "candidates": list(candidates), "domain": "sbx.example.com", "needed": True,
+            "applying": applying, "failure": failure}
+
+
+class EndpointCliTests(CliTests):
+    """sbx endpoints: list, add and rm over the HTTP API, waiting until the server applied the change."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+
+    def polls(self, *answers):
+        found = list(answers)
+        self.routes[("GET", "/api/endpoints")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_ls_shows_each_and_the_servers_without_one(self):
+        self.polls(endpoints(endpoint("on", used_by=["owner/app"], repos=["owner/app"]),
+                             candidates=[{"server": "dev_ch", "kind": "clickhouse", "address": "dev-ch.sbx.example.com"}]))
+        code, out, err = self.run_cli("endpoints")
+        self.assertEqual(code, 0, err)
+        self.assertIn("dev-pg               on        dev-pg.sbx.example.com -> 172.29.50.10:5432 (dev_pg; for owner/app); used by owner/app", out)
+        self.assertIn("sbx endpoints add --server dev_ch", out)
+        code, out, err = self.run_cli("endpoints", "ls", "--json")
+        self.assertEqual(json.loads(out)["endpoints"][0]["name"], "dev-pg")
+
+    def test_add_waits_until_it_is_on(self):
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying"))
+        self.polls(endpoints(endpoint("applying"), applying=True), endpoints(endpoint("on")))
+        code, out, err = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "dev-pg: on, at dev-pg.sbx.example.com\n")
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3], {"server": "dev_pg"})
+
+    def test_add_an_internal_host_for_its_repos_without_waiting(self):
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying", name="temporal"))
+        code, out, err = self.run_cli("endpoints", "add", "--name", "temporal", "--target", "10.0.0.5:7233",
+                                      "--repo", "owner/app", "--repo", "other/app", "--no-wait", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["state"], "applying")
+        self.assertEqual(self.control.calls[-1][3], {"name": "temporal", "target": "10.0.0.5:7233",
+                                                     "repos": ["owner/app", "other/app"]})
+
+    def test_grant_and_revoke_one_repo_at_a_time(self):
+        temporal = endpoint("on", name="temporal", kind="internal", server="", repos=["owner/app"])
+        self.routes[("POST", "/api/endpoints/temporal/repos")] = lambda q, body: {
+            **temporal, "repos": sorted({*temporal["repos"], body["repo"]})}
+        code, out, err = self.run_cli("endpoints", "grant", "temporal", "Other/App")
+        self.assertEqual((code, out), (0, "temporal: for other/app, owner/app\n"))
+        self.assertEqual(self.control.calls[-1][:4], ("POST", "/api/endpoints/temporal/repos", {}, {"repo": "other/app"}))
+        self.routes[("DELETE", "/api/endpoints/temporal/repos/owner/app")] = lambda q, body: {**temporal, "repos": []}
+        code, out, err = self.run_cli("endpoints", "revoke", "temporal", "owner/app")
+        self.assertEqual((code, out), (0, "temporal: for no repo\n"))
+        self.routes[("DELETE", "/api/endpoints/temporal/repos/owner/app")] = lambda q, body: (
+            404, {"detail": "owner/app is not granted the endpoint temporal"})
+        code, _, _ = self.run_cli("endpoints", "revoke", "temporal", "owner/app")
+        self.assertEqual(code, "sbx-control: owner/app is not granted the endpoint temporal")
+        self.routes[("POST", "/api/endpoints/dev-pg/repos")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
+        code, _, _ = self.run_cli("endpoints", "grant", "dev-pg", "owner/app")
+        self.assertEqual(code, "sbx-control: attach the server to the repo instead")
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (400, {"detail": "attach the server to the repo instead"})
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg", "--repo", "owner/app")
+        self.assertEqual(code, "sbx-control: attach the server to the repo instead")   # the server's to refuse
+
+    def test_refusals_and_failures_exit_non_zero(self):
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "a", "--target", "10.0.0.5:1")
+        self.assertIn("--server NAME, or --name NAME --target HOST:PORT", code)
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (409, {"detail": "connect a domain first: ..."})
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, "sbx-control: connect a domain first: ...")
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: (202, endpoint("applying"))
+        self.polls(endpoints(endpoint("failed", message="nginx did not take the endpoints' configuration")))
+        code, _, _ = self.run_cli("endpoints", "add", "--server", "dev_pg")
+        self.assertEqual(code, "the endpoint dev-pg failed: nginx did not take the endpoints' configuration")
+        self.routes[("DELETE", "/api/endpoints/dev-pg")] = lambda q, body: (409, {"detail": "sandboxes of owner/app use it"})
+        code, _, _ = self.run_cli("endpoints", "rm", "dev-pg")
+        self.assertEqual(code, "sbx-control: sandboxes of owner/app use it")
+
+    def test_rm_waits_until_the_server_applied_it(self):
+        self.routes[("DELETE", "/api/endpoints/dev-pg")] = lambda q, body: (202, {"name": "dev-pg", "deleted": True})
+        self.polls(endpoints(applying=True), endpoints())
+        code, out, err = self.run_cli("endpoints", "rm", "dev-pg")
+        self.assertEqual((code, out), (0, "dev-pg: removed\n"))
 
 
 class SetupCliTests(CliTests):
@@ -523,6 +651,13 @@ class SetupCliTests(CliTests):
         self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
         self.assertNotIn("one-time-token", out + err)
 
+    def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]
+        code, out, err = self.run_cli("setup", "address", "--domain", "203-0-113-7.sslip.io", "--dns", "none", "--insecure")
+        self.assertEqual(code, 0, err)
+        sent = next(c[3] for c in self.control.calls if c[:2] == ("PUT", "/api/connections/domain"))
+        self.assertEqual((sent["values"]["name"], sent["values"]["acme"]), ("203-0-113-7.sslip.io", "none"))
+
     def test_the_link_comes_from_the_environment_or_a_file_never_argv(self):
         with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):
             code, out, err = self.run_cli("setup", "status")
@@ -531,10 +666,24 @@ class SetupCliTests(CliTests):
             link.write_text(f"{self.control.url}/setup#t=from-a-file\n")
             self.assertEqual(self.run_cli("setup", "status", "--link-file", str(link))[0], 0)
         self.assertEqual(self.control.calls[-1][4], "Setup from-a-file")
-        with patch.dict(os.environ, {"SBX_SETUP_LINK": "https://203.0.113.7/setup"}):
-            self.assertIn("not a setup link", str(self.run_cli("setup", "status")[0]))
+        for bad in ("https://203.0.113.7/setup", "http://203.0.113.7/setup#t=x", "ftp://127.0.0.1/setup#t=x"):
+            with patch.dict(os.environ, {"SBX_SETUP_LINK": bad}):   # http only to this machine
+                self.assertIn("not a setup link", str(self.run_cli("setup", "status")[0]), bad)
         self.routes[("GET", "/api/setup")] = lambda q, body: (401, {"detail": "the setup token"})
         self.assertIn("the setup link was refused", str(self.run_cli("setup", "status")[0]))
+
+
+    def test_a_server_out_of_reach_is_said_not_a_traceback(self):
+        with socket.socket() as free:
+            free.bind(("127.0.0.1", 0))
+            port = free.getsockname()[1]
+        for link, hint in ((f"https://127.0.0.1:{port}/setup#t=x", True), (f"http://localhost:{port}/setup#t=x", True)):
+            with patch.dict(os.environ, {"SBX_SETUP_LINK": link}):
+                said = str(self.run_cli("setup", "status")[0])
+            self.assertIn(f"cannot reach {link.split('/setup')[0]}", said)
+            self.assertEqual("add --insecure" in said, hint)
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"https://127.0.0.1:{port}/setup#t=x"}):
+            self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
 
 
 class CliApiTests(Server):
@@ -554,6 +703,28 @@ class CliApiTests(Server):
         self.assertNotIn("template", recipe)
         self.assertEqual(r["found"]["secrets"], ["API_KEY", "DB_URL"])
         self.assertEqual(r["executable"], [".sbx/setup"])
+
+    def test_a_scaffold_names_a_port_only_where_the_checkout_shows_one(self):
+        from sbx_control import repo_onboarding
+        go = repo_onboarding.detect({"go.mod", "go.sum", "main.go"}, {})
+        self.assertIsNone(go["port"])
+        recipe = repo_onboarding.scaffold("owner/app", go)["files"][".sbx/sbx.yaml"]
+        self.assertNotIn("3000", recipe)
+        self.assertEqual(yaml.safe_load(recipe)["previews"], {})
+        from sbx_control import recipes   # the draft applies as it is
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "sbx.yaml").write_text(recipe)
+            recipes.validate("owner/app", Path(directory))
+        express = repo_onboarding.detect({"package.json"}, {"package.json": json.dumps(
+            {"scripts": {"dev": "node server.js"}, "dependencies": {"express": "4"}})})
+        recipe = yaml.safe_load(repo_onboarding.scaffold("owner/app", express)["files"][".sbx/sbx.yaml"])
+        self.assertEqual(recipe["processes"]["web"], "npm run dev")
+        self.assertNotIn("health", recipe)
+        self.assertNotIn("env", recipe)
+        nextjs = repo_onboarding.detect({"package.json"}, {"package.json": json.dumps(
+            {"scripts": {"dev": "next dev"}, "dependencies": {"next": "15"}})})
+        recipe = yaml.safe_load(repo_onboarding.scaffold("owner/app", nextjs)["files"][".sbx/sbx.yaml"])
+        self.assertEqual((recipe["previews"][""], recipe["env"]["PORT"]), (3000, "3000"))
 
     def test_the_cli_writes_the_recipe_the_server_drafts_for_its_checkout(self):
         self.repo_admin()
@@ -628,6 +799,19 @@ class CliApiTests(Server):
         bad = self.client.put("/api/repos/owner/app/recipe", json={"files": {".sbx/sbx.yaml": "services: []\n"}})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(recipes.load("owner/app").spec["previews"]["web"], 3000)
+
+    def test_an_admin_reads_the_setup_brief_before_the_repo_is_served(self):
+        from sbx_control import auth, settings
+        self.repo_admin()
+        self.assertIsNone(settings.trust("owner/new"))
+        response = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("# Set up owner/new", response.text)
+        self.app.app.dependency_overrides[auth.api_user] = lambda: "someone@example.test"
+        self.addCleanup(self.app.app.dependency_overrides.clear)
+        refused = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("not served here", refused.text)
 
     def test_an_applied_recipe_is_removed_once_its_sandboxes_are_gone(self):
         from types import SimpleNamespace

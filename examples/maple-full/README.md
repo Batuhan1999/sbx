@@ -67,8 +67,8 @@ Electric source and keeps the shared servers.
 ## How this recipe was made
 
 Model for a multi-process stack with native builds, two shared servers, and a
-sidecar that needs a package of its own. Recipe: `examples/maple-full/.sbx/`;
-package: `examples/maple-full/electric-source/`.
+sidecar that needs a package of its own. Recipe: [`examples/maple-full/.sbx/`](.sbx/);
+package: [`examples/maple-full/electric-source/`](electric-source/).
 
 **What the repository showed.** `package.json` pins Bun (`packageManager`),
 `mise.toml` pins Rust, `otel/builder-config.yaml` defines the custom collector;

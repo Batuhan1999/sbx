@@ -15,8 +15,25 @@ selection guide, the acceptance checklist and the resource guide.
   mode, starting data, a provider or plan that costs money) or for access, and
   wait for the answer before work that depends on it.
 - Work through `sbx` and `ssh sbx-NAME` (run `sbx ssh-config` once so ssh
-  knows the `sbx-` hosts). When something fails, fix the recipe and retry the
-  same command. Do not patch a sandbox by hand and call it done.
+  knows the `sbx-` hosts). Where ssh doesn't work, `sbx sandbox exec NAME`
+  runs a script from stdin over the API. When something fails, fix the recipe
+  and retry the same command. Do not patch a sandbox by hand and call it done.
+- Without the CLI, use the HTTP API with an API token
+  (`Authorization: Bearer TOKEN`; `curl -k` for a self-signed certificate):
+
+  | Command in this brief | HTTP API |
+  | --- | --- |
+  | `sbx repo status` | `GET /api/repos/{repo}`; the checklist: `GET /api/repos/{repo}/readiness` |
+  | `sbx catalog show PACKAGE` | `GET /api/catalog/PACKAGE`; a slot's saved connections: `GET /api/catalog/KIND` (`connections`, for admins) |
+  | `sbx attach PACKAGE --key KEY` | `POST /api/repos/{repo}/attachments` `{"package": "...", "key": "...", "inputs": {...}}` |
+  | `sbx endpoints` | `GET /api/endpoints` |
+  | `sbx recipe apply` | `PUT /api/repos/{repo}/recipe` `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}` |
+  | `sbx up NAME` | `POST /api/sandboxes` `{"name": "NAME", "repo": "{repo}"}` (optional `"runtime"`); then `GET /api/sandboxes/NAME?wait=30` until `lifecycle.active` is false |
+  | `sbx logs NAME`, why it failed | `GET /api/sandboxes/NAME/inspect?lines=200` (setup and process logs); `GET /api/sandboxes/NAME/detail` (`events`: each failure with its cause) |
+  | `ssh sbx-NAME '...'`, `sbx sandbox exec NAME` | `POST /api/sandboxes/NAME/exec` `{"script": "...", "timeout": 120}` |
+  | `sbx sandbox prepare\|restart\|pause\|resume NAME` | `POST /api/sandboxes/NAME/prepare` (or `/restart`, `/pause`, `/resume`) |
+  | `sbx sandbox resources NAME` | `GET /api/sandboxes/NAME/resources?probe=true` |
+  | `sbx down NAME` | `DELETE /api/sandboxes/NAME` |
 - Never print, paste, commit or ask for a secret value in chat. The owner types
   values into `sbx env set` themselves.
 
@@ -32,10 +49,11 @@ Catalog packages on this server: {services}
 
 Run `sbx repo status`.
 
-Check: `trust` is `trusted`. If it is anything else, stop and tell the owner: an
-admin connects the repository in the web app first, and an untrusted
-repository gets no services or secret values. Note `configured`: whether the
-server already has a recipe for it.
+Check: `trust` is `trusted`. If it is empty (not served yet) and you are an
+admin, go on: step 6's `sbx recipe apply` serves and trusts it. Otherwise stop
+and tell the owner: an admin connects the repository in the web app first, and
+an untrusted repository gets no services or secret values. Note `configured`:
+whether the server already has a recipe for it.
 
 ## 2. Find out what the app needs
 
@@ -61,17 +79,26 @@ Check: you have a list of services and a list of variables, each with evidence.
 Choose with the service selection guide appended below. Show the owner its
 table before you change anything, and use the saved connections listed above
 before asking for a new one. Never create a hosted account, pick a paid plan or
-copy production data unless the owner says so.
+copy production data unless the owner says so. A managed server with an
+endpoint (`sbx endpoints` lists them) gives every repository bound to it
+access through that endpoint. Applying a recipe whose `connections:` names
+that server (step 6) is the bind: ask the owner before you apply it.
 
 Declare each service in `.sbx/sbx.yaml`:
 
 ```yaml
 services:
   db:
-    uses: postgres-clone            # the package
-    connections: {server: CONNECTION} # the saved connection, by key
+    uses: postgres-clone          # the package
+    connections: {server: dev-pg} # the slot, and the name of a saved connection
     with: {template: template0}   # the package's inputs
 ```
+
+`dev-pg` stands for the name of a connection saved on this server: the list
+above, or `sbx catalog show PACKAGE` (it lists the package's inputs, outputs,
+the variables it sets and the saved connections each slot can take). With
+one saved connection of the slot's kind, leave `connections:` out. A wrong
+name stops the launch with an error that names the ones the server has.
 
 A package input that is a secret goes to the server, never into the file:
 `sbx attach PACKAGE --key db` asks for it hidden. If `sbx attach` reports
@@ -91,17 +118,19 @@ Write each variable from step 2 into `env:` in `.sbx/sbx.yaml`:
 | The value is | Write |
 | --- | --- |
 | A secret the app can generate | `SESSION_SECRET: ${random:32}` (also `${random:hex64}`, `${random:base64:32}`); stable per sandbox |
-| A service output | `DATABASE_URL: ${services.db.url}` |
+| A service output | `DATABASE_URL: ${services.db.url}` (`sbx catalog show PACKAGE` lists the outputs and the variables a package already sets) |
 | A preview URL (origins, callbacks, CORS) | `${SBX_URL}`, or `${SBX_URL_<PREVIEW>}` for a named preview |
 | Per-sandbox naming, such as a cookie prefix | `${SBX_NAME}` |
 | A fixed setting | `NODE_ENV: development` |
 | Something only the owner has (an API key, an account token) | declare it: list the name under `secrets:`, or use `${secret:NAME}` inside another value |
 
-Declare **every** value that sbx cannot generate or provision. The declaration
-is how sbx knows a value is missing: `sbx repo status` lists declared names
-without a value under `secrets_missing`, and the web app flags them on the
-repository's Environment page. A value the app reads but the recipe never
-declares is invisible to that check and only fails at runtime.
+Declare every value the owner's chosen mode needs that sbx cannot generate or
+provision. The declaration is how sbx knows a value is missing: `sbx repo
+status` lists declared names without a value under `secrets_missing`, and the
+web app flags them on the repository's Environment page. A needed value the
+recipe never declares is invisible to that check and only fails at runtime.
+Optional variables (an integration the owner doesn't use) stay out of the
+recipe; list them in the hand-over (step 9).
 
 ```yaml
 secrets: [STRIPE_SECRET_KEY, OPENAI_API_KEY]   # injected under their own names
@@ -139,9 +168,13 @@ env:
   to `0.0.0.0`. Use `.sbx/start` only when a script is simpler; it starts its
   servers detached and returns.
 - `health:` lists URLs that only answer when the app works. Without them a
-  started app counts as unverified.
+  started app counts as unverified. Try each URL by hand inside a sandbox
+  (`curl -i URL`) before you rely on it: a URL that never answers below 400
+  holds the launch for the whole `health_timeout` (240 s by default).
 - Leave out `template:` and `resources:` on the first pass. Sandboxes then get
-  the default size (2 vCPU, 4 GiB RAM). Add `resources:` only when
+  the default size (2 vCPU, 4 GiB RAM). Set `resources: {swap_mb: ...}` when
+  setup is memory-hungry (a large `yarn install`, a native build), so every
+  runtime gives it the same swap. Add other `resources:` only when
   measurements show the default is too small, and `template:` only when
   repeated setup dominates launch time (resource guide below). A size applies
   with or without `template:`, to sandboxes started after `sbx template build`.
@@ -149,7 +182,8 @@ env:
   after a pause.
 - The recipe stays below 128 files and 1 MiB, with no symlinks.
 
-The full format is in `docs/reference.md` (section Recipe) in the sbx source.
+The full format is in the
+[reference](https://github.com/Batuhan1999/sbx/blob/main/docs/reference.md#recipe).
 
 Check: `.sbx/setup` and any `.sbx/start` are executable, and running setup
 twice in a row would leave the same state.
@@ -161,7 +195,8 @@ else the one imported from the default branch. Your checkout's `sbx.yaml` is
 not read until it gets there.
 
 - If you are an admin on the server, run `sbx recipe apply` in the checkout.
-  Repeat after every edit.
+  Repeat after every edit. Applying is what serves the repository and binds
+  it to the managed servers its `connections:` name (step 3).
 - Otherwise, publish it with `sbx recipe pr`; once the owner merges
   the pull request, `sbx template build` imports the default branch's recipe.
 
@@ -174,38 +209,59 @@ and `secrets_missing` is empty or holds only values the owner chose to skip.
 
 ## 7. First launch
 
-Run `sbx up try-a`. It returns with the preview links once health passes.
+Run `sbx up check-a`. It returns with the preview links once health passes.
 
-If it fails, read `sbx logs try-a` and look inside with `ssh sbx-try-a`
-(`/tmp/sbx-setup.log`, `/tmp/sbx-<process>.log`). After a recipe edit, apply it
-again (step 6) and rerun setup and start on the same sandbox, keeping its
-source edits, with `sbx sandbox prepare try-a`.
-`sbx sandbox restart try-a` only restarts the processes. A changed service, package or
-resource size needs a new sandbox.
+If it fails, `sbx up` prints the cause. Read `sbx logs check-a` and look inside
+with `ssh sbx-check-a` (`/tmp/sbx-setup.log`, `/tmp/sbx-<process>.log`):
+
+| The error says | Look at |
+| --- | --- |
+| `` `.sbx/setup` was killed (exit code 137: out of memory?) `` | `sudo dmesg \| grep -i oom` in the sandbox; then lower setup's parallelism or set `resources.swap_mb` / `memory_mb` (resource guide) |
+| `` `.sbx/setup` exited with code N `` | the end of `/tmp/sbx-setup.log` |
+| `the app did not come up: after N s, URL answered CODE` (or `did not answer`) | the process logs, and the health URL by hand inside the sandbox |
+| `the app did not come up: a process of the app exited` | that process's log |
+
+While the app starts, the operation holds the sandbox: `prepare` or `restart`
+answers 409 "busy" until health passes or `health_timeout` runs out.
+
+After a recipe edit, apply it again (step 6) and rerun setup and start on the
+same sandbox, keeping its source edits, with `sbx sandbox prepare check-a`.
+`sbx sandbox restart check-a` only restarts the processes. A changed service,
+package or resource size needs a new sandbox.
 
 Before changing `resources:`, read what the sandbox actually got with
-`sbx sandbox resources try-a`.
+`sbx sandbox resources check-a`.
 
 Check: open the preview link and do one thing the app exists for, such as
 signing in and creating a record. A home page that answers 200 is not enough.
-Where possible, script the action (`ssh sbx-try-a '...'`) so you can run it
-again in step 8, and keep its output.
+Where possible, script the action (`ssh sbx-check-a '...'`, or a request to the
+preview with `Authorization: Bearer TOKEN`, an sbx API token) so you can run it
+again in step 8, and keep its output. A request that signs in with the sbx
+token loses its `Authorization` header at the gateway, so the app's own Bearer
+token can't ride along: sign in through the app and send its session cookie,
+or call the app inside the sandbox (`curl http://127.0.0.1:PORT/...` over ssh
+or exec).
 
 ## 8. Prove independence
 
-Work through the acceptance checklist appended below with two disposable
-sandboxes, `try-a` and `try-b` (`sbx up try-b`). Reuse the action you scripted
-in step 7 on both, and keep the output of every check.
-
-Then `sbx down try-b`.
+Work through the acceptance checklist appended below with `check-a` and a
+second sandbox, `check-b` (`sbx up check-b`). Reuse the action you scripted
+in step 7 on both, and keep the output of every check. The checklist deletes
+`check-a`; keep `check-b` (and `check-b-KIND` on each further runtime) for the
+hand-over.
 
 ## 9. Hand over
 
-Tell the owner, with evidence: the preview links, what you verified and what
-you did not (optional providers left unconfigured, for example), and the
+Tell the owner, with evidence: `check-b`'s preview links, what you verified and
+what you did not (optional providers left unconfigured, for example), the
+optional variables the app reads that the recipe leaves out, and the
 everyday commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`,
-`sbx down NAME`. Offer `sbx recipe pr` to publish `.sbx/` if it is not merged
-yet. PR previews and a prebuilt template come later, and only when asked.
+`sbx down NAME` (`sbx down check-b` once they are done with it). A value the
+recipe generates, such as an admin password from `${random:32}`, is per
+sandbox; give the command that reads it, not the value:
+`echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox exec SANDBOX`. Offer
+`sbx recipe pr` to publish `.sbx/` if it is not merged yet. PR previews and a
+prebuilt template come later, and only when asked.
 
 Done means every item of the acceptance checklist below is checked and
 reported.

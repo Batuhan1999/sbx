@@ -1,7 +1,7 @@
 """An in-memory sandbox runtime: what the test suite runs sbx on, next to
 Embed, and the reference for what every backend must do (the conformance
 tests in tests/test_runtimes.py run against it). It is hosted, not on this
-host: it inherits HostSide's no-op host part.
+host: it inherits Backend's no-op host part.
 
 Commands understand just enough to be checked: `echo WORDS`, `cat PATH`,
 `true`, `false` and `exit N`; anything else succeeds with no output unless a
@@ -15,8 +15,8 @@ import shlex
 import threading
 from types import SimpleNamespace
 
-from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, HostSide, Info, Limits, NoRoom,
-                    NotRunning, Snapshot, TemplateGone, TemplateSpec)
+from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Backend, Info, Limits, NoRoom,
+                    NotRunning, SettingField, Snapshot, TemplateGone, TemplateSpec)
 
 INTERNAL_HOST_SUFFIX = "fake.sandboxes.internal"
 CONTROL_PORT = 49999        # its own daemon in every sandbox: never a preview
@@ -48,7 +48,7 @@ class _Commands:
             answer = _interpret(box, cmd)
         stdout, exit_code = (answer, 0) if isinstance(answer, str) else answer
         if exit_code:
-            raise CommandFailed(stdout=stdout, stderr=stdout, exit_code=exit_code)
+            raise CommandFailed(stdout=stdout, stderr=stdout, exit_code=exit_code, command=cmd)
         result = SimpleNamespace(stdout=stdout, stderr="", exit_code=0)
         if background:
             result.disconnect = lambda: None
@@ -97,7 +97,7 @@ class _Handle:
         return self._runtime.kill(self.sandbox_id)
 
 
-class Fake(HostSide):
+class Fake(Backend):
     kind = "fake"
     title = "Fake runtime"
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)
@@ -107,6 +107,7 @@ class Fake(HostSide):
     ports = frozenset({CONTROL_PORT})
     credential_keys = ("FAKE_RUNTIME_TOKEN",)
     secret_key = "FAKE_RUNTIME_TOKEN"
+    settings = (SettingField("FAKE_RUNTIME_TOKEN", "Token", secret=True),)
     id_prefix = "fk"
 
     def __init__(self):

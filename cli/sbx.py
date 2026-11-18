@@ -61,54 +61,107 @@ class Refused(Exception):
         self.status = status
 
 
-# sbx setup: the first-run setup link's token stands in for a session (Authorization: Setup <token>),
-# and the link's own certificate may be the self-signed one the installer made (--insecure).
-SETUP_TOKEN = None
-SSL_CONTEXT = None
+class Client:
+    """sbx-control at base, signed in with the session's API token from the
+    Keychain, or with a first-run setup link's token (Authorization: Setup)
+    over that link's own TLS context (its certificate may be the self-signed
+    one the installer made: --insecure)."""
 
+    def __init__(self, base, setup_token=None, context=None):
+        self.base, self.setup_token, self.context = base, setup_token, context
 
-def request(method, path, body=None, raw=False, timeout=600):
-    if SETUP_TOKEN:
-        authorization = f"Setup {SETUP_TOKEN}"
-    else:
+    def _authorization(self):
+        if self.setup_token:
+            return f"Setup {self.setup_token}"
         token = keychain_get(API_TOKEN_SERVICE)
         if not token:
             raise Refused("not signed in: run `sbx login`")
-        authorization = f"Bearer {token}"
-    call = urllib.request.Request(f"{CONTROL}{path}", method=method,
-                                  data=json.dumps(body).encode() if body is not None else None,
-                                  headers={"Authorization": authorization, "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(call, timeout=timeout, context=SSL_CONTEXT) as response:
-            server = response.headers.get("X-Sbx-Version")
-            if server and VERSION not in ("dev", server):
-                print(f"sbx {server} is available (you have {VERSION}): sbx update", file=sys.stderr)
-            data = response.read()
-            return data.decode() if raw else json.loads(data or b"null")
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
+        return f"Bearer {token}"
+
+    def request(self, method, path, body=None, raw=False, timeout=600):
+        call = urllib.request.Request(f"{self.base}{path}", method=method,
+                                      data=json.dumps(body).encode() if body is not None else None,
+                                      headers={"Authorization": self._authorization(),
+                                               "Content-Type": "application/json"})
         try:
-            detail = json.loads(detail).get("detail", detail)
-        except (ValueError, AttributeError):
-            pass
-        if isinstance(detail, dict):   # {message, checks}: what failed, each check that did
-            detail = "; ".join([detail.get("message") or "refused", *(f"{c.get('name')}: {c.get('detail')}"
-                                                                      for c in detail.get("checks") or [] if not c.get("ok"))])
-        if error.code == 401:
-            raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a new one)"
-                          if SETUP_TOKEN else "session expired: run `sbx login`", 401) from None
-        raise Refused(f"sbx-control: {detail}", error.code) from None
+            with urllib.request.urlopen(call, timeout=timeout, context=self.context) as response:
+                server = response.headers.get("X-Sbx-Version")
+                if server and VERSION not in ("dev", server):
+                    print(f"sbx {server} is available (you have {VERSION}): sbx update", file=sys.stderr)
+                data = response.read()
+                return data.decode() if raw else json.loads(data or b"null")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except (ValueError, AttributeError):
+                pass
+            if isinstance(detail, dict):   # {message, checks}: what failed, each check that did
+                detail = "; ".join([detail.get("message") or "refused", *(f"{c.get('name')}: {c.get('detail')}"
+                                                                          for c in detail.get("checks") or [] if not c.get("ok"))])
+            if error.code == 401:
+                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a "
+                              "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
+            raise Refused(f"sbx-control: {detail}", error.code) from None
+
+    def api(self, method, path, body=None, raw=False, timeout=600):
+        """request(), exiting with the refusal or why the server could not be reached (request() itself
+        raises OSError, which follow() retries while sbx-control restarts)."""
+        try:
+            return self.request(method, path, body, raw, timeout)
+        except Refused as error:
+            sys.exit(str(error))
+        except OSError as error:
+            reason = getattr(error, "reason", None) or error
+            hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
+            sys.exit(f"cannot reach {self.base}: {reason}{hint}")
+
+
+def request(method, path, body=None, raw=False, timeout=600):
+    return Client(CONTROL).request(method, path, body, raw, timeout)
 
 
 def api(method, path, body=None, raw=False, timeout=600):
-    try:
-        return request(method, path, body, raw, timeout)
-    except Refused as error:
-        sys.exit(str(error))
+    return Client(CONTROL).api(method, path, body, raw, timeout)
 
 
 def note(text):
     print(text, file=sys.stderr)
+
+
+RETRIED = (502, 503, 504)   # sbx-control restarting behind nginx
+
+
+def follow(fetch, verdict, timeout, *, interval=2.0, first=None, retry_statuses=(), late="still waiting"):
+    """What fetch() answers, followed until verdict(found) -> (progress, done)
+    says it is done: then that answer. Progress (text or None) is noted when
+    it changes; done is True, False, or why it failed (a text: it exits with
+    it). first: an answer in hand already. A fetch refused with one of retry_statuses, or a dropped
+    connection while there are any, is tried again; any other refusal exits.
+    Past timeout: exits with late (or late(found))."""
+    deadline, said = time.monotonic() + timeout, None
+    found = fetch() if first is None else first
+    while True:
+        progress, done = verdict(found)
+        if progress and progress != said:
+            note(progress)
+            said = progress
+        if isinstance(done, str):
+            sys.exit(done)
+        if done:
+            return found
+        if time.monotonic() > deadline:
+            sys.exit(late(found) if callable(late) else late)
+        if interval:
+            time.sleep(interval)
+        try:
+            found = fetch()
+        except Refused as error:
+            if error.status not in retry_statuses:
+                sys.exit(str(error))
+        except OSError:   # refused or dropped connections while it restarts
+            if not retry_statuses:
+                raise
 
 
 def login_control():
@@ -381,25 +434,29 @@ def failed(info):
                                          or record.get("application") == "failed")
 
 
+def cause(name):
+    """Why the sandbox's last operation failed, as its newest failure event
+    says (the command, its exit code, the end of its output); "" when none."""
+    try:
+        events = request("GET", f"/api/sandboxes/{name}/detail").get("events") or []
+    except (Refused, OSError):
+        return ""
+    return next((e["detail"] for e in events if e["kind"].endswith(" failed") and e["detail"]), "")
+
+
 def wait_for(name, timeout):
     """Follow the sandbox's operation until it finishes (the server holds
     each request until the phase changes); exit 1 when it failed."""
-    deadline = time.time() + timeout
-    last = None
-    while True:
-        info = api("GET", f"/api/sandboxes/{name}?wait=30", timeout=90)
+    def verdict(info):
         record = info.get("lifecycle") or {}
-        if record.get("phase") != last:
-            last = record.get("phase")
-            note(f"  {(last or 'unknown').replace('_', ' ')}")
-        if failed(info):
-            sys.exit(f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n"
-                     f"fix it, then `sbx sandbox prepare {name}`; `sbx logs {name}` follows the app")
-        if not record.get("active"):
-            return info
-        if time.time() > deadline:
-            sys.exit(f"{name} is still {(last or 'starting').replace('_', ' ')}; "
-                     f"`sbx sandbox info {name} --wait` follows it")
+        why = cause(name) if failed(info) else ""
+        return f"  {(record.get('phase') or 'unknown').replace('_', ' ')}", (
+            f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n{why + chr(10) if why else ''}"
+            f"fix it, then `sbx sandbox prepare {name}`; `sbx logs {name}` follows the app"
+            if failed(info) else not record.get("active"))
+    return follow(lambda: api("GET", f"/api/sandboxes/{name}?wait=30", timeout=90), verdict, timeout, interval=0,
+                  late=lambda info: f"{name} is still {((info.get('lifecycle') or {}).get('phase') or 'starting').replace('_', ' ')}; "
+                                    f"`sbx sandbox info {name} --wait` follows it")
 
 
 def outcome(info):
@@ -478,14 +535,15 @@ def open_tool(name, tool):
 
 
 def runtimes_cmd(args):
-    """sbx runtimes [available | add | set | remove | default KIND]: list, or change (admins)."""
+    """sbx runtimes [available | test | add | set | remove | default KIND]: list, or change (admins)."""
+    client = Client(CONTROL)
     if args.action == "available":
-        return runtimes_available(args)
+        return runtimes_available(args, client)
     if args.action == "test":
-        return runtime_test(args)
+        return runtime_test(args, client)
     if args.action:
-        return runtime_change(args)
-    found = api("GET", "/api/runtimes")
+        return runtime_change(args, client)
+    found = client.api("GET", "/api/runtimes")
     if args.json:
         print(json.dumps(found))
         return
@@ -498,9 +556,9 @@ def runtimes_cmd(args):
               f"{r['status']['state']:<14} {r['title']}{plan}: {r['status']['summary']}")
 
 
-def runtimes_available(args):
+def runtimes_available(args, client):
     """Every runtime the server's packages provide: whether it can run here, its plans, its settings now."""
-    found = api("GET", "/api/runtimes/available")
+    found = client.api("GET", "/api/runtimes/available")
     if args.json:
         print(json.dumps(found))
         return
@@ -509,8 +567,8 @@ def runtimes_available(args):
             "can be added" if r.get("can_run") and not r.get("host") else
             f"can't run here: {r['why_not']}" if not r.get("can_run") else "set up by install.sh")
         print(f"{r['kind']:<12} {r['title']}: {state}")
-        if r.get("not_editable") and not r.get("host"):
-            print(f"  {r['not_editable']}")
+        if r.get("edit_blocker") and not r.get("host"):
+            print(f"  {r['edit_blocker']['message']}")
         if r.get("plan"):
             print(f"  plan now: {r['plan']['name']}")
         for p in r.get("presets") or []:
@@ -528,15 +586,15 @@ def runtimes_available(args):
             unit = f" {s['unit']}" if s.get("unit") else ""
             now = (r.get("values") or {}).get(s["key"]) or f"default {s['default'] or 'none'}"
             print(f"  --set {s['key']}=… ({s['label']}{unit}{span}; now {now})")
-        if r.get("enabled") and r.get("removable"):
-            print(f"  can't remove: {r['removable']}")
+        if r.get("enabled") and r.get("remove_blocker"):
+            print(f"  can't remove: {r['remove_blocker']['message']}")
 
 
-def runtime_test(args):
+def runtime_test(args, client):
     """sbx runtimes test KIND: the runtime's checks, as Settings and sbx-admin doctor run them; non-zero when any fails."""
     if not args.kind:
         sys.exit("sbx runtimes test KIND (sbx runtimes lists the enabled ones)")
-    found = api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test")
+    found = client.api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test")
     if args.json:
         print(json.dumps(found))
     else:
@@ -553,37 +611,19 @@ def _read_secret(prompt):
     return value.strip()
 
 
-def _runtime_values(args, runtime, adding):
-    """The values a change sends, as the web app's form does: --plan's (Hobby when
-    adding without one; a plan fixes its limits but those it leaves adjustable,
-    which keep the runtime's values now on set, or start at the plan's), then
-    --set over them where the plan allows, then each --secret read from stdin
-    (one line each, in order; hidden at a terminal). set without --plan sends
-    only what --set and --secret name."""
+def _runtime_body(args, runtime, adding):
+    """What a change sends: --plan (the first plan when adding without one; the server resolves its limits),
+    each --set, and each --secret read from stdin (one line each, in order; hidden at a terminal): a secret
+    never on the command line."""
     settings = {s["key"]: s for s in runtime.get("settings") or []}
     presets = runtime.get("presets") or []
     values = {}
-    plan = args.plan or (presets[0]["name"] if adding and presets else None)
-    preset = None
-    if plan and plan != "custom":
-        preset = next((p for p in presets if p["name"] == plan), None)
-        if preset is None:
-            sys.exit(f"{runtime['title']} has no plan {plan}; its plans: {', '.join([p['name'] for p in presets] + ['custom'])}")
-        now = runtime.get("values") or {}
-        for key, value in preset["values"].items():
-            kept = now.get(key) if not adding and key in (preset.get("adjustable") or []) else ""
-            values[key] = kept or value
     for pair in args.set or []:
         key, sep, value = pair.partition("=")
         if not sep:
             sys.exit(f"--set {pair}: expected KEY=VALUE")
-        setting = settings.get(key)
-        if setting is None:
-            sys.exit(f"{runtime['title']} has no setting {key}; sbx runtimes available lists them")
-        if setting.get("secret"):
+        if (settings.get(key) or {}).get("secret"):
             sys.exit(f"{key} is a secret: --secret {key} reads it from stdin, never the command line")
-        if preset and key in preset["values"] and key not in (preset.get("adjustable") or []):
-            sys.exit(f"the {preset['title']} plan fixes {key}; choose --plan custom to set it")
         values[key] = value
     for key in args.secret or []:
         setting = settings.get(key)
@@ -593,10 +633,11 @@ def _runtime_values(args, runtime, adding):
         if not value:
             sys.exit(f"no value for {key} on stdin")
         values[key] = value
-    return values
+    plan = args.plan or (presets[0]["name"] if adding and presets else None)
+    return {"plan": plan, "values": values} if plan else {"values": values}
 
 
-def runtime_change(args):
+def runtime_change(args, client):
     """sbx runtimes add | set | remove | default KIND (and sbx setup runtime add):
     queued by sbx-control, applied by the host, which restarts sbx-control;
     waits for it unless --no-wait."""
@@ -604,67 +645,120 @@ def runtime_change(args):
         sys.exit(f"sbx runtimes {args.action} KIND (sbx runtimes available lists them)")
     kind = urllib.parse.quote(args.kind, safe="")
     if args.action in ("add", "set"):
-        runtime = next((r for r in api("GET", "/api/runtimes/available") if r["kind"] == args.kind), None)
+        runtime = next((r for r in client.api("GET", "/api/runtimes/available") if r["kind"] == args.kind), None)
         if runtime is None:
             sys.exit(f"there is no runtime {args.kind}: sbx runtimes available lists them")
-        if runtime.get("not_editable") and args.action == "add":
-            sys.exit(runtime["not_editable"])
-        values = _runtime_values(args, runtime, adding=args.action == "add")
-        if args.action == "add":
-            queued = api("POST", "/api/runtimes", {"kind": args.kind, "values": values})
-        else:
-            queued = api("PUT", f"/api/runtimes/{kind}", {"values": values})
+        if runtime.get("edit_blocker") and args.action == "add":
+            sys.exit(runtime["edit_blocker"]["message"])
+        body = _runtime_body(args, runtime, adding=args.action == "add")
+        queued = (client.api("POST", "/api/runtimes", {"kind": args.kind, **body}) if args.action == "add" else
+                  client.api("PUT", f"/api/runtimes/{kind}", body))
     elif args.action == "remove":
-        queued = api("DELETE", f"/api/runtimes/{kind}")
+        queued = client.api("DELETE", f"/api/runtimes/{kind}")
     else:
-        queued = api("PUT", "/api/runtimes/default", {"kind": args.kind})
+        queued = client.api("PUT", "/api/runtimes/default", {"kind": args.kind})
     if args.no_wait:
         print(json.dumps(queued) if args.json else f"queued: {args.action} {args.kind} (sbx runtimes to see it once applied)")
         return
-    done = wait_runtime_change(queued, args.timeout)
+    done = wait_host_request(client, "/api/runtimes/change", queued, args.timeout, "the runtime change")
     print(json.dumps(done) if args.json else done.get("message") or "done")
 
 
-RETRIED = (502, 503, 504)   # sbx-control restarting behind nginx
+# A host request's state (host_requests on the server), as GET /api/runtimes/change answers it.
+HOST_REQUEST_STATES = {"queued": "queued; waiting for the host to apply it", "applying": "applying",
+                       "done": "applied; waiting for sbx-control to restart"}
 
 
-def wait_runtime_change(change, timeout, interval=2.0):
-    """The change once it is done and a restarted sbx-control answers (as the
-    web app follows it). A poll the restart fails (502, 503, 504, a refused or
-    dropped connection) is retried; any other refusal ends it at once. Exits
-    non-zero when the change failed."""
-    deadline, said = time.monotonic() + timeout, None
-    while True:
+def wait_host_request(client, path, first, timeout, what):
+    """A request the host applies, once it is done and a restarted sbx-control answers (as the web app
+    follows it); a poll the restart fails is retried. Exits non-zero when it failed."""
+    def verdict(change):
         state = change.get("state")
         if state == "failed":
-            sys.exit(f"the runtime change failed: {change.get('message') or 'see the server log'}")
-        if state == "done" and not change.get("restarting"):
-            return change
-        now = {"queued": "queued; waiting for the host to apply it", "applying": "applying",
-               "done": "applied; waiting for sbx-control to restart"}.get(state, state)
-        if now != said:
-            note(now)
-            said = now
-        if time.monotonic() > deadline:
-            sys.exit(f"the runtime change is still {state} after {timeout} s: sbx runtimes shows it once applied")
-        time.sleep(interval)
-        try:
-            change = request("GET", "/api/runtimes/change", timeout=30)
-        except Refused as error:
-            if error.status not in RETRIED:
-                sys.exit(str(error))
-        except OSError:   # refused or dropped connections while it restarts
-            pass
+            return None, f"{what} failed: {change.get('message') or 'see the server log'}"
+        done = state == "done" and not change.get("restarting")
+        return (None if done else HOST_REQUEST_STATES.get(state, state)), done
+    return follow(lambda: client.request("GET", path, timeout=30), verdict, timeout, first=first,
+                  retry_statuses=RETRIED,
+                  late=lambda change: f"{what} is still {change.get('state')} after {timeout} s: sbx runtimes shows it "
+                                      "once applied")
+
+
+def endpoints_cmd(args):
+    """sbx endpoints [ls | add | rm NAME | grant NAME REPO | revoke NAME REPO] (admins): this server's
+    private services for sandboxes on runtimes that don't reach its private network, and which repos'
+    sandboxes may use each; add and rm wait until the server applied the change."""
+    if args.action in (None, "ls"):
+        found = api("GET", "/api/endpoints")
+        if args.json:
+            print(json.dumps(found))
+            return
+        if not found["domain"]:
+            print("no domain yet: endpoints need one (sbx setup address, or Settings)")
+        for e in found["endpoints"]:
+            used = f"; used by {', '.join(e['used_by'])}" if e["used_by"] else ""
+            print(f"{e['name']:<20} {e['state']:<9} {e['address']} -> {e['target']} "
+                  f"({e['server'] or 'internal host'}; for {', '.join(e.get('repos') or []) or 'no repo yet'}){used}"
+                  + (f": {e['message']}" if e["message"] else ""))
+        for c in found["candidates"]:
+            print(f"{'':<20} {'off':<9} managed server {c['server']} ({c['kind']}): sbx endpoints add --server {c['server']}")
+        if not found["endpoints"] and not found["candidates"]:
+            print("no endpoints" + ("" if found["needed"] else " (no enabled runtime needs one)"))
+        return
+    if args.action in ("grant", "revoke"):
+        if not args.endpoint or not args.repo_name:
+            sys.exit(f"sbx endpoints {args.action} NAME OWNER/REPO")
+        path = f"/api/endpoints/{urllib.parse.quote(args.endpoint, safe='')}/repos"
+        repo = args.repo_name.lower()
+        changed = (api("POST", path, {"repo": repo}) if args.action == "grant" else
+                   api("DELETE", f"{path}/{urllib.parse.quote(repo, safe='/')}"))
+        print(json.dumps(changed) if args.json else
+              f"{changed['name']}: for {', '.join(changed['repos']) or 'no repo'}")
+        return
+    if args.action == "add":
+        if bool(args.server) == bool(args.target):
+            sys.exit("sbx endpoints add --server NAME, or --name NAME --target HOST:PORT [--repo OWNER/REPO ...]")
+        body = {"server": args.server, "name": args.name, "target": args.target, "repos": args.repo}
+        added = api("POST", "/api/endpoints", {k: v for k, v in body.items() if v})
+        name = added["name"]
+    else:
+        if not args.endpoint:
+            sys.exit("sbx endpoints rm NAME (sbx endpoints lists them)")
+        name = args.endpoint
+        added = api("DELETE", f"/api/endpoints/{urllib.parse.quote(name, safe='')}")
+    if args.no_wait:
+        print(json.dumps(added) if args.json else f"{args.action}: {name}, applying (sbx endpoints shows it)")
+        return
+    done = wait_endpoints(name, removed=args.action == "rm", timeout=args.timeout)
+    print(json.dumps(done) if args.json else (f"{name}: on, at {done['address']}" if done else f"{name}: removed"))
+
+
+def wait_endpoints(name, removed, timeout, interval=2.0):
+    """The endpoint once the server applied it (None once a removal is applied);
+    exits non-zero when it failed or the wait ran out."""
+    def verdict(found):
+        endpoint = next((e for e in found["endpoints"] if e["name"] == name), None)
+        if removed:
+            if endpoint is None and not found.get("applying"):
+                return None, (f"removing {name} failed: {found['failure']}" if found.get("failure") else True)
+        elif endpoint is None:
+            return None, f"the endpoint {name} is gone"
+        elif endpoint["state"] == "on":
+            return None, True
+        elif endpoint["state"] == "failed":
+            return None, f"the endpoint {name} failed: {endpoint['message'] or 'see the server log'}"
+        return "applying on the server", False
+    found = follow(lambda: api("GET", "/api/endpoints"), verdict, timeout, interval=interval,
+                   late=f"the endpoint {name} is still applying after {timeout} s: sbx endpoints shows it once applied")
+    return next((e for e in found["endpoints"] if e["name"] == name), None)
 
 
 # sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
 
 
-def _setup_link(args):
-    """The setup link from SBX_SETUP_LINK or --link-file (never argv: it is a
-    credential, and stdin is the secrets'); sets where requests go and the
-    Setup authorization."""
-    global CONTROL, SETUP_TOKEN, SSL_CONTEXT
+def setup_client(args):
+    """sbx-control as the setup link names it, from SBX_SETUP_LINK or --link-file (never argv: it is a
+    credential, and stdin is the secrets'), signed in with its token."""
     if args.link_file:
         link = pathlib.Path(args.link_file).expanduser().read_text().strip()
     else:
@@ -674,28 +768,31 @@ def _setup_link(args):
                  "by --link-file; never on the command line")
     url = urllib.parse.urlsplit(link)
     token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
-    if url.scheme not in ("https", "http") or not url.netloc or not token:
+    # http only to this machine itself (a tunnel): the token never crosses a network in plain text.
+    plain_ok = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
+    if not (url.scheme == "https" or plain_ok) or not url.netloc or not token:
         sys.exit("that is not a setup link: https://HOST/setup#t=TOKEN")
-    CONTROL, SETUP_TOKEN = f"{url.scheme}://{url.netloc}", token
+    context = None
     if args.insecure:
         import ssl
-        SSL_CONTEXT = ssl.create_default_context()
-        SSL_CONTEXT.check_hostname = False
-        SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return Client(f"{url.scheme}://{url.netloc}", token, context)
 
 
 def setup_cmd(args):
-    _setup_link(args)
+    client = setup_client(args)
     {"status": setup_status, "address": setup_address, "runtime": setup_runtime, "admin": setup_admin,
-     "finish": setup_finish}[args.step](args)
+     "finish": setup_finish}[args.step](args, client)
 
 
 def _steps(state):
     return {s["step"]: s for s in state.get("steps") or []}
 
 
-def setup_status(args):
-    state = api("GET", "/api/setup")
+def setup_status(args, client):
+    state = client.api("GET", "/api/setup")
     if args.json:
         print(json.dumps(state))
         return
@@ -712,9 +809,9 @@ def setup_status(args):
           "next: sbx setup address | runtime add | admin, then sbx setup finish")
 
 
-def setup_address(args):
+def setup_address(args, client):
     """IP access or a domain (its certificate follows on its own), then waits until HTTPS works there."""
-    state = api("GET", "/api/setup")
+    state = client.api("GET", "/api/setup")
     if args.domain:
         values = {"name": args.domain, "address": state["host"].get("address", ""), "acme": args.dns,
                   "acme_email": args.email or ""}
@@ -723,48 +820,44 @@ def setup_address(args):
             if not value:
                 sys.exit(f"no value for {key} on stdin")
             values[key] = value
-        api("PUT", "/api/connections/domain", {"values": values})
+        client.api("PUT", "/api/connections/domain", {"values": values})
     else:
         address = args.ip or state["host"].get("address", "")
         if not address:
             sys.exit("the server's address is unknown: give it (sbx setup address --ip ADDRESS)")
-        api("POST", "/api/setup/address", {"address": address})
+        client.api("POST", "/api/setup/address", {"address": address})
     if args.no_wait:
         return
-    deadline, said = time.monotonic() + args.timeout, None
-    while True:
-        state = api("GET", "/api/setup")
+
+    def verdict(state):
         if _steps(state).get("address", {}).get("done"):
-            print(f"address ready: {state['access']['url']}"
-                  + (f"; the setup link is now {state['link']}" if args.domain else ""))
-            return
+            return None, True
         error = state["access"].get("certificate_error")
-        now = f"waiting for the certificate{': ' + error if error else ''}"
-        if now != said:
-            note(now)
-            said = now
-        if time.monotonic() > deadline:
-            sys.exit(f"HTTPS is not ready after {args.timeout} s ({error or 'no certificate yet'}); sbx setup status")
-        time.sleep(5)
+        return f"waiting for the certificate{': ' + error if error else ''}", False
+    state = follow(lambda: client.api("GET", "/api/setup"), verdict, args.timeout, interval=5,
+                   late=lambda state: f"HTTPS is not ready after {args.timeout} s "
+                                      f"({state['access'].get('certificate_error') or 'no certificate yet'}); "
+                                      "sbx setup status")
+    print(f"address ready: {state['access']['url']}" + (f"; the setup link is now {state['link']}" if args.domain else ""))
 
 
-def setup_runtime(args):
+def setup_runtime(args, client):
     if args.action == "available":
-        return runtimes_available(args)
-    return runtime_change(args)
+        return runtimes_available(args, client)
+    return runtime_change(args, client)
 
 
-def setup_admin(args):
+def setup_admin(args, client):
     """The first admin's own account: the email, their password on stdin."""
     password = _read_secret(f"password for {args.email}")
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
-    api("POST", "/api/setup/admin", {"email": args.email, "password": password})
+    client.api("POST", "/api/setup/admin", {"email": args.email, "password": password})
     print(f"{args.email} has an account and is an admin; next: sbx setup finish --admin {args.email} "
           "(their password on stdin again)")
 
 
-def setup_finish(args):
+def setup_finish(args, client):
     """Finish the setup; with --admin, as that admin (their own password on stdin)."""
     body = None
     if args.admin:
@@ -772,7 +865,7 @@ def setup_finish(args):
         if not password:
             sys.exit("the admin's password comes on stdin")
         body = {"email": args.admin, "password": password}
-    state = api("POST", "/api/setup/complete", body)
+    state = client.api("POST", "/api/setup/complete", body)
     if args.json:
         print(json.dumps(state))
         return
@@ -1016,6 +1109,9 @@ def repo_cmd(args):
         for key, value in api("GET", f"/api/repos/{repo}").items():
             print(f"{key:<16} {', '.join(value) if isinstance(value, list) else value}")
         return
+    if args.action == "brief":
+        print(api("GET", f"/api/repos/{repo}/setup-brief", raw=True))
+        return
     me = api("GET", "/api/me")
     status = api("GET", f"/api/repos/{repo}")
     if not status["trust"]:
@@ -1034,7 +1130,8 @@ def repo_cmd(args):
         r = scaffold(checkout, repo, args.prebuild)
         found = r["found"]
         print(f"wrote {', '.join(sorted(r['files']))}")
-        print(f"  start: {found['dev'] or '(none found; the agent starts the app)'}; preview on port {found['port']}")
+        print(f"  start: {found['dev'] or '(none found; the agent starts the app)'}; preview on port "
+              f"{found['port'] or '(none found; the agent sets it)'}")
         wanted = found["secrets"]
     elif checkout:
         print(".sbx/ is already there; kept it")
@@ -1051,7 +1148,7 @@ def repo_cmd(args):
         print(f"starting {args.agent} with the setup brief; it writes .sbx/, tries it in a sandbox "
               "and verifies the application")
         run_agent(args.agent, api("GET", f"/api/repos/{repo}/setup-brief", raw=True), checkout)
-    print("Next: sbx recipe apply (the server uses .sbx/ before it is committed), then sbx up try-1"
+    print("Next: give your agent the setup brief (sbx repo brief prints it), or sbx recipe apply, then sbx up check-a"
           + ("; it has a template of its own: sbx template build" if args.prebuild or status.get("prebuilt") else ""))
 
 
@@ -1069,16 +1166,11 @@ def template_cmd(args):
         if not args.wait:
             print(f"building {repo}'s template on the server; sbx template status shows when it's done")
             return
-    deadline = time.time() + args.timeout
-    while True:
-        r = api("GET", path)
-        if not args.wait or r["status"] != "building":
-            r.pop("log", None)
-            print(json.dumps(r))
-            sys.exit(1 if r["status"] == "failed" else 0)
-        if time.time() > deadline:
-            sys.exit("the template is still building; sbx template status shows when it's done")
-        time.sleep(5)
+    r = follow(lambda: api("GET", path), lambda r: (None, not args.wait or r["status"] != "building"), args.timeout,
+               interval=5, late="the template is still building; sbx template status shows when it's done")
+    r.pop("log", None)
+    print(json.dumps(r))
+    sys.exit(1 if r["status"] == "failed" else 0)
 
 
 def read_dotenv(path):
@@ -1203,8 +1295,17 @@ def catalog_cmd(args):
             choices = ", ".join(repr(c["value"]) for c in i.get("choices", ()))
             print(f"  input {n}{' (required)' if i['required'] else ''}{' secret' if i['secret'] else ''}: {about}"
                   + (f" (one of {choices})" if choices else ""))
+        for n, o in (e.get("outputs") or {}).items():
+            print(f"  output {n}{' (secret)' if o.get('sensitive') else ''}: ${{services.KEY.{n}}}")
+        for var, value in (e.get("env") or {}).items():
+            print(f"  sets {var}: {value}")
         for slot, r in e["requires"].items():
-            print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})")
+            # The saved connections of that kind (listed to admins): what connections: {slot: NAME} names.
+            saved = [c["key"] for c in api("GET", f"/api/catalog/{r['kind']}").get("connections") or []]
+            print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})"
+                  + (f"; saved: {', '.join(saved)}" if saved else ""))
+        for c in e.get("connections") or []:
+            print(f"  saved connection {c['key']}")
         if args.files:
             for path, text in api("GET", f"/api/catalog/{name}/files")["files"].items():
                 print(f"\n--- {path}\n{text}")
@@ -1331,6 +1432,22 @@ def parser():
                         "test: an enabled one's checks")
     p.add_argument("kind", nargs="?", help="test, add, set, remove, default: the runtime (e2b-cloud, ...)")
     change_flags(p)
+    p = command("endpoints", endpoints_cmd, "admins: this server's private services (managed servers, internal "
+                "hosts) for sandboxes on runtimes that don't reach its private network, over TLS at <name>.<domain>")
+    p.add_argument("action", nargs="?", choices=["ls", "add", "rm", "grant", "revoke"],
+                   help="none or ls: list them and the managed servers without one; add: --server NAME, or --name "
+                        "NAME --target HOST:PORT --repo OWNER/REPO; rm NAME; grant | revoke NAME OWNER/REPO: which "
+                        "repos' sandboxes may use an internal host's endpoint")
+    p.add_argument("endpoint", nargs="?", metavar="NAME", help="rm, grant, revoke: the endpoint")
+    p.add_argument("repo_name", nargs="?", metavar="REPO", help="grant, revoke: owner/name")
+    p.add_argument("--repo", action="append", metavar="OWNER/REPO",
+                   help="add, an internal host: a repo whose sandboxes may use it (repeatable)")
+    p.add_argument("--server", help="add: a managed server (sbx-admin server ls)")
+    p.add_argument("--name", help="add: the endpoint's name, a host name label (default for --server: its name)")
+    p.add_argument("--target", metavar="HOST:PORT", help="add: an internal host within network.internal_cidrs")
+    p.add_argument("--no-wait", action="store_true", help="add, rm: return once recorded")
+    p.add_argument("--timeout", type=int, default=300, help="seconds to wait for the server to apply it (default 300)")
+    p.add_argument("--json", action="store_true", help="as the API answers")
 
     p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the link install.sh "
                 "printed (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")
@@ -1346,7 +1463,9 @@ def parser():
     s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
     s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at login.D")
     s.add_argument("--email", help="for the certificate's expiry notices (with --domain)")
-    s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53"])
+    s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53", "none"],
+                   help="how the wildcard certificate is issued (default delegated); none: self-signed, for a first "
+                        "test (browsers warn, and only sbx setup takes it, with --insecure)")
     s.add_argument("--secret", action="append", metavar="KEY",
                    help="the DNS provider's credential (cloudflare_api_token, aws_access_key_id, ...) on stdin")
     s.add_argument("--no-wait", action="store_true")
@@ -1375,8 +1494,9 @@ def parser():
     p = command("push", push, "push a local branch into the sandbox's checkout")
     p.add_argument("name")
     p.add_argument("--branch", help="default: the current one")
-    p = command("sandbox", sandbox_cmd, "agent operations; each prints the sandbox's JSON: info [--wait], restart "
-                "(the app), prepare (reapply the recipe), pause, resume, resources, exec (a script on stdin)")
+    p = command("sandbox", sandbox_cmd, "agent operations; each prints the sandbox's JSON on stdout (progress goes to "
+                "stderr): info [--wait], restart (the app), prepare (reapply the recipe), pause, resume, resources, "
+                "exec (a script on stdin; prints its output)")
     p.add_argument("action", choices=["info", "restart", "prepare", "pause", "resume", "resources", "exec"])
     p.add_argument("name")
     p.add_argument("--wait", action="store_true", help="info: until its operation finishes")
@@ -1388,8 +1508,9 @@ def parser():
                    "and register them in Claude Desktop (again after up or down)")
     p.add_argument("--remove", action="store_true", help="take all of it out again")
     p = command("repo", repo_cmd, "status: what the server knows about the repo; connect: set it up for sandboxes "
-                "(an admin adds it to the server; drafts .sbx/ from the checkout)")
-    p.add_argument("action", choices=["status", "connect"])
+                "(an admin adds it to the server; drafts .sbx/ from the checkout); brief: print the setup brief "
+                "an agent follows")
+    p.add_argument("action", choices=["status", "connect", "brief"])
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--dir", help="connect: the checkout (default: the one you are in)")
     p.add_argument("--agent", nargs="?", const="claude", metavar="COMMAND",

@@ -24,8 +24,8 @@ const LIMITS = [
 const HOBBY = { E2B_CLOUD_MAX_TIMEOUT: '3600', E2B_CLOUD_MAX_CPU: '8', E2B_CLOUD_MAX_MEMORY_MB: '8192', E2B_CLOUD_MAX_DISK_MB: '10240', E2B_CLOUD_MAX_SANDBOXES: '10' }
 const PRO = { E2B_CLOUD_MAX_TIMEOUT: '86400', E2B_CLOUD_MAX_CPU: '8', E2B_CLOUD_MAX_MEMORY_MB: '8192', E2B_CLOUD_MAX_DISK_MB: '20480', E2B_CLOUD_MAX_SANDBOXES: '100' }
 const available = (kind: string, title: string, extra: Partial<AvailableRuntime> = {}): AvailableRuntime => ({
-  kind, title, host: false, enabled: false, default: false, can_run: true, why_not: '', managed_by: '', not_editable: '',
-  settings: [], presets: [], values: {}, secrets_set: [], facts: {}, sandboxes: [], removable: '', limit_hit: null, ...extra,
+  kind, title, host: false, enabled: false, default: false, can_run: true, why_not: '', managed_by: '', edit_blocker: null,
+  settings: [], presets: [], values: {}, secrets_set: [], facts: {}, sandboxes: [], remove_blocker: null, limit_hit: null, ...extra,
 })
 const CLOUD_FORM: Partial<AvailableRuntime> = {
   settings: [
@@ -35,7 +35,7 @@ const CLOUD_FORM: Partial<AvailableRuntime> = {
   ],
   presets: [{ name: 'hobby', title: 'Hobby', values: HOBBY, source: 'https://e2b.dev/pricing' }, { name: 'pro', title: 'Pro', values: PRO, source: 'https://e2b.dev/pricing', adjustable: ['E2B_CLOUD_MAX_CPU', 'E2B_CLOUD_MAX_MEMORY_MB'], note: 'Pro allows more than 8 vCPUs and 8 GB if E2B raised it for your team; E2B says so when it doesn’t.' }],
 }
-const AV_EMBED = available('embed', 'E2B Embed', { host: true, enabled: true, default: true, managed_by: 'install.sh', not_editable: 'E2B Embed is set up by install.sh on this server', removable: 'E2B Embed is set up by install.sh on this server' })
+const AV_EMBED = available('embed', 'E2B Embed', { host: true, enabled: true, default: true, managed_by: 'install.sh', edit_blocker: { code: 'host', message: 'E2B Embed is set up by install.sh on this server', sandboxes: [] }, remove_blocker: { code: 'host', message: 'E2B Embed is set up by install.sh on this server; remove it there: sbx-admin runtime remove embed', sandboxes: [] } })
 const IDLE: RuntimeChange = { state: 'idle', operation: '', kind: '', message: '', at: '' }
 const change = (state: RuntimeChange['state'], operation: RuntimeChange['operation'], message = ''): RuntimeChange => ({ state, operation, kind: 'e2b-cloud', message, at: '2026-11-17T12:00:00Z' })
 
@@ -100,7 +100,7 @@ describe('Settings → Sandbox runtimes', () => {
     await user.type(within(form).getByLabelText('API key'), 'test-only-key')
     await user.click(within(form).getByRole('button', { name: 'Add E2B Cloud' }))
     expect(await screen.findByText('Applying…')).toBeTruthy()
-    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ kind: 'e2b-cloud', values: {
+    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ kind: 'e2b-cloud', plan: 'custom', values: {
       E2B_CLOUD_API_KEY: 'test-only-key', E2B_CLOUD_MAX_TIMEOUT: '5400', E2B_CLOUD_MAX_CPU: '8', E2B_CLOUD_MAX_MEMORY_MB: '4096',
       E2B_CLOUD_MAX_DISK_MB: '10240', E2B_CLOUD_MAX_SANDBOXES: '100' } })
     await waitFor(() => expect(calls.filter(c => c.url === '/api/runtimes/change').length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
@@ -112,7 +112,7 @@ describe('Settings → Sandbox runtimes', () => {
   it('changes settings with the key kept, makes a default, and says why one can’t be removed', async () => {
     const calls = stubApi({
       'GET /api/me': ME,
-      'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { E2B_CLOUD_MAX_TIMEOUT: '3600', E2B_CLOUD_MAX_SANDBOXES: '20' }, sandboxes: ['login'], removable: '1 sandbox run on E2B Cloud (login): delete them first' })],
+      'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: true, secrets_set: ['E2B_CLOUD_API_KEY'], values: { E2B_CLOUD_MAX_TIMEOUT: '3600', E2B_CLOUD_MAX_SANDBOXES: '20' }, sandboxes: ['login'], remove_blocker: { code: 'has_sandboxes', message: '1 sandbox run on E2B Cloud (login): delete them first (sbx down NAME, or the web app)', sandboxes: ['login'] } })],
       'GET /api/runtimes/change': IDLE,
       'PUT /api/runtimes/default': change('queued', 'default'),
       'PUT /api/runtimes/e2b-cloud': change('queued', 'change'),
@@ -160,7 +160,7 @@ describe('Settings → Sandbox runtimes', () => {
     await user.type(within(form).getByLabelText('vCPUs (exact)'), '16{Enter}')
     await user.click(within(form).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'PUT')).toBe(true))
-    expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ values: { ...PRO, E2B_CLOUD_MAX_CPU: '16' } })   // no key: kept; the domain is as it was
+    expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ plan: 'pro', values: { E2B_CLOUD_MAX_CPU: '16' } })   // the server sets Pro's limits; no key: kept; the domain is as it was
   })
 
   it('shows Custom for limits no plan has, and asks for the key again when the domain moves', async () => {
@@ -195,7 +195,7 @@ describe('Settings → Sandbox runtimes', () => {
   it('shows the server’s refusal, and what to do on a local secret store instead of the form', async () => {
     stubApi({
       'GET /api/me': ME,
-      'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, not_editable: 'set up the secret store first, or on the server: sbx-admin runtime add e2b-cloud' })],
+      'GET /api/runtimes/available': [AV_EMBED, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, edit_blocker: { code: 'local_store', message: 'set up the secret store first, or on the server: sbx-admin runtime add e2b-cloud', sandboxes: [] } })],
       'GET /api/runtimes/change': { ...change('failed', 'add', 'E2B Cloud did not take the settings: E2B Cloud API: HTTP 401'), at: new Date().toISOString() },
       'GET /api/runtimes': { default: 'embed', runtimes: [EMBED] },
     })
@@ -277,13 +277,32 @@ describe('first-run setup without a runtime', () => {
     expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)
 
+  it('keeps what was typed when applying the runtime fails', async () => {
+    setSetupToken('one-time-token')
+    const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('failed', 'add', 'E2B Cloud refused the key') })
+    stubApi({
+      'GET /api/setup/checks': { ok: true, checks: [] },
+      'GET /api/setup': SETUP(false),
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
+      'GET /api/runtimes/change': () => polls(),
+      'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
+      'GET /api/runtimes': { default: '', runtimes: [] },
+    })
+    renderApp(<SetupPage />, '/app/setup')
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText('API key'), 'test-only-key')
+    await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
+    expect(await screen.findByText(/E2B Cloud refused the key/, undefined, { timeout: 10000 })).toBeTruthy()
+    await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('test-only-key'))
+  }, 20000)
+
   it('says up front that a provider needs a domain, and goes back to the address step', async () => {
     setSetupToken('one-time-token')
     stubApi({
       'GET /api/setup/checks': { ok: true, checks: [] },
       'GET /api/setup': { ...SETUP(false), access: { ...SETUP(false).access, mode: 'ip', domain: '' } },
-      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, needs_domain: true,
-        not_editable: "E2B Cloud's sandboxes call this server back at its login address: connect a domain first (the server address step, or Settings → General)" })],
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM,
+        edit_blocker: { code: 'needs_domain', message: "E2B Cloud's sandboxes call this server back at its login address: connect a domain first (the server address step, or Settings → General)", sandboxes: [] } })],
       'GET /api/runtimes/change': IDLE,
       'GET /api/runtimes': { default: '', runtimes: [] },
     })

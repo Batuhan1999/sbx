@@ -67,13 +67,14 @@ class IpPreviewTests(Installation):
         self.assertEqual(addressing.ssh_url('first', a, 'sandbox-id'), 'wss://8081-sandbox-id.sbx.example')
 
     def test_control_cookie_never_reaches_an_application(self):
-        self.assertEqual(self.ip.app_cookies('app=a; sbx_session=first; other=b; sbx_session=second'),
+        from sbx_control import preview_proxy
+        self.assertEqual(preview_proxy.app_cookies('app=a; sbx_session=first; other=b; sbx_session=second'),
                          'app=a; other=b')
 
     def test_the_preview_server_gates_every_request_and_strips_what_the_app_must_not_see(self):
         config_text = self.ip.nginx('203.0.113.10', '203.0.113.10')
         self.assertIn('auth_request /_sbx_ip_gate;', config_text)
-        self.assertIn('proxy_set_header Cookie $ip_cookies;', config_text)     # app_cookies, without the control's
+        self.assertIn('proxy_set_header Cookie $ip_cookie;', config_text)     # app_cookies, without the control's
         self.assertIn('proxy_set_header E2b-Sandbox-Id "";', config_text)      # the gate, not the client, picks the VM
 
     def test_ipv6(self):

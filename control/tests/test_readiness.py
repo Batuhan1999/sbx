@@ -74,6 +74,8 @@ class ReadinessTests(unittest.TestCase):
         unknown = step(progress({"github": "anonymous"}), "github")
         self.assertEqual((unknown["status"], unknown["who"], unknown["action"]),
                          ("todo", "admin", INFO["github_app_install"]))
+        # Not known to be public yet: a public repo clones without the App, so it is asked for to push.
+        self.assertIn("can push (and clone it, if it is private)", unknown["detail"])
         # A trusted public repo without the App: cloned anonymously, ready without it.
         found = progress({"github": "anonymous", "github_anonymous": True})
         self.assertEqual(step(found, "github")["status"], "done")

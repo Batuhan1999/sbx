@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from support import Installation
+from support import Installation, _builds_settled
 
 
 class TemplateRoomTests(Installation):
@@ -58,9 +58,30 @@ class TemplateRoomTests(Installation):
             with self.assertRaisesRegex(self.builds.NotBuilt, "cannot build now: building the owner/app template needs 16.0 GB"):
                 self.builds.template_for("owner/app")
             self.assertIn("owner/app", self.builds.stale())   # not failed: the next round tries again
+            from sbx_control import template_scheduler
             with patch.object(self.builds, "build_now", side_effect=self.builds.NoRoom("fixture")) as build:
-                self.builds._build_quietly("owner/app")
+                template_scheduler._build_quietly("owner/app")
             build.assert_called_once()
+
+    def test_a_nightly_rebuild_without_room_is_tried_again_the_next_night(self):
+        from sbx_control import runtime, template_scheduler
+        self.builds.mark_moved("owner/app")
+        stop = SimpleNamespace(waits=0, is_set=lambda: False)
+        stop.wait = lambda seconds: (setattr(stop, "waits", stop.waits + 1) or stop.waits > 1)
+        night = time.localtime()[:3] + (self.builds.NIGHTLY_REBUILD_HOUR,) + time.localtime()[4:]
+        with patch.object(runtime, "enabled", return_value=["embed"]), \
+                patch.object(self.builds, "forget_missing"), patch.object(self.builds, "stale", return_value=[]), \
+                patch.object(self.builds, "keys", return_value=["owner/app"]), patch.object(self.builds, "prune"), \
+                patch.object(template_scheduler.time, "localtime", return_value=time.struct_time(night)), \
+                patch.object(self.builds, "build_now", side_effect=self.builds.NoRoom("fixture")) as build:
+            template_scheduler.schedule(stop)
+        build.assert_called_once_with("owner/app", "embed")
+        self.assertEqual(self.builds.moved(), ["owner/app"])
+
+    def test_a_build_left_running_after_a_test_fails_it_by_name(self):
+        with patch.object(self.builds, "_running", {("embed", "owner/app")}):
+            with self.assertRaisesRegex(AssertionError, "still running after 0.1 s: .*owner/app"):
+                _builds_settled(0.1)
 
     # While it runs.
 

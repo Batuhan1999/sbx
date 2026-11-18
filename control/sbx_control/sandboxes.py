@@ -11,8 +11,8 @@ import time
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, settings,
-               state, template_builds, variables)
+from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, sandbox_layers,
+               settings, state, template_builds, variables)
 from .state import db
 
 SLUG_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -67,10 +67,13 @@ def register(name: str, owner: str, branch: str, slug: str, metadata: dict | Non
         if core.find(name):
             raise lifecycle.Conflict(f"{name} still has a sandbox; prepare or delete it before creating again")
         unregister(name)
+    from . import endpoints
     try:
-        with db() as conn:
-            conn.execute("insert into sandboxes (name, owner, branch, slug, metadata, runtime) values (?, ?, ?, ?, ?, ?)",
-                         (name, owner, branch, slug, json.dumps(metadata or {}), kind or runtime.default()))
+        with endpoints.lock():   # an endpoint is added under it: its name and this slug checked against each other
+            _no_endpoint_at(slug)
+            with db() as conn:
+                conn.execute("insert into sandboxes (name, owner, branch, slug, metadata, runtime) values (?, ?, ?, ?, ?, ?)",
+                             (name, owner, branch, slug, json.dumps(metadata or {}), kind or runtime.default()))
     except sqlite3.IntegrityError as error:
         raise lifecycle.Conflict(f"{name} exists") from error
 
@@ -109,7 +112,15 @@ def check_slug(slug: str, name: str = "") -> str:
         raise core.SandboxError(f"{slug} is taken: it is the host of a port in {slug.rpartition('-')[0]}")
     if slug_taken(slug, name):
         raise core.SandboxError(f"{slug} is another sandbox's")
+    _no_endpoint_at(slug)
     return slug
+
+
+def _no_endpoint_at(slug: str) -> None:
+    from . import endpoints
+    if slug and (found := endpoints.slug_taken(slug)):
+        raise core.SandboxError(f"{slug} is taken: {found}.<domain> is an endpoint (sbx endpoints), which a "
+                                f"preview host of {slug} would be; choose another name or slug")
 
 
 def set_branch(name: str, branch: str):
@@ -151,6 +162,7 @@ def prepare_waiting(present: set):
 def unregister(name: str):
     with db() as conn:
         conn.execute("delete from sandboxes where name = ?", (name,))
+    sandbox_layers.forget(name)
 
 
 def forget(name: str):
@@ -251,6 +263,7 @@ def create_locked(body: CreateSandbox, email: str, *, start_app: bool = True, me
     kind = runtimes.choose(repo, body.runtime, None if start_from else recipes.load(body.repo).size)
     template = start_from or template_builds.template_for(repo, kind)
     register(body.name, email, branch, slug, metadata, kind)
+    advise_endpoints(body.name, repo, kind)
     try:
         result = core.create(body.name, slug, email, branch, body.public_keys, body.repo,
                              source_commit=body.source_commit, template=template,
@@ -264,6 +277,22 @@ def create_locked(body: CreateSandbox, email: str, *, start_app: bool = True, me
                                 lambda operation: core.prepare_and_start(body.name, branch, operation=operation))
     info = core.find(body.name)
     return {**result, **(describe(info) if info else {})}
+
+
+def advise_endpoints(name: str, repo: str | None, kind: str):
+    """An internal address in the recipe's env that its sandboxes on this
+    runtime won't reach (no endpoint, or not granted to the repo): not a
+    refusal, an event that says what would make it reachable."""
+    from . import endpoints, runtime
+    if not repo or runtime.capabilities(kind).private_networks:
+        return
+    try:
+        said = endpoints.advice(repo)
+    except Exception as error:   # advice only: the create goes on
+        print(f"endpoints: advice for {repo}: {error!r}", flush=True)
+        return
+    for line in said:
+        state.event(name, "endpoint suggested", line)
 
 
 def restart(name: str, info, prepare: bool = False):
@@ -280,7 +309,8 @@ def restart(name: str, info, prepare: bool = False):
 def pause(name: str, info):
     core.pause(name, info)
     state.event(name, "paused", "explicit operator request")
-    return {"name": name, "state": "paused"}
+    # Its status as the API shows it: a failed sandbox stays failed, its VM paused.
+    return {"name": name, "state": (lifecycle.get(name) or {}).get("status", "paused"), "vm": "paused"}
 
 
 def resume(name: str, info, start_app: bool = True):
@@ -362,44 +392,6 @@ def deliver_pending(sandbox: str):
         state.event(sandbox, "env update failed", "retained for retry: " + str(error)[-1000:])
     finally:
         guard.release()
-
-
-DELIVERED_PIN = state.Setting("tls_pin_delivered")
-# While a new pin is not delivered to every sandbox yet: {"pin", "names"}
-# of those it was queued for (a listing that missed a runtime's).
-PIN_QUEUED = state.Setting("tls_pin_queued", encoded=True)
-PIN_PARTIAL = "partial"   # DELIVERED_PIN while a delivery is incomplete: equals no real pin
-
-
-def redeliver_on_certificate_change(names, complete: bool = True) -> bool:
-    """When this server's self-signed certificate's key changed (or the
-    sandboxes do not have it yet): their runtime layers again, so what calls
-    sbx from inside them (the git credential helper) pins the key of now.
-    names: the sandboxes listed. Running ones get it at this round's
-    deliveries, paused ones when they resume. A listing that missed a
-    runtime (complete False) queues those it has, once each, and the pin
-    counts as delivered only after a complete one. Whether it queued any."""
-    from . import templates
-    pin, delivered = templates.pinned_key(), DELIVERED_PIN.get()
-    if pin == delivered or (delivered is None and not pin):
-        if delivered is None:
-            DELIVERED_PIN.set(pin)
-        return False
-    queued = PIN_QUEUED.get() or {}
-    done = set(queued.get("names", [])) if queued.get("pin") == pin else set()
-    fresh = sorted({name for name in names if name} - done)
-    for name in fresh:
-        delivery.queue(name, [], restart=False)
-    if complete:
-        DELIVERED_PIN.set(pin)
-        PIN_QUEUED.delete()
-    else:
-        PIN_QUEUED.set({"pin": pin, "names": sorted(done | set(fresh))})
-        # Some sandboxes may hold this pin now: no pin counts as delivered
-        # until a complete round, so going back to the previous one queues
-        # them again.
-        DELIVERED_PIN.set(PIN_PARTIAL)
-    return bool(fresh)
 
 
 def deliver_waiting(running: set):

@@ -33,9 +33,10 @@ class HostUnit(enum.StrEnum):
     HOST_GUARD = "host-guard"        # sbx-host-guard: public ports, the egress rules
     RUNTIME_NETWORK = "runtime-network"  # what recreates the runtime: pending until sbx-admin network apply
     CONTROL = "control"              # sbx-control restart (what it reads at start: the cookie domain)
-    RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Runtime.apply_host)
+    RUNTIME_ENV = "runtime-env"      # the installation's names, to the runtime (Backend.apply_host)
     UPGRADE = "upgrade"              # install a newer release (updates.py); the request names its tag
     RUNTIME_CHANGE = "runtime-change"  # add, change, remove a runtime or make one the default (runtime_changes.py)
+    ENDPOINTS = "endpoints"          # nginx's stream configuration for the endpoints (endpoints.py)
 
 
 class Section(BaseModel):
@@ -384,12 +385,17 @@ def history(limit: int = 100) -> list:
 def request_effects(*units: str):
     """Ask the host for these effects now: what a secret declares it affects
     (vault.Key.applies), or a restored installation."""
+    from .. import host_requests
     for unit in units:
-        _request(unit)
+        try:
+            host_requests.queue(unit)
+        except OSError as error:  # no /run/sbx (a development machine): the effect is the operator's
+            print(f"settings: could not request {unit}: {error}", file=sys.stderr, flush=True)
 
 
 def pending_effects() -> list[str]:
-    return _pending()
+    from .. import host_requests
+    return host_requests.pending()
 
 
 def _with(s: Settings, changes: dict) -> Settings:
@@ -518,17 +524,3 @@ def _history(limit: int = 100) -> list:
     with state.db() as conn:
         return [{"section": s, "by": by, "at": at} for s, by, at in conn.execute(
             "select section, by, at from config_history order by id desc limit ?", (limit,))]
-
-
-def _request(unit: str):
-    try:
-        folder = paths.run() / "apply"
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / str(unit)).write_text(f"{time.time():.0f}\n")
-    except OSError as error:  # no /run/sbx (a development machine): the effect is the operator's
-        print(f"settings: could not request {unit}: {error}", file=sys.stderr, flush=True)
-
-
-def _pending() -> list[str]:
-    folder = paths.run() / "apply"
-    return sorted(p.name for p in folder.glob("*")) if folder.exists() else []

@@ -2,7 +2,7 @@
 
 Status: phase 1 of [sbx#18](https://github.com/Batuhan1999/sbx/issues/18). This
 file is the contract the backend, the web app and the docs build against; it
-is removed or folded into `docs/development.md` once phase 1 has landed.
+is removed or folded into `docs/development.md` once phase 1 has landed. Phase 4's decisions are below.
 
 ## Goal
 
@@ -55,8 +55,8 @@ runtime; it asks the registry.
      `test`) run over the enabled runtimes that have a host side.
    - `capabilities(kind=None)`, `title(kind=None)`.
 6. **The contract has two parts.** Every backend implements the compute part
-   of `Runtime`. The host part has no-op defaults in a base class
-   (`runtime.base.HostSide`) that hosted backends inherit, so they implement
+   of `runtime.base.Backend`. The host part has no-op defaults in that class
+   that hosted backends inherit, so they implement
    nothing they do not have. Embed overrides it.
 7. **Choosing the runtime of a new sandbox**, in order: the request's
    `runtime` (API field, `sbx up --runtime`), the repo's setting (admins:
@@ -102,8 +102,82 @@ runtime; it asks the registry.
   sets or clears it.
 - CLI: `sbx up NAME --runtime KIND`; `sbx runtimes` lists them.
 
+## Phase 4: shared services over one TLS path
+
+Sandboxes on a runtime without `private_networks` reach this host's managed
+servers and internal hosts through endpoints (`sbx_control/endpoints/`;
+[reference](reference.md#endpoints)).
+
+1. **One generic path, on 443.** nginx's stream module owns 443 and
+   routes by SNI without decrypting (`ssl_preread`): endpoint names to a
+   loopback listener where a server per endpoint terminates TLS with the
+   wildcard certificate and proxies to its target, every other name to the
+   HTTPS server on loopback (client address in the PROXY protocol). No
+   extra port: cloud firewalls often open only the standard ones. No per-protocol code: in the sandbox, the guest
+   helper's forwarder turns `127.0.0.1:<local port>` into TLS to that name.
+2. **Opt-in per endpoint.** An endpoint is `{name, target}`: a managed
+   server's (`--server`) or an internal host's within
+   `network.internal_cidrs`. With none, nothing listens and no port opens.
+3. **Access per repository, explicit, not by trust.** A managed server's
+   endpoint is for the repositories attached to it; an internal host's for
+   the repositories granted it (`repos`, `PUT /api/endpoints/NAME`, `sbx
+   endpoints grant | revoke`). Enforced by certificates: a CA per endpoint,
+   nginx verifying each endpoint's clients against its own CA, and a
+   sandbox holding certificates only for the endpoints its repository may
+   use.
+4. **mTLS, short-lived.** A 24-hour client certificate per sandbox and
+   endpoint: written with the runtime, renewed by the keeper while running,
+   pushed when sbx resumes the sandbox, and pulled by the forwarder in the
+   background with a credential of the sandbox instance's own when less than
+   an hour is left. No IP allowlists, no revocation lists: a revoke makes the
+   endpoint's CA anew (what the revoked sandboxes hold, or copied, stops
+   passing once nginx reloads), and nginx's old workers end open sessions
+   within 30 s (`worker_shutdown_timeout`). The service's own auth stays on
+   top.
+5. **Values per runtime.** On a provider runtime, endpoint targets in the
+   sandbox's env and its services' outputs become the forwarder's loopback
+   address, and an internal host's endpoint is `SBX_ENDPOINT_<NAME>`;
+   Embed's sandboxes keep the private ones.
+6. **The gate.** `runtimes.choose` refuses a provider runtime while a
+   private target the repository's attachments bind is not reachable for
+   it, naming `sbx endpoints add ...` or `sbx endpoints grant ...`; an
+   internal address only in `sbx.yaml`'s env is a sandbox event instead.
+7. **API and CLI.** `GET/POST /api/endpoints`, `PUT/DELETE
+   /api/endpoints/NAME` (admins), `POST /api/sandbox/endpoint-certs` (a
+   sandbox); `sbx endpoints [ls | add | rm | grant | revoke]`.
+
+## Phase 5: Boat, and a page for every preview
+
+1. **Boat is a third built-in backend** (`runtime/boat/`, kind `boat`) over
+   Boat's official SDK, which nothing else imports. Templates are saved
+   snapshots built by replaying the `TemplateSpec` in a builder sandbox;
+   pause is Boat's stop; sandboxes carry labels for the installation and the
+   template. Capabilities: snapshots, no private networks, no egress rules
+   (untrusted public repos are refused while it is enabled).
+2. **What differs is a property, not core special-casing.** A preview token
+   per port in a cookie (`upstream_token_at = TokenPlace("cookie", name)`,
+   `upstream_token(sandbox_id, port, *, fetch=True)`; E2B Cloud ignores the port), the
+   provider's own desktop (`desktop = "provider"`, `desktop_url`; sbx's noVNC
+   only where `desktop` is `"sbx"`), and every resume treated as a cold boot
+   (`cold_resume`: sbx re-ships `/run/sbx` and restarts the processes).
+3. **Previews never end in a bare error.** On every runtime, signed out is
+   the login for any host; signed in, every state the app can't answer in
+   (starting, waking, its step, the app stopped, failed, deleted, no such
+   name, no access, nothing on the port) is one page, polling sbx's state
+   with no time cap and handing over to the exact URL once the app's port
+   answers. nginx sends the gate's refusals and its own 502 or 504 (not
+   reachable, timed out) to it, never an app's own answer; a navigation
+   waits on the page until the port listens. Non-HTML requests get the
+   status with `Retry-After`. The gate starts a resume and answers within
+   2.5 seconds instead of holding nginx.
+4. **A trial account is accepted; templates need the first payment.** Run
+   live on a trial account: the base template's replay worked on real
+   Boat and the save was refused ("Saved snapshots are not available during
+   the free trial"). sbx now refuses a build on the trial before it starts a
+   builder and says so in the status, the check and the trial preset.
+
 ## Out of phase 1
 
 The E2B Cloud backend (phase 2), adding runtimes from the web app and their
 settings forms (phase 3), shared services over TLS subdomains (phase 4), the
-boat.dev backend (phase 5).
+boat.dev backend (phase 5, above).

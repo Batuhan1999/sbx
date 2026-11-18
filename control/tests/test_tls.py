@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -80,6 +81,14 @@ import shlex
 if sys.argv[1:2] == ['-c'] and 'host.CURRENT' in sys.argv[2]:
     print(os.getcwd())
     raise SystemExit(0)
+if sys.argv[1:3] == ['-m', 'sbx_control.endpoints']:   # the records' part needs sbx.db: the stream front alone here
+    from sbx_control.endpoints import nginx
+    (Path(sys.argv[4]) / nginx.STREAM_FILE).write_text(nginx.stream_config([], ''))
+    raise SystemExit(0)
+if sys.argv[1:3] == ['-m', 'sbx_control.tls_front']:
+    from sbx_control import tls_front
+    sys.stdout.write(tls_front.MAIN_CONF if sys.argv[3] == 'main-conf' else tls_front.HTTPS_LISTEN)
+    raise SystemExit(0)
 if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     from sbx_control.ip_previews import nginx
     print(nginx(sys.argv[4], sys.argv[5]), end='')
@@ -151,6 +160,8 @@ path.write_text(path.read_text().replace(before, after))
                               request[request.index("--preferred-profile") + 1]), ("203.0.113.10", "shortlived"))
             self.assertNotIn("--force-renewal", request)
         self.assertIn("/live/203.0.113.10/fullchain.pem", (self.root / "tls/nginx/default.conf").read_text())
+        self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server",
+                      (self.root / "tls/nginx/default.conf").read_text())
         self.assertIn("/live/203.0.113.10/fullchain.pem", (self.root / "tls/nginx/ip-previews.conf").read_text())
         self.assertTrue((self.root / "tls/ip-certificate.fingerprint").exists())
         self.assertIn(["systemctl", "enable", "-q", "--now", "sbx-tls-renew.timer"], self.commands())
@@ -176,14 +187,30 @@ path.write_text(path.read_text().replace(before, after))
         config = (self.root / "tls/nginx/default.conf").read_text()
         bootstrap = (self.root / "tls/nginx/bootstrap.conf").read_text()
         self.assertIn("/live/sbx.example.com/fullchain.pem", config)
-        self.assertNotIn("listen 443 ssl default_server", config)
-        self.assertIn("listen 443 ssl default_server", bootstrap)
+        # Every HTTPS server listens behind the stream front on 443, with the client's address in the PROXY protocol.
+        self.assertNotIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", config)
+        self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", bootstrap)
+        self.assertNotIn("listen 443", config + bootstrap)
+        self.assertEqual(config.count("listen 127.0.0.1:8442 ssl proxy_protocol"), 2)
+        front = (self.root / "tls/nginx/endpoints.stream").read_text()
+        self.assertIn("listen 443;\n  ssl_preread on;", front)
+        self.assertIn("default 127.0.0.1:8442;", front)
+        self.assertIn("real_ip_header proxy_protocol;", (self.root / "tls/nginx.conf").read_text())
+        launcher = (self.bin / "sbx-tls-nginx").read_text()
+        self.assertIn("--label sbx.nginx-layout=2", launcher)
+        self.assertIn('[ "$(docker inspect -f \'{{index .Config.Labels "sbx.nginx-layout"}}\' sbx-tls-nginx)" != 2 ]',
+                      launcher)
         self.assertIn("/live/203.0.113.10/fullchain.pem", bootstrap)
         self.assertGreater(sum("certonly" in c for c in self.commands()), ip_requests)   # the domain's renewal renews the IP's too
         self.assertFalse((self.root / 'tls/nginx/ip-previews.conf').exists())
         # A deleted sandbox's preview is a 404 within a second, not a 502 for as long as an allow is cached.
         gate = (self.root / "tls/nginx/gate.inc").read_text()
         self.assertIn("proxy_cache_valid 200 1s;", gate)
+        # nginx -t refuses a buffer size its proxy_buffers can't hold twice over
+        # (busy buffers default to two of them, and must leave one buffer free).
+        size = int(re.search(r"proxy_buffer_size (\d+)k;", gate)[1])
+        count, each = map(int, re.search(r"proxy_buffers (\d+) (\d+)k;", gate).groups())
+        self.assertLess(2 * max(size, each), count * each - each)
         # A CORS preflight goes through the gate too, named by its method, which
         # comes first in the cache key: an anonymous OPTIONS's allow never answers a GET.
         self.assertIn("proxy_set_header X-Original-Method $sbx_method;", gate)

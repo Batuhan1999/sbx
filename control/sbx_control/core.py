@@ -5,29 +5,27 @@ contributions; this module writes them and never names an extension.
 Personal agent credentials travel directly from the desktop to the sandbox
 and are not stored by the control service."""
 import contextlib
+import copy
+import dataclasses
 import fcntl
 import json
-import hashlib
-import pathlib
 import re
 import shlex
 import threading
 import time
 import uuid
 
-from . import (addressing, contributions, delivery, extensions, ip_previews, lifecycle, paths, platform, recipes,
-               runtime, secret_store, settings, state, variables)
+from . import (addressing, contributions, extensions, ip_previews, lifecycle, paths, platform, recipes,
+               runtime, sandbox_layers, secret_store, settings, state, variables)
+# The runtime's half (sandbox_runtime): writing it, putting it back, the guest helper, the recipe's scripts.
+from .sandbox_runtime import (ENV_SPLIT, GUEST, GUEST_SOURCE, SETUP_LOCK, _envs, app_script,  # noqa: F401
+                              ensure_started, guest, initialize_ssh_identity, restore_runtime, runtime_layer,
+                              runtime_values, ship_guest, write_env, write_runtime, written_env)
 from .template_files import sbx_guest
 
 RUN = platform.RUN
 HOME = platform.HOME
 APP_SCRIPTS = platform.APP_SCRIPTS
-SETUP_LOCK = f"{HOME}/.sbx-setup.lock"
-# The platform's helper in the sandbox: process supervision, SSH identity,
-# swap, usage (template_files/sbx_guest.py). Extensions' guest scripts
-# shipped next to it import it.
-GUEST_SOURCE = pathlib.Path(sbx_guest.__file__)
-GUEST = f"{RUN}/{GUEST_SOURCE.name}"
 # A sandbox pauses this long after its last sign of use (sbx-control's
 # keeper extends it while it is used) and the gate resumes it on the next
 # request. Paused, it holds no memory on the host. Each pause writes a new
@@ -137,7 +135,19 @@ def detectable(port: int, a: recipes.App) -> bool:
 
 def detectable_port(port: int) -> bool:
     return ((port == 80 or 1024 <= port <= 65535) and port not in platform.PLATFORM_PORTS
-            and port not in runtime.ports() and port not in extensions.reserved_ports())
+            and port not in runtime.ports() and port not in extensions.reserved_ports()
+            and port not in sandbox_layers.reserved_ports())
+
+
+def listening_ports(listening: str) -> list[tuple[str, int]]:
+    """(address, port) of each socket in `ss -Hltn`'s lines."""
+    out = []
+    for line in listening.splitlines():
+        fields = line.split()
+        address, _, port = fields[3].rpartition(":") if len(fields) > 3 else ("", "", "")
+        if port.isdigit():
+            out.append((address.strip("[]").partition("%")[0].removeprefix("::ffff:"), int(port)))
+    return out
 
 
 def detected_ports(listening: str, a: recipes.App) -> dict:
@@ -145,14 +155,10 @@ def detected_ports(listening: str, a: recipes.App) -> dict:
     forwarder may reset connections to loopback-only ports under load, so those
     are reported but not exposed: the server has to listen on 0.0.0.0."""
     out = {}
-    for line in listening.splitlines():
-        fields = line.split()
-        address, _, port = fields[3].rpartition(":") if len(fields) > 3 else ("", "", "")
-        if not port.isdigit() or not detectable(int(port), a):
-            continue
-        address = address.strip("[]").partition("%")[0].removeprefix("::ffff:")
-        loopback = address.startswith("127.") or address in ("::1", "localhost")
-        out[int(port)] = out.get(int(port), True) and loopback
+    for address, port in listening_ports(listening):
+        if detectable(port, a):
+            loopback = address.startswith("127.") or address in ("::1", "localhost")
+            out[port] = out.get(port, True) and loopback
     return out
 
 
@@ -382,13 +388,14 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         else:
             if operation:
                 operation.advance("provisioning_services")
-            created = create_services(a, env)
+            write = sandbox_layers.Write(name, a.repo, kind)
+            created = sandbox_layers.outputs(write, create_services(a, env))
             values, hidden = trusted_values(a, env, created, audience(metadata), personal(metadata))
             if operation:
                 operation.advance("services_ready")
                 operation.advance("allocating")
             result = _start(a, env, values, public_keys, hidden=hidden,
-                            operation=operation, metadata=metadata, kind=kind)
+                            operation=operation, metadata=metadata, kind=kind, write=write)
         if operation:
             operation.advance("preparing_workspace", sandbox_id=result["sandbox_id"], runtime="running")
             # A new sandbox's checkout is its template's: what the template's setup changed is nobody's edit.
@@ -447,14 +454,6 @@ def shared(metadata: dict | None) -> bool:
     return (metadata or {}).get("shared") == "team"
 
 
-def runtime_layer(name: str, a: recipes.App, envs: dict, trusted: bool, metadata: dict | None):
-    """(the env with what extensions add, their runtime layers as one) for the sandbox."""
-    target = extensions.Target(repo=a.repo, name=name, trusted=trusted, connector=(metadata or {}).get("connector", ""),
-                               env=envs)
-    layer = contributions.merged_runtime(extensions.contributions_for(target))
-    return {**envs, **layer.env}, layer
-
-
 def target_of(info) -> extensions.Target:
     """What contributions are for, for an existing sandbox (without its env)."""
     meta, a = info.metadata or {}, app_of(info)
@@ -463,9 +462,11 @@ def target_of(info) -> extensions.Target:
 
 
 def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool = True,
-           hidden: set = frozenset(), operation=None, metadata=None, kind: str | None = None) -> dict:
+           hidden: set = frozenset(), operation=None, metadata=None, kind: str | None = None,
+           write: sandbox_layers.Write | None = None) -> dict:
     name, slug = env["SBX_NAME"], env["SBX_SLUG"]
-    envs, layer = runtime_layer(name, a, _envs(env, app_env, kind), trusted, metadata)
+    write = write or sandbox_layers.Write(name, a.repo, kind)
+    envs, layer = runtime_layer(name, a, _envs(env, app_env, kind), trusted, metadata, write)
     # The cloud metadata service, denied per sandbox where the runtime
     # applies egress rules (one without them may deny it already). Private
     # ranges are the runtime's to enforce (Runtime.apply_network), not per sandbox.
@@ -486,99 +487,15 @@ def _start(a: recipes.App, env: dict, app_env: dict, public_keys, trusted: bool 
     try:
         if operation:
             operation.advance("preparing_workspace", sandbox_id=sbx.sandbox_id, runtime="running")
-        ensure_started(sbx)
+        ensure_started(sbx, kind)
         initialize_ssh_identity(sbx)
-        host_key = write_runtime(sbx, name, envs, layer, public_keys, hidden)
+        host_key = write_runtime(sbx, name, envs, layer, public_keys, hidden, write=write)
     except Exception:
         if not operation:
             runtime.kill(sbx.sandbox_id)
         raise
     return {"name": name, "sandbox_id": sbx.sandbox_id, "host_key": " ".join(host_key), "branch": env["SBX_BRANCH"],
             "repo": a.workdir, "ssh_url": addressing.ssh_url(slug, a, sbx.sandbox_id), "urls": addressing.urls(slug, a)}
-
-
-def ensure_started(sbx):
-    """The start contract (platform.START) running: a VM booted from its disk
-    or from a filesystem snapshot comes up without its saved processes."""
-    if sbx.commands.run(platform.STARTED, user="user", timeout=15).stdout.strip() == "ready":
-        return
-    sbx.commands.run("DISPLAY=:0 xset q >/dev/null 2>&1 || rm -f /tmp/.X0-lock /tmp/.X11-unix/X0",
-                     user="user", timeout=15)
-    handle = sbx.commands.run(platform.START, user="user", background=True, timeout=0)
-    handle.disconnect()
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if sbx.commands.run(platform.STARTED, user="user", timeout=15).stdout.strip() == "ready":
-            return
-        time.sleep(0.25)
-    raise SandboxError("the cold-booted template's SSH/desktop transport did not start")
-
-
-def ship_guest(sbx):
-    """Put the guest helper into the sandbox's runtime directory, which a
-    cold boot empties; every use ships it, so it matches this release."""
-    sbx.commands.run(f"sudo install -d -m 700 -o user -g user {RUN}", timeout=30)
-    sbx.files.write(GUEST, GUEST_SOURCE.read_text(), user="user")
-
-
-def guest(*args: str, sudo: bool = False) -> str:
-    return ("sudo " if sudo else "") + shlex.join(["python3", GUEST, *args])
-
-
-def initialize_ssh_identity(sbx):
-    """A preparation template's existing host keys belong to no new sandbox:
-    give each allocation its own, once."""
-    identity = hashlib.sha256(sbx.sandbox_id.encode()).hexdigest()[:32]
-    ship_guest(sbx)
-    command = guest("identity", identity, "--ssh-port", str(platform.SSH_PORT), sudo=True)
-    sbx.commands.run(f"umask 077; {command} > {RUN}/ssh-identity.log 2>&1", timeout=120)
-
-
-def _envs(env: dict, app_env: dict, kind: str | None = None) -> dict:
-    return {**app_env, **env, "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": addressing.vite_allowed_hosts(kind)}
-
-
-def write_runtime(sbx, name: str, envs: dict, layer: contributions.RuntimeLayer, public_keys=None,
-                  hidden: set = frozenset()) -> list:
-    """The sandbox's env and the extensions' runtime layers (files under
-    contributions.EXT, git config, files shells source), in its tmpfs.
-    Returns its SSH host key."""
-    # Shells and agents don't get the provider API keys, so agents run on the
-    # developer's subscription, nor what the repo's env gives only the app.
-    hidden = set(settings.current().sandboxes.agent_hidden) | set(hidden)
-    exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k not in hidden)
-    exports += "".join(f"if [ -r {RUN}/{f} ]; then . {RUN}/{f}; fi\n" for f in layer.sources)
-    app_exports = f". {RUN}/env\n" + "".join(
-        f"export {k}={shlex.quote(v)}\n" for k, v in envs.items() if k in hidden)
-    staging = f"{RUN}/.runtime-staging"
-    ext = f"{staging}/ext"
-    # A failed publication must be retryable, including on envd versions that
-    # open uploads as root before assigning ownership (Linux protected_regular).
-    folders = sorted({str(pathlib.PurePosixPath(f"{ext}/{path}").parent) for path in layer.files})
-    sbx.commands.run(f"sudo install -d -m 700 -o user -g user {RUN} {staging} && rm -rf {ext} "
-                     f"&& mkdir -p -m 700 {shlex.join([ext, *folders])}", timeout=30)
-    if public_keys is not None:
-        sbx.files.write(f"{HOME}/.ssh/authorized_keys", public_keys or "\n", user="user")
-    sbx.files.write(f"{staging}/sbx-env", exports, user="user")
-    sbx.files.write(f"{staging}/sbx-app-env", app_exports, user="user")
-    for path, f in layer.files.items():
-        sbx.files.write(f"{ext}/{path}", f.content, user="user")
-    modes = "".join(f"&& chmod {f.mode:o} {shlex.quote(f'{ext}/{path}')} " for path, f in layer.files.items())
-    git = "".join(f"&& git config --global {shlex.quote(k)} {shlex.quote(v)} " for k, v in layer.git_config.items())
-    dirs = "".join(f"&& mkdir -p -m 700 {shlex.quote(d)} " for d in layer.dirs)
-    # A link replaces what is at its path: a file there from before (an
-    # agent's login on disk) is gone, and the link points into the tmpfs.
-    dirs += "".join(f"&& mkdir -p -m 700 {shlex.quote(str(pathlib.PurePosixPath(path).parent))} "
-                    f"&& ln -sfn {shlex.quote(target)} {shlex.quote(path)} " for path, target in layer.links.items())
-    host_key = sbx.commands.run(
-        f"chmod 600 {staging}/sbx-env {staging}/sbx-app-env {modes}"
-        f"&& mv {staging}/sbx-env {RUN}/env && mv {staging}/sbx-app-env {RUN}/app-env "
-        f"&& rm -rf {contributions.EXT}.old && {{ [ ! -e {contributions.EXT} ] || mv {contributions.EXT} {contributions.EXT}.old; }} "
-        f"&& mv {ext} {contributions.EXT} && rm -rf {contributions.EXT}.old {dirs}"
-        f"&& chmod -R go-rwx {RUN} && mkdir -p {HOME}/.ssh && chmod 700 {HOME}/.ssh "
-        f"&& touch {HOME}/.ssh/authorized_keys && chmod 600 {HOME}/.ssh/authorized_keys "
-        f"{git}&& cat /etc/ssh/ssh_host_ed25519_key.pub").stdout.split()[:2]
-    return host_key
 
 
 def check_app(info) -> str | None:
@@ -593,54 +510,6 @@ def check_app(info) -> str | None:
         return None
     return (run_space(sbx) or f"its processes are not running; see {sbx_guest.SUPERVISOR_LOG} and the process logs "
             "(sbx logs NAME)")
-
-
-def runtime_values(info) -> tuple[dict, set, contributions.RuntimeLayer]:
-    """(the sandbox's env as sbx-control would write it now, the names only
-    its app gets, the extensions' runtime layers)."""
-    meta, a = info.metadata or {}, app_of(info)
-    name = meta["sbx"]
-    env = sbx_env(name, slug_of(info), a, meta.get("owner", ""), meta.get("branch", ""), meta.get("template", ""))
-    kind = runtime.kind_of(info)
-    if settings.trust(a.repo) != "trusted":
-        envs, layer = runtime_layer(name, a, _envs(env, app_env(a, env, trusted=False), kind), False, meta)
-        return envs, set(), layer
-    created = extensions.packages().refresh(name, a.repo)
-    values, hidden = trusted_values(a, env, created, audience(meta), personal(meta))
-    envs, layer = runtime_layer(name, a, _envs(env, values, kind), True, meta)
-    return envs, hidden, layer
-
-
-def restore_runtime(sbx, info) -> bool:
-    """When the runtime had no room for a pause snapshot, it boots the
-    sandbox again from its disk, and its tmpfs comes back empty: put the env,
-    key and git credential back from what sbx-control keeps. True when it
-    had to, or the recipe requests an app restart after resume."""
-    meta = info.metadata if isinstance(info.metadata, dict) else {}
-    if runtime_state(info) == "paused":
-        extensions.on_resume(sbx, info)
-    if sbx.commands.run(f"test -f {RUN}/env && echo ok || true", timeout=30).stdout.strip() == "ok":
-        paused = runtime_state(info) == "paused"
-        name = meta.get("sbx")
-        pending = delivery.pending(name) if isinstance(name, str) and name else None
-        if pending and paused:
-            _, restart, revision = pending
-            delivered = _refresh_env(sbx, info, restart)
-            delivery.acknowledge(name, revision)
-            state.event(name, "env updated", "queued changes applied")
-            if delivered["restarted"]:
-                return False
-        return paused and app_of(info).resume_mode == "restart"
-    # Booted from its disk, or an allocation whose creation failed part way.
-    ensure_started(sbx)
-    initialize_ssh_identity(sbx)
-    name = (info.metadata or {})["sbx"]
-    envs, hidden, layer = runtime_values(info)
-    write_runtime(sbx, name, envs, layer, hidden=hidden)
-    state.event(name, "runtime restored", "its tmpfs was empty (likely: booted from its disk, as the host had "
-                                          "no room for its pause snapshot), so its env and credentials were gone",
-                internal=True)
-    return True
 
 
 def connect(name: str, why: str, info=None):
@@ -660,6 +529,7 @@ def connect(name: str, why: str, info=None):
     if paused:
         lifecycle.observe(name, info.sandbox_id, "running")
         state.event(name, "resumed", f"{why}, in {time.time() - began:.0f}s")
+        sandbox_layers.on_resume(sbx, info)
     return sbx, info
 
 
@@ -749,6 +619,13 @@ def attach(name: str, why: str, *, info=None, run_app: bool = True, wait: bool =
 def _attach(name, why, info, run_app, wait):
     if not info:
         raise SandboxError(f"no sbx-{name}")
+    if runtime_state(info) == "running" and _paused_by_us(name, info):
+        # A provider's listing can lag its pause by seconds (E2B): sbx's own record wins, so this
+        # is a resume (the app restarted when the recipe asks, the certificates pushed), not a
+        # connect that wakes the VM unseen.
+        info = dataclasses.replace(info, state="paused") if dataclasses.is_dataclass(info) else copy.copy(info)
+        if not dataclasses.is_dataclass(info):
+            info.state = "paused"
     if runtime_state(info) == "paused":
         return _resume(name, why, info, run_app, wait)
     sbx, info = connect(name, why, info)
@@ -758,6 +635,12 @@ def _attach(name, why, info, run_app, wait):
         else:
             lifecycle.in_background(name, "restart", lambda operation: restart(name, operation))
     return sbx, info
+
+
+def _paused_by_us(name: str, info) -> bool:
+    """Whether sbx paused this very VM last (its lifecycle record) and saw no resume since."""
+    record = lifecycle.get(name) or {}
+    return record.get("runtime") == "paused" and record.get("sandbox_id") == info.sandbox_id
 
 
 def _resume(name, why, info, run_app, wait):
@@ -782,21 +665,6 @@ def _resume(name, why, info, run_app, wait):
     return sbx, info
 
 
-ENV_SPLIT = "--sbx-app-env--"
-
-
-def written_env(sbx) -> dict:
-    text = sbx.commands.run(f"cat {RUN}/env; echo {ENV_SPLIT}; cat {RUN}/app-env 2>/dev/null || true",
-                            timeout=30).stdout
-    # Whole-file tokens: a quoted value may span lines (a key file's).
-    tokens, out = shlex.split(text), {}
-    for word, pair in zip(tokens, tokens[1:]):
-        key, sep, value = pair.partition("=")
-        if word == "export" and sep and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
-            out[key] = value
-    return out
-
-
 def refresh_env(name: str, restart: bool = True) -> dict:
     """Connecting resumes a paused sandbox: callers pass only running ones."""
     with lifecycle.operation(name, "env_update") as operation:
@@ -810,21 +678,7 @@ def refresh_env(name: str, restart: bool = True) -> dict:
 
 def _refresh_env(sbx, info, restart, operation=None):
     with masked(info):
-        return _write_env(sbx, info, restart, operation)
-
-
-def _write_env(sbx, info, restart, operation):
-    name = (info.metadata or {})["sbx"]
-    envs, hidden, layer = runtime_values(info)
-    before = written_env(sbx)
-    differs = sorted(k for k in set(before) | set(envs) if before.get(k) != envs.get(k))
-    must_restart = bool(app_of(info).repo and restart and (differs or delivery.restart_required(name)))
-    if must_restart:
-        delivery.restart_required(name, mark=True)
-    write_runtime(sbx, name, envs, layer, hidden=hidden)
-    if must_restart:
-        _run_app(sbx, info, operation)
-    return {"changed": differs, "restarted": must_restart}
+        return write_env(sbx, info, restart, operation)
 
 
 def slug_of(info) -> str:
@@ -953,21 +807,6 @@ def apply_resources(sbx, a: recipes.App):
         run_in(sbx, guest("swap", "--mb", str(swap), sudo=True), timeout=120)
 
 
-def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None):
-    """Run one of the recipe's scripts: the shipped copy when it is the
-    operator's, else the checkout's .sbx/ (a branch may change its scripts)."""
-    source = f"d={APP_SCRIPTS}" if a.operator else f"d=.sbx; [ -d .sbx ] || d={APP_SCRIPTS}"
-    scope = f"export {sbx_guest.START_SCOPE}={shlex.quote(process_scope)}; " if process_scope else ""
-    command = (f"cd {shlex.quote(a.workdir)} && {{ {source}; }} "
-               f"&& {{ {scope}true; }} "
-               f'&& {{ [ ! -x "$d/{script}" ] || "$d/{script}"; }}')
-    if operation and script == "setup":
-        operation.check()
-        command = f"umask 077; exec > {sbx_guest.SETUP_LOG} 2>&1; " + command
-        command = f"flock -n {shlex.quote(SETUP_LOCK)} bash -c {shlex.quote(command)}"
-    return run_in(sbx, command, timeout=timeout, env=env)
-
-
 def start_processes(sbx, a: recipes.App) -> str:
     processes = a.spec.get("processes") or {}
     ship_guest(sbx)
@@ -998,7 +837,8 @@ def start_app(sbx, a: recipes.App):
     if pid.isdigit():
         probe += f"kill -0 {pid} 2>/dev/null || echo exited; "
     probe += probe_processes or "true"
-    deadline = time.time() + a.spec.get("health_timeout", 240)
+    seconds = a.spec.get("health_timeout", 240)
+    deadline, state = time.time() + seconds, []
     while time.time() < deadline:
         time.sleep(1)
         try:
@@ -1011,7 +851,17 @@ def start_app(sbx, a: recipes.App):
             return
     logs = shlex.join([*app_logs(a), sbx_guest.SUPERVISOR_LOG])
     tail = sbx.commands.run(f"grep -hE 'ERROR|Error|error' {logs} 2>/dev/null | grep -v '^ *at ' | tail -15").stdout
-    raise SandboxError(f"the app did not come up:\n{tail}")   # its callers mask it (masked)
+    raise SandboxError(f"the app did not come up: {health_said(a.health, state, seconds)}\n{tail}")   # its callers mask it (masked)
+
+
+def health_said(urls: list, state: list, seconds) -> str:
+    """Why start_app gave up, from the last probe: a process exited, or what
+    each health URL answered (curl's 000: no answer)."""
+    if "exited" in state[len(urls):]:
+        return "a process of the app exited"
+    codes = [*state[:len(urls)], *[""] * len(urls)]
+    return f"after {seconds} s, " + ", ".join(
+        f"{url} " + (f"answered {code}" if code.strip("0") else "did not answer") for url, code in zip(urls, codes))
 
 
 def open_desktop_browser(sbx, a: recipes.App, web_url):
@@ -1076,7 +926,9 @@ def restart(name: str, operation=None):
 
 def _restart(name, operation):
     sbx, info = connect(name, "to restart its app")
-    restore_runtime(sbx, info)
+    if not restore_runtime(sbx, info):
+        # Its runtime as it would be written now (the env, what the sandbox layers add), before the app starts.
+        _refresh_env(sbx, info, False)
     operation.configure_workspace(app_of(info).repo)
     _bring_up(sbx, info, operation)
 

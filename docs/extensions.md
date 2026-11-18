@@ -222,10 +222,10 @@ my-provider = "my_package:MyProvider"
 Unlike a connector, a runtime that `SBX_RUNTIMES` enables but no package
 provides stops sbx at start, naming the kinds that exist. A backend:
 
-- implements the compute part of `runtime.base.Runtime`: its sandboxes
+- subclasses `runtime.base.Backend` and implements its compute part: its sandboxes
   (`create`, `connect`, `sandboxes`, `info`, `pause`, `kill`, ...), their
   templates, and what it can do (`capabilities`);
-- inherits `runtime.base.HostSide` for the host part, whose no-op defaults
+- inherits `Backend`'s host part, whose no-op defaults
   fit a backend with nothing on this host, and overrides only what it has;
 - reads only its own keys from `/etc/sbx/runtime.env` (`credential_keys`),
   never another backend's;

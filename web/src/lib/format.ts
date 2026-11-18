@@ -70,7 +70,8 @@ function duration(seconds: number): string {
 
 /** A run's length, short: "1 h", "1 h 30 min", "45 min". */
 export function runLength(seconds: number): string {
-  const h = Math.floor(seconds / 3_600), m = Math.round((seconds % 3_600) / 60)
+  const minutes = Math.round(seconds / 60)   // rounded once: 3599 s is "1 h", never "60 min"
+  const h = Math.floor(minutes / 60), m = minutes % 60
   return [h && `${h} h`, m && `${m} min`].filter(Boolean).join(' ') || `${seconds} s`
 }
 

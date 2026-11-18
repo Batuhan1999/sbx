@@ -1,4 +1,4 @@
-"""Runtime settings (phase 3): each backend declares its settings; admins
+"""Runtime settings: each backend declares its settings; admins
 add, change, remove a runtime and make one the default from the web app,
 checked by sbx-control and queued for the root side (runtime_changes), a
 secret only ever as a reference into the managed store; an installation
@@ -28,9 +28,9 @@ class Schema(Installation):
         self.assertTrue(all(f.kind == "int" and f.default.isdigit() for f in cloud.settings if f.limit))
         self.assertEqual([p.name for p in cloud.presets], ["hobby", "pro"])
         for preset in cloud.presets:
-            self.assertEqual(set(preset.values), {f.key for f in cloud.settings if f.limit})
+            self.assertEqual(set(preset.by_key()), {f.key for f in cloud.settings if f.limit})
             self.assertIn("e2b.dev/pricing", preset.source)
-        self.assertEqual(dict(cloud.presets[0].values)["E2B_CLOUD_MAX_TIMEOUT"], "3600")
+        self.assertEqual(cloud.presets[0].by_key()["E2B_CLOUD_MAX_TIMEOUT"], "3600")
 
     def test_embed_is_install_sh_s_and_says_when_the_host_cannot_run_it(self):
         from sbx_control.runtime.embed import Embed
@@ -41,12 +41,11 @@ class Schema(Installation):
         self.assertIn("disk", embed.can_run({"kvm": True, "memory_gb": 64, "disk_free_gb": 20}))
         self.assertEqual(embed.can_run({"kvm": True, "memory_gb": 64, "disk_free_gb": 500}), "")
 
-    def test_a_backend_that_declares_none_has_its_secret(self):
-        from sbx_control import runtimes
-        from sbx_control.runtime.fake import Fake
-        found = runtimes.fields(Fake())
-        self.assertEqual(list(found), ["FAKE_RUNTIME_TOKEN"])
-        self.assertTrue(found["FAKE_RUNTIME_TOKEN"].secret)
+    def test_a_backend_s_form_is_its_settings(self):
+        from sbx_control import runtime_settings
+        from sbx_control.runtime.e2b_cloud import Cloud
+        cloud = Cloud()
+        self.assertEqual(list(runtime_settings.fields(cloud)), [f.key for f in cloud.settings])
 
 
 class Web(TwoRuntimes, Server):
@@ -55,7 +54,7 @@ class Web(TwoRuntimes, Server):
 
     def setUp(self):
         super().setUp()
-        from sbx_control import runtime, secret_store, settings, template_builds, vault
+        from sbx_control import runtime, secret_store, settings, template_scheduler, vault
         from sbx_control.connections.base import Check
         from sbx_control.runtime.e2b_cloud import Cloud
         self.file = self.root / "etc/runtime.env"
@@ -63,7 +62,7 @@ class Web(TwoRuntimes, Server):
         self.checks = [Check("E2B Cloud API", True, "answers")]
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.checks))
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: []))
-        self.builds = self.enterContext(patch.object(template_builds, "start_detached",
+        self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("unit", True)))
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
         # The managed store, as references: sealing makes one per value.
@@ -102,17 +101,23 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn(KEY, response.text)
         found = {r["kind"]: r for r in response.json()}
-        self.assertEqual(set(found), {"embed", "e2b-cloud", "fake"})
+        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "fake"})
         embed, cloud, fake = found["embed"], found["e2b-cloud"], found["fake"]
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
-        self.assertIn("install.sh", embed["removable"])
+        self.assertEqual(embed["remove_blocker"]["code"], "host")
+        self.assertIn("install.sh", embed["remove_blocker"]["message"])
         self.assertEqual(embed["settings"], [])                          # install.sh's keys, never a form
-        self.assertEqual((cloud["enabled"], cloud["can_run"], cloud["not_editable"]), (False, True, ""))
+        self.assertEqual((cloud["enabled"], cloud["can_run"], cloud["edit_blocker"]), (False, True, None))
         self.assertEqual([p["name"] for p in cloud["presets"]], ["hobby", "pro"])
+        boat = found["boat"]   # the same form machinery: its keys, plans and limits, nothing Boat-specific in core
+        self.assertEqual((boat["enabled"], boat["can_run"], boat["title"]), (False, True, "Boat"))
+        self.assertEqual([p["name"] for p in boat["presets"]], ["trial", "20", "100", "500", "2000"])
+        self.assertIn("templates need the first payment", boat["presets"][0]["note"])
+        self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
-        self.assertEqual((fake["sandboxes"], fake["removable"]), ([], ""))
+        self.assertEqual((fake["sandboxes"], fake["remove_blocker"]), ([], None))
         self.assertEqual(self.client.get("/api/runtimes/available").status_code, 401)   # no token, no session
 
     def test_adding_seals_the_key_queues_a_reference_and_the_root_side_applies_it(self):
@@ -129,7 +134,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual((request["operation"], request["kind"], request["values"]["E2B_CLOUD_MAX_TIMEOUT"]),
                          ("add", "e2b-cloud", "86400"))
         self.assertNotIn("E2B_CLOUD_DOMAIN", request["values"])        # empty and unset: no change
-        self.assertNotIn(KEY, (self.root / "state/runtime-change.json").read_text())
+        self.assertFalse((self.root / "state/runtime-change.json").exists())   # the root side records
         busy = self.call("PUT", "/api/runtimes/default", {"kind": "fake"})
         self.assertEqual(busy.status_code, 409)                         # one change at a time
         code, said = self.apply()
@@ -198,7 +203,8 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 409)
         self.assertIn("sbx-admin runtime add e2b-cloud", response.json()["detail"])
         listed = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
-        self.assertIn("sbx-admin runtime add e2b-cloud", listed["e2b-cloud"]["not_editable"])   # the UI says it
+        self.assertEqual(listed["e2b-cloud"]["edit_blocker"]["code"], "local_store")              # the UI says it
+        self.assertIn("sbx-admin runtime add e2b-cloud", listed["e2b-cloud"]["edit_blocker"]["message"])
         self.assertEqual(self.call("PUT", "/api/runtimes/fake", {"values": {"FAKE_RUNTIME_TOKEN": "x"}}).status_code,
                          409)
         self.assertEqual(self.store, {})
@@ -246,7 +252,8 @@ class Web(TwoRuntimes, Server):
         self.assertIn("busy-one", response.json()["detail"])
         listed = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
         self.assertEqual(listed["fake"]["sandboxes"], ["busy-one"])
-        self.assertIn("busy-one", listed["fake"]["removable"])
+        self.assertEqual(listed["fake"]["remove_blocker"], {"code": "has_sandboxes", "sandboxes": ["busy-one"],
+                                                            "message": response.json()["detail"]})
 
     def test_a_domain_is_needed_before_a_provider_s_runtime(self):
         from sbx_control import settings
@@ -342,7 +349,8 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
             "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
         self.assertEqual(len(self.store), 1)
-        later = runtime_changes.time.time() + runtime_changes.PICKUP_SECONDS + 1
+        from sbx_control import host_requests
+        later = runtime_changes.time.time() + host_requests.PICKUP_SECONDS + 1
         with patch.object(runtime_changes.time, "time", return_value=later):
             status = self.call("GET", "/api/runtimes/change").json()
         self.assertEqual(status["state"], "failed")
@@ -351,19 +359,46 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.store, {})
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)   # unblocked
 
-    def test_the_cli_takes_the_same_lock(self):
-        from sbx_control import admin, runtime_changes
-        taken = []
-        real = runtime_changes.locked
+    def test_a_request_queued_after_the_stuck_look_is_kept(self):
+        from sbx_control import host_requests
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        with patch.object(host_requests, "stuck", return_value=True):   # the old one, seen before this was queued
+            self.assertEqual(self.call("GET", "/api/runtimes/change").json()["state"], "queued")
+        self.assertTrue(self.request_file.exists())
 
-        def locked():
-            taken.append(1)
-            return real()
+    def test_the_cli_takes_the_same_lock(self):
+        from sbx_control import admin, host_requests
+        taken = []
+        real = host_requests.lock
+
+        def lock(key, **kwargs):
+            taken.append(key)
+            return real(key, **kwargs)
         out = io.StringIO()
-        with patch.object(runtime_changes, "locked", side_effect=locked), patch("sys.stdout", out), \
+        with patch.object(host_requests, "lock", side_effect=lock), patch("sys.stdout", out), \
                 patch("sys.stderr", out):
             self.assertEqual(admin.main(["runtime", "default", "fake"]), 0, out.getvalue())
-        self.assertEqual(taken, [1])
+        self.assertEqual(taken, ["runtime-change"])
+
+    def test_the_cli_refuses_a_change_while_one_from_the_web_app_is_queued(self):
+        from sbx_control import admin, runtime
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "remove", "fake"]), 1, out.getvalue())
+        self.assertIn("apply-pending", out.getvalue())
+        self.assertIn("fake", runtime.enabled())
+        self.assertTrue(self.request_file.exists())
+
+    def test_the_cli_removes_a_runtime_whose_key_is_missing(self):
+        from sbx_control import admin, runtime
+        self.file.write_text(self.RUNTIME_ENV.replace("FAKE_RUNTIME_TOKEN=test-only-fake\n", ""))
+        out = io.StringIO()
+        with patch.object(self.fake, "configure", side_effect=SystemExit("FAKE_RUNTIME_TOKEN is not set")), \
+                patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.main(["runtime", "remove", "fake"]), 0, out.getvalue())
+        self.assertEqual(runtime.enabled(), ["embed"])
+        self.assertIn("is disabled", out.getvalue())
 
     def test_limits_are_held_to_their_range_and_the_plan_is_named(self):
         from sbx_control import runtimes
@@ -372,7 +407,11 @@ class Web(TwoRuntimes, Server):
             "E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_MAX_CPU": "64"}})
         self.assertEqual(too_big.status_code, 400)
         self.assertIn("vCPUs (E2B_CLOUD_MAX_CPU) is from 1 to 32", too_big.json()["detail"])
-        pro = {**PRESETS[1].values, "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
+        for bad in ("²", "1" * 40):   # never a 500: a whole number in ASCII digits
+            refused = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
+                "E2B_CLOUD_API_KEY": KEY, "E2B_CLOUD_MAX_CPU": bad}})
+            self.assertEqual(refused.status_code, 400, bad)
+        pro = {**PRESETS[1].by_key(), "E2B_CLOUD_MAX_CPU": "16"}   # Pro's vCPUs are "8+": still Pro
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {
             "E2B_CLOUD_API_KEY": KEY, **pro}}).status_code, 202)
         self.assertEqual(self.apply()[0], 0)
@@ -388,6 +427,30 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.apply()[0], 0)
         listed = {r["kind"]: r for r in runtimes.describe()["runtimes"]}
         self.assertEqual(listed["e2b-cloud"]["plan"], {"name": "custom", "title": "Custom limits"})
+
+    def test_a_plan_is_resolved_here_and_keeps_the_limits_it_leaves_adjustable(self):
+        from sbx_control.runtime.e2b_cloud import PRESETS
+        hobby, pro = PRESETS
+        for plan, values, said in (("gold", {}, "no plan gold"),
+                                   ("hobby", {"E2B_CLOUD_MAX_TIMEOUT": "7200"}, "plan fixes E2B_CLOUD_MAX_TIMEOUT")):
+            with self.subTest(plan=plan):
+                refused = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "plan": plan,
+                                                              "values": {"E2B_CLOUD_API_KEY": KEY, **values}})
+                self.assertEqual(refused.status_code, 400, refused.text)
+                self.assertIn(said, refused.json()["detail"])
+        self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "plan": "hobby", "values": {
+            "E2B_CLOUD_API_KEY": KEY}}).status_code, 202)
+        queued = json.loads(self.request_file.read_text())["values"]
+        self.assertEqual({k: queued[k] for k in hobby.by_key()}, hobby.by_key())
+        self.assertEqual(self.apply()[0], 0)
+        self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"values": {
+            "E2B_CLOUD_MAX_CPU": "16"}}).status_code, 202)                # no plan: the values alone
+        self.assertEqual(json.loads(self.request_file.read_text())["values"], {"E2B_CLOUD_MAX_CPU": "16"})
+        self.assertEqual(self.apply()[0], 0)
+        self.assertEqual(self.call("PUT", "/api/runtimes/e2b-cloud", {"plan": "pro", "values": {}}).status_code, 202)
+        queued = json.loads(self.request_file.read_text())["values"]
+        self.assertNotIn("E2B_CLOUD_MAX_CPU", queued)                      # adjustable: the value set stays
+        self.assertEqual(queued["E2B_CLOUD_MAX_TIMEOUT"], pro.by_key()["E2B_CLOUD_MAX_TIMEOUT"])
 
     def test_an_enabled_runtime_s_checks_over_the_api(self):
         from sbx_control import reachability, template_builds
@@ -417,19 +480,32 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
         self.assertEqual(runtime_changes.status()["state"], "queued")
         self.request_file.unlink()                                       # taken, and its process gone
+        (self.root / "state/runtime-change.json").write_text(json.dumps({"state": "applying", "operation": "default"}))
         self.assertEqual(runtime_changes.status()["state"], "failed")
 
     def test_a_change_finished_while_status_looked_is_done_not_failed(self):
-        from sbx_control import runtime_changes
+        from sbx_control import host_requests, runtime_changes
         self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
         self.request_file.unlink()                                       # taken by the root side...
-        record = json.loads((self.root / "state/runtime-change.json").read_text())
+        record = {"state": "applying", "operation": "default", "kind": "fake"}
+        (self.root / "state/runtime-change.json").write_text(json.dumps(record))
 
-        def finished():   # ...which finishes between status()'s first read and its checks
+        def finished(key):   # ...which finishes right after status() saw its lock held
             (self.root / "state/runtime-change.json").write_text(json.dumps({**record, "state": "done", "message": "ok"}))
-            return False
-        with patch.object(runtime_changes, "_applying", side_effect=finished):
+            return True
+        with patch.object(host_requests, "applying", side_effect=finished):
             self.assertEqual(runtime_changes.status()["state"], "done")
+
+    def test_a_change_taken_after_status_looked_at_the_lock_is_applying(self):
+        from sbx_control import host_requests, runtime_changes
+        self.assertEqual(self.call("PUT", "/api/runtimes/default", {"kind": "fake"}).status_code, 202)
+
+        def free(key):   # the lock free when looked at; then the root side takes the request
+            self.request_file.unlink()
+            (self.root / "state/runtime-change.json").write_text(json.dumps({"state": "applying"}))
+            return False
+        with patch.object(host_requests, "applying", side_effect=free), host_requests.lock(runtime_changes.KEY):
+            self.assertEqual(runtime_changes.status()["state"], "applying")
 
     def test_a_store_reference_is_never_taken_as_a_value(self):
         from sbx_control import secret_store
@@ -442,24 +518,25 @@ class Web(TwoRuntimes, Server):
         self.assertFalse(self.request_file.exists())
 
     def test_an_installation_that_never_chose_a_plan_is_on_hobby(self):
-        from sbx_control import runtimes
+        from sbx_control import runtime_settings
         from sbx_control.runtime.e2b_cloud import Cloud
         cloud = Cloud()
         self.assertEqual(cloud.limits().sandboxes, 10)
-        self.assertEqual(runtimes.plan_of(cloud, {}), {"name": "hobby", "title": "Hobby"})
+        self.assertEqual(runtime_settings.plan_of(cloud, {}), {"name": "hobby", "title": "Hobby"})
 
     def test_a_provider_without_a_domain_is_said_up_front(self):
         from sbx_control import settings
         settings.update("domain", {**settings.current().domain.model_dump(), "name": ""}, by="test")
         cloud = next(r for r in self.call("GET", "/api/runtimes/available").json() if r["kind"] == "e2b-cloud")
-        self.assertTrue(cloud["needs_domain"])
-        self.assertIn("connect a domain first", cloud["not_editable"])
+        self.assertEqual(cloud["edit_blocker"]["code"], "needs_domain")
+        self.assertIn("connect a domain first", cloud["edit_blocker"]["message"])
 
     def test_the_default_again_is_done_at_once(self):
         from sbx_control import runtime_changes
         response = self.call("PUT", "/api/runtimes/default", {"kind": "embed"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual((response.json()["state"], response.json()["restarting"]), ("done", False))
+        self.assertEqual((response.json()["state"], response.json()["restarting"], response.json()["unchanged"]),
+                         ("done", False, True))
         self.assertIn("is the default already", response.json()["message"])
         self.assertFalse(self.request_file.exists())
         self.assertEqual(runtime_changes.status()["state"], "idle")
@@ -467,7 +544,7 @@ class Web(TwoRuntimes, Server):
     def test_a_runtime_that_cannot_be_configured_can_still_be_removed(self):
         with patch.object(self.fake, "configure", side_effect=SystemExit("missing platform secret: FAKE_RUNTIME_TOKEN")):
             listed = {r["kind"]: r for r in self.call("GET", "/api/runtimes/available").json()}
-            self.assertEqual(listed["fake"]["removable"], "")
+            self.assertIsNone(listed["fake"]["remove_blocker"])
             self.assertEqual(self.call("DELETE", "/api/runtimes/fake").status_code, 202)
             code, said = self.apply()
         self.assertEqual(code, 0, said)
@@ -475,20 +552,20 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(self.runtime.enabled(), ["embed"])
 
     def test_install_sh_s_runtime_is_refused_before_any_listing(self):
-        from sbx_control import runtimes
-        with patch.object(runtimes, "removal_refused", side_effect=AssertionError("listed")):
+        from sbx_control import runtime_settings
+        with patch.object(runtime_settings, "_listing", side_effect=AssertionError("listed")):
             response = self.call("DELETE", "/api/runtimes/embed")
         self.assertEqual(response.status_code, 409)
         self.assertIn("set up by install.sh", response.json()["detail"])
 
     def test_the_last_runtime_points_at_the_cli_and_the_settings(self):
-        from sbx_control import runtimes
+        from sbx_control import runtime_settings
         self.assertEqual(self.call("DELETE", "/api/runtimes/fake").status_code, 202)
         self.assertEqual(self.apply()[0], 0)
         with patch.object(self.runtime, "enabled", return_value=["fake"]):
-            with self.assertRaises(runtimes.Conflict) as refused:
-                runtimes.removal_refused("fake")
-        self.assertIn("sbx runtimes add KIND, or Settings → Sandbox runtimes", str(refused.exception))
+            found = runtime_settings.remove_blocker("fake")
+        self.assertEqual(found.code, "last_runtime")
+        self.assertIn("sbx runtimes add KIND, or Settings → Sandbox runtimes", found.message)
 
 
 class LearnedLimits(TwoRuntimes, Installation):
@@ -545,8 +622,19 @@ class NoRuntimeYet(Server):
         self.file = self.root / "etc/runtime.env"
         self.addCleanup(self.file.write_text, self.RUNTIME_ENV)
 
+    def test_a_recipe_s_size_is_checked_without_a_runtime(self):
+        from sbx_control import recipes
+        with tempfile.TemporaryDirectory() as folder:
+            for bad in ("false", "0", "-2", "1.5", "lots"):
+                with self.subTest(cpu=bad):
+                    Path(folder, "sbx.yaml").write_text(f"resources:\n  cpu: {bad}\n")
+                    with self.assertRaisesRegex(recipes.RecipeError, "resources.cpu must be a positive integer"):
+                        recipes.validate("owner/app", Path(folder))
+            Path(folder, "sbx.yaml").write_text("resources:\n  cpu: 64\n")
+            recipes.validate("owner/app", Path(folder))   # no runtime's limits to hold it to yet
+
     def test_sbx_control_runs_and_says_what_to_do(self):
-        from sbx_control import ip_previews, jobs, runtimes
+        from sbx_control import jobs, preview_proxy, runtimes
         self.assertEqual((self.runtime.enabled(), self.runtime.default()), ([], ""))
         self.assertEqual(self.client.get("/api/runtimes", headers=self.headers).json(), {"default": "", "runtimes": []})
         with self.assertRaisesRegex(runtimes.Refused, "no sandbox runtime is set up: add one in Settings"):
@@ -555,7 +643,7 @@ class NoRuntimeYet(Server):
             self.runtime.get()
         self.assertEqual(list(self.runtime.sandboxes()), [])
         self.assertEqual(self.runtime.status().state, "not_connected")
-        self.assertIn("default http://127.0.0.1:9;", ip_previews.runtime_upstreams())
+        self.assertIn("default http://127.0.0.1:9;", preview_proxy.runtime_upstreams())
         jobs.jobs()                                                     # nothing of a runtime's
         from sbx_control import template_builds
         out = io.StringIO()
@@ -617,7 +705,7 @@ class NoRuntimeYet(Server):
         self.assertFalse(setup.configured())                             # install-report keeps the link open
 
     def test_the_first_runtime_is_added_from_none(self):
-        from sbx_control import runtimes, secret_store, settings, vault
+        from sbx_control import runtime_changes, runtime_settings, secret_store, settings, vault
         from sbx_control.connections.base import Check
         from sbx_control.runtime.e2b_cloud import Cloud
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
@@ -626,12 +714,11 @@ class NoRuntimeYet(Server):
                 patch.object(secret_store, "seal", return_value="infisical-ref-1"), \
                 patch.object(secret_store, "is_reference", side_effect=lambda v: v == "infisical-ref-1"), \
                 patch.object(secret_store, "unseal", return_value=KEY):
-            values = runtimes.prepare("e2b-cloud", {"E2B_CLOUD_API_KEY": KEY}, adding=True)
+            values = runtime_settings.prepare("e2b-cloud", {"E2B_CLOUD_API_KEY": KEY}, adding=True)
             self.assertEqual(values, {"E2B_CLOUD_API_KEY": "infisical-ref-1"})
-            runtimes.add("e2b-cloud", values)
+            runtime_changes.perform("add", "e2b-cloud", values)
         self.assertEqual(self.runtime.enabled(), ["e2b-cloud"])
-        with self.assertRaisesRegex(runtimes.Conflict, "only runtime"):
-            runtimes.removal_refused("e2b-cloud")
+        self.assertEqual(runtime_settings.remove_blocker("e2b-cloud").code, "last_runtime")
 
 
 class SetupWithoutABrowser(Server):
@@ -684,24 +771,50 @@ class InstallerWithoutARuntime(Installation):
         with tempfile.TemporaryDirectory(prefix="sbx-install-none-") as directory:
             env = Path(directory) / "runtime.env"
             cases = (
-                (None, False, "none=1 embed= cloud="),
-                ("SBX_RUNTIMES=''\n", False, "none=1 embed= cloud="),
-                ("E2B_API_KEY=x\n", False, "FAILED"),
-                (None, True, "none= embed=1 cloud="),                   # a first install where Embed fits
-                ("SBX_RUNTIMES=''\n", True, "none=1 embed= cloud="),    # none enabled stays so: no auto-enable
+                (None, False, "none=1 embed= cloud=", False),
+                ("SBX_RUNTIMES=''\n", False, "none=1 embed= cloud=", False),
+                ("E2B_API_KEY=x\n", False, "FAILED", False),
+                (None, True, "none= embed=1 cloud=", False),            # a first install where Embed fits
+                ("SBX_RUNTIMES=''\n", True, "none=1 embed= cloud=", False),   # none enabled stays so: no auto-enable
+                # An installation without runtime.env runs Embed (as sbx reads it): never none written over it.
+                (None, True, "none= embed=1 cloud=", True),
+                (None, False, "FAILED: no /dev/kvm", True),
             )
-            for before, kvm, expected in cases:
-                with self.subTest(before=before, kvm=kvm):
+            for before, kvm, expected, installed in cases:
+                with self.subTest(before=before, kvm=kvm, installed=installed):
                     env.unlink(missing_ok=True)
                     if before is not None:
                         env.write_text(before)
-                    device = directory if kvm else "/nonexistent-kvm"   # a path that exists stands for /dev/kvm
-                    script = ("set -eu\nmem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
-                              "sign_in= domain=\nconfigured() { false; }\ndie() { echo \"FAILED: $*\"; exit 1; }\n"
-                              + step.replace("/etc/sbx/runtime.env", str(env)).replace("/dev/kvm", device)
-                              .replace("/dev/net/tun", directory if kvm else "/nonexistent-tun")
+                    device = "1" if kvm else ""   # the preflight's facts: /dev/kvm and /dev/net/tun
+                    script = (f"set -eu\nsrc={Path(__file__).parents[2]}\n"
+                              "mem_mib=64000 disk_gib=500 hugepages= cloud_key= first=1 email= admin= "
+                              f"sign_in= domain= check= kvm={device} tun={device}\nconfigured() {{ {str(installed).lower()}; }}\n"
+                              "die() { echo \"FAILED: $*\"; exit 1; }\n"
+                              + step.replace("/etc/sbx/runtime.env", str(env))
                               + 'echo "none=$none embed=$embed cloud=$cloud"\n')
                     result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
                     self.assertIn(expected, result.stdout + result.stderr)
         # The none path writes runtime.env only where there is none.
         self.assertIn('if [ -n "$none" ] && [ -z "$has_env" ]; then', text)
+
+
+class DoctorWithSealedKeys(Installation):
+    """sbx-admin doctor reads a runtime's key as its backend does: a reference into the store, unsealed."""
+    RUNTIME_ENV = "SBX_RUNTIMES=e2b-cloud\nE2B_CLOUD_API_KEY=placeholder\n"
+
+    def test_a_sealed_key_reads_as_set(self):
+        from sbx_control import admin, connections, runtime, secret_store
+        from sbx_control.runtime.e2b_cloud import Cloud
+        reference = secret_store.seal("e2b_test_only_key", key="runtime/E2B_CLOUD_API_KEY/test")
+        (self.root / "etc/runtime.env").write_text(f"SBX_RUNTIMES=e2b-cloud\nE2B_CLOUD_API_KEY={reference}\n")
+        self.enterContext(patch.dict(runtime._backends, clear=True))   # a fresh process: nothing configured yet
+        self.enterContext(patch.object(Cloud, "sandboxes", return_value=[]))
+        self.enterContext(patch.object(connections, "status_all",
+                                       side_effect=lambda: [connections.get("runtime").status()]))
+        self.enterContext(patch.object(connections.get("runtime"), "test", return_value=[]))
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            self.assertEqual(admin.do_doctor(), 0, out.getvalue())
+        self.assertIn("connected · E2B Cloud · 0 running here", out.getvalue())
+        self.assertNotIn("no E2B_CLOUD_API_KEY", out.getvalue())
+        self.assertNotIn("e2b_test_only_key", out.getvalue())

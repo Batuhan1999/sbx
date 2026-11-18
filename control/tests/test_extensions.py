@@ -318,10 +318,13 @@ class ExtensionTests(Installation):
         from sbx_control import settings, template_builds
         self.recipe("owner/app", "template: yes\n")
         settings.add_repo("owner/app", by="test")
+        clock = iter(["2026-11-18 00:00:00", "2026-11-18 00:00:01", "2026-11-18 00:00:02", "2026-11-18 00:00:03"])
         with patch.object(template_builds.recipes, "mirror", return_value=Path("/unused")), \
                 patch.object(template_builds.templates, "build", side_effect=[None, RuntimeError("clone refused")]), \
+                patch.object(template_builds, "_utc", lambda: next(clock)), \
                 self.assertRaises(RuntimeError):
-            template_builds.build_now("owner/app")   # the base builds, then the repo's fails
+            # The repo's build begins, its base builds and ends a second later, then the repo's fails.
+            template_builds.build_now("owner/app")
         with patch.object(template_builds, "start") as start, \
                 self.assertRaisesRegex(template_builds.NotBuilt, "last build failed \\(clone refused\\)"):
             template_builds.template_for("owner/app")

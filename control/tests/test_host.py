@@ -313,6 +313,10 @@ class HostTests(Installation):
         self.assertIn(f"for unit in {out / 'systemd'}/sbx-apply-*.path; do\n", rollback)
         self.assertNotIn("start", [c[0] for c in self.systemctl()])   # they stay stopped for the migration
         self.assertIn("systemctl start sbx-control.service claude-orchestrator.service sbx-acme-dns.service\n", rollback)
+        # nginx goes back to the release's own layout: no stream front on 443, its tls.sh makes the container anew.
+        nginx = rollback[rollback.index("rm -f /opt/sbx-tls/nginx/*.stream"):]
+        self.assertLess(nginx.index("docker rm -f sbx-tls-nginx"), nginx.index("&& sh tls.sh)"))
+        self.assertIn(f"(cd {(releases / 'old').resolve()} && sh tls.sh)", nginx)
         # Back to a release from before the effects' rename, a pending request takes its old name again.
         start = rollback.index("if [ -e")
         end = rollback.index("\nfi\n", start) + 4
