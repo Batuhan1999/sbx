@@ -90,15 +90,18 @@ TOOL_FILES = ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-w
 
 
 def tools_valid(data: bytes) -> bool:
-    """Whether data is a whole gzipped tarball (its trailer checked: the
-    stream is read to the end) holding the files READY needs."""
+    """Whether data is a whole gzipped tarball holding the files READY needs,
+    each executable. Streamed, so the expanded archive is never held whole;
+    the gzip stream is then read to its end, which checks its trailer."""
     try:
-        tar_bytes = gzip.decompress(data)
-        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
-            names = {name.removeprefix("./") for name in tar.getnames()}
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+            with tarfile.open(fileobj=stream, mode="r|") as tar:
+                modes = {m.name.removeprefix("./"): m.mode for m in tar if m.isfile()}
+            while stream.read(1 << 20):   # past tar's end-of-archive marker, through the trailer
+                pass
     except (OSError, EOFError, zlib.error, tarfile.TarError):
         return False
-    return all(f in names for f in TOOL_FILES)
+    return all(f in modes and modes[f] & 0o111 for f in TOOL_FILES)
 
 
 def wayland_tools() -> bytes:
@@ -281,6 +284,9 @@ class Amp(extensions.Connector):
 
     @staticmethod
     def _tools_check() -> Check:
+        if cached_tools().is_dir():   # a refill can't replace a directory with the archive
+            return Check("desktop tools", False, f"{cached_tools()} is a directory",
+                         f"move or remove {cached_tools()}; the next template build fetches the tools again")
         try:
             kept = cached_tools().read_bytes()
         except FileNotFoundError:   # never fetched, or cleared since

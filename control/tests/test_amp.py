@@ -416,7 +416,7 @@ sudo() {
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
 
 
-def _tarball(gateway: bool = True) -> bytes:
+def _tarball(gateway: bool = True, executable: bool = True) -> bytes:
     import io
     import tarfile
     out = io.BytesIO()
@@ -425,7 +425,7 @@ def _tarball(gateway: bool = True) -> bytes:
             if not gateway and path.endswith("waymote-gateway"):
                 continue
             entry = tarfile.TarInfo(path)
-            entry.size = 4
+            entry.size, entry.mode = 4, 0o755 if executable else 0o644
             tar.addfile(entry, io.BytesIO(b"\x7fELF"))
     return out.getvalue()
 
@@ -506,13 +506,13 @@ class AmpToolsTests(Installation):
     def test_a_damaged_kept_copy_is_fetched_again(self):
         flipped = bytearray(TARBALL)
         flipped[len(flipped) // 2] ^= 0xFF   # the compressed payload damaged
-        for damaged in (b"", TARBALL[:len(TARBALL) // 2], TARBALL[:-4], bytes(flipped), _tarball(gateway=False)):
+        for damaged in (b"", TARBALL[:len(TARBALL) // 2], TARBALL[:-4], bytes(flipped), _tarball(gateway=False), _tarball(executable=False)):
             self.amp.cached_tools().parent.mkdir(parents=True, exist_ok=True)
             self.amp.cached_tools().write_bytes(damaged)
             self.assertFalse(self.amp.Amp._tools_check().detail == "kept on this host")
             self.assertEqual(self.amp.wayland_tools(), TARBALL)
             self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
-        self.assertEqual(self.fetches(self.fake), 5)
+        self.assertEqual(self.fetches(self.fake), 6)
 
     def test_the_throwaway_template_is_this_installations(self):
         names = []
@@ -535,6 +535,13 @@ class AmpToolsTests(Installation):
             self.amp.wayland_tools()
         self.assertEqual(self.fake.built, {})
         self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_directory_at_the_cache_path_fails_the_check(self):
+        self.amp.cached_tools().mkdir(parents=True)
+        self.addCleanup(self.amp.cached_tools().rmdir)
+        check = self.amp.Amp._tools_check()
+        self.assertFalse(check.ok)
+        self.assertIn("is a directory", check.detail)
 
     def test_the_first_error_wins_when_the_template_delete_fails_too(self):
         with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
