@@ -5,7 +5,7 @@ import type {
   RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
-  SetupState, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
+  SetupState, TemplateProgress, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
 } from './types'
 
 const get = <T,>(url: string) => request<T>('GET', url)
@@ -116,9 +116,11 @@ export const api = {
     save: (kind: string, values: Record<string, string>) => put<ConnectionChange>(`/api/connections/${enc(kind)}`, { values }),
     test: (kind: string) => post<CheckResult>(`/api/connections/${enc(kind)}/test`),
     disconnect: (kind: string) => del<ConnectionChange>(`/api/connections/${enc(kind)}`),
-    githubManifest: (owner: string, returnTo: '/app/repos/new' | '/app/extensions') =>
+    githubManifest: (owner: string, returnTo: '/app/repos' | '/app/repos/new' | '/app/extensions') =>
       post<{ action_url: string; manifest: string }>('/api/connections/github/manifest', { owner, return_to: returnTo }),
   },
+
+  templates: () => get<TemplateProgress>('/api/templates'),
 
   setup: {
     state: () => get<SetupState>('/api/setup'),

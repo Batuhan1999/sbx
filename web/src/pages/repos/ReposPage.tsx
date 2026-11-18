@@ -8,7 +8,9 @@ import { EmptyState, ErrorState, SkeletonRows } from '@/components/states'
 import { StateBadge } from '@/components/StatusBadge'
 import { LinkButton } from '@/components/ui/button'
 import { Badge } from '@/components/ui/primitives'
+import { TemplateProgressLine } from '@/components/TemplateProgressLine'
 import { ago, plural } from '@/lib/format'
+import { ReadyDialog } from './ReadyDialog'
 
 export default function ReposPage() {
   const me = useMe()
@@ -17,12 +19,19 @@ export default function ReposPage() {
   const list = repos.data ?? []
   const needAgent = list.filter(r => r.trust && !r.configured)
   return <>
+    {admin && <ReadyDialog />}
     <PageHeader title="Repositories"
       actions={admin && <LinkButton variant="primary" to="/app/repos/new"><Plus />Connect repository</LinkButton>} />
     {repos.error ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
       : repos.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
-      : list.length === 0 ? <div className="rounded-lg border border-dashed border-line">
-        <EmptyState icon={FolderGit2} title="No repositories yet" action={admin ? <LinkButton variant="primary" size="sm" to="/app/repos/new"><Plus />Connect repository</LinkButton> : undefined} />
+      : list.length === 0 ? <div className="space-y-4">
+        {admin && <TemplateProgressLine quiet />}
+        <div className="rounded-lg border border-dashed border-line">
+          <EmptyState icon={FolderGit2} title={admin ? 'Connect your first repository' : 'No repositories yet'}
+            action={admin ? <LinkButton variant="primary" size="sm" to="/app/repos/new"><Plus />Connect repository</LinkButton> : undefined}>
+            {admin ? 'Pick a repository and copy a prompt for your coding agent. The agent writes the recipe and starts the first sandbox.' : undefined}
+          </EmptyState>
+        </div>
       </div>
       : <div className="space-y-4">
         {needAgent.length > 0 && <AgentCallout repos={needAgent} />}
