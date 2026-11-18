@@ -69,7 +69,7 @@ class Domain(Installation):
 
     def test_missing_records_and_credentials_link_to_the_dns_page(self):
         found = self.checks(acme="cloudflare")
-        self.assertEqual(found["login.sbx.example.com resolves"].help_url, howto.DNS_RECORDS)
+        self.assertEqual(found["app.sbx.example.com resolves"].help_url, howto.DNS_RECORDS)
         self.assertEqual(found["*.sbx.example.com resolves"].help_url, howto.DNS_RECORDS)
         self.assertEqual(found["Cloudflare token"].help_url, howto.CLOUDFLARE_TOKEN)
         self.assertEqual(found["certificate"].help_url, howto.CLOUDFLARE_TOKEN)
@@ -109,7 +109,7 @@ class DomainApi(Server):
                                 json={"values": {"name": "sbx.example.com", "acme": "cloudflare"}})
         self.assertEqual(r.status_code, 400, r.text)
         sent = {c["name"]: c for c in r.json()["detail"]["checks"]}
-        self.assertEqual(sent["login.sbx.example.com resolves"]["help_url"], howto.DNS_RECORDS)
+        self.assertEqual(sent["app.sbx.example.com resolves"]["help_url"], howto.DNS_RECORDS)
         self.assertEqual(sent["Cloudflare token"]["help_url"], howto.CLOUDFLARE_TOKEN)
 
 
