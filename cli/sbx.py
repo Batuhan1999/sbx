@@ -7,6 +7,8 @@ from the server. `sbx COMMAND -h` explains a command.
 """
 import argparse
 import base64
+import contextlib
+import fcntl
 import getpass
 import hashlib
 import http.client
@@ -297,14 +299,24 @@ def ssh_config_installed():
     return SSH_CONFIG.exists() and SSH_BLOCK[0] in SSH_CONFIG.read_text()
 
 
-def rewrite_ssh_config(block):
-    text = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
-    begin, end = SSH_BLOCK
-    if begin in text and end in text:
-        text = text[:text.index(begin)] + text[text.index(end) + len(end):].lstrip("\n")
+@contextlib.contextmanager
+def ssh_config_lock():
+    """One read-edit-write of ~/.ssh/config at a time (`sbx open`, `sbx
+    ssh-config`), so two at once don't undo each other's change."""
     SSH_CONFIG.parent.mkdir(mode=0o700, exist_ok=True)
-    SSH_CONFIG.write_text(block + text)
-    SSH_CONFIG.chmod(0o600)
+    with open(SSH_CONFIG.parent / ".sbx-config.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)   # released when the file closes
+        yield
+
+
+def rewrite_ssh_config(block):
+    with ssh_config_lock():
+        text = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
+        begin, end = SSH_BLOCK
+        if begin in text and end in text:
+            text = text[:text.index(begin)] + text[text.index(end) + len(end):].lstrip("\n")
+        SSH_CONFIG.write_text(block + text)
+        SSH_CONFIG.chmod(0o600)
 
 
 def claude_desktop_hosts(names):
@@ -406,8 +418,7 @@ def bridge_ready(host, url, token):
             sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If its address changed, "
                      f"`sbx open NAME ssh` points its SSH config at it again (`sbx up NAME` if it is gone). If ssh "
                      f"then reports a changed host key, it was recreated: only the `sbx up` that made it received "
-                     f"its key, so use that Mac. Recreating it here deletes it and its work: note its repository, branch "
-                     f"and runtime (`sbx ls`), then `sbx down NAME` and `sbx up NAME` with those same options")
+                     f"its key, so use that Mac")
         if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
             sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
                      f"not your sandbox")
@@ -422,7 +433,10 @@ def bridge_ready(host, url, token):
             said = True
         retry = (retry or "").strip()
         # Delay-seconds only: an HTTP date, a negative or any other value waits 2 s.
-        wait = float(min(int(retry), 10)) if retry.isascii() and retry.isdigit() else 2.0
+        # Leading zeros dropped and capped by length first: int() of thousands of digits raises.
+        digits = retry.lstrip("0") or "0"
+        wait = (float(min(int(digits), 10)) if len(digits) <= 2 else 10.0) \
+            if retry.isascii() and retry.isdigit() else 2.0
         time.sleep(min(wait, max(deadline - time.monotonic(), 0)))
         if time.monotonic() >= deadline:   # no probe after the budget
             sys.exit(late)
@@ -584,14 +598,23 @@ def refresh_host(name, info):
     conf = SSH_DIR / f"{name}.conf"
     if not info.get("ssh_url") or not conf.exists():
         return
+    def point(text):
+        return re.sub(r"^(  ProxyCommand .* tunnel %h ).*$", lambda m: m.group(1) + info["ssh_url"], text, flags=re.M)
+
     text = conf.read_text()
-    fresh = re.sub(r"^(  ProxyCommand .* tunnel %h ).*$", lambda m: m.group(1) + info["ssh_url"], text, flags=re.M)
-    if fresh != text:
-        conf.write_text(fresh)
-        # The copy `sbx ssh-config --apps` made for GUI apps, if there is one.
+    if point(text) != text:
+        conf.write_text(point(text))
+    # The copy `sbx ssh-config --apps` made for GUI apps, if there is one:
+    # checked on every open, so one an earlier open could not update is now.
+    begin, end = SSH_BLOCK
+    with ssh_config_lock():
         copied = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
-        if text.rstrip("\n") in copied:
-            SSH_CONFIG.write_text(copied.replace(text.rstrip("\n"), fresh.rstrip("\n")))
+        if begin not in copied or end not in copied:
+            return
+        start, stop = copied.index(begin), copied.index(end)
+        host = re.compile(rf"^Host sbx-{re.escape(name)}\n(?:  .*\n)*", re.M).search(copied, start, stop)
+        if host and point(host.group(0)) != host.group(0):
+            SSH_CONFIG.write_text(copied[:host.start()] + point(host.group(0)) + copied[host.end():])
 
 
 def open_tool(name, tool):

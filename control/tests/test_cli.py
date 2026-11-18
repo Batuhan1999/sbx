@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import tarfile
@@ -256,7 +257,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execv.call_args.args[1][-1], "wss://8081-bx-5f3f8tnb7k.sbx.example")
 
     def test_the_tunnel_says_what_to_do_when_the_bridge_names_no_sandbox_or_refuses(self):
-        for answer, words in (((404, None), "deletes it and its work"),
+        for answer, words in (((404, None), "received its key, so use that Mac"),
                               ((302, None), "`sbx login` again"),
                               ((502, None), "runtime reports an error"),
                               ((503, "2"), "still not ready")):
@@ -273,6 +274,7 @@ class CliTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as exit:
                     self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="wss://8081-vm1.sbx.example"))
             self.assertIn(words, str(exit.exception.code))
+            self.assertNotIn("sbx down", str(exit.exception.code))   # never a destructive way out
             execv.assert_not_called()
 
     def test_the_tunnel_asks_the_gate_for_a_websocket_upgrade_with_the_token(self):
@@ -337,6 +339,52 @@ class CliTests(unittest.TestCase):
         copied = self.cli.SSH_CONFIG.read_text()
         self.assertIn("tunnel %h wss://8081-new.sbx.example\n", copied)
         self.assertNotIn("8081-old", copied)
+
+    def test_open_refreshes_a_stale_copy_even_when_the_sandbox_conf_is_current(self):
+        self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-old.sbx.example", "host_key": "k"})
+        self.cli.write_host("other", {**SANDBOX, "ssh_url": "wss://8081-other.sbx.example", "host_key": "k"})
+        self.assertEqual(self.run_cli("ssh-config", "--apps")[0], 0)
+        self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example", "host_key": "k"})
+        self.cli.refresh_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example"})
+        copied = self.cli.SSH_CONFIG.read_text()
+        self.assertIn("tunnel %h wss://8081-new.sbx.example\n", copied)
+        self.assertNotIn("8081-old", copied)
+        self.assertIn("tunnel %h wss://8081-other.sbx.example\n", copied)   # other hosts untouched
+
+    def test_edits_of_the_ssh_config_hold_its_lock(self):
+        self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-old.sbx.example", "host_key": "k"})
+        held = []
+        real_write = pathlib.Path.write_text
+
+        def write_text(path, *args, **kwargs):
+            if path == self.cli.SSH_CONFIG:
+                held.append(locked[0])
+            return real_write(path, *args, **kwargs)
+
+        locked = [False]
+        real_flock = self.cli.fcntl.flock
+
+        def flock(file, op):
+            locked[0] = True
+            return real_flock(file, op)
+
+        with patch.object(self.cli.fcntl, "flock", side_effect=flock), \
+                patch.object(pathlib.Path, "write_text", write_text):
+            self.assertEqual(self.run_cli("ssh-config", "--apps")[0], 0)
+            locked[0] = False
+            self.cli.refresh_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example"})
+        self.assertEqual(held, [True, True])
+
+    def test_a_huge_retry_after_waits_the_cap_and_leading_zeros_count_as_seconds(self):
+        for retry, wait in (("9" * 5000, 10.0), ("0003", 3.0), ("000", 0.0)):
+            answers = iter([(503, retry), (101, None)])
+            with self.subTest(retry=retry[:8]), \
+                    patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)), \
+                    patch.object(self.cli.time, "sleep") as sleep, \
+                    patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
+                    patch.object(self.cli.os, "execv"):
+                self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="wss://8081-vm1.sbx.example"))
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [wait])
 
     def test_the_tunnel_gives_the_last_probe_only_the_time_left(self):
         clock = iter([0, 119.5, 119.8, 119.8, 120])   # deadline, probe timeout, after it, the sleep, after it
