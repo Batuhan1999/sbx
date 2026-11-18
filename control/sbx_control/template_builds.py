@@ -32,6 +32,7 @@ at its sandboxes' size, which the row keeps for capacity (size_of).
       runtime unless --runtime names another; with --if-stale, nothing
       until the setup is complete (setup.templates_blocked)"""
 import argparse
+import calendar
 import os
 import sys
 import threading
@@ -46,7 +47,10 @@ CHECK_SECONDS = 300
 RESUME_SECONDS = 30  # how soon after a start the scheduler looks for what a restart cut off
 
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
-          "built_memory_mb", "pid_birth")
+          "built_memory_mb", "pid_birth", "step", "steps", "step_name", "last_duration_s")
+# step, steps, step_name: the step the build's runtime is at (runtime.build_step: each step's VM
+# starts from the previous one's snapshot), set as its log says it; last_duration_s: how long the
+# last build that succeeded took, which the next one's estimate (progress: eta_s) starts from.
 # The machine: a build starts from any settled state and settles as built or
 # failed. A build whose process is gone (a restart of sbx-control cut it off)
 # reads as interrupted (status()), never stored: not a failure of its plan, so
@@ -189,6 +193,21 @@ class Watch:
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+
+def _seconds(at: str | None) -> int | None:
+    """A _utc() time as seconds since the epoch; None for none."""
+    try:
+        return calendar.timegm(time.strptime(at, "%Y-%m-%d %H:%M:%S")) if at else None
+    except ValueError:
+        return None
+
+
+def _record_step(key: str, kind: str | None, step: int, steps: int, name: str):
+    """The step key's build is at now (templates.build's on_step)."""
+    with db() as conn:
+        conn.execute("update template_builds set step = ?, steps = ?, step_name = ? where runtime = ? and repo = ? "
+                     "and status = 'building'", (step, steps, name or None, _kind(kind), key))
 
 
 def _birth(pid, proc: Path = Path("/proc")) -> str | None:
@@ -568,7 +587,7 @@ def _begin(key: str, kind: str | None = None):
             if (_kind(kind), key) in _running:
                 raise ValueError
             _transition(key, "building", kind, started_at=_utc(), finished_at=None, error=None, fingerprint=None,
-                        pid=os.getpid(), pid_birth=_birth(os.getpid()))
+                        pid=os.getpid(), pid_birth=_birth(os.getpid()), step=None, steps=None, step_name=None)
         except ValueError:  # here, or in another process
             raise RuntimeError(f"{key}'s template is already building") from None
         _running.add((_kind(kind), key))
@@ -605,14 +624,17 @@ def _build(key: str, kind: str | None = None):
             print(f"template build {key}{_on(kind)}: {p.name}", flush=True)
             with Watch(key, p, kind) as watch:
                 try:
-                    templates.build(p, git_dir, kind=_kind(kind), base=base_name)
+                    templates.build(p, git_dir, kind=_kind(kind), base=base_name,
+                                    on_step=lambda *step: _record_step(key, kind, *step))
                 except Exception as error:
                     if watch.why():
                         raise templates.BuildFailed(f"{watch.why()} (the runtime said: {str(error)[-600:]})") from None
                     raise
-            _transition(key, "built", kind, finished_at=_utc(), fingerprint=p.fingerprint,
+            finished = _utc()
+            took = (_seconds(finished) or 0) - (_seconds(state_row(key, kind)["started_at"]) or 0)
+            _transition(key, "built", kind, finished_at=finished, fingerprint=p.fingerprint,
                         built_fingerprint=p.fingerprint, built_template=runtime.template_name(p.name, _kind(kind)),
-                        built_memory_mb=p.size["memory_mb"])
+                        built_memory_mb=p.size["memory_mb"], last_duration_s=max(took, 0))
         except BaseException as error:
             _transition(key, "failed", kind, finished_at=_utc(), error=str(error)[-2000:],
                         fingerprint=p and p.fingerprint)
@@ -826,8 +848,13 @@ def rebuilds(before: dict) -> dict:
 def progress() -> dict:
     """Every template some sandbox starts from, per enabled runtime, and where
     its build stands: {blocked, runtimes: {kind: [{key, phase, status,
-    template, error}]}}; phase is phase()'s (current, stale, building,
-    stuck: failed on this plan), or "unplanned" when it can't be planned."""
+    template, error, started_at, step, steps, step_name, last_duration_s,
+    eta_s}]}}; phase is phase()'s (current, stale, building, stuck: failed
+    on this plan), or "unplanned" when it can't be planned. step of steps
+    (step_name: the step's short name) is where the latest build got to (0
+    until its first step; null before the runtime said); eta_s, while it
+    builds, is the seconds left by the last successful build's duration
+    there (last_duration_s), null when none is known."""
     from . import setup
     out = {}
     for kind in runtime.enabled():
@@ -841,9 +868,21 @@ def progress() -> dict:
                 at = "unplanned"
             found.append({"key": key, "phase": at, "status": status(key, row, kind),
                           "template": (row or {}).get("built_template"),
-                          "error": (row or {}).get("error") if at == "stuck" else None})
+                          "error": (row or {}).get("error") if at == "stuck" else None, **_steps_of(row, at)})
         out[kind] = found
     return {"blocked": setup.templates_blocked(), "runtimes": out}
+
+
+def _steps_of(row: dict | None, at: str) -> dict:
+    """progress()'s step fields of a build row, its estimate while it builds (at: its phase)."""
+    row = row or {}
+    last, started = row.get("last_duration_s"), _seconds(row.get("started_at"))
+    eta = None
+    if at == "building" and last is not None and started is not None:
+        eta = max(last - (int(time.time()) - started), 0)
+    building = at == "building"
+    return {"started_at": row.get("started_at"), "step": (row.get("step") or 0) if building else row.get("step"),
+            "steps": row.get("steps"), "step_name": row.get("step_name"), "last_duration_s": last, "eta_s": eta}
 
 
 def _current(row: dict | None, fingerprint: str) -> bool:
@@ -927,7 +966,7 @@ def main(argv=None) -> int:
 TABLE = """create table if not exists template_builds (
     runtime text not null, repo text not null, status text not null, started_at text, finished_at text, error text,
     fingerprint text, built_fingerprint text, built_template text, pid integer, built_memory_mb integer,
-    pid_birth text,
+    pid_birth text, step integer, steps integer, step_name text, last_duration_s integer,
     primary key (runtime, repo));"""
 
 
@@ -962,7 +1001,9 @@ def _per_runtime(conn):
 # own template; repos whose default branch moved since their template's last build.
 SCHEMA = Schema(tables=TABLE + """
 create table if not exists template_moved (repo text primary key, since text not null default current_timestamp);
-""", columns=(("template_builds", "pid_birth", "text"),), upgrade=_per_runtime)
+""", columns=(("template_builds", "pid_birth", "text"), ("template_builds", "step", "integer"),
+              ("template_builds", "steps", "integer"), ("template_builds", "step_name", "text"),
+              ("template_builds", "last_duration_s", "integer")), upgrade=_per_runtime)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-"""The onboarding order: no template builds before the setup is finished with
-the coding agents chosen, so the first build already has their layers; a
-later change to an extension says what it rebuilds."""
+"""The onboarding order: no template builds before the setup is finished;
+choosing coding agents is optional (every template has every agent's
+layer); a later change to an extension says what it rebuilds."""
 import io
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -18,12 +18,12 @@ class TemplateGate(Server):
         from sbx_control import extensions
         return extensions.get("amp")
 
-    def test_nothing_builds_until_the_setup_is_finished_with_the_agents_chosen(self):
+    def test_nothing_builds_until_the_setup_is_finished(self):
         self.choose_ip()
         self.create_admin()
-        self.assertIn("coding agents", self.setup.templates_blocked())
+        self.assertEqual(self.setup.templates_blocked(), "templates build once the setup is finished")
         # sbx templates says why while the setup is open (not the setup gate's 503).
-        self.assertIn("coding agents", self.client.get("/api/templates", headers=self.headers).json()["blocked"])
+        self.assertIn("setup is finished", self.client.get("/api/templates", headers=self.headers).json()["blocked"])
         with patch.object(self.scheduler, "_build_quietly") as build, \
                 patch.object(self.scheduler, "start_detached") as detached, \
                 patch.object(self.builds, "build_now") as build_now:
@@ -40,14 +40,7 @@ class TemplateGate(Server):
             detached.assert_not_called()
             build_now.assert_not_called()
         state = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertFalse(state["can_complete"])
-        refused = self.client.post("/api/setup/complete", headers=self.headers)
-        self.assertEqual(refused.status_code, 400)
-        self.assertIn("coding agents", refused.text)
-
-        chosen = self.choose_agents("amp")
-        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
-        self.assertEqual(self.setup.templates_blocked(), "templates build once the setup is finished")
+        self.assertTrue(state["can_complete"])   # no coding agents chosen: optional
         self.kick.assert_not_called()
         done = self.client.post("/api/setup/complete", headers=self.headers)
         self.assertEqual(done.status_code, 200, done.text)
@@ -91,7 +84,9 @@ class TemplateGate(Server):
         unknown = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["nope"]})
         self.assertEqual(unknown.status_code, 400)
         self.assertIn("claude, amp", unknown.text)
-        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": False,
+        chosen = self.choose_agents("amp")
+        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
+        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": True,
                                                              "summary": "none"})
         self.assertEqual(self.client.post("/api/setup/complete", headers=self.headers).status_code, 200)
         late = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["amp"]})

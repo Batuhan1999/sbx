@@ -77,8 +77,7 @@ class SetupTests(Server):
         self.assertIn(self.settings.HostUnit.HOST_GUARD, effects)
         admin = self.create_admin()
         self.assertTrue(admin["signed_in"])
-        self.assertFalse(admin["can_complete"])   # the coding agents are not chosen yet
-        self.assertTrue(self.choose_agents()["can_complete"])
+        self.assertTrue(admin["can_complete"])   # choosing coding agents is optional
         # The setup header must not hide the session established on the same origin.
         self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
         done = self.client.post("/api/setup/complete", headers=self.headers)

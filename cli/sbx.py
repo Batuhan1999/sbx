@@ -111,8 +111,9 @@ class Client:
             except (ValueError, AttributeError):
                 pass
             if isinstance(detail, dict):   # {message, checks}: what failed, each check that did, and how to fix it
-                detail = "; ".join([detail.get("message") or "refused", *(check_line(c)
-                                                                          for c in detail.get("checks") or [] if not c.get("ok"))])
+                message = detail.get("message") or "refused"
+                detail = "; ".join([message, *(check_line(c) for c in detail.get("checks") or []
+                                               if not c.get("ok") and c.get("detail") != message)])
             if error.code == 401:
                 raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a "
                               "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
@@ -774,11 +775,11 @@ def _read_secret(prompt):
 
 
 def _runtime_body(args, runtime, adding):
-    """What a change sends: --plan (the first plan when adding without one; the server resolves its limits),
+    """What a change sends: --plan (without one, adding takes the plan the provider says the key's account
+    is on, else the runtime's default limits; the server resolves its limits),
     each --set, and each --secret read from stdin (one line each, in order; hidden at a terminal): a secret
     never on the command line."""
     settings = {s["key"]: s for s in runtime.get("settings") or []}
-    presets = runtime.get("presets") or []
     values = {}
     for pair in args.set or []:
         key, sep, value = pair.partition("=")
@@ -795,8 +796,7 @@ def _runtime_body(args, runtime, adding):
         if not value:
             sys.exit(f"no value for {key} on stdin")
         values[key] = value
-    plan = args.plan or (presets[0]["name"] if adding and presets else None)
-    return {"plan": plan, "values": values} if plan else {"values": values}
+    return {"plan": args.plan, "values": values} if args.plan else {"values": values}
 
 
 def runtime_change(args, client):
@@ -1169,9 +1169,52 @@ def wait_rebuilds(report, timeout, interval=10):
                   late=f"the templates are still rebuilding after {timeout} s: sbx templates shows them")
 
 
+def _minutes(seconds) -> str:
+    return "under a minute" if seconds < 60 else f"about {round(seconds / 60)} min"
+
+
+def template_step(kind, t) -> str:
+    """A building template's progress in words: "sbx-base on embed: step 3 of 12 (RUN ...), about 4 min left"."""
+    line = f"{t['key']} on {kind}"
+    if t.get("steps"):
+        line += f": step {t.get('step') or 0} of {t['steps']}" + (f" ({t['step_name']})" if t.get("step_name") else "")
+    if t.get("eta_s") is not None:
+        line += f", {_minutes(t['eta_s'])} left"
+    return line
+
+
+def templates_verdict(found):
+    """follow()'s verdict on GET /api/templates: (progress, done): done once every template is built as
+    planned now; why it failed (a text) when one failed, can't be planned, or none may build yet."""
+    if found.get("blocked"):
+        return None, f"no template builds yet: {found['blocked']}"
+    rows = [(kind, t) for kind, listed in found["runtimes"].items() for t in listed]
+    for kind, t in rows:
+        if t["phase"] == "stuck":
+            return None, f"the {t['key']} template failed on {kind}: {(t.get('error') or 'sbx templates shows it')[-300:]}"
+        if t["phase"] == "unplanned":
+            return None, f"the {t['key']} template on {kind} can't be planned: sbx templates shows it"
+    left = [(kind, t) for kind, t in rows if t["phase"] != "current"]
+    if not left:
+        return None, True
+    building = [template_step(kind, t) for kind, t in left if t["phase"] == "building"]
+    progress = f"templates: {len(rows) - len(left)} of {len(rows)} built" + (f"; building {'; '.join(building)}"
+                                                                             if building else "; waiting to build")
+    return progress, False
+
+
 def templates_cmd(args):
-    """sbx templates (admins): every template sandboxes start from, per runtime, and where its build stands."""
-    found = api("GET", "/api/templates")
+    """sbx templates (admins; the setup link while the setup is open): every template sandboxes start from,
+    per runtime, and where its build stands; with --wait, followed until all are built."""
+    link = args.link_file or (not CONTROL and os.environ.get("SBX_SETUP_LINK"))
+    client = setup_client(args) if link else Client(CONTROL)
+    fetch = lambda: client.request("GET", "/api/templates", timeout=60)   # noqa: E731
+    if args.wait:
+        found = follow(fetch, templates_verdict, args.timeout, interval=5, retry_statuses=RETRIED,
+                       late=lambda found: f"the templates are not all built after {args.timeout} s "
+                                          f"({templates_verdict(found)[0] or 'sbx templates shows them'})")
+    else:
+        found = client.api("GET", "/api/templates")
     if args.json:
         print(json.dumps(found))
         return
@@ -1179,7 +1222,8 @@ def templates_cmd(args):
         print(f"none builds yet: {found['blocked']}")
     for kind, listed in found["runtimes"].items():
         for t in listed:
-            print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}"
+            step = f"  step {t.get('step') or 0}/{t['steps']}" if t["phase"] == "building" and t.get("steps") else ""
+            print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}{step}"
                   + (f"  ({t['error'][-200:]})" if t.get("error") else ""))
 
 
@@ -1250,12 +1294,12 @@ def setup_status(args, client):
             print(f"{'done' if found['done'] else 'todo':<5} {names[step]:<8} {found['summary']}")
     print(f"server address: {state['host'].get('address') or 'unknown'}; link: {state.get('link', '')}")
     print("ready to finish: sbx setup finish" if state.get("can_complete") else
-          "next: sbx setup address | admin | runtime add | agents, then sbx setup finish")
+          "next: sbx setup address | runtime add | admin, then sbx setup finish")
 
 
 def setup_agents(args, client):
-    """The coding agents every template is built with (none is a choice); no
-    template builds before this is chosen and the setup is finished."""
+    """Optional: the coding agents whose connections to suggest (none is a
+    choice); every template has every agent whatever is chosen."""
     if not args.kinds:
         state = client.api("GET", "/api/setup")
         if args.json:
@@ -1270,8 +1314,8 @@ def setup_agents(args, client):
     if args.json:
         print(json.dumps(state))
         return
-    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'}; every template is built "
-          "with them once the setup is finished (their own keys may come later)")
+    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'} (optional; connect each "
+          "one later under Extensions)")
 
 
 def setup_address(args, client):
@@ -1318,7 +1362,7 @@ def setup_admin(args, client):
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
     client.api("POST", "/api/setup/admin", {"email": args.email, "password": password})
-    print(f"{args.email} has an account and is an admin; next: sbx login as them, sbx setup runtime add | agents, then sbx setup "
+    print(f"{args.email} has an account and is an admin; next: sbx login as them, then sbx setup "
           f"finish (or sbx setup finish --admin {args.email}, their password on stdin again)")
 
 
@@ -1915,7 +1959,8 @@ def detach_cmd(args):
 def change_flags(p):
     """The flags of a runtime change (sbx runtimes add | set | remove | default, sbx setup runtime add)."""
     p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom; add "
-                   "without one is on the first plan (hobby)")
+                   "without one takes the plan the provider says the key's account is on (Boat), else the "
+                   "runtime's default limits (E2B Cloud: hobby). A Boat trial key is refused")
     p.add_argument("--set", action="append", metavar="KEY=VALUE",
                    help="add, set: a setting, in its unit (seconds, MiB); repeatable; a plan fixes its own limits")
     p.add_argument("--secret", action="append", metavar="KEY",
@@ -1985,9 +2030,17 @@ def parser():
                    help="set, disconnect: wait until the templates the change rebuilds are built; non-zero when one fails")
     p.add_argument("--timeout", type=int, default=3600, help="seconds to wait for the rebuilds (default 3600)")
     p.add_argument("--json", action="store_true", help="as the API answers (with --wait: and the templates then)")
-    p = command("templates", templates_cmd, "admins: every template sandboxes start from, per runtime, and "
-                "where its build stands")
-    p.add_argument("--json", action="store_true", help="as the API answers")
+    p = command("templates", templates_cmd, "admins (or the setup link while the setup is open): every template "
+                "sandboxes start from, per runtime, and where its build stands")
+    p.add_argument("--wait", action="store_true", help="follow the builds, a line each time their progress changes "
+                   "(step k of n), until every template is built; non-zero when one fails or none may build yet")
+    p.add_argument("--timeout", type=int, default=1800, help="seconds --wait waits in all (default 1800); non-zero "
+                   "past it")
+    p.add_argument("--json", action="store_true", help="as the API answers (with --wait: once all are built)")
+    p.add_argument("--link-file", metavar="FILE", help="during the setup: a file holding the setup link (else "
+                   "SBX_SETUP_LINK when not signed in)")
+    p.add_argument("--insecure", action="store_true", help="with the setup link: accept the server's self-signed "
+                   "certificate")
 
     p = command("secrets", secrets_cmd, "ask the owner for keys: a page on the server they sign in to, where each "
                 "key goes straight to where it is used; and follow the request (admins)",
@@ -2041,8 +2094,8 @@ def parser():
     change_flags(s)
     s = steps.add_parser("admin", parents=[link], help="the first admin's own account: the email, their password on stdin")
     s.add_argument("email")
-    s = steps.add_parser("agents", parents=[link], help="the coding agents every template is built with: KIND ... "
-                         "or none (no template builds before this); without one, what is offered")
+    s = steps.add_parser("agents", parents=[link], help="optional: the coding agents whose connections to "
+                         "suggest: KIND ... or none (every template has every agent); without one, what is offered")
     s.add_argument("kinds", nargs="*", metavar="KIND")
     s.add_argument("--json", action="store_true")
     s = steps.add_parser("finish", parents=[link], help="finish: as the admin sbx login signed in, or with the "

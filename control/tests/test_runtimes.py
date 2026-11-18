@@ -263,6 +263,48 @@ class Templates(TwoRuntimes, Installation):
                          [named])
         self.assertEqual(self.builds.state(self.templates.BASE, "fake")["status"], "built")   # the other key stays
 
+    def test_a_build_says_its_step_and_the_next_one_an_estimate_from_the_last(self):
+        import time
+        from sbx_control import runtime
+        base = self.templates.BASE
+        seen = []
+        build = self.fake.build_template
+
+        def watched(spec, **kwargs):   # what progress() says at each step the fake logs
+            log = kwargs["on_log"]
+
+            def on_log(line):
+                log(line)
+                row = next(r for r in self.builds.progress()["runtimes"]["fake"] if r["key"] == base)
+                seen.append((row["phase"], row["step"], row["steps"], row["step_name"]))
+            return build(spec, **{**kwargs, "on_log": on_log})
+        clock = iter([1_000_000, 1_000_000 + 600])   # the first build took 10 minutes
+        with patch.object(self.fake, "build_template", side_effect=watched), \
+                patch.object(self.builds, "_utc", side_effect=lambda: time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.gmtime(next(clock)))):
+            self.builds.build_now(base, "fake")
+        steps = len(seen) - 1
+        self.assertGreater(steps, 3)
+        self.assertEqual(seen[0], ("building", 1, steps, "IMAGE"))
+        self.assertEqual(seen[-2][1:3], (steps, steps))
+        row = next(r for r in self.builds.progress()["runtimes"]["fake"] if r["key"] == base)
+        self.assertEqual((row["phase"], row["last_duration_s"], row["eta_s"]), ("current", 600, None))
+        self.assertEqual(row["started_at"], "1970-01-12 13:46:40")
+        # The next build: 0 until its runtime names a step, and the time left by the last one's.
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
+        with patch.object(self.builds, "_utc", return_value=started):
+            self.builds._begin(base, "fake")
+        self.addCleanup(self.builds._running.discard, ("fake", base))
+        row = next(r for r in self.builds.progress()["runtimes"]["fake"] if r["key"] == base)
+        self.assertEqual((row["phase"], row["step"], row["steps"], row["step_name"]), ("building", 0, None, None))
+        self.assertAlmostEqual(row["eta_s"], 480, delta=5)
+        self.builds._record_step(base, "fake", 2, 9, "RUN apt-get update")
+        row = next(r for r in self.builds.progress()["runtimes"]["fake"] if r["key"] == base)
+        self.assertEqual((row["step"], row["steps"], row["step_name"]), (2, 9, "RUN apt-get update"))
+        self.assertEqual(runtime.build_step("CACHED [builder 3/14] RUN apt-get install -y jq [0123abcd4567ef89]"),
+                         (3, 14, "RUN apt-get install -y jq"))   # E2B's builder's own line
+        self.assertIsNone(runtime.build_step("[base] FROM ubuntu:24.04"))
+
     def test_a_repo_s_template_only_on_the_runtimes_its_sandboxes_use(self):
         from sbx_control import runtimes
         with patch.object(self.builds.recipes, "with_recipe", return_value=["owner/app"]), \

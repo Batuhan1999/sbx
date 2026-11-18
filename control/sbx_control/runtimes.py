@@ -32,7 +32,13 @@ REQUEST_HOURS = 24
 
 class Refused(SandboxError):
     """The runtime asked for can't run the sandbox, or is no runtime here;
-    the message says why (the API answers 400)."""
+    the message says why (the API answers 400). checks: the provider's
+    checks that failed ({name, ok, detail, fix, help_url, field}; field: the
+    setting the web app shows it next to), when a check refused it."""
+
+    def __init__(self, message: str = "", checks=()):
+        super().__init__(message)
+        self.checks = list(checks)
 
 
 class Conflict(Refused):

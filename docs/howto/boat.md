@@ -21,7 +21,7 @@ add it again (below).
 
 ## Plan
 
-Tell your agent the plan, so sbx sets its limits to match. As read from
+sbx sets its limits to match your plan. As read from
 Boat's [pricing](https://docs.boat.dev/pricing.md) on 2026-11-17:
 
 | Plan | Per sandbox, at most | At once |
@@ -32,9 +32,15 @@ Boat's [pricing](https://docs.boat.dev/pricing.md) on 2026-11-17:
 | `500` | 16 vCPUs, 32 GB, 251 GB disk | 1,000 |
 | `2000` | 16 vCPUs, 32 GB, 251 GB disk | 2,000 |
 
-The trial saves no snapshots, and sbx's templates are saved snapshots, so
-templates build only after the first payment: pay in Boat's dashboard
-(Billing), and the next build round builds them. Plan on `20` or above. The
+sbx reads your plan from Boat when the key is saved and sets these
+limits for you; nothing to choose.
+
+**A trial key is refused at the key step.** The trial saves no snapshots,
+and sbx's templates are saved snapshots, so a server on the trial could
+never build them. When you save a key whose account is still on the trial,
+sbx says so under the key field (the CLI exits with the same message) and
+adds nothing: make the first payment in Boat's dashboard (Billing), then save
+the key again. Plan on `20` or above. The
 [reference](../reference.md#boat-boat) has every setting.
 
 ## Add it to sbx
@@ -53,7 +59,8 @@ command line:
 - The web app: **Settings → Sandbox runtimes**, add Boat, paste the key and
   choose the plan. The first-run wizard offers the same.
 - The `sbx` CLI, as an admin:
-  `sbx runtimes add boat --plan 20 --secret BOAT_API_KEY < key-file`.
+  `sbx runtimes add boat --secret BOAT_API_KEY < key-file` (the plan comes
+  from the key; `--plan` sets another).
 - On the server: `sbx-admin runtime add boat < key-file`.
 
 `sbx runtimes test boat` then checks that Boat answers with the key and

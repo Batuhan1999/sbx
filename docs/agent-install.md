@@ -139,9 +139,9 @@ answers. Ask nothing that `--check` already answered.
      the desktop CLI refuses it, so steps 5 to 10 go through the
      [HTTP API](reference.md#http-api) with `curl -k`).
 3. **The owner's email** for their admin account (`owner@example.com`).
-4. **Which coding agents the team uses**: none, [Amp](howto/amp.md),
-   [Claude Code](claude-code.md). Every template is built with the ones
-   chosen; their keys can come later.
+4. **Which coding agents the team uses**: [Amp](howto/amp.md),
+   [Claude Code](claude-code.md), Codex. Every template has all of them; this
+   only says which ones to connect after the setup (step 7).
 5. **The repository** (`owner/app`) and access to it: the GitHub App
    ([how-to](howto/github.md)); a public repository clones without it.
 
@@ -169,8 +169,7 @@ The `grep` keeps the setup link out of your output.
 
 - **`0`**: done. `==> Done: finish the setup in your browser`; a provider host
   also says `No sandbox runtime yet` (the key page adds it). No template is
-  built yet, on any host: templates build once the setup is finished, with the
-  coding agents chosen (step 7).
+  built yet, on any host: templates build once the setup is finished (step 7).
 - **Another number**: read the `FAILED: ...` line and
   `ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 40'`, fix the
   cause and start the same command again: every step is safe to repeat.
@@ -260,11 +259,13 @@ sbx secrets request --wait --link-file ~/.sbx-install/setup-link \
 ```
 
 Targets: `runtime:KIND` (`e2b-cloud`, `boat`; one not enabled yet is enabled
-on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
+on the plan Boat says the key's account is on, else on the runtime's default
+limits; a Boat trial key is refused, and the page says so at the key),
+`dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
 `repo:OWNER/NAME:VAR` (a connected repository only, step 9; `sbx secrets request --help` lists them). Send the
-owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
-the owner's plan if it is not the first one: `sbx runtimes set KIND --plan
-PLAN`. Send the owner the guide's
+owner the URL it prints. Then `sbx setup status` shows the runtime `done`; for
+E2B Cloud set the owner's plan if it is not Hobby: `sbx runtimes set e2b-cloud
+--plan pro`. Send the owner the guide's
 [keys page section](howto/setup.md#paste-your-keys) with the URL the first
 time: it shows the page and what happens after they save.
 
@@ -276,39 +277,39 @@ anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 `python3 ~/.sbx-install/sbx.py setup runtime add KIND --link-file ~/.sbx-install/setup-link --plan PLAN --secret E2B_CLOUD_API_KEY < ~/.sbx-install/e2b-key`
 (`BOAT_API_KEY` for Boat), and delete the file.
 
-## 7. Coding agents, then finish: the first template build
+## 7. Finish: the first template build
 
-Record the owner's answer from step 2, then finish. Nothing has built yet:
-templates wait for the setup to finish. Every template already has the coding
-agents' layers (Amp's is in the base), so the choice only decides which keys
-sbx asks for, and nothing rebuilds when a key arrives:
+Nothing has built yet: templates wait for the setup to finish. There is no
+coding-agent step: every template has every coding agent (Amp's is in the
+base), so connecting one later rebuilds nothing. Finish:
 
 ```sh
-sbx setup agents amp claude --link-file ~/.sbx-install/setup-link   # or: sbx setup agents none
 sbx setup status --link-file ~/.sbx-install/setup-link              # every step done
 sbx setup finish                                                    # as the signed-in admin: no password
 ```
 
-Without the desktop CLI, record the agents, then finish:
+Without the desktop CLI:
 
 ```sh
-curl -fsS -X PUT -H @$HOME/.sbx-install/api-header -H 'Content-Type: application/json' \
-  -d '{"agents": ["amp", "claude"]}' https://app.D/api/setup/agents   # {"agents": []} for none
 curl -fsS -X POST -H @$HOME/.sbx-install/api-header https://app.D/api/setup/complete
 ```
- The owner may press **Finish setup** on
-the setup page instead; both work. `finish` runs the server's checks
+
+The owner may press **Finish setup** on the setup page instead (creating
+their account there finishes it); both work. `finish` runs the server's checks
 (`The server needs attention` lists each failed one: fix it and run `finish`
 again), then prints `set up: https://app.D; ... the templates build now`.
 The base and default templates take about 10 minutes the first time:
-`sbx templates` shows them; wait until `sbx-base` and `default` are `current`
-on each runtime.
+`sbx templates --wait` follows them step by step (`step 3 of 12`) and exits
+once `sbx-base` and `default` are `current` on each runtime (non-zero when
+one fails, or after `--timeout`, default 1800 s).
 
-**An agent chosen later** (`sbx extensions set amp --secret provider_token < FILE`, a key page with `connector:amp`, or the
-web app's Extensions page) changes every template: the answer says how many
-rebuild on each runtime; existing sandboxes keep their templates and new ones
-start from the old ones until the rebuilds finish. Add `--wait` to wait for
-them (non-zero when one fails).
+**Then connect the coding agents** from step 2 under Extensions: Amp's
+self-hosted orb provider (`sbx extensions set amp --secret provider_token <
+FILE`, or a key page with `connector:amp`) and Claude Code's self-hosted
+environment ([Claude Code](claude-code.md)); Codex needs nothing. A change
+that moves the templates says how many rebuild on each runtime; existing
+sandboxes keep their templates and new ones start from the old ones until the
+rebuilds finish. Add `--wait` to wait for them (non-zero when one fails).
 
 ## 8. Optional: shared servers
 

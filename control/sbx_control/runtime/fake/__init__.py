@@ -16,7 +16,7 @@ import threading
 from types import SimpleNamespace
 
 from ..base import (PAUSED, RUNNING, Busy, Capabilities, CommandFailed, Failed, Backend, Info, Limits, NoRoom,
-                    NotRunning, SettingField, Snapshot, TemplateGone, TemplateSpec)
+                    NotRunning, SettingField, Snapshot, TemplateGone, TemplateSpec, step_line)
 
 INTERNAL_HOST_SUFFIX = "fake.sandboxes.internal"
 CONTROL_PORT = 49999        # its own daemon in every sandbox: never a preview
@@ -207,7 +207,9 @@ class Fake(Backend):
         for what, value in spec.steps:
             if what == "template" and value not in self.built:
                 raise Failed(f"the fake runtime has no template {value} to build {alias} from")
-        if on_log:
+        if on_log:   # each step as a runtime's builder logs it (step_line), then the end
+            for number, (what, _) in enumerate(spec.steps, 1):
+                on_log(step_line(number, len(spec.steps), what.upper()))
             on_log(f"built {alias} ({len(spec.steps)} steps)")
         self.built[alias] = "ready"
         return alias
