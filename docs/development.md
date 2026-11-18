@@ -125,7 +125,8 @@ web app's bundle) and its `.sha256`, lays a release out from the unpacked
 archive with `control/release.sh` to check it, and publishes the GitHub
 release. Its notes are the tag's message below its first line, then the
 titles of the PRs merged since the previous release (grouped by
-[`.github/release.yml`](../.github/release.yml)). A tag with a
+[`.github/release.yml`](../.github/release.yml); a PR labelled
+`no-release-notes` or `dependencies` is left out). A tag with a
 suffix (`v0.2.0-rc.1`) publishes a pre-release to try on a test installation
 (one with `updates.prereleases` offers it in the web app); the next full
 release's notes still start from the release before it.
