@@ -1,5 +1,5 @@
 """Where things are reached: on the domain's host names
-(<slug><suffix>.<domain>, <port>-<sandbox id>.<domain>), or, on an
+(<slug><suffix>.<domain>, <port>-<host id>.<domain>), or, on an
 installation with only an IP, on the HTTPS ports ip_previews assigns.
 
 Every function decides from the settings as they are now; nothing is kept
@@ -8,8 +8,30 @@ import re
 
 from . import ip_previews, recipes, runtime, settings
 
-# <port>-<sandbox id>.<domain>: the runtime's own host for a sandbox port.
-RAW_HOST = re.compile(r"^(\d+)-([a-z0-9]+)$")
+# <port>-<host id>.<domain>: a sandbox's port by its runtime's sandbox id,
+# spelled as a host name label (host_id).
+RAW_HOST = re.compile(r"^(\d+)-([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$")
+_ESCAPE = re.compile(r"-([0-9a-f]{2})")
+
+
+def host_id(sandbox_id: str) -> str:
+    """The runtime's sandbox id as it goes in a host name: lowercase letters
+    and digits as they are, every other byte (an underscore, a hyphen, a
+    capital) as -<two hex digits>, since a DNS label holds only [a-z0-9-]
+    and hosts are matched case-blind. Ids of letters and digits keep their
+    host; a Boat id bx_3f8tnb7k becomes bx-5f3f8tnb7k."""
+    return "".join(c if c in "abcdefghijklmnopqrstuvwxyz0123456789" else
+                   "".join(f"-{b:02x}" for b in c.encode()) for c in sandbox_id)
+
+
+def sandbox_id_of(label: str) -> str | None:
+    """host_id's inverse; None for what host_id never makes."""
+    if not re.fullmatch(r"(?:[a-z0-9]|-[0-9a-f]{2})+", label):
+        return None
+    try:
+        return _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), label).encode("latin-1").decode()
+    except UnicodeError:
+        return None
 
 
 def domain() -> str:
@@ -79,14 +101,16 @@ def env_urls(slug: str, a) -> dict:
 
 def ssh_url(slug: str, a, sandbox_id: str) -> str:
     """Where the CLI's ProxyCommand reaches the sandbox's SSH-over-WebSocket
-    bridge. An IP-only installation has no <port>-<id> hostnames, so the
-    bridge gets an assigned port like any other preview."""
+    bridge: <port>-<host id>.<domain>, which names the VM itself (a new VM
+    under the same name is another host). An IP-only installation has no
+    such hostnames, so the bridge gets an assigned port like any other
+    preview."""
     port = ports(a).get("-ssh")
     if not port:
         return ""
     current = domain()
     if current:
-        return f"wss://{port}-{sandbox_id}.{current}"
+        return f"wss://{port}-{host_id(sandbox_id)}.{current}"
     try:
         origin = ip_previews.origin(slug, port)
     except ip_previews.PortPoolExhausted:
@@ -95,13 +119,13 @@ def ssh_url(slug: str, a, sandbox_id: str) -> str:
 
 
 def detected_origin(slug: str, sandbox_id: str, port: int, *, raw: bool) -> str:
-    """The link of a detected preview: <slug>-<port>, or the raw <port>-<id>
-    host when raw; an assigned port without a domain ("" when none can be
-    given). Raises ip_previews.PortPoolExhausted when the pool is full."""
+    """The link of a detected preview: <slug>-<port>, or the raw
+    <port>-<host id> host when raw; an assigned port without a domain (""
+    when none can be given). Raises ip_previews.PortPoolExhausted when the pool is full."""
     current = domain()
     if not current:
         return ip_previews.origin(slug, port)
-    host = f"{port}-{sandbox_id}" if raw else f"{slug}-{port}"
+    host = f"{port}-{host_id(sandbox_id)}" if raw else f"{slug}-{port}"
     return f"https://{host}.{current}"
 
 
@@ -144,11 +168,13 @@ def host_label(host: str) -> str:
 
 
 def raw_host(host: str):
+    """<port>-<host id>.<domain> -> (port, sandbox id); None for any other host."""
     current = domain()
-    if not host.endswith(f".{current}"):
+    if not current or not host.endswith(f".{current}"):
         return None
     match = RAW_HOST.match(host[:-len(current) - 1])
-    return (int(match.group(1)), match.group(2)) if match else None
+    sandbox_id = sandbox_id_of(match.group(2)) if match else None
+    return (int(match.group(1)), sandbox_id) if sandbox_id else None
 
 
 def upstream(port: int, sandbox_id: str) -> str:

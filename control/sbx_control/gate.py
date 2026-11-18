@@ -310,7 +310,7 @@ def _resolve(request: Request, mode: Mode) -> Target | Outcome:
         return nothing(lambda: _unlisted(name or addressing.host_label(original_host), port, email))
     # Only what the app's sbx.yaml and the settings expose and, unless
     # detected_previews is off, what a server listens on on 0.0.0.0; also on
-    # raw <port>-<id> hosts. A team-shared sandbox's owner-only previews (the
+    # raw <port>-<host id> hosts. A team-shared sandbox's owner-only previews (the
     # desktop) are the team's.
     preview = addressing.preview_on(sandbox.app, port)
     if preview is None and not (preflight and not ip_route):   # a domain host's preflight: declared ones only
@@ -323,13 +323,32 @@ def _resolve(request: Request, mode: Mode) -> Target | Outcome:
     return Target(sandbox_id, port, sandbox, email or "", how, ip_route is not None)
 
 
+# Operations during which the VM is being made, going away or coming back:
+# the SSH bridge waits on them like any preview.
+_VM_OPERATIONS = ("create", "pause", "resume", "delete")
+
+
+def _record_page(target: Target, record: dict | None) -> Page | None:
+    """The page sbx's record of the sandbox calls for. The SSH bridge is
+    the platform's, not the app's: it answers while sbx prepares or restarts
+    the app (creating a sandbox returns once SSH works, and the developer's
+    agent logins go in then) and after the app or its preparation failed,
+    when SSH is how to look; only while its VM is made, pauses, resumes or
+    is deleted does it wait like any preview."""
+    if record is not None and target.port == addressing.ports(target.listed.app).get("-ssh") and \
+            record["phase"] not in ("deleting", "deleted") and \
+            not (record["active"] and record["operation"] in _VM_OPERATIONS):
+        return None
+    return preview_pages.page_for(target.name, record, target.mine)
+
+
 def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
     """What keeps the request from the app now: an operation of sbx's, the
     runtime's error, a resume, the provider's desktop, a navigation before
     the app's port listens; None when nothing does."""
     sandbox_id, name, mine = target.sandbox_id, target.name, target.mine
     record = lifecycle.get(name, sandbox_id=sandbox_id) if name else None
-    page = preview_pages.page_for(name, record, mine)   # an operation runs, or the last one failed
+    page = _record_page(target, record)   # an operation runs, or the last one failed
     if page is not None:
         return Show(page)
     sandbox = _snapshot.by_id.get(sandbox_id) or target.listed
@@ -350,7 +369,7 @@ def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
     elif not waking.wake(sandbox_id, lambda fresh: listed(sandbox_id, fresh)):
         return could_not_wake if waking.failed(sandbox_id) else Show(Page("waking", name, step="Waking up"))
     record = lifecycle.get(name, sandbox_id=sandbox_id) if name else None
-    page = preview_pages.page_for(name, record, mine)   # the resume may have started a restart
+    page = _record_page(target, record)   # the resume may have started a restart
     if page is not None:
         return Show(page)
     if target.port == _desktop_port(target.listed.app) and runtime.desktop(runtime.kind_of(target.listed.info)) == "provider":

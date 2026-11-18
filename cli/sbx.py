@@ -9,6 +9,7 @@ import argparse
 import base64
 import getpass
 import hashlib
+import http.client
 import http.server
 import io
 import json
@@ -351,6 +352,9 @@ def websocat():
     return shutil.which("websocat", path=f"/opt/homebrew/bin:/usr/local/bin:{os.environ.get('PATH', '')}")
 
 
+SSH_REACH_SECONDS = 120   # how long the tunnel waits for a sandbox being made or waking up
+
+
 def tunnel(args):
     """SSH ProxyCommand: the sandbox's sshd over a WebSocket through the
     gate in front of the sandboxes, which checks this token and that you own
@@ -359,7 +363,55 @@ def tunnel(args):
     if not token:
         sys.exit("not signed in: run `sbx login`")
     binary = websocat() or sys.exit("websocat not found: brew install websocat")
+    bridge_ready(args.sandbox_id, args.url, token)
     os.execv(binary, [binary, "--binary", "-B", "65536", f"--header=Authorization: Bearer {token}", "-", args.url])
+
+
+def bridge_status(url, token):
+    """The status the gate answers a WebSocket upgrade to the bridge with
+    (101 once it is let through), and its Retry-After."""
+    parts = urllib.parse.urlsplit(url)
+    secure = parts.scheme == "wss"
+    connection = (http.client.HTTPSConnection if secure else http.client.HTTPConnection)(
+        parts.hostname, parts.port or (443 if secure else 80), timeout=30)
+    try:
+        connection.request("GET", parts.path or "/", headers={
+            "Authorization": f"Bearer {token}", "Connection": "Upgrade", "Upgrade": "websocket",
+            "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": base64.b64encode(secrets.token_bytes(16)).decode()})
+        response = connection.getresponse()
+        return response.status, response.getheader("Retry-After")
+    finally:
+        connection.close()
+
+
+def bridge_ready(host, url, token):
+    """Before ssh's bytes go over the bridge: while the gate says the
+    sandbox is on its way (503: being made, waking up), wait, saying so on
+    stderr (ssh shows it); a bridge that names no sandbox (404), refuses
+    (a sign-in, 403) or whose VM failed (502) exits with what to do. Anything else is websocat's to
+    meet. host: the sandbox, as ssh's %h names it."""
+    deadline, said = time.monotonic() + SSH_REACH_SECONDS, False
+    while True:
+        try:
+            status, retry = bridge_status(url, token)
+        except (OSError, http.client.HTTPException) as error:
+            sys.exit(f"{host}: the SSH bridge at {url} did not answer: {error}")
+        if status == 404:
+            sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If it was deleted or "
+                     f"recreated, `sbx up NAME` writes its SSH config again")
+        if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
+            sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
+                     f"not your sandbox")
+        if status == 502:   # the gate's "failed": the runtime reports an error for its VM
+            sys.exit(f"{host}: the sandbox's runtime reports an error; `sbx ls` shows it, restart or delete it in sbx")
+        if status != 503:
+            return
+        if time.monotonic() > deadline:
+            sys.exit(f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it")
+        if not said:
+            note(f"{host}: waiting for the sandbox to be ready ...")
+            said = True
+        time.sleep(min(float(retry or 2), 10))
 
 
 def hand_credentials(name):
@@ -512,8 +564,21 @@ def up(args):
 EDITORS = ("code", "cursor", "zed", "ssh")
 
 
+def refresh_host(name, info):
+    """Point this Mac's SSH config for the sandbox at the bridge the server
+    names now (its address may have changed since `sbx up` wrote it)."""
+    conf = SSH_DIR / f"{name}.conf"
+    if not info.get("ssh_url") or not conf.exists():
+        return
+    text = conf.read_text()
+    fresh = re.sub(r"^(  ProxyCommand .* tunnel %h ).*$", lambda m: m.group(1) + info["ssh_url"], text, flags=re.M)
+    if fresh != text:
+        conf.write_text(fresh)
+
+
 def open_tool(name, tool):
     info = api("GET", f"/api/sandboxes/{name}")
+    refresh_host(name, info)
     repo = info["repo"]
     commands = {agent["command"] for agent in agents().values()}
     if tool in commands:

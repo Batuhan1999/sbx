@@ -380,3 +380,75 @@ class PausedSinceListing(GateCase):
                     thread.join(5)
                 self.waking.forget_preview_resume(self.vm)
         self.assertEqual(response.headers.get("x-sbx-page"), "waking")
+
+
+class HostIds(unittest.TestCase):
+    """A runtime's sandbox id in a host name: always a DNS label, and back."""
+
+    def test_any_id_becomes_a_dns_label_and_comes_back(self):
+        import re
+        from sbx_control import addressing
+        label = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+        for sandbox_id in ("i3x9k2m4abc", "bx_3f8tnb7k", "sandbox-id", "Mixed.Case_ID", "a--b", "_x_", "é"):
+            with self.subTest(sandbox_id=sandbox_id):
+                host = addressing.host_id(sandbox_id)
+                self.assertRegex(f"8081-{host}", label)
+                self.assertEqual(addressing.sandbox_id_of(host), sandbox_id)
+        self.assertEqual(addressing.host_id("i3x9k2m4abc"), "i3x9k2m4abc")   # E2B's and Embed's ids keep their hosts
+        self.assertEqual(addressing.host_id("bx_3f8tnb7k"), "bx-5f3f8tnb7k")
+
+    def test_what_host_id_never_makes_names_no_sandbox(self):
+        from sbx_control import addressing
+        for label in ("bx_3f8tnb7k", "a-b", "a-", "-5", "A", "", "a-zz"):
+            with self.subTest(label=label):
+                self.assertIsNone(addressing.sandbox_id_of(label))
+
+
+class SshBridge(GateCase):
+    """The CLI's SSH bridge (`ssh sbx-NAME`, the agent login handover) on
+    <port>-<host id>, for any runtime's ids, and while sbx works on the app."""
+
+    def bridge(self, sandbox_id, token=None):
+        from urllib.parse import urlsplit
+        from sbx_control import addressing
+        url = addressing.ssh_url("unused", self.app, sandbox_id)
+        self.assertTrue(url.startswith("wss://8081-"), url)
+        return self.ask(urlsplit(url).hostname, token or self.owner, Upgrade="websocket")
+
+    def test_a_sandbox_id_with_an_underscore_is_reached(self):
+        self.fake.id_prefix = "bx_"
+        sandbox_id = self.add("memos-b")
+        self.assertIn("_", sandbox_id)
+        response = self.bridge(sandbox_id)
+        self.assertEqual(response.status_code, 200, response.headers)
+        self.assertEqual(response.headers["x-sbx-upstream"], self.runtime.upstream_host(8081, sandbox_id))
+        self.assertEqual(self.bridge(sandbox_id, self.other).headers.get("x-sbx-page"), "forbidden")   # owner only
+
+    def test_a_detected_preview_on_the_raw_host_is_reached_too(self):
+        from sbx_control import addressing
+        self.fake.id_prefix = "bx_"
+        sandbox_id = self.add("memos-b")
+        origin = addressing.detected_origin("memos-b", sandbox_id, 5173, raw=True)
+        self.assertEqual(addressing.raw_host(origin.removeprefix("https://")), (5173, sandbox_id))
+
+    def test_the_bridge_answers_while_sbx_prepares_the_app_and_after_it_failed(self):
+        from sbx_control import lifecycle
+        op = lifecycle.begin("memos-a", "prepare")
+        op.advance("preparing_workspace", sandbox_id=self.vm, runtime="running")
+        op.advance("workspace_ready")
+        op.advance("setting_up")
+        self.assertEqual(self.ask("memos-a.example.test", self.owner).headers.get("x-sbx-page"), "starting")
+        self.assertEqual(self.bridge(self.vm).status_code, 200)
+        op.fail(RuntimeError("setup failed"))
+        self.assertEqual(self.ask("memos-a.example.test", self.owner).headers.get("x-sbx-page"), "failed")
+        self.assertEqual(self.bridge(self.vm).status_code, 200)   # SSH is how to look
+
+    def test_the_bridge_waits_while_the_vm_pauses_and_is_gone_once_deleted(self):
+        from sbx_control import lifecycle
+        lifecycle.begin("memos-a", "pause").advance("pausing")
+        self.assertEqual(self.bridge(self.vm).headers.get("x-sbx-page"), "waking")
+        lifecycle.recover_interrupted()
+        op = lifecycle.begin("memos-a", "delete")
+        op.advance("deleting")
+        self.assertEqual(self.bridge(self.vm).headers.get("x-sbx-gone") or
+                         self.bridge(self.vm).headers.get("x-sbx-page"), "deleted")

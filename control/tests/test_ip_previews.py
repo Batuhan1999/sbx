@@ -64,7 +64,7 @@ class IpPreviewTests(Installation):
         self.assertEqual(url, self.ip.origin('first', 8081).replace('https://', 'wss://'))
         self.assertTrue(self.ip.route(int(url.rsplit(':', 1)[1])))
         settings.update('domain', {'address': '203.0.113.10', 'name': 'sbx.example'}, by='test')
-        self.assertEqual(addressing.ssh_url('first', a, 'sandbox-id'), 'wss://8081-sandbox-id.sbx.example')
+        self.assertEqual(addressing.ssh_url('first', a, 'sandbox-id'), 'wss://8081-sandbox-2did.sbx.example')
 
     def test_control_cookie_never_reaches_an_application(self):
         from sbx_control import preview_proxy
