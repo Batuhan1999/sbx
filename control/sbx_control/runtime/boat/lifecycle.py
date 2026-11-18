@@ -27,7 +27,7 @@ class Sandboxes:
     """The lifecycle part of the Boat backend (mixed into Boat)."""
 
     def _sandbox(self, sandbox_id):
-        found = self.call(lambda: self.api().get(sandbox_id), sandbox_id=sandbox_id).sandbox
+        found = self.call(lambda: self.api().get(sandbox_id), sandbox_id=sandbox_id, read=True).sandbox
         if found.state in GONE:
             raise NotRunning(f"Boat sandbox {sandbox_id} was cancelled")
         return found
@@ -151,7 +151,7 @@ class Sandboxes:
         found, cursor = [], None
         while True:
             page = self.call(lambda: self.api().sandboxes(limit=200, cursor=cursor, state=wanted, label=labels or None,
-                                                          **self._org_args()))
+                                                          **self._org_args()), read=True)
             found += [self._info(s) for s in page.sandboxes if s.state not in GONE
                       and all((s.labels or {}).get(k) == v for k, v in (metadata or {}).items())]
             info = page.page_info
