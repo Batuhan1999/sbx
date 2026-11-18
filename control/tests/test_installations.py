@@ -207,6 +207,7 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         builds.build_now(templates.BASE, "fake")
         time.sleep(1.1)                                   # a later attempt, the base unchanged since
         builds._transition(templates.DEFAULT, "building", "fake", started_at=builds._utc(), pid=None,
+                           finished_at=builds._utc(),   # as a failed build records it
                            fingerprint=builds.plan(templates.DEFAULT).fingerprint, error="apt failed")
         with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
             builds.template_for(None, "fake")

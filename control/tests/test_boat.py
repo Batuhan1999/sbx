@@ -359,6 +359,21 @@ class Backend(unittest.TestCase):
                                 '"$D" "$E" "$MSG"'], capture_output=True, text=True, check=True).stdout
         self.assertEqual(shown, "1-1|/opt/node/bin:/usr/bin:/bin|x y|$(id)|`id`|a;b|hello 1|")   # no command ran
 
+    def test_a_recipe_dockerfile_runs_as_root_with_or_without_a_from(self):
+        from sbx_control.runtime import TemplateSpec
+        for n, text in enumerate(("RUN apt-get install -y jq\nCMD node\n", "FROM node:20\nRUN apt-get install -y jq\n")):
+            with self.subTest(text=text):
+                self.fake.ran.clear()
+                self.backend.build_template(TemplateSpec().from_template("tpl").set_user("user").dockerfile(text)
+                                            .set_user("user").run_cmd("make"),
+                                            alias=f"d{n}", cpu=2, memory_mb=4096, disk_mb=1024)
+                commands = [c for _, c, _ in self.fake.ran]
+                apt = next(c for c in commands if "apt-get install -y jq" in c)
+                self.assertIn("exec sudo -H -u root", apt)
+                self.assertIn("cd / ", apt)
+                self.assertNotIn("sudo -H -u root", next(c for c in commands if "; make" in c))
+                self.assertFalse(any("node" in c for c in commands))   # CMD is not run
+
     def test_builds_and_snapshots_are_refused_on_the_trial_before_a_builder_starts(self):
         from sbx_control.runtime import LimitRefused, TemplateSpec
         self.fake.plan = "trial"

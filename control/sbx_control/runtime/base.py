@@ -369,8 +369,13 @@ class TemplateSpec:
         return self._add("run", command)
 
     def dockerfile(self, text: str):
-        """A Dockerfile's instructions; its FROM is ignored, the template has started already."""
-        return self._add("dockerfile", text)
+        """A Dockerfile's instructions, the same on every runtime: they start
+        as root in /, as Docker's do; a FROM is optional and ignored (the
+        template has started already), CMD and ENTRYPOINT are ignored (its
+        VMs run set_start_cmd's), and a second FROM raises ValueError. The
+        step holds dockerfile.instructions(text), with no FROM."""
+        from .dockerfile import instructions
+        return self.set_user("root").set_workdir("/")._add("dockerfile", instructions(text))
 
     def set_start_cmd(self, command: str, ready: int | str):
         """What every VM of the template runs when it starts, and when it is
