@@ -15,6 +15,8 @@ no key to copy. GitHub's pages may differ a little from the labels below.
    permissions it needs (contents and pull requests: read and write; metadata:
    read) and the push and pull-request events. Confirm it.
 
+![The GitHub card on the Extensions page, with Create a GitHub App for this server](images/extensions-github.png)
+
 GitHub then goes straight on to installing it.
 
 ## Select repositories

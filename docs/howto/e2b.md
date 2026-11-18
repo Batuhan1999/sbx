@@ -11,10 +11,9 @@ whose plan pays for the sandboxes, and a domain (see
 1. Sign in at [e2b.dev/dashboard](https://e2b.dev/dashboard), in the team
    that should pay.
 2. Open **API keys** and create a key. Copy it once.
-3. Never paste it into a chat or onto a command line. Save it in a file only
-   you and your agent can read; the [installation guide](../agent-install.md)
-   gives the exact line. sbx checks it with E2B and keeps it in its secret
-   store.
+3. Never paste it into a chat or onto a command line. Paste it on the keys
+   page your agent sends you ([below](#add-it-to-sbx)). sbx checks it with
+   E2B and keeps it in its secret store.
 
 A key belongs to the team, and the plan's limits are the team's: several
 installations on the same team share them.
@@ -36,7 +35,15 @@ every setting.
 
 ## Add it to sbx
 
-Any of these, with the key read from a file or stdin, never typed on a
+Your agent usually asks for the key on a **keys page**: it sends you a link
+to your server (`https://login.<domain>/keys/…`). Sign in, paste the key into
+its field and choose **Save keys**. sbx checks the key with E2B, stores it and
+adds E2B Cloud; the page shows when the server has applied it. Each **How do
+I get this?** link leads back here.
+
+![The keys page with fields for a Boat key, an E2B key and an Amp provider token](images/keys-page.png)
+
+Other ways, with the key read from a file or stdin, never typed on a
 command line:
 
 - The web app: **Settings → Sandbox runtimes**, add E2B Cloud, paste the key

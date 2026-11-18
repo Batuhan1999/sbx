@@ -207,8 +207,10 @@ ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link
 
 Send the owner the link (`cat ~/.sbx-install/setup-link` in a terminal of
 their own, or yours if they trust it there; never in a shared log), with:
-**"Create your account here."** They create it with `owner@example.com` and a
-password of their own; that signs them in. `setup status` then shows `admin`
+**"Create your account here."**, plus the owner's guide
+[howto/setup.md](howto/setup.md#create-your-account), which shows the screen.
+They create it with `owner@example.com` and a password of their own; that
+signs them in. `setup status` then shows `admin`
 as `done`.
 
 ## 5. Sign in the CLI as the owner
@@ -256,7 +258,9 @@ on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
 `repo:OWNER/NAME:VAR` (`sbx secrets request --help` lists them). Send the
 owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
 the owner's plan if it is not the first one: `sbx runtimes set KIND --plan
-PLAN`.
+PLAN`. Send the owner the guide's
+[keys page section](howto/setup.md#paste-your-keys) with the URL the first
+time: it shows the page and what happens after they save.
 
 **No web app reachable** (the server isn't reachable from the owner's
 browser): the owner writes the key into a file only they and you can read,

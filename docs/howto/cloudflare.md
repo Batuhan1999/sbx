@@ -46,11 +46,14 @@ token that may edit the zone's DNS. To create one (labels may differ):
 If sbx reports that it can't find the zone, edit the token and add the
 permission **Zone → Zone → Read** next to the template's DNS edit permission.
 
-Never paste the token into a chat or onto a command line. Save it in a file
-only you and your agent can read; the
-[installation guide](../agent-install.md) gives the exact line. sbx then
-keeps it in its secret store. To replace it later, paste the new token in
-the web app's **Settings → Domain & certificate**.
+Never paste the token into a chat or onto a command line. Paste it in the
+first-run setup's **Server address** step: choose **A domain**, then
+**Cloudflare API** under **Certificate verification**. The same screen lists
+the DNS records to add. sbx keeps the token in its secret store. To replace
+it later, paste the new token in the web app's
+**Settings → Domain & certificate**.
+
+![The setup's Server address step with a domain, Cloudflare API verification, the token field and the DNS records to add](images/setup-domain-cloudflare.png)
 
 ## Why sbx needs the token
 

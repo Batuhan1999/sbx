@@ -35,15 +35,29 @@ Orbs.
 
 ## Give the token to sbx
 
-In the sbx web app, open **Extensions → Coding agents → Amp**, paste the
-provider token, choose a default repository if you like, and enable it. Or on
-the server, with the token on stdin:
+Choose **Amp** in the first-run setup's **Coding agents** step, so the first
+template build already contains it and adding the token later rebuilds
+nothing:
 
-```sh
-read -r -s AMP_TOKEN
-printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=- enabled=true repo=owner/repository
-unset AMP_TOKEN
-```
+![The setup's Coding agents step with Amp chosen](images/setup-agents.png)
+
+Then paste the token in one of these places:
+
+- **The keys page** your agent sends you (`https://login.<domain>/keys/…`),
+  next to any other keys it needs. Amp stays on and its provider starts.
+- **Extensions → Coding agents → Amp** in the web app: paste the provider
+  token, choose a default repository if you like, and keep **Enabled** on
+  **Yes**.
+
+  ![The Amp form on the Extensions page: orb provider token, default repository and Enabled](images/extensions-amp.png)
+
+- On the server, with the token on stdin:
+
+  ```sh
+  read -r -s AMP_TOKEN
+  printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=- enabled=true repo=owner/repository
+  unset AMP_TOKEN
+  ```
 
 Saving installs the Amp CLI on the server if it is missing and starts the
 `sbx-amp` service. Run one provider controller per token: do not start
