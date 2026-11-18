@@ -1048,7 +1048,7 @@ def templates(phase, boat_phase=None, error=None):
     def row(at):
         return {"key": "default", "phase": at, "status": "failed" if at == "stuck" else "built",
                 "template": "default-0123abcd", "error": error if at == "stuck" else None}
-    return {"blocked": "", "runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
+    return {"runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
                                         "boat": [row(boat_phase or phase)]}}
 
 

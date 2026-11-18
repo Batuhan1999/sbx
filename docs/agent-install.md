@@ -140,8 +140,9 @@ answers. Ask nothing that `--check` already answered.
      [HTTP API](reference.md#http-api) with `curl -k`).
 3. **The owner's email** for their admin account (`owner@example.com`).
 4. **Which coding agents the team uses**: none, [Amp](howto/amp.md),
-   [Claude Code](claude-code.md). Every template is built with the ones
-   chosen; their keys can come later.
+   [Claude Code](claude-code.md). Every template has each of them, chosen
+   or not: the choice decides which keys sbx asks for, and they can come
+   later.
 5. **The repository** (`owner/app`) and access to it: the GitHub App
    ([how-to](howto/github.md)); a public repository clones without it.
 
@@ -168,9 +169,11 @@ ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 5; sudo cat /root/s
 The `grep` keeps the setup link out of your output.
 
 - **`0`**: done. `==> Done: finish the setup in your browser`; a provider host
-  also says `No sandbox runtime yet` (the key page adds it). No template is
-  built yet, on any host: templates build once the setup is finished, with the
-  coding agents chosen (step 7).
+  also says `No sandbox runtime yet` (the key page adds it). Templates build
+  as soon as the server has an address and a sandbox runtime, whether the
+  setup is finished or not: `install.sh` builds them when it already has both
+  (`--domain` on an Embed host), otherwise they start once the setup chooses
+  the address and adds the runtime.
 - **Another number**: read the `FAILED: ...` line and
   `ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 40'`, fix the
   cause and start the same command again: every step is safe to repeat.
@@ -276,12 +279,15 @@ anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 `python3 ~/.sbx-install/sbx.py setup runtime add KIND --link-file ~/.sbx-install/setup-link --plan PLAN --secret E2B_CLOUD_API_KEY < ~/.sbx-install/e2b-key`
 (`BOAT_API_KEY` for Boat), and delete the file.
 
-## 7. Coding agents, then finish: the first template build
+## 7. Coding agents, then finish
 
-Record the owner's answer from step 2, then finish. Nothing has built yet:
-templates wait for the setup to finish. Every template already has the coding
-agents' layers (Amp's is in the base), so the choice only decides which keys
-sbx asks for, and nothing rebuilds when a key arrives:
+Record the owner's answer from step 2, then finish. The base and default
+templates started building once the address and the runtime were chosen, and
+the setup can finish while they build: its check that sandboxes reach the
+server says `not checked yet: the base template is still building` until the
+base is built. Every template already has the coding agents' layers (Amp's is
+in the base), so the choice only decides which keys sbx asks for, and nothing
+rebuilds when a key arrives:
 
 ```sh
 sbx setup agents amp claude --link-file ~/.sbx-install/setup-link   # or: sbx setup agents none
@@ -299,16 +305,17 @@ curl -fsS -X POST -H @$HOME/.sbx-install/api-header https://app.D/api/setup/comp
  The owner may press **Finish setup** on
 the setup page instead; both work. `finish` runs the server's checks
 (`The server needs attention` lists each failed one: fix it and run `finish`
-again), then prints `set up: https://app.D; ... the templates build now`.
-The base and default templates take about 10 minutes the first time:
+again), then prints `set up: https://app.D; ...`. The base and default
+templates take about 10 minutes the first time:
 `sbx templates` shows them; wait until `sbx-base` and `default` are `current`
 on each runtime.
 
 **An agent chosen later** (`sbx extensions set amp --secret provider_token < FILE`, a key page with `connector:amp`, or the
-web app's Extensions page) changes every template: the answer says how many
-rebuild on each runtime; existing sandboxes keep their templates and new ones
-start from the old ones until the rebuilds finish. Add `--wait` to wait for
-them (non-zero when one fails).
+web app's Extensions page) rebuilds no template: its layer is in every
+template already. A change that does move templates (a new pinned version,
+say) answers how many rebuild on each runtime; existing sandboxes keep their
+templates and new ones start from the old ones until the rebuilds finish. Add
+`--wait` to wait for them (non-zero when one fails).
 
 ## 8. Optional: shared servers
 

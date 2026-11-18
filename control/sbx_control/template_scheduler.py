@@ -1,9 +1,8 @@
 """When templates build: the scheduler's rounds (stale templates on every
 enabled runtime, the moved repos' at night), a round started now (kick:
 the setup finished, an extension changed the templates) and builds started
-in a process of their own for short-lived commands. Nothing builds until
-the setup is complete (setup.templates_blocked). What a build is and does
-is template_builds'."""
+in a process of their own for short-lived commands. What a build is and
+does is template_builds'."""
 from __future__ import annotations
 
 import os
@@ -13,7 +12,7 @@ import sys
 import threading
 import time
 
-from . import runtime, setup, templates
+from . import runtime, templates
 from . import template_builds as builds
 
 _kicked = threading.Lock()
@@ -75,15 +74,12 @@ def _build_quietly(key: str, kind: str | None = None) -> bool:
 
 def build_stale(stop: threading.Event | None = None, kinds=None):
     """One round: the stale templates on each runtime of kinds (default:
-    every enabled one), one at a time; nothing while setup.templates_blocked.
-    It waits for a round already running."""
+    every enabled one), one at a time. It waits for a round already running."""
     with _round:
         _build_stale(stop, kinds)
 
 
 def _build_stale(stop, kinds):
-    if setup.templates_blocked():
-        return
     for kind in kinds or runtime.enabled():
         try:
             builds.forget_missing(kind)   # one listing; what is gone is stale below
@@ -103,8 +99,8 @@ def _build_stale(stop, kinds):
 def kick() -> bool:
     """A round now on a thread of its own, not on the scheduler's next one
     (the setup just finished, an extension changed the templates): False
-    when templates may not build yet or a kicked round is running."""
-    if setup.templates_blocked() or not _kicked.acquire(blocking=False):
+    when a kicked round is running."""
+    if not _kicked.acquire(blocking=False):
         return False
 
     def run():
@@ -121,14 +117,12 @@ def kick() -> bool:
 def schedule(stop: threading.Event):
     """Until stop: every builds.CHECK_SECONDS the stale templates on every enabled
     runtime, and at NIGHTLY_REBUILD_HOUR the moved repos', one at a time,
-    for the disk's sake; none until the setup is complete."""
+    for the disk's sake."""
     night = None
     wait = builds.first_wait()   # soon, when a restart cut a build off
     while not stop.wait(wait):
         wait = builds.CHECK_SECONDS
         try:
-            if setup.templates_blocked():
-                continue
             build_stale(stop)
             if stop.is_set():
                 return
@@ -150,10 +144,6 @@ def start_template_builds(kind: str) -> None:
     on the scheduler's next round; in a process of their own, so this
     command returns."""
     title = runtime.title(kind)
-    if why := setup.templates_blocked():
-        print(f"{templates.BASE} and {templates.DEFAULT} on {title}: not yet: {why}, with their layers "
-              "(about 10 minutes the first time)")
-        return
     try:
         where, started = start_detached(kind)
     except Exception as error:

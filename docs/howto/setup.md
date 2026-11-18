@@ -40,10 +40,11 @@ server (it needs `/dev/kvm`), or a hosted one such as E2B Cloud or Boat.
 
 ![The setup's Sandbox runtime step: E2B Embed, E2B Cloud and Boat](images/setup-runtime.png)
 
-**Coding agents** are the agents your team starts sandboxes from. Each one
-you choose goes into every sandbox template from the first build on, so adding
-its key later rebuilds nothing. Choosing none is fine.
+**Coding agents** are the agents your team starts sandboxes from. Every
+sandbox template has each of them, chosen or not; choosing one decides which
+key sbx asks for, and adding it later rebuilds nothing. Choosing none is fine.
 
 ![The setup's Coding agents step with Amp chosen](images/setup-agents.png)
 
-Finishing the setup starts the first template builds, about 10 minutes.
+The first template builds start once the address and the sandbox runtime are
+chosen and take about 10 minutes; you can finish the setup while they run.
