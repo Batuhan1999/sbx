@@ -18,8 +18,11 @@ export function TemplateProgressLine({ className, quiet }: { className?: string;
     <span className="min-w-0 break-words"><span className="font-medium">Template {stuck.key} failed to build.</span>{stuck.error && <DetailText className="block text-muted" text={stuck.error} />}</span>
   </div>
   if (ready === all.length) return quiet ? null : <div role="status" className={box}><Check className="mt-0.5 size-4 shrink-0 text-ok" /><span>Templates ready.</span></div>
+  const building = all.find(t => t.phase === 'building')
+  const step = building?.steps ? ` · ${building.key}, step ${building.step ?? 0} of ${building.steps}` : building ? ` · ${building.key}` : ''
+  const left = building?.eta_s != null ? `about ${Math.max(1, Math.round(building.eta_s / 60))} min left` : ready === 0 ? 'about 10 minutes' : ''
   return <div role="status" className={box}>
     <Spinner className="mt-0.5 shrink-0" />
-    <span className="min-w-0">Building templates: {ready} of {all.length} ready. {ready === 0 ? 'About 10 minutes; you' : 'You'} can keep going.</span>
+    <span className="min-w-0">Building templates: {ready} of {all.length} ready{step}{left ? `, ${left}` : ''}. You can keep going.</span>
   </div>
 }
