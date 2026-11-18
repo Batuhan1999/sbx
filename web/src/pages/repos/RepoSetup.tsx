@@ -30,6 +30,7 @@ const STEP_TITLE: Record<ReadinessStepId, string> = {
   env: 'Environment',
   template: 'Template',
   sandbox: 'First sandbox',
+  recipe_pr: 'Recipe in the repository',
 }
 
 const STAGE_TITLE: Record<ReadinessStage, string> = {
@@ -68,7 +69,7 @@ export default function RepoSetup() {
         <Facts items={[
           ['Trust', trusted ? 'Trusted: secrets and services' : readiness.info.trust === 'public' ? 'Public: no secrets or services' : 'Not served'],
           ['GitHub', readiness.info.github === 'app' ? 'GitHub App' : readiness.info.github === 'key' ? 'Deploy key' : 'Anonymous'],
-          ['Recipe', readiness.info.configured ? <Link to={`/app/repos/${repo}/recipe`} className="hover:underline">.sbx/ on the default branch</Link> : 'none yet'],
+          ['Recipe', readiness.info.configured ? <Link to={`/app/repos/${repo}/recipe`} className="hover:underline">{readiness.info.recipe_source === 'server' ? '.sbx/ applied on the server' : '.sbx/ on the default branch'}</Link> : 'none yet'],
           ['Previews', readiness.info.previews.join(', ') || '—'],
           ...(runtime ? [['Runtime', admin ? <Link to={`/app/repos/${repo}/recipe`} className="hover:underline">{runtime}</Link> : runtime] as [string, React.ReactNode]] : []),
         ]} />
@@ -142,6 +143,11 @@ function StepAction({ step, repo, admin }: { step: ReadinessStep; repo: string; 
       </>
     case 'sandbox':
       return row(<NewSandboxButton repo={repo} />)
+    case 'recipe_pr':
+      return step.url || (step.action && admin) ? row(<>
+        {step.url && <AnchorButton size="sm" href={step.url} target="_blank" rel="noreferrer">Open the pull request<ArrowUpRight /></AnchorButton>}
+        {step.action && admin && <AnchorButton size="sm" variant="ghost" href={step.action} target="_blank" rel="noreferrer">GitHub App installation<ArrowUpRight /></AnchorButton>}
+      </>) : null
     default:
       return null
   }

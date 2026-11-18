@@ -68,7 +68,21 @@ and reads its default branch's `.sbx/` again, or needs a recipe; a template
 it no longer has a use for is deleted with it.
 
 `sbx recipe pr` publishes reviewed `.sbx` files as a draft pull request through
-the GitHub App.
+the GitHub App (`POST /api/repos/OWNER/NAME/setup-pr`; `--yes` skips the
+question, `--json` prints the API's answer). Each repository has one such pull
+request, on the branch `sbx/setup`: while it is open, publishing again adds a
+commit that makes its `.sbx/` the new files, and changes nothing when they are
+the same.
+
+A recipe installed with `sbx recipe apply` is committed on its own: once a
+sandbox comes up healthy from it (its `health:` URLs answer), the server
+publishes that recipe the same way, and does again after a later healthy
+launch from a changed recipe. When the GitHub App is not connected, not
+installed on the repository, or may not push or open pull requests there, the
+server records why instead. `sbx recipe pr --status` (`GET
+/api/repos/OWNER/NAME/setup-pr`) prints the pull request's link or that reason,
+and exits 1 on the reason; `sbx repo status` (`recipe_pr`), the repository's
+readiness (the `recipe_pr` step) and the web app's checklist show the same.
 
 ## Environment and secrets
 

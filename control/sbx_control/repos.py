@@ -5,7 +5,7 @@ import pathlib
 import posixpath
 import re
 
-from . import addressing, catalog, env, github_app, paths, recipes, runtimes, settings, template_builds
+from . import addressing, catalog, env, github_app, paths, recipes, runtimes, settings, setup_pr, template_builds
 from .catalog import attachments, connections
 
 BRIEFS = pathlib.Path(__file__).parent / "template_files"
@@ -29,14 +29,25 @@ def info(repo: str) -> dict:
     trust = settings.trust(repo)
     a = recipes.load(repo)
     build = template_builds.current(repo, runtimes.of_repo(repo))
+    sha = recipes.fingerprint(a)
     return {"repo": repo, "trust": trust, "configured": a.has_recipe, "prebuilt": template_builds.own(repo),
-            "template": build.get("template") or "", "recipe_sha256": recipes.fingerprint(a),
+            "template": build.get("template") or "", "recipe_sha256": sha,
+            "recipe_source": ("server" if a.operator else "repository") if a.has_recipe else "",
+            "recipe_pr": recipe_pr(repo, sha),
             "previews": sorted(k.lstrip("-") or "web" for k, p in addressing.previews(a).items() if p["link"]), "secrets_missing": env.missing(repo),
             "services": sorted(a.spec.get("services") or {}),
             "template_build": build.get("status") or "-", "template_stale": bool(build.get("stale")),
             "github": github_app.access(repo) if trust else "-", "github_app_install": github_app.install_url(),
             "github_anonymous": bool(trust) and github_app.reachable_anonymously(repo),
             "runtime": runtimes.setting(repo)}
+
+
+def recipe_pr(repo: str, sha: str) -> dict | None:
+    """The recipe's pull request as last recorded (setup_pr.record), and
+    whether it carries the recipe the server runs now (current); None
+    before sbx tried to open one."""
+    found = setup_pr.record(repo)
+    return {**found, "current": bool(sha) and found["recipe_sha256"] == sha} if found else None
 
 
 def setup_brief(repo: str, email: str) -> str:

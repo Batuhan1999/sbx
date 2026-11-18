@@ -363,13 +363,16 @@ def ship(sbx, a: App, target: str):
 
 def fingerprint(a: App) -> str:
     """sha256 over the recipe's files, their paths and executable bits; "" without one."""
-    if not a.has_recipe:
-        return ""
-    digest = hashlib.sha256()
-    for entry in checked(walk(a.dir)):
-        digest.update(f"{entry.path}\0{int(executable(entry))}\0{entry.size}\0".encode())
-        digest.update(entry.read())
-    return digest.hexdigest()
+    return digest(checked(walk(a.dir))) if a.has_recipe else ""
+
+
+def digest(entries) -> str:
+    """fingerprint() of a recipe given as entries (checked), in any order."""
+    found = hashlib.sha256()
+    for entry in sorted(entries, key=lambda e: e.path):
+        found.update(f"{entry.path}\0{int(executable(entry))}\0{entry.size}\0".encode())
+        found.update(entry.read())
+    return found.hexdigest()
 
 
 _reported: dict = {}  # repo -> default branch GitHub reported

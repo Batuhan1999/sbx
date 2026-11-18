@@ -7,10 +7,10 @@ The repo page's checklist, the repo list's one-line state and the template
 badge all read the rules here; the web app only renders them."""
 from __future__ import annotations
 
-from . import auth, env, recipes, repos, runtime, runtimes, settings, template_builds, views
+from . import auth, env, recipes, repos, runtime, runtimes, settings, setup_pr, template_builds, views
 from .catalog import attachments
 
-STEPS = ("served", "github", "configured", "services", "env", "template", "sandbox")
+STEPS = ("served", "github", "configured", "services", "env", "template", "sandbox", "recipe_pr")
 
 # A template build's state: (step status, who acts, level, label, detail).
 TEMPLATE = {
@@ -100,13 +100,44 @@ def steps(info: dict, atts: list, missing: list, build: dict, live: bool, admin:
         out.append(_step("template", status, (key == "failed" and build.get("error")) or detail, who))
     out.append(_step("sandbox", "done", "A sandbox is up") if live
                else _step("sandbox", "todo" if recipe else "blocked", "Start a sandbox and open its preview", "person"))
-    before = [s for s in out if s["step"] != "sandbox"]
+    out.append(published(info))
+    before = [s for s in out if s["step"] not in ("sandbox", "recipe_pr")]   # what sandboxes need
     todo = [s for s in before if s["status"] == "todo"]
     stage = ("agent" if any(s.get("who") == "agent" for s in todo) else "person" if todo else
              "working" if any(s["status"] == "working" for s in before) else "live" if live else "ready")
     first = next((s for s in out if s["status"] in ("todo", "working")), None)
     return {"steps": out, "stage": stage, "done": sum(s["status"] == "done" for s in out), "total": len(out),
             "next": first["step"] if first else None}
+
+
+def published(info: dict) -> dict:
+    """Whether the recipe the server runs is in the repository: one imported
+    from the default branch is; the operator's copy (sbx recipe apply) gets
+    a pull request once a sandbox came up healthy from it (setup_pr)."""
+    if not info["configured"]:
+        return _step("recipe_pr", "blocked", "Available once the recipe exists")
+    if info.get("recipe_source") != "server":
+        return _step("recipe_pr", "done", "The recipe is the repository's .sbx/")
+    pr = info.get("recipe_pr")
+    if not pr:
+        return _step("recipe_pr", "blocked", "sbx opens a pull request with the recipe once a sandbox comes up "
+                                             "healthy from it")
+    link = {"url": pr["url"]} if pr["url"] else {}
+    named = f"PR #{pr['number']}" if pr["number"] else "the pull request"
+    if pr["problem"]:
+        action = {"action": info["github_app_install"]} if info.get("github_app_install") else {}
+        return _step("recipe_pr", "todo", pr["problem"], "admin", **link, **action)
+    if not pr["current"]:
+        return _step("recipe_pr", "todo", f"The recipe changed since {named}; it is updated once a sandbox comes "
+                                          "up healthy from the new one", "agent", **link)
+    if pr["state"] == "in_repository":
+        return _step("recipe_pr", "done", "The default branch has this recipe already")
+    if pr["state"] == "merged":
+        return _step("recipe_pr", "done", f"Merged in {named}", **link)
+    if pr["state"] == "closed":
+        return _step("recipe_pr", "todo", f"{named} was closed without merging: reopen it, or run sbx recipe pr",
+                     "person", **link)
+    return _step("recipe_pr", "todo", f"Review and merge {named}: it commits .sbx/ to the repository", "person", **link)
 
 
 def of(repo: str, email: str) -> dict:
@@ -156,6 +187,7 @@ def summaries() -> list:
         trusted = trust == "trusted" and a.has_recipe
         out.append({"repo": repo, "trust": trust, "configured": a.has_recipe, "prebuilt": own,
                     "built_at": build.get("finished_at") if build.get("template") else None, "sandboxes": counts.get(repo, 0),
+                    "recipe_pr": setup_pr.record(repo),
                     "state": list_state(trust, a.has_recipe, own, build,
                                         len(env.missing(repo)) if trusted else 0,
                                         len(problems(attachments.effective(repo))) if trusted else 0)})

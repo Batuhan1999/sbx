@@ -63,6 +63,23 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual((step(failed, "template")["who"], failed["stage"]), ("admin", "person"))
         self.assertEqual(step(progress({"prebuilt": False}, build={"status": "building"}), "template")["status"], "working")
 
+    def test_an_applied_recipe_waits_for_its_pr_without_holding_sandboxes_back(self):
+        pr = {"number": 4, "url": "https://github.com/usememos/memos/pull/4", "state": "open", "problem": None,
+              "current": True}
+        server = {"recipe_source": "server"}
+        self.assertEqual(step(progress(server), "recipe_pr")["status"], "blocked")   # no healthy launch yet
+        live = progress({**server, "recipe_pr": pr}, live=True)
+        found = step(live, "recipe_pr")
+        self.assertEqual((found["status"], found["who"], found["url"]), ("todo", "person", pr["url"]))
+        self.assertEqual((live["stage"], live["next"]), ("live", "recipe_pr"))
+        problem = step(progress({**server, "recipe_pr": {**pr, "problem": "The server's GitHub App is not installed"}}),
+                       "recipe_pr")
+        self.assertEqual((problem["who"], problem["detail"], problem["action"]),
+                         ("admin", "The server's GitHub App is not installed", INFO["github_app_install"]))
+        self.assertEqual(step(progress({**server, "recipe_pr": {**pr, "current": False}}), "recipe_pr")["who"], "agent")
+        self.assertEqual(step(progress({**server, "recipe_pr": {**pr, "state": "merged"}}), "recipe_pr")["status"], "done")
+        self.assertEqual(step(progress({"recipe_source": "repository"}), "recipe_pr")["status"], "done")
+
     def test_ready_leaves_only_the_first_sandbox_and_live_has_nothing_left(self):
         ready = progress()
         self.assertEqual((ready["stage"], ready["next"]), ("ready", "sandbox"))
