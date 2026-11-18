@@ -312,7 +312,7 @@ class Backend(unittest.TestCase):
         import subprocess
         from sbx_control.runtime import TemplateSpec
         steps = dockerfile.dockerfile_steps("FROM x\nENV APP=/srv/app\nWORKDIR $APP/web\n")
-        exports = "".join(dockerfile.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        exports = "".join(dockerfile.export_line(d.items()) for what, d in steps if what == "env")
         shown = subprocess.run(["bash", "-c", exports + f"printf %s {steps[-1][1]}"], capture_output=True, text=True)
         self.assertEqual(shown.stdout, "/srv/app/web")
         self.fake.respond = lambda _, command: "/srv/app/web" if 'printf %s "$APP/web"' in command else None
@@ -341,6 +341,12 @@ class Backend(unittest.TestCase):
         shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/template.sh") + 'printf %s "$A $B"'],
                                capture_output=True, text=True, check=True).stdout
         self.assertEqual(shown, "new old")   # B is A as it was then, as Docker has it
+        self.backend.build_template(TemplateSpec().from_template("tpl").dockerfile("ENV A=old\nENV A=new B=$A\n"
+                                                                                    "RUN make"),
+                                    alias="f", cpu=2, memory_mb=4096, disk_mb=1024)
+        shown = subprocess.run(["bash", "-c", self.written("/etc/sbx/template.sh") + 'printf %s "$A $B"'],
+                               capture_output=True, text=True, check=True).stdout
+        self.assertEqual(shown, "new old")   # in one ENV too: its values see the env from before it
 
     def test_a_dockerfile_reads_as_docker_does(self):
         import subprocess
@@ -348,7 +354,7 @@ class Backend(unittest.TestCase):
             "FROM x\nARG V=1\nRUN apt-get update \\\n  # a comment inside the continuation\n  && echo done\n"
             "ENV X=${V}-$V PATH=/opt/node/bin:$PATH A=\"x y\" C=$(id) D=`id` E=a;b\nENV MSG hello $V\n")
         self.assertEqual(steps[1], ("run", "apt-get update  && echo done"))
-        exports = "".join(dockerfile.export_line(k, v) for what, d in steps if what == "env" for k, v in d.items())
+        exports = "".join(dockerfile.export_line(d.items()) for what, d in steps if what == "env")
         shown = subprocess.run(["bash", "-c", "PATH=/usr/bin:/bin\n" + exports + 'printf "%s|" "$X" "$PATH" "$A" "$C" '
                                 '"$D" "$E" "$MSG"'], capture_output=True, text=True, check=True).stdout
         self.assertEqual(shown, "1-1|/opt/node/bin:/usr/bin:/bin|x y|$(id)|`id`|a;b|hello 1|")   # no command ran

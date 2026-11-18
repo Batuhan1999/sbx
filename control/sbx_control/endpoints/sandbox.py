@@ -155,24 +155,25 @@ def ensure_forwarder(sbx) -> dict:
         return {}
 
 
-def _issue(name: str, repo: str, kind: str | None, only=None) -> tuple[str, dict]:
+def _issue(name: str, repo: str, kind: str | None, only=None, still=None) -> tuple[str, dict]:
     """(the endpoints' revision, certs.issue_all for the endpoints (of only,
     when given) the repo may use now), chosen and signed under the
     endpoints' lock: a revoke's new CA never signs for the repo it revoked.
-    {} when it may use none."""
+    {} when it may use none. still(), when given, is checked under the same
+    lock (a credential not replaced or forgotten meanwhile); LookupError if not."""
     with lock():
+        if still and not still():
+            raise LookupError(f"{name} is another sandbox now")
         names = [r.name for r in routes(kind, repo).rows if only is None or r.name in only]
         return REVISION.get("0"), certs.issue_all(name, repo, names) if names else {}
 
 
 def _write_current(sbx, revision: str, issued: dict, again):
-    """write_bundles, then again with again()'s while an endpoint changed
-    since the issue (a revoke's new CA, whose own delivery may have written
-    first): the last write is signed by the current CAs."""
+    """write_bundles, then again with again()'s for as long as an endpoint
+    changed since the issue (a revoke's new CA, whose own delivery may have
+    written first): the last write is signed by the current CAs."""
     write_bundles(sbx, issued)
-    for _ in range(2):
-        if REVISION.get("0") == revision:
-            return
+    while REVISION.get("0") != revision:
         revision, issued = again()
         write_bundles(sbx, issued)
 
@@ -203,9 +204,9 @@ def issue_for(authorization: str) -> list[dict]:
     if not info:
         raise LookupError(f"no sandbox {name}")
     repo = core.app_of(info).repo
-    if certs.bound_repo(authorization) != (repo or "").lower():   # the credential checked again, with its repo
-        raise LookupError(f"{name} is another sandbox now")
-    issued = _issue(name, repo, runtime.kind_of(info))[1]
+    # The credential checked again, with its repo, under the lock its binding and forgetting take.
+    issued = _issue(name, repo, runtime.kind_of(info),
+                    still=lambda: certs.bound_repo(authorization) == (repo or "").lower())[1]
     if not issued:
         raise PermissionError(f"{name}'s repo may use no endpoint now")
     return [{"name": n, "cert": c, "key": k, "not_after": t} for n, (c, k, t) in sorted(issued.items())]
@@ -255,10 +256,12 @@ class Layer(sandbox_layers.SandboxLayer):
         from .. import sandbox_runtime
         found, mine = self._routes(write), write.of(self)
         if not found.rows:
-            certs.forget(write.name)
+            with lock():
+                certs.forget(write.name)
             sbx.commands.run(f"rm -rf {RENEWED}", timeout=30)
             return
-        certs.bind(write.name, write.repo, mine["credential"])
+        with lock():
+            certs.bind(write.name, write.repo, mine["credential"])
         only = {r.name for r in found.rows}
         _write_current(sbx, *_issue(write.name, write.repo, write.kind, only),
                        lambda: _issue(write.name, write.repo, write.kind, only))
@@ -267,7 +270,8 @@ class Layer(sandbox_layers.SandboxLayer):
 
     def forget(self, name):
         """A deleted sandbox's credential goes with it: one made again under the name never takes it."""
-        certs.forget(name)
+        with lock():
+            certs.forget(name)
 
     def on_resume(self, sbx, info):
         push(sbx, info)   # its certificates may have run out while it slept

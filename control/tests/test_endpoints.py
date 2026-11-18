@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1202,3 +1203,23 @@ class ForwarderLivenessTests(Setup, Installation):
                                                "kind = 'endpoint port taken'")]
         self.assertEqual(len(said), 1)
         self.assertIn("dev-pg can't listen on 127.0.0.1:17400", said[0])
+
+
+class DeliveryOrderTests(unittest.TestCase):
+    def test_a_write_is_issued_again_until_no_revoke_moved_the_endpoints_meanwhile(self):
+        from sbx_control.endpoints import sandbox
+        revisions = iter(["2", "4", "6", "6"])   # a revoke lands during each of the first three writes
+        written, issued = [], iter([("3", {"dev-pg": "b"}), ("5", {"dev-pg": "c"}), ("6", {"dev-pg": "d"})])
+        with patch.object(sandbox, "write_bundles", lambda sbx, bundles: written.append(bundles)), \
+                patch.object(sandbox.REVISION, "get", lambda default=None: next(revisions)):
+            sandbox._write_current(None, "1", {"dev-pg": "a"}, lambda: next(issued))
+        self.assertEqual(written, [{"dev-pg": x} for x in "abcd"])   # the last one signed at the current revision
+
+    def test_a_credential_replaced_before_the_lock_is_refused_under_it(self):
+        from sbx_control.endpoints import sandbox
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("sbx_control.paths.state_dir", return_value=Path(directory)), \
+                patch.object(sandbox.certs, "issue_all") as issue:
+            with self.assertRaises(LookupError):
+                sandbox._issue("box", "owner/app", "e2b-cloud", still=lambda: False)
+        issue.assert_not_called()

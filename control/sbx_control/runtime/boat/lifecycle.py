@@ -210,5 +210,5 @@ class Sandboxes:
         """envs as a file in the sandbox (ENV_DIR, 0700), through the files
         API: what a command reads once and removes (sandbox.wrap)."""
         path = f"{self.env_dir(sandbox_id)}/{uuid.uuid4().hex}"
-        Handle(self, sandbox_id).files._put(path, "".join(export_line(k, v) for k, v in envs.items()).encode())
+        Handle(self, sandbox_id).files._put(path, "".join(export_line([pair]) for pair in envs.items()).encode())
         return path

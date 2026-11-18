@@ -57,9 +57,12 @@ def shell_word(raw: str, *, quoted: bool = False) -> ShellWord:
     return ShellWord(f'"{word}"' if quoted else (word or "''"))
 
 
-def export_line(key: str, value) -> str:
-    """export KEY=VALUE for a shell: a ShellWord as written, anything else quoted."""
-    return f"export {key}={value if isinstance(value, ShellWord) else shlex.quote(str(value))}\n"
+def export_line(pairs) -> str:
+    """export K1=V1 K2=V2 for a shell, one ENV's pairs: a ShellWord as written,
+    anything else quoted. The shell expands every word before it sets any, so
+    $K1 in V2 is K1's value from before, as in Docker."""
+    return "export " + " ".join(f"{key}={value if isinstance(value, ShellWord) else shlex.quote(str(value))}"
+                                for key, value in pairs) + "\n"
 
 
 
