@@ -49,9 +49,28 @@ describe('parseNotes', () => {
     const hidden = parseNotes('Shown.\n<!-- an example:\n```\nnot shown\n```\n-->\nAlso shown.')
     expect(hidden.steps).toEqual([{ text: 'Shown.' }, { text: 'Also shown.' }])
   })
+
+  it('keeps the release\'s own headings, paragraphs and groups apart from the generated list', () => {
+    const notes = parseNotes(`Intro line.\n\n## Highlights\n\n### Runtimes\n- **Boat** runs \`sbx up\`.\n\n## Upgrading\n- No steps.\nFull docs: docs/reference.md\n\n## What's Changed\n### Changes\n* Faster previews by @someone in https://github.com/o/sbx/pull/14`)
+    expect(notes.steps).toEqual([{ text: 'Intro line.' }])
+    expect(notes.sections.map(s => [s.title, s.level, s.generated])).toEqual([
+      ['Highlights', 2, false], ['Runtimes', 3, false], ['Upgrading', 2, false], ['Changes', 3, true]])
+    expect(notes.sections[2].items).toEqual([{ text: 'No steps.' }, { text: 'Full docs: docs/reference.md', para: true }])
+  })
 })
 
 describe('Updates page', () => {
+  it('renders inline Markdown in the notes as formatting, not characters', async () => {
+    const notes = 'Read this.\n\n## Highlights\n- **Boat** runs \`sbx up\`, see [the docs](https://example.com/docs).'
+    stubApi({ 'GET /api/updates': view({ available: { latest: 'v0.2.0', url: 'u', breaking: false, releases: [release('v0.2.0', notes)] } }) })
+    renderApp(<Updates />)
+    const card = await screen.findByRole('region', { name: 'Release v0.2.0' })
+    expect(within(card).getByText('Boat').tagName).toBe('STRONG')
+    expect(within(card).getByText('sbx up').tagName).toBe('CODE')
+    expect(within(card).getByRole('link', { name: 'the docs' })).toHaveProperty('href', 'https://example.com/docs')
+    expect(card.textContent).not.toContain('**')
+  })
+
   it('lists what changed, asks for the breaking changes to be read, then posts the tag', async () => {
     const available = { latest: 'v0.2.0', url: 'u', breaking: true, releases: [release('v0.2.0', GENERATED, true)] }
     const calls = stubApi({
