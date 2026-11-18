@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 import subprocess
 import tempfile
+import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -114,3 +115,26 @@ class TemplateBundleTests(Installation):
             self.assertNotIn(secret, text)
             self.assertNotIn(url, text)
             self.assertIn("••••", text)
+
+
+class SwapDefaultTests(unittest.TestCase):
+    """The base template's swap file is 8 GiB on every runtime, also where
+    the runtime's own image brings a smaller /swapfile (Boat had 2 GiB)."""
+
+    def run_replacement(self, size: int) -> bool:
+        text = (Path(__file__).parents[1] / "sbx_control/template_files/resource-control.sh").read_text()
+        start = text.index("if [ -f /swapfile ]")
+        block = text[start:text.index("\nfi\n", start) + 4]
+        with tempfile.TemporaryDirectory(prefix="sbx-swap-") as directory:
+            swapfile = Path(directory) / "swapfile"
+            with swapfile.open("wb") as f:
+                f.truncate(size)   # sparse: no disk taken
+            (Path(directory) / "swapoff").write_text("#!/bin/sh\nexit 0\n")
+            (Path(directory) / "swapoff").chmod(0o755)
+            subprocess.run(["sh", "-c", "set -e\n" + block.replace("/swapfile", str(swapfile))], check=True,
+                           env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"]})
+            return swapfile.exists()
+
+    def test_a_smaller_swapfile_from_the_image_is_replaced_and_an_8_gib_one_kept(self):
+        self.assertFalse(self.run_replacement(2 * 1024**3))
+        self.assertTrue(self.run_replacement(8 * 1024**3))
