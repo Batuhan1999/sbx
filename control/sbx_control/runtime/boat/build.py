@@ -56,18 +56,43 @@ class Builds:
     def _save(self, sandbox_id: str, name: str, seconds: float = 3600) -> str:
         from boat_sdk.models import SavedSnapshotSaveRequest
         name = saved_name(name)
-        self.call(lambda: self.api().save_saved_snapshot(SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)),
-                  sandbox_id=sandbox_id)
         deadline = time.monotonic() + seconds
         while True:
-            found = self.call(lambda: self.api().get_saved_snapshot(name)).snapshot
-            if found.status == "ready":
+            if time.monotonic() > deadline:
+                raise Timeout(f"Boat was still saving an earlier {name} after {int(seconds)} s")
+            try:
+                # Boat-directed resends of this POST stay within the save's own deadline.
+                self.call(lambda: self.api().save_saved_snapshot(
+                    SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)), sandbox_id=sandbox_id,
+                    retry_seconds=max(0.0, deadline - time.monotonic()))
+                break
+            except BoatError as error:
+                # save_in_progress: an earlier save under this name runs (a build a restart cut
+                # off, whose builder Boat still saves): wait for it to settle, then save this one.
+                if error.status != 409 or error.code != "save_in_progress":
+                    raise
+            time.sleep(POLL_SECONDS)
+            while time.monotonic() <= deadline and self._saving(name):
+                time.sleep(POLL_SECONDS)
+        while True:
+            found = self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot
+            # Ready counts only as this build's save: another save under the name replaces it.
+            if found.status == "ready" and found.source_sandbox_id in (None, "", sandbox_id):
                 return name
             if found.status == "failed":
                 raise Failed(f"Boat could not save {name}: {found.error or 'failed'}")
             if time.monotonic() > deadline:
                 raise Timeout(f"Boat was still saving {name} after {int(seconds)} s")
             time.sleep(POLL_SECONDS)
+
+    def _saving(self, name: str) -> bool:
+        """Whether Boat is still saving the saved snapshot name."""
+        try:
+            return self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot.status == "saving"
+        except BoatError as error:
+            if error.gone():
+                return False
+            raise
 
     def snapshot(self, sandbox_id, name):
         self._refuse_on_trial()
@@ -77,7 +102,7 @@ class Builds:
         """Boat's plan key for the account ("trial" before the first payment), a few minutes old at most."""
         when, found = self._plan
         if fresh or not found or time.monotonic() - when > PLAN_CACHE_SECONDS:
-            found = self.call(lambda: self.api().limits(**self._org_args())).sandbox_plan_key or ""
+            found = self.call(lambda: self.api().limits(**self._org_args()), read=True).sandbox_plan_key or ""
             self._plan = (time.monotonic(), found)
         return found
 
@@ -90,7 +115,7 @@ class Builds:
         self.delete_template(snapshot_id)
 
     def templates(self):
-        found = self.call(lambda: self.api().list_saved_snapshots())
+        found = self.call(lambda: self.api().list_saved_snapshots(), read=True)
         return [(s.name, s.status) for s in found.snapshots]
 
     def delete_template(self, name):
@@ -154,7 +179,7 @@ class Builds:
         build that died with sbx-control left them (labelled sbx_build)."""
         try:
             found = self.call(lambda: self.api().sandboxes(limit=200, label=[f"{INSTALL_LABEL}={_installation()}"],
-                                                          **self._org_args())).sandboxes
+                                                          **self._org_args()), read=True).sandboxes
         except Exception as error:   # the build goes on; the next one looks again
             log(f"Boat: could not list old builders: {error}")
             return

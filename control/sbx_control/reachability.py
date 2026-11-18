@@ -97,7 +97,7 @@ def _check(kind: str) -> Check:
             return Check(NAME, False, f"no sandbox to check from: the base template's build failed: {error}",
                          f"fix the cause, then `sbx-admin template rm {templates.BASE}`; "
                          "the scheduler builds it again within minutes")
-        if build.get("status") == "building":
+        if build.get("status") in ("building", "interrupted"):
             return Check(NAME, True, "not checked yet: the base template is still building; "
                          "sbx-admin doctor checks it once it is built")
         return Check(NAME, False, f"no sandbox to check from: {not_built}",

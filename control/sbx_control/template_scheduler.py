@@ -71,14 +71,21 @@ def schedule(stop: threading.Event):
     runtime, and at NIGHTLY_REBUILD_HOUR the moved repos', one at a time,
     for the disk's sake."""
     night = None
-    while not stop.wait(builds.CHECK_SECONDS):
+    wait = builds.first_wait()   # soon, when a restart cut a build off
+    while not stop.wait(wait):
+        wait = builds.CHECK_SECONDS
         try:
             for kind in runtime.enabled():
                 try:
                     builds.forget_missing(kind)   # one listing; what is gone is stale below
                 except Exception as error:
                     print(f"template check{builds._on(kind)}: {error!r}", flush=True)
-                for key in builds.stale(kind):
+                try:
+                    stale = builds.stale(kind)
+                except Exception as error:   # one runtime's check must not keep the others from building
+                    print(f"template check{builds._on(kind)}: {error!r}", flush=True)
+                    continue
+                for key in stale:
                     if stop.is_set():
                         return
                     _build_quietly(key, kind)
