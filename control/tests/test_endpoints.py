@@ -54,6 +54,8 @@ class Setup:
         # Deliveries to running sandboxes: recorded here, run where a test asks for them (delivered()).
         self.deliveries = []
         self.enterContext(patch.object(model, "_background", side_effect=self.deliveries.append))
+        from sbx_control.endpoints import sandbox
+        self.enterContext(patch.object(sandbox, "_staging", return_value=".push"))   # one name the tests can read
         self.effects()
 
     def delivered(self):
@@ -1223,3 +1225,9 @@ class DeliveryOrderTests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 sandbox._issue("box", "owner/app", "e2b-cloud", still=lambda: False)
         issue.assert_not_called()
+
+
+class StagingTests(unittest.TestCase):
+    def test_each_bundle_write_stages_in_a_folder_of_its_own(self):
+        from sbx_control.endpoints import sandbox
+        self.assertNotEqual(sandbox._staging(), sandbox._staging())

@@ -358,11 +358,21 @@ def restart_listener():
             old = int(Path("/run/sshd.pid").read_text().strip())
         except (OSError, ValueError):   # none recorded (stopped, or a machine just booted): only start it
             old = 0
-        if old > 1 and not exited(old):
+        handle = None
+        try:   # a pidfd, and sshd's binary behind it: a pid reused by another process is left alone
+            handle = os.pidfd_open(old) if old > 1 else None
+            if handle is not None and not str((PROC / str(old) / "exe").resolve()).startswith("/usr/sbin/sshd"):
+                os.close(handle)
+                handle = None
+        except OSError:
+            handle = None
+        if handle is not None:
             try:
-                os.kill(old, signal.SIGTERM)
+                signal.pidfd_send_signal(handle, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            finally:
+                os.close(handle)
             if not wait_until(lambda: exited(old), 15):   # it holds the port until it exits
                 raise GuestError("workspace SSH listener did not stop")
         subprocess.run(["/usr/sbin/sshd"], check=True, timeout=30)

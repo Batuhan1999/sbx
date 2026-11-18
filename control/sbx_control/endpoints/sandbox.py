@@ -126,12 +126,17 @@ def _self_signed() -> str:
     return (paths.tls() / "letsencrypt/live" / domain() / "fullchain.pem").read_text()
 
 
+def _staging() -> str:
+    return f".push-{secrets.token_hex(6)}"
+
+
 def write_bundles(sbx, issued: dict):
     """The certificates into RENEWED, each key and certificate one file
     replaced whole, the files before the index that points at them; a
-    revoked endpoint's go."""
-    staging = f"{RENEWED}/.push"
-    sbx.commands.run(f"install -d -m 700 {RENEWED} && rm -rf {staging} && install -d -m 700 {staging}", timeout=30)
+    revoked endpoint's go. Each write stages in a folder of its own, so two
+    at once never publish each other's files."""
+    staging = f"{RENEWED}/{_staging()}"
+    sbx.commands.run(f"install -d -m 700 {RENEWED} && install -d -m 700 {staging}", timeout=30)
     for endpoint, (cert, key, _) in issued.items():
         sbx.files.write(f"{staging}/{BUNDLE.format(endpoint)}", key + cert, user="user")
     sbx.files.write(f"{staging}/{BUNDLE_INDEX}", json.dumps({n: v[2] for n, v in issued.items()}), user="user")

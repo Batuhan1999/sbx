@@ -224,7 +224,7 @@ class IdentityTests(unittest.TestCase):
 
 
     def test_a_stopped_standalone_sshd_with_no_or_a_stale_pid_is_just_started(self):
-        for pid_file in (None, "", "999999\n"):
+        for pid_file in (None, "", "999999\n", "456\n"):   # 456: a pid another process has now
             with self.subTest(pid_file=pid_file), tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
                 root = Path(directory)
                 (root / "proc/1").mkdir(parents=True)
@@ -232,10 +232,19 @@ class IdentityTests(unittest.TestCase):
                 if pid_file is not None:
                     (root / "run").mkdir()
                     (root / "run/sshd.pid").write_text(pid_file)
+                (root / "proc/456").mkdir()
+                (root / "proc/456/exe").symlink_to("/usr/bin/postgres")
+
+                def pidfd_open(pid):
+                    if not (root / "proc" / str(pid)).exists():
+                        raise ProcessLookupError(pid)
+                    return 77
                 started, killed = [], []
                 with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
                         patch.object(sbx_guest, "PROC", root / "proc"), \
-                        patch.object(sbx_guest.os, "kill", lambda pid, sig: killed.append(pid)), \
+                        patch.object(sbx_guest.os, "pidfd_open", pidfd_open, create=True), \
+                        patch.object(sbx_guest.os, "close", lambda fd: None), \
+                        patch.object(sbx_guest.signal, "pidfd_send_signal", lambda fd, sig: killed.append(fd), create=True), \
                         patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(a[0])), \
                         patch.object(sbx_guest, "listener_alive", return_value=True):
                     sbx_guest.restart_listener()
@@ -253,7 +262,10 @@ class IdentityTests(unittest.TestCase):
             started = []
             with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
                     patch.object(sbx_guest, "PROC", root / "proc"), \
-                    patch.object(sbx_guest.os, "kill", lambda pid, sig: threading.Timer(0.3, old.unlink).start()), \
+                    patch.object(sbx_guest.os, "pidfd_open", lambda pid: 77, create=True), \
+                    patch.object(sbx_guest.os, "close", lambda fd: None), \
+                    patch.object(sbx_guest.signal, "pidfd_send_signal", lambda fd, sig: threading.Timer(0.3, old.unlink).start(),
+                                 create=True), \
                     patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(old.is_symlink())), \
                     patch.object(sbx_guest, "listener_alive", return_value=True):
                 sbx_guest.restart_listener()
