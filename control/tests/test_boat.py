@@ -484,6 +484,136 @@ class Backend(unittest.TestCase):
         handle.files.write("/home/user/a", "x")
         self.assertEqual(handle.files.read("/home/user/a"), "x")   # a file read gives the same again
 
+    def test_an_answer_that_is_not_boats_envelope_is_a_runtime_failure_and_a_listing_tries_again(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES, BoatError
+        self.create()
+        # A proxy's answer: error is a string, not Boat's object (was AttributeError: 'str' ... 'get').
+        self.fake.fail("GET", "/sandboxes", 502, "", raw={"error": "Bad Gateway"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)   # read again
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 503, "", raw={"error": "upstream timeout"})
+        with self.assertRaises(BoatError) as raised:
+            self.backend.sandboxes()
+        self.assertIn("upstream timeout", str(raised.exception))
+        self.assertEqual(raised.exception.status, 503)
+        # A body the SDK can't read at all, on a 200.
+        self.fake.fail("GET", "/sandboxes", 200, "", raw="oops")
+        self.assertEqual(len(self.backend.sandboxes()), 1)
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 200, "", raw={"ok": True, "sandboxes": "none"})
+        with self.assertRaises(BoatError):
+            self.backend.sandboxes()
+
+    def test_a_listing_reads_again_on_any_codeless_5xx_and_keeps_a_string_body(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES, BoatError
+        self.create()
+        self.fake.fail("GET", "/sandboxes", 522, "", raw={"code": 522, "message": "origin timed out"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)   # 522, and a number is no code of Boat's
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 502, "", raw="upstream timeout")
+        with self.assertRaises(BoatError) as raised:
+            self.backend.sandboxes()
+        self.assertIn("upstream timeout", str(raised.exception))
+        self.assertEqual(raised.exception.code, "")
+
+    def test_boats_own_retries_do_not_use_up_a_reads_transient_ones(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES
+        self.create()
+        for _ in range(3):
+            self.fake.fail("GET", "/sandboxes", 409, "sandbox_starting")
+        for _ in range(TRANSIENT_TRIES - 1):
+            self.fake.fail("GET", "/sandboxes", 502, "", raw={"error": "Bad Gateway"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)
+
+    def test_a_save_waits_for_an_earlier_save_under_its_name_then_saves(self):
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "saving", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")
+        self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(self.fake.saved["cache"]["sourceSandboxId"], handle.sandbox_id)   # saved again, its own
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls), 2)
+
+    def test_a_save_saves_again_when_the_earlier_save_settled_first_and_raises_other_conflicts(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "ready", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")   # settled by the time of the look
+        self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(self.fake.saved["cache"]["sourceSandboxId"], handle.sandbox_id)
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/saved-snapshots", 409, "snapshot_name_taken")
+        with self.assertRaises(BoatError) as raised:
+            self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(raised.exception.code, "snapshot_name_taken")
+        self.assertEqual([(m, p) for m, p, _, _ in self.fake.calls[before:]], [("POST", "/saved-snapshots")])
+
+    def test_no_save_is_sent_again_past_its_deadline(self):
+        import types
+        from sbx_control.runtime.base import Timeout
+        build = self.boat_module.build
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "saving", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")
+        clock = [0.0]
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock[0],
+                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        before = len(self.fake.calls)
+        with patch.object(build, "time", fake_time), self.assertRaises(Timeout):
+            self.backend._save(handle.sandbox_id, "cache", seconds=1)
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls[before:]), 1)
+
+    def test_save_in_progress_is_trusted_only_as_a_409(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/saved-snapshots", 500, "save_in_progress")
+        with self.assertRaises(BoatError):
+            self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls[before:]), 1)
+
+    def test_a_ready_snapshot_from_another_sandbox_is_not_this_builds(self):
+        import types
+        from sbx_control.runtime.base import Timeout
+        build = self.boat_module.build
+        handle = self.create()
+        clock = [0.0]
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock[0],
+                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        real_get = self.backend.api().get_saved_snapshot
+
+        def replaced(name):   # a later save under the name, from another builder, finished first
+            found = real_get(name)
+            found.snapshot.status, found.snapshot.source_sandbox_id = "ready", "another"
+            return found
+        with patch.object(build, "time", fake_time), \
+                patch.object(type(self.backend.api()), "get_saved_snapshot", side_effect=lambda name: replaced(name)), \
+                self.assertRaises(Timeout):
+            self.backend._save(handle.sandbox_id, "cache", seconds=5)
+
+    def test_a_body_nested_past_the_decoders_limit_is_unreadable(self):
+        import types
+        from sbx_control.runtime.boat import errors
+        answer = types.SimpleNamespace(body="[" * 200000, status=502)
+        self.assertEqual(errors.code(answer), "")
+        self.assertTrue(errors._transient(answer))
+
+    def test_a_create_is_not_sent_again_on_a_strange_error_and_odd_details_are_read(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/sandboxes", 500, "", raw={"error": "internal"})
+        with self.assertRaises(BoatError) as raised:
+            self.create()
+        self.assertIn("internal", str(raised.exception))
+        self.assertEqual(sum(m == "POST" and p == "/sandboxes" for m, p, _, _ in self.fake.calls[before:]), 1)
+        handle = self.create()
+        self.fake.fail("POST", f"/sandboxes/{handle.sandbox_id}/commands", 502, "", raw={
+            "code": "sandbox_direct_failed", "error": {"code": "sandbox_direct_failed", "details": "reset"}})
+        with self.assertRaises(BoatError):
+            handle.commands.run("true")
+
     def test_saved_names_follow_boats_rules(self):
         name = self.boat_module.build.saved_name
         self.assertEqual(name("abcd1234--default-0f0f0f0f"), "abcd1234--default-0f0f0f0f")

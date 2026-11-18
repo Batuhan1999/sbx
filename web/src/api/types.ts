@@ -297,8 +297,8 @@ export type TemplateState = TemplateOnRuntime & {
 /** A repo's template on one runtime: the one its sandboxes start from there. */
 export type TemplateOnRuntime = {
   runtime?: string
-  status: 'building' | 'built' | 'failed' | '-' | string
-  /** default, building, failed, missing, stale or built; label and level say it for people (the server decides). */
+  status: 'building' | 'built' | 'failed' | 'interrupted' | '-' | string
+  /** default, building, failed, interrupted, missing, stale or built; label and level say it for people (the server decides). */
   state: string
   label: string
   level: Level

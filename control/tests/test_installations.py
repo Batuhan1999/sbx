@@ -112,6 +112,13 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         template_builds.build_now(templates.DEFAULT, "fake")
         return template_builds, templates, template_builds.built(templates.DEFAULT, "fake")
 
+    @staticmethod
+    def failed(builds, key, **facts):
+        """key's build on fake failed now (one cut off by a restart is interrupted instead, and built again)."""
+        import os
+        builds._transition(key, "building", "fake", started_at=builds._utc(), pid=os.getppid())
+        builds._transition(key, "failed", "fake", finished_at=builds._utc(), **facts)
+
     def start(self, template):
         from pathlib import Path
         from sbx_control import core, recipes
@@ -194,9 +201,8 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
             # Never built since (the lab's repo template): nothing to start a sandbox from.
             conn.execute("update template_builds set built_template = null, built_fingerprint = null "
                          "where runtime = 'fake' and repo = ?", (templates.DEFAULT,))
-        builds._transition(templates.DEFAULT, "building", "fake", started_at=builds._utc(), pid=None,
-                           fingerprint=builds.plan(templates.DEFAULT).fingerprint,
-                           error=f"template '{prefixed}' not found")   # no process: failed
+        self.failed(builds, templates.DEFAULT, fingerprint=builds.plan(templates.DEFAULT).fingerprint,
+                    error=f"template '{prefixed}' not found")
         self.assertEqual(builds.status(templates.DEFAULT, builds.state_row(templates.DEFAULT, "fake"), "fake"),
                          "failed")
         return builds, templates, prefixed, legacy
@@ -206,9 +212,8 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         builds, templates, prefixed, _ = self.legacy_base()
         builds.build_now(templates.BASE, "fake")
         time.sleep(1.1)                                   # a later attempt, the base unchanged since
-        builds._transition(templates.DEFAULT, "building", "fake", started_at=builds._utc(), pid=None,
-                           finished_at=builds._utc(),   # as a failed build records it
-                           fingerprint=builds.plan(templates.DEFAULT).fingerprint, error="apt failed")
+        self.failed(builds, templates.DEFAULT, fingerprint=builds.plan(templates.DEFAULT).fingerprint,
+                    error="apt failed")
         with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
             builds.template_for(None, "fake")
         self.assertIn("its last build failed (apt failed)", str(refused.exception))
@@ -219,8 +224,7 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         from sbx_control.state import db
         builds, templates, _ = self.built()
         # The base's last build failed on the plan of now: final until built again explicitly.
-        builds._transition(templates.BASE, "building", "fake", started_at=builds._utc(), pid=None,
-                           fingerprint=builds.plan(templates.BASE).fingerprint, error="apt failed")
+        self.failed(builds, templates.BASE, fingerprint=builds.plan(templates.BASE).fingerprint, error="apt failed")
         with db() as conn:   # the default never built since: a create needs it
             conn.execute("update template_builds set built_template = null, built_fingerprint = null "
                          "where runtime = 'fake' and repo = ?", (templates.DEFAULT,))
