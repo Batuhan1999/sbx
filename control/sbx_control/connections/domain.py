@@ -180,7 +180,39 @@ def _dig(kind: str, name: str) -> list[str]:
 
 
 def _ns(name: str) -> list[str]:
-    return _dig("NS", name)
+    """name's NS records as its parent zone publishes them. Asked of the parent's own nameservers, not
+    recursively: a resolver follows the delegation to this server and fails (SERVFAIL) while port 53 is
+    closed, which would read as "no NS record" when the record is there and the port is what to fix."""
+    parent = _parent_nameservers(name)
+    if not parent:
+        return _dig("NS", name)
+    try:
+        out = subprocess.run(["dig", f"@{parent[0]}", "+norecurse", "+time=4", "+tries=1", "+noall", "+answer",
+                              "+authority", "NS", name], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return _dig("NS", name)
+    return sorted({line.split()[-1] for line in out.splitlines()
+                   if line.split()[:1] and line.split()[0].rstrip(".").lower() == name.rstrip(".").lower()
+                   and ("\tNS\t" in line or " NS " in line)})
+
+
+def _parent_nameservers(name: str) -> list[str]:
+    """The nameservers of the closest zone above name, found through the public resolver."""
+    labels = name.rstrip(".").split(".")
+    for i in range(1, len(labels) - 1):
+        found = [ns for ns in _dig_short("NS", ".".join(labels[i:])) if ns]
+        if found:
+            return found
+    return []
+
+
+def _dig_short(kind: str, name: str) -> list[str]:
+    try:
+        out = subprocess.run(["dig", f"@{PUBLIC_RESOLVER}", "+time=4", "+tries=1", "+short", kind, name],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip().rstrip(".") for line in out.splitlines() if line.strip() and not line.startswith(";")]
 
 
 def _cname(name: str) -> list[str]:

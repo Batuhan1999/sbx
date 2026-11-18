@@ -5,6 +5,7 @@ import contextlib
 import io
 import struct
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -278,3 +279,31 @@ class SetupLink(Server):
         self.assertTrue(setup.token_ok(fresh.split("#t=")[1]))
         setup.token_file().unlink()
         self.assertNotEqual(self.link(), fresh)
+
+
+class DelegationFromTheParentZone(unittest.TestCase):
+    """The NS record is read from the parent zone's own nameservers: a resolver fails (SERVFAIL) following a
+    delegation to a server whose port 53 is closed, which must not read as a missing record."""
+
+    def test_the_parent_zone_answers_even_while_port_53_is_closed(self):
+        from unittest.mock import patch
+        from sbx_control.connections import domain
+
+        class Done:
+            def __init__(self, stdout): self.stdout = stdout
+
+        referral = "_acme-challenge.sbx.example.com.\t60\tIN\tNS\tsbx.example.com.\n"
+        with patch.object(domain, "_dig_short", side_effect=lambda kind, name: ["ns1.example.net"] if name == "example.com" else []), \
+                patch.object(domain.subprocess, "run", return_value=Done(referral)) as run, \
+                patch.object(domain, "_dig", return_value=[]) as recursive:
+            self.assertEqual(domain._ns("_acme-challenge.sbx.example.com"), ["sbx.example.com."])
+        self.assertIn("@ns1.example.net", run.call_args.args[0])
+        self.assertIn("+norecurse", run.call_args.args[0])
+        recursive.assert_not_called()
+
+    def test_without_a_parent_zone_it_asks_the_resolver(self):
+        from unittest.mock import patch
+        from sbx_control.connections import domain
+        with patch.object(domain, "_dig_short", return_value=[]), patch.object(domain, "_dig", return_value=["x."]) as recursive:
+            self.assertEqual(domain._ns("_acme-challenge.sbx.example.com"), ["x."])
+        recursive.assert_called_once_with("NS", "_acme-challenge.sbx.example.com")
