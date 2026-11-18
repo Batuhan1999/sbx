@@ -416,14 +416,17 @@ sudo() {
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
 
 
-def _tarball() -> bytes:
+def _tarball(gateway: bool = True) -> bytes:
     import io
     import tarfile
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w:gz") as tar:
-        entry = tarfile.TarInfo("amp-wayland/bin/labwc")
-        entry.size = 4
-        tar.addfile(entry, io.BytesIO(b"\x7fELF"))
+        for path in ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-wayland/libexec/waymote-streamd"):
+            if not gateway and path.endswith("waymote-gateway"):
+                continue
+            entry = tarfile.TarInfo(path)
+            entry.size = 4
+            tar.addfile(entry, io.BytesIO(b"\x7fELF"))
     return out.getvalue()
 
 
@@ -501,13 +504,15 @@ class AmpToolsTests(Installation):
         self.assertFalse(self.amp.cached_tools().exists())
 
     def test_a_damaged_kept_copy_is_fetched_again(self):
-        for damaged in (b"", TARBALL[:len(TARBALL) // 2]):
+        flipped = bytearray(TARBALL)
+        flipped[len(flipped) // 2] ^= 0xFF   # the compressed payload damaged
+        for damaged in (b"", TARBALL[:len(TARBALL) // 2], TARBALL[:-4], bytes(flipped), _tarball(gateway=False)):
             self.amp.cached_tools().parent.mkdir(parents=True, exist_ok=True)
             self.amp.cached_tools().write_bytes(damaged)
             self.assertFalse(self.amp.Amp._tools_check().detail == "kept on this host")
             self.assertEqual(self.amp.wayland_tools(), TARBALL)
             self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
-        self.assertEqual(self.fetches(self.fake), 2)
+        self.assertEqual(self.fetches(self.fake), 5)
 
     def test_the_throwaway_template_is_this_installations(self):
         names = []

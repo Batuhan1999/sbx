@@ -4,12 +4,14 @@ is its thread's state."""
 from __future__ import annotations
 
 import fcntl
+import gzip
 import io
 import os
 import pathlib
 import subprocess
 import tarfile
 import time
+import zlib
 
 from pydantic import ValidationError
 
@@ -82,13 +84,21 @@ def no_tools_runtime() -> str:
             "every runtime.")
 
 
+# What a template's READY check runs from the tools: a tarball without them
+# would build templates that never become ready.
+TOOL_FILES = ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-wayland/libexec/waymote-streamd")
+
+
 def tools_valid(data: bytes) -> bool:
-    """Whether data is a whole gzipped tarball of amp-wayland."""
+    """Whether data is a whole gzipped tarball (its trailer checked: the
+    stream is read to the end) holding the files READY needs."""
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            return "amp-wayland" in {name.split("/")[0] for name in tar.getnames()}
-    except (OSError, EOFError, tarfile.TarError):
+        tar_bytes = gzip.decompress(data)
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
+            names = {name.removeprefix("./") for name in tar.getnames()}
+    except (OSError, EOFError, zlib.error, tarfile.TarError):
         return False
+    return all(f in names for f in TOOL_FILES)
 
 
 def wayland_tools() -> bytes:
@@ -136,12 +146,23 @@ def _fetch_tools(kind: str) -> bytes:
         try:   # the host keeps the tools; the template would only hold the runtime's storage
             runtime.delete_template(name, kind)
         except Exception as error:   # a runtime's refusal must not cost the tools already read
-            if not (isinstance(error, RuntimeError) or runtime.failure(error)):
+            if not (isinstance(error, RuntimeError) or _refused_by(kind, error)):
                 raise
             print(f"could not delete the {name} template on {kind}: {error}", flush=True)
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
+
+
+def _refused_by(kind: str, error: BaseException) -> bool:
+    """Whether the runtime that fetched the tools counts error as its own
+    failure; asked of that runtime alone, so another enabled runtime that
+    can't load here can't replace the error."""
+    from ... import runtime
+    try:
+        return isinstance(error, runtime.Failed) or runtime.get(kind).failure(error)
+    except Exception:
+        return False
 
 
 class Amp(extensions.Connector):
@@ -257,7 +278,11 @@ class Amp(extensions.Connector):
 
     @staticmethod
     def _tools_check() -> Check:
-        if cached_tools().is_file() and tools_valid(cached_tools().read_bytes()):
+        try:
+            kept = cached_tools().read_bytes()
+        except FileNotFoundError:   # never fetched, or cleared since
+            kept = b""
+        if tools_valid(kept):
             return Check("desktop tools", True, "kept on this host")
         kind = tools_runtime()
         if kind is None:

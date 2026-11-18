@@ -93,11 +93,12 @@ container images can do that (`image_import`: E2B Embed and E2B Cloud, not
 Boat), so sbx uses the default runtime when it can and otherwise the first
 enabled runtime that can.
 
-The host keeps the tarball in `/var/lib/sbx/cache/amp-tools/<digest>.tar.gz`.
+The host keeps the tarball in `$SBX_STATE_DIR/cache/amp-tools/<digest>.tar.gz`
+(`/var/lib/sbx/cache/amp-tools/` by default).
 Every later template build, on any runtime and Boat included, unpacks that
 copy instead of fetching again; when the pinned digest changes, the next build
 fetches the new image and removes the copies of other digests. A copy that is
-empty or damaged is fetched again the same way. Clearing the folder only makes
+empty, damaged or missing one of the tools is fetched again the same way. Clearing the folder only makes
 the next build fetch again, but do it only while no template build is running
 (a running build holds the folder's lock file), and on a host whose only
 runtime is Boat, enable a runtime that imports images first (see below).
