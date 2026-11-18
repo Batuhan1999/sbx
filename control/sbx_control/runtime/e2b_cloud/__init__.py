@@ -109,7 +109,7 @@ def refused_limit(error: BaseException, asked: dict) -> LimitRefused | None:
 class Cloud(Compute):
     kind = KIND
     title = "E2B Cloud"
-    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=True)
+    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=True, image_import=True)
     ingress_cleared = ()
     ports = frozenset({ENVD_PORT})
     credential_keys = (API_KEY, DOMAIN_KEY, *(spec.key for spec in LIMITS))

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 
-from support import Server
+from support import Installation, Server
 
 
 class AmpTests(Server):
@@ -637,3 +637,160 @@ sudo() {
         with patch.object(runtime, "sandboxes", return_value=["first", "second"]) as listing:
             self.assertEqual(amp_orbs.sandboxes_of("amp-test"), ["first", "second"])
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
+
+
+def _tarball(gateway: bool = True, executable: bool = True) -> bytes:
+    import io
+    import tarfile
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for path in ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-wayland/libexec/waymote-streamd"):
+            if not gateway and path.endswith("waymote-gateway"):
+                continue
+            entry = tarfile.TarInfo(path)
+            entry.size, entry.mode = 4, 0o755 if executable else 0o644
+            tar.addfile(entry, io.BytesIO(b"\x7fELF"))
+    return out.getvalue()
+
+
+TARBALL = _tarball()
+
+
+class AmpToolsTests(Installation):
+    """Amp's desktop tools come from its container image: fetched once on a
+    runtime that imports images, whichever is the default, and kept on the
+    host for every runtime's builds."""
+
+    def setUp(self):
+        super().setUp()
+        from sbx_control import runtime
+        from sbx_control.connectors import amp
+        from sbx_control.runtime.fake import Fake
+
+        class BoatLike(Fake):
+            """Starts only from its own Ubuntu, as Boat does."""
+            kind, id_prefix = "boat", "bt"
+            capabilities = runtime.Capabilities(snapshots=True)
+
+            def build_template(self, spec, **kwargs):
+                if any(what == "image" and value != "ubuntu:24.04" for what, value in spec.steps):
+                    raise runtime.Failed("Boat starts every sandbox from its own Ubuntu 24.04")
+                return super().build_template(spec, **kwargs)
+
+        def tools(box, command):
+            if command.startswith("tar -C /opt"):
+                box.files["/tmp/sbx-amp-tools.tar.gz"] = TARBALL
+            return None
+
+        self.runtime, self.amp, self.boat, self.fake = runtime, amp, BoatLike(), Fake()
+        self.fake.respond = tools
+        self.enterContext(patch.dict(runtime._backends, {"boat": self.boat, "fake": self.fake}))
+        self.enterContext(patch.object(runtime, "enabled", return_value=["boat", "fake"]))
+        self.enterContext(patch.object(runtime, "default", return_value="boat"))
+        if amp.tools_cache().exists():
+            for path in amp.tools_cache().iterdir():
+                path.unlink()
+
+    def fetches(self, backend) -> int:
+        return sum(cmd.startswith("tar -C /opt") for _, cmd in backend.ran)
+
+    def test_a_default_runtime_without_image_import_fetches_on_one_that_has_it(self):
+        self.assertEqual(self.amp.tools_runtime(), "fake")
+        self.assertEqual(self.amp.Amp._tools_check().detail, "fetched on Fake runtime at the next template build")
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual((self.fetches(self.fake), self.boat.ran, self.boat.boxes), (1, [], {}))
+        self.assertEqual((self.fake.boxes, self.fake.built), ({}, {}))   # its builder and template are gone
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+
+    def test_the_kept_tools_are_reused_and_other_digests_dropped(self):
+        stale = self.amp.tools_cache() / "0000.tar.gz"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"older image")
+        self.amp.wayland_tools()
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 1)                  # the second build reused it
+        self.assertFalse(stale.exists())
+        self.assertEqual(self.amp.Amp._tools_check().detail, "kept on this host")
+        with patch.object(self.runtime, "enabled", return_value=["boat"]):   # Boat alone builds from the copy
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 1)
+
+    def test_no_runtime_that_imports_images_says_what_to_enable(self):
+        with patch.object(self.runtime, "enabled", return_value=["boat"]):
+            self.assertIsNone(self.amp.tools_runtime())
+            check = self.amp.Amp._tools_check()
+            with self.assertRaisesRegex(RuntimeError, "no enabled sandbox runtime builds templates from one"):
+                self.amp.wayland_tools()
+        self.assertFalse(check.ok)
+        self.assertIn("Enable a runtime that does (E2B Embed, E2B Cloud", check.fix)
+        self.assertEqual((self.boat.ran, self.boat.built), ([], {}))
+        self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_damaged_kept_copy_is_fetched_again(self):
+        flipped = bytearray(TARBALL)
+        flipped[len(flipped) // 2] ^= 0xFF   # the compressed payload damaged
+        for damaged in (b"", TARBALL[:len(TARBALL) // 2], TARBALL[:-4], bytes(flipped), _tarball(gateway=False), _tarball(executable=False)):
+            self.amp.cached_tools().parent.mkdir(parents=True, exist_ok=True)
+            self.amp.cached_tools().write_bytes(damaged)
+            self.assertFalse(self.amp.Amp._tools_check().detail == "kept on this host")
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+            self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 6)
+
+    def test_the_throwaway_template_is_this_installations(self):
+        names = []
+        build = self.fake.build_template
+        self.enterContext(patch.object(self.fake, "build_template",
+                                       side_effect=lambda spec, alias, **kw: names.append(alias) or build(spec, alias=alias, **kw)))
+        self.amp.wayland_tools()
+        self.assertEqual(names, [self.runtime.template_name(self.amp.TOOLS, "fake")])
+        self.assertNotEqual(names[0], self.amp.TOOLS)
+        self.assertEqual(self.fake.built, {})
+
+    def test_a_refused_template_delete_keeps_the_tools(self):
+        with patch.object(self.fake, "delete_template", side_effect=RuntimeError("HTTP 503")):
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+
+    def test_an_unwritable_diagnostic_after_a_refused_delete_keeps_the_tools(self):
+        with patch.object(self.fake, "delete_template", side_effect=RuntimeError("HTTP 503")), \
+                patch("builtins.print", side_effect=BrokenPipeError):
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+
+    def test_the_template_is_deleted_when_the_sandbox_cleanup_fails(self):
+        with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
+                self.assertRaisesRegex(self.runtime.Failed, "kill refused"):
+            self.amp.wayland_tools()
+        self.assertEqual(self.fake.built, {})
+        self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_directory_at_the_cache_path_fails_the_check(self):
+        self.amp.cached_tools().mkdir(parents=True)
+        self.addCleanup(self.amp.cached_tools().rmdir)
+        check = self.amp.Amp._tools_check()
+        self.assertFalse(check.ok)
+        self.assertIn("is a directory", check.detail)
+
+    def test_a_directory_appearing_as_the_cache_is_read_gets_the_guidance(self):
+        with patch.object(Path, "read_bytes", side_effect=IsADirectoryError):
+            check = self.amp.Amp._tools_check()
+        self.assertFalse(check.ok)
+        self.assertIn("is a directory", check.detail)
+
+    def test_the_first_error_wins_when_the_template_delete_fails_too(self):
+        with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
+                patch.object(self.fake, "delete_template", side_effect=ValueError("delete broke")) as delete, \
+                self.assertRaisesRegex(self.runtime.Failed, "kill refused"):
+            self.amp.wayland_tools()
+        delete.assert_called_once_with(self.runtime.template_name(self.amp.TOOLS, "fake"))
+        self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_a_default_that_imports_images_is_chosen_without_making_the_others(self):
+        self.enterContext(patch.object(self.runtime, "default", return_value="fake"))
+        self.runtime._backends.pop("boat")
+        with patch.object(self.runtime, "make", side_effect=ImportError("no boat package")) as make:
+            self.assertEqual(self.amp.tools_runtime(), "fake")
+            make.assert_not_called()
+            self.enterContext(patch.object(self.runtime, "default", return_value="boat"))
+            self.assertEqual(self.amp.tools_runtime(), "fake")   # a runtime that can't be made is passed over

@@ -154,6 +154,27 @@ class SetupTests(Server):
                                 headers={"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
                                          "Origin": "https://203.0.113.10"}).status_code
 
+    def test_the_sign_in_cookie_is_named_per_installation_and_leaves_an_app_s_sbx_session_alone(self):
+        from sbx_control import platform
+        # The session middleware reads the key once per process; this test's installation has its own.
+        self.app.app.middleware_stack = None
+        self.choose_ip()
+        self.create_admin()
+        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
+        self.assertEqual(self.password_login("operator%40example.com"), 200)
+        name = platform.session_cookie()
+        self.assertRegex(name, r"^sbx_session_[0-9a-f]{12}$")
+        self.assertIn(name, self.client.cookies)
+        self.assertNotIn("sbx_session", self.client.cookies)
+        # An app's own sbx_session on the same host (sbx as a repository on sbx) is not ours.
+        self.client.cookies.set("sbx_session", "an-app-session", domain="203.0.113.10")
+        self.assertEqual(self.client.get("/api/me").json()["email"], "operator@example.com")
+        # Another installation (another session key) names its cookie differently.
+        with patch("sbx_control.state.session_key", return_value="another installation's key"):
+            self.assertNotEqual(platform.session_cookie(), name)
+
     def test_admins_the_installer_named_get_a_login_through_a_link(self):
         from sbx_control import users
         self.settings.update("access", {"admins": ["named@example.com"]}, by="install.sh")

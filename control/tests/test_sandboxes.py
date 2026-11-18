@@ -276,7 +276,7 @@ class WorkspaceTests(Server):
 
     def test_ip_preview_gate_enforces_owner_strips_control_credentials_and_resumes(self):
         from urllib.parse import urlsplit
-        from sbx_control import auth, core, ip_previews, recipes, routing, waking
+        from sbx_control import auth, core, ip_previews, platform, recipes, routing, waking
         self.repo_admin()
         app = recipes.App('owner/app', Path('/unused'), {'previews': {'': {'port': 3000, 'access': 'owner'}}})
         info = Mock(sandbox_id='vm-fixture', state='paused', metadata={
@@ -301,11 +301,12 @@ class WorkspaceTests(Server):
             response = self.client.get('/gate', headers={**headers, 'X-Original-Method': 'OPTIONS'})
             self.assertEqual(response.status_code, 200)
             resume.assert_not_called()
+            control = platform.session_cookie()
             response = self.client.get('/gate', headers={**headers, 'Authorization': f'Bearer {owner}',
-                'Cookie': 'app=a; sbx_session=first; other=b; sbx_session=second'})
+                'Cookie': f'app=a; {control}=first; sbx_session=apps; other=b; {control}=second'})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.headers['x-sbx-upstream'], '3000-vm-fixture.e2b.sandboxes.internal')
-            self.assertEqual(response.headers['x-sbx-upstream-cookie'], 'app=a; other=b')
+            self.assertEqual(response.headers['x-sbx-upstream-cookie'], 'app=a; sbx_session=apps; other=b')
             self.assertEqual(response.headers['x-sbx-auth'], 'bearer')
             resume.assert_called_once()
         ip_previews.remove('ip-gate-fixture')

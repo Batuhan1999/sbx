@@ -137,7 +137,7 @@ def instructions(sandbox: core.Attached, u: dict, slug: str, allocation: dict | 
         detected = ("\n- Public previews use HTTPS on this server's IP with an assigned port; no SSH tunnel is needed.\n"
                     "  Find declared and detected preview URLs in the sandbox API or its page. Listen on 0.0.0.0.\n"
                     "  Cookies share an IP across ports: use the app's cookie-prefix setting with SBX_NAME\n"
-                    f"  to keep development logins separate. Never use the reserved {platform.SESSION_COOKIE} cookie name.")
+                    "  to keep development logins separate.")
     resource_note = "Check `nproc`, `free -m`, `df -h /`, and `df -i /` before increasing build concurrency."
     if allocation:
         resource_note = resources.agent_brief(allocation)

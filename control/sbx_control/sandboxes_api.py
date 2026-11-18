@@ -95,8 +95,7 @@ def api_delete(name: str, email: str = Depends(auth.api_user)):
             raise HTTPException(409, f"{name} was replaced while its deletion was waiting")
         if current:
             auth.require_owned(name, email)
-        sandboxes.delete_locked(name)
-        return {"deleted": name}
+        return {"deleted": name, "cleanup": sandboxes.delete_locked(name)}
 
 
 @router.post("/api/sandboxes/{name}/pause")

@@ -29,8 +29,9 @@ def _named(place: str) -> list[str]:
 def app_cookies(value: str, *without: str) -> str:
     """The browser's cookies without sbx's session (it must reach only the
     gate; cookies are host-scoped, ports alike) or any named in without,
-    even when a client sends a name twice."""
-    drop = {platform.SESSION_COOKIE, *without}
+    even when a client sends a name twice. sbx's is named per installation
+    (platform.session_cookie), so an app's own sbx_session passes."""
+    drop = {platform.session_cookie(), *without}
     return '; '.join(part.strip() for part in value.split(';')
                      if part.partition('=')[0].strip() not in drop and part.strip())
 

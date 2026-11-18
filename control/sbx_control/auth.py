@@ -37,7 +37,8 @@ router = APIRouter()
 
 
 class Sessions:
-    """The signed session cookie. It covers every *.<domain> host, so the
+    """The signed session cookie, named per installation
+    (platform.session_cookie). It covers every *.<domain> host, so the
     gate in front of the sandboxes (control/tls.sh) can check it; that nginx
     removes the cookie before a request reaches a sandbox, where an agent
     could read it. Its key and domain are read when the first request
@@ -55,7 +56,7 @@ class Sessions:
             domain = addressing.domain()
             self._sessions = SessionMiddleware(
                 self.app, secret_key=platform.session_key(), https_only=True, same_site="lax",
-                session_cookie=platform.SESSION_COOKIE, max_age=SESSION_DAYS * 24 * 3600,
+                session_cookie=platform.session_cookie(), max_age=SESSION_DAYS * 24 * 3600,
                 **({"domain": f".{domain}"} if domain else {}))
         await self._sessions(scope, receive, send)
 

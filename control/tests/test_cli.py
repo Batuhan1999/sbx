@@ -218,6 +218,53 @@ class CliTests(unittest.TestCase):
                                                                ".sbx/sbx.yaml": "previews: {web: 3000}\n"},
                                                      "executable": [".sbx/setup"]})
 
+    def test_down_shows_what_the_recipe_cleanup_printed_and_warns_when_it_failed(self):
+        answers = iter([{"deleted": "a", "cleanup": {"exit_code": 0, "output": "released the webhook\n"}},
+                        {"deleted": "a", "cleanup": {"exit_code": 2, "output": "half done\n"}},
+                        {"deleted": "a", "cleanup": {"error": "resuming the sandbox or running it failed: gone"}},
+                        {"deleted": "a", "cleanup": None}])
+        self.routes[("DELETE", "/api/sandboxes/a")] = lambda q, body: next(answers)
+        code, out, err = self.run_cli("down", "a")
+        self.assertEqual((code, out.strip(), err.strip()), (0, "sbx-a deleted", "released the webhook"))
+        code, out, err = self.run_cli("down", "a")
+        self.assertEqual(code, 0)   # the sandbox is gone; the failure is a warning
+        self.assertIn("half done", err)
+        self.assertIn("warning: .sbx/cleanup failed (it exited with 2)", err)
+        code, out, err = self.run_cli("down", "a")
+        self.assertIn("running it failed: gone", err)
+        code, out, err = self.run_cli("down", "a", "--json")
+        self.assertEqual((code, json.loads(out)), (0, {"deleted": "a", "cleanup": None}))
+
+    def test_down_without_an_answer_in_time_says_the_outcome_is_unknown(self):
+        def slow(q, body):
+            threading.Event().wait(1)   # not time.sleep: some subclasses patch it
+            return {"deleted": "a", "cleanup": None}
+        self.routes[("DELETE", "/api/sandboxes/a")] = slow
+        with patch.object(self.cli, "DOWN_TIMEOUT_SECONDS", 0.2):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("unknown", str(code))
+        self.assertIn("sbx ls", str(code))
+        self.assertNotIn("deleted\n", out)
+
+    def test_down_with_a_dropped_reply_says_the_outcome_is_unknown_and_never_resends(self):
+        import http.client
+        import urllib.error
+        sent = []
+        def dropped(*args, **kwargs):
+            sent.append(args)
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        with patch.object(self.cli.Client, "request", dropped):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("unknown", str(code))
+        self.assertIn("sbx ls", str(code))
+        self.assertEqual(len(sent), 1)
+        def unreachable(*args, **kwargs):
+            raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+        with patch.object(self.cli.Client, "request", unreachable):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("cannot reach", str(code))
+        self.assertNotIn("unknown", str(code))
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}
