@@ -363,7 +363,11 @@ migrate with `pg_dump`/`pg_restore`.
 
 `clickhouse-database` creates empty schemas by default; with `mode: clone` and a
 `template`, it clones each supported local MergeTree table, sharing immutable
-data parts. Views and replicated, shared or external engines are refused.
+data parts. Views and replicated, shared or external engines are refused. A
+ClickHouse connection sends its admin password with every request, so its URL
+must use `https://` unless every address of its host is loopback, private
+(RFC 1918, link-local, IPv6 ULA) or in 100.64.0.0/10; the check and the
+package refuse plain `http://` to any other host.
 
 `sbx-admin server down NAME` stops a server and keeps its data;
 `--delete-data` removes its storage. Both refuse while recipes or sandboxes use
