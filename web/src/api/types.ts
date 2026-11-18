@@ -257,12 +257,27 @@ export type RepoInfo = {
   github: 'app' | 'key' | 'anonymous' | '-'
   github_app_install: string
   github_anonymous: boolean
+  /** server: the operator's copy (sbx recipe apply); repository: imported from the default branch. */
+  recipe_source?: 'server' | 'repository' | ''
+  /** The recipe's pull request as last recorded; current: it carries the recipe the server runs. */
+  recipe_pr?: RecipePr | null
+}
+
+export type RecipePr = {
+  number: number | null
+  url: string | null
+  state: 'open' | 'merged' | 'closed' | 'in_repository' | null
+  draft: boolean
+  recipe_sha256: string
+  /** Why the last try could not publish it (GitHub access), when it failed. */
+  problem: string | null
+  current?: boolean
 }
 
 /** GET /api/repos/{repo}: runtime is the repo's own setting, null for the installation's default. */
 export type RepoDetail = RepoInfo & { runtime?: string | null }
 
-export type ReadinessStepId = 'served' | 'github' | 'configured' | 'template' | 'services' | 'env' | 'sandbox'
+export type ReadinessStepId = 'served' | 'github' | 'configured' | 'template' | 'services' | 'env' | 'sandbox' | 'recipe_pr'
 export type ReadinessStepStatus = 'done' | 'todo' | 'working' | 'blocked'
 export type ReadinessStep = {
   step: ReadinessStepId
@@ -272,10 +287,12 @@ export type ReadinessStep = {
   /** Names of what is missing: env variables, attachment keys. */
   missing: string[]
   detail: string
-  /** The github step: the App's install URL while it is not done. */
+  /** The github and recipe_pr steps: the App's install URL while it is not done. */
   action?: string
   /** The owner's how-to page for the step, if it has one. */
   help_url?: string
+  /** The recipe_pr step: the pull request. */
+  url?: string
 }
 /** agent: hand it to the coding agent; person: someone must enter or approve something; working: wait; ready: start sandboxes; live: one is running. */
 export type ReadinessStage = 'agent' | 'person' | 'working' | 'ready' | 'live'
@@ -314,7 +331,7 @@ export type RecipeFiles = { files: { path: string; text: string | null }[] }
 
 export type GitHubRepository = { repo: string; description: string; private: boolean; branch: string }
 export type RepoInspection = { repo: string; description: string; branch: string; private: boolean; github_app: boolean; registered: boolean; url: string }
-export type SetupPr = { available: boolean; pull_request: null | { number: number; url: string; state: string; title?: string; draft?: boolean; merged?: boolean } }
+export type SetupPr = { available: boolean; pull_request: null | { number: number; url: string; state: string; title?: string; draft?: boolean; merged?: boolean }; record?: RecipePr | null }
 
 export type EnvKind = 'service' | 'sbx.yaml' | 'installation' | 'repo' | 'mine'
 export type Audience = 'all' | 'previews' | 'sessions'

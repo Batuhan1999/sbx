@@ -266,6 +266,43 @@ class CliTests(unittest.TestCase):
         self.assertIn("cannot reach", str(code))
         self.assertNotIn("unknown", str(code))
 
+    def test_recipe_pr_prints_the_link_or_why_it_could_not_open_it(self):
+        recipe = self.home / "checkout/.sbx"
+        recipe.mkdir(parents=True)
+        (recipe / "sbx.yaml").write_text("previews: {web: 3000}\n")
+        (recipe / "setup").write_text("#!/bin/sh\n")
+        (recipe / "setup").chmod(0o755)
+        pr = {"number": 3, "url": "https://github.com/owner/app/pull/3", "state": "open", "draft": True,
+              "branch": "sbx/setup", "changed": True, "recipe_sha256": "abc"}
+        self.routes[("POST", "/api/repos/owner/app/setup-pr")] = lambda q, body: pr
+        code, out, err = self.run_cli("recipe", "pr", str(recipe.parent), "--repo", "owner/app", "--yes")
+        self.assertEqual((code, out), (0, "https://github.com/owner/app/pull/3 (draft)\n"), err)
+        self.assertEqual(self.control.calls[-1][3]["executable"], [".sbx/setup"])
+        code, out, err = self.run_cli("recipe", "pr", str(recipe.parent), "--repo", "owner/app", "--yes", "--json")
+        self.assertEqual(json.loads(out)["url"], pr["url"])
+
+        problem = "The server's GitHub App may not push to owner/app or open pull requests there: give it access."
+        self.routes[("GET", "/api/repos/owner/app/setup-pr")] = lambda q, body: {
+            "available": True, "pull_request": None, "record": {"number": None, "url": None, "problem": problem}}
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--repo", "owner/app")
+        self.assertEqual((code, out), (1, f"not published: {problem}\n"))
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--json", "--repo", "owner/app")
+        self.assertEqual((code, json.loads(out)["record"]["problem"]), (1, problem))
+        self.routes[("GET", "/api/repos/owner/app/setup-pr")] = lambda q, body: {
+            "available": True, "pull_request": {**pr, "state": "merged"}, "record": {**pr, "problem": None}}
+        code, out, err = self.run_cli("recipe", "pr", "--status", "--repo", "owner/app")
+        self.assertEqual((code, out), (0, "https://github.com/owner/app/pull/3 (merged)\n"))
+
+    def test_repo_status_shows_the_recipe_pr_and_prints_json(self):
+        info = {"repo": "owner/app", "trust": "trusted", "recipe_pr": {
+            "number": 3, "url": "https://github.com/owner/app/pull/3", "state": "open", "draft": False,
+            "problem": None, "current": False}}
+        self.routes[("GET", "/api/repos/owner/app")] = lambda q, body: info
+        code, out, err = self.run_cli("repo", "status", "--repo", "owner/app")
+        self.assertIn("recipe_pr        https://github.com/owner/app/pull/3 (open); the recipe changed since", out)
+        code, out, err = self.run_cli("repo", "status", "--repo", "owner/app", "--json")
+        self.assertEqual(json.loads(out), info)
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}

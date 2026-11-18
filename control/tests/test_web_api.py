@@ -38,7 +38,7 @@ class WebApiTests(Server):
         with patch("sbx_control.github_app.access", return_value="app"):
             found = self.client.get("/api/repos/owner/app/readiness").json()
         self.assertEqual([s["step"] for s in found["steps"]],
-                         ["served", "github", "configured", "services", "env", "template", "sandbox"])
+                         ["served", "github", "configured", "services", "env", "template", "sandbox", "recipe_pr"])
         env = next(s for s in found["steps"] if s["step"] == "env")
         self.assertEqual((env["status"], env["who"], env["missing"]), ("todo", "person", ["APP_SECRET"]))
         self.assertEqual((found["stage"], found["next"]), ("person", "env"))

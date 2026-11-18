@@ -1401,19 +1401,46 @@ def recipe_cmd(args):
         print(f"{repo}: the recipe installed with sbx recipe apply is removed; "
               + ("the default branch's .sbx/ applies now" if r["recipe"] == "imported" else "it needs a recipe now"))
         return
+    if args.action == "pr" and args.status:
+        found = api("GET", f"/api/repos/{repo}/setup-pr")
+        pr, last = found["pull_request"], found["record"] or {}
+        if args.json:
+            print(json.dumps(found))
+        else:
+            if pr:
+                print(recipe_pr_line(pr))
+            if last.get("problem") or not pr:
+                print(recipe_pr_line(last or None))
+        if last.get("problem"):
+            sys.exit(1)
+        return
     files, executable = recipe_files(default_folder(args.dir))
     if args.action == "apply":
         r = api("PUT", f"/api/repos/{repo}/recipe", {"files": files, "executable": executable})
         print(f"{repo}: {r['files']} recipe file(s) installed on the server"
               + ("; it has a template of its own: sbx template build" if r["prebuilt"] else ""))
         return
-    print(f"Open a draft setup PR on {repo} through the server's GitHub App:")
-    for path in files:
-        print(f"  {path}")
-    print("Review these files first. Credentials belong on the sandbox server, not in the PR.")
-    if input("Publish this proposal? [y/N] ").strip().lower() not in ("y", "yes"):
-        return
-    print(api("POST", f"/api/repos/{repo}/setup-pr", {"files": files, "title": args.title})["url"])
+    if not args.yes:
+        print(f"Open a draft setup PR on {repo} through the server's GitHub App:")
+        for path in files:
+            print(f"  {path}")
+        print("Review these files first. Credentials belong on the sandbox server, not in the PR.")
+        if input("Publish this proposal? [y/N] ").strip().lower() not in ("y", "yes"):
+            return
+    r = api("POST", f"/api/repos/{repo}/setup-pr", {"files": files, "executable": executable, "title": args.title})
+    print(json.dumps(r) if args.json else recipe_pr_line(r))
+
+
+def recipe_pr_line(pr):
+    """The recipe's pull request (setup_pr's summary or record) in one line."""
+    if not pr:
+        return "no recipe pull request yet"
+    if pr.get("problem"):
+        return f"not published: {pr['problem']}"
+    if pr.get("state") == "in_repository":
+        return "the default branch has this recipe already; no pull request needed"
+    word = "draft" if pr.get("draft") and pr.get("state") == "open" else pr.get("state") or "open"
+    return f"{pr['url']} ({word})"
 
 
 def checkout_paths(checkout):
@@ -1449,7 +1476,14 @@ def scaffold(checkout, repo, prebuild):
 def repo_cmd(args):
     repo = this_repo(args.repo)
     if args.action == "status":
-        for key, value in api("GET", f"/api/repos/{repo}").items():
+        found = api("GET", f"/api/repos/{repo}")
+        if args.json:
+            print(json.dumps(found))
+            return
+        for key, value in found.items():
+            if key == "recipe_pr":
+                value = recipe_pr_line(value) + ("" if not value or value["current"] or value.get("problem")
+                                                 else "; the recipe changed since")
             print(f"{key:<16} {', '.join(value) if isinstance(value, list) else value}")
         return
     if args.action == "brief":
@@ -1886,12 +1920,19 @@ def parser():
     p.add_argument("--agent", nargs="?", const="claude", metavar="COMMAND",
                    help="connect: let this agent CLI (default claude; codex, ...) finish and verify the recipe")
     p.add_argument("--prebuild", action="store_true", help="connect: draft a recipe with a template of its own")
+    p.add_argument("--json", action="store_true", help="status: as the API answers")
     p = command("recipe", recipe_cmd, "apply: install the checkout's .sbx/ on the server (admins); "
-                "rm: remove what apply installed (admins); pr: propose it as a draft PR through the GitHub App")
+                "rm: remove what apply installed (admins); pr: propose it as a draft PR through the GitHub App, "
+                "or update the open one (the server opens it on its own once a sandbox comes up healthy from an "
+                "applied recipe)")
     p.add_argument("action", choices=["apply", "rm", "pr"])
     p.add_argument("dir", nargs="?", help="the checkout or its .sbx folder (default: the checkout you are in)")
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--title", default="Set up dev sandboxes", help="pr: its title")
+    p.add_argument("--yes", action="store_true", help="pr: publish without asking")
+    p.add_argument("--status", action="store_true", help="pr: the recipe's PR (its link), or why sbx could not "
+                   "open it (exits 1)")
+    p.add_argument("--json", action="store_true", help="pr: as the API answers")
     p = command("template", template_cmd, "build the repo's template from its default branch, its build's status, "
                 "or rm: delete its templates and build record (admins)")
     p.add_argument("action", choices=["build", "status", "rm"])

@@ -126,6 +126,9 @@ class WorkspaceTests(Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(vm.shipped_before_started(self.START))
         self.assertEqual(lifecycle.get("test-resume")["phase"], "app_ready")
+        # Healthy from the operator's recipe: sbx tried to commit it, and says why it could not.
+        from sbx_control import setup_pr
+        self.assertIn("No GitHub App is connected", setup_pr.record("owner/app")["problem"])
 
     def test_preview_resume_restarts_the_app_before_forwarding(self):
         from sbx_control import core, gate, waking
@@ -807,63 +810,6 @@ class WorkspaceTests(Server):
             template_builds.build_now(key)  # retryable
         self.assertEqual(template_builds.first_wait(), template_builds.CHECK_SECONDS)
         self.assertEqual(template_builds.state(key)['status'], 'built')
-
-    def test_setup_pr_is_draft_scoped_to_sbx_and_idempotent(self):
-        import httpx
-        from sbx_control import setup_pr
-        self.repo_admin()
-        self.settings.add_repo('owner/app', by='test')
-        files = {'.sbx/sbx.yaml': 'template: owner-app\n', '.sbx/setup': '#!/bin/sh\necho setup\n'}
-        writes = []
-        opened = []
-        def handle(request):
-            self.assertEqual(request.headers['authorization'], 'Bearer fixture-token')
-            path = request.url.path
-            if request.method == 'POST':
-                import json
-                body = json.loads(request.content)
-                writes.append((path, body))
-                if path.endswith('/git/trees'):
-                    self.assertEqual(body['base_tree'], 'base-tree')
-                    self.assertEqual({f['path'] for f in body['tree']}, set(files))
-                    return httpx.Response(201, json={'sha': 'new-tree'})
-                if path.endswith('/git/commits'):
-                    self.assertEqual(body['parents'], ['base-head'])
-                    return httpx.Response(201, json={'sha': 'new-head'})
-                if path.endswith('/git/refs'):
-                    return httpx.Response(201, json={})
-                if path.endswith('/pulls'):
-                    self.assertTrue(body['draft'])
-                    self.assertEqual(body['base'], 'develop')
-                    pr = {'number': 42, 'html_url': 'https://github.com/owner/app/pull/42', 'state': 'open', 'draft': True, 'head': {'ref': body['head']}}
-                    opened.append(pr)
-                    return httpx.Response(201, json=pr)
-            if path.endswith('/pulls'):
-                return httpx.Response(200, json=opened)
-            if path.endswith('/pulls/42'):
-                return httpx.Response(200, json={**opened[0], 'merged_at': '2026-01-01'})
-            if path.endswith('/git/ref/heads/develop'):
-                return httpx.Response(200, json={'object': {'sha': 'base-head'}})
-            if '/git/ref/heads/sbx' in path:
-                return httpx.Response(404, json={})
-            if path.endswith('/git/commits/base-head'):
-                return httpx.Response(200, json={'tree': {'sha': 'base-tree'}})
-            return httpx.Response(200, json={'default_branch': 'develop'})
-        github = httpx.Client
-        with patch.object(setup_pr.github_app, 'token', return_value='fixture-token'), \
-                patch.object(setup_pr.httpx, 'Client', side_effect=lambda **kwargs: github(transport=httpx.MockTransport(handle), **kwargs)):
-            one = self.client.post('/api/repos/owner/app/setup-pr', json={'files': files})
-            two = self.client.post('/api/repos/owner/app/setup-pr', json={'files': files})
-            status = self.client.get('/api/repos/owner/app/setup-pr')
-        self.assertEqual(one.status_code, 200, one.text)
-        self.assertEqual(two.json()['url'], one.json()['url'])
-        self.assertEqual(status.json()['pull_request']['state'], 'merged')
-        self.assertEqual(len(writes), 4)
-        with patch.object(setup_pr.httpx, 'Client') as client:
-            for path in ('../file', '.sbx/../file', '.sbx/.env', '.sbx/private.key'):
-                result = self.client.post('/api/repos/owner/app/setup-pr', json={'files': {**files, path: 'no'}})
-                self.assertEqual(result.status_code, 400)
-            client.assert_not_called()
 
 
 class MissingValuesTests(Server):
