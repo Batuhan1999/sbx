@@ -94,8 +94,8 @@ class SetupTests(Server):
         with TestClient(self.app.app, base_url="https://203.0.113.10") as outsider:
             self.assertEqual(outsider.get("/api/setup", headers=self.headers).status_code, 401)
             self.assertEqual(outsider.get("/api/me").status_code, 401)
-        self.client.get("/auth/logout")
-        login = self.client.post("/auth/login", content="email=operator%40example.com&password=test-only-password-123",
+        self.client.get("/logout")
+        login = self.client.post("/login", content="email=operator%40example.com&password=test-only-password-123",
                                  headers={"content-type": "application/x-www-form-urlencoded",
                                           "Origin": "https://203.0.113.10"}, follow_redirects=False)
         self.assertEqual(login.status_code, 303, login.text)
@@ -149,8 +149,8 @@ class SetupTests(Server):
         self.assertEqual(self.settings.current().access.admins, ("operator@example.com",))
 
     def password_login(self, email):
-        self.client.get("/auth/logout")
-        return self.client.post("/auth/login", content=f"email={email}&password=test-only-password-123",
+        self.client.get("/logout")
+        return self.client.post("/login", content=f"email={email}&password=test-only-password-123",
                                 headers={"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
                                          "Origin": "https://203.0.113.10"}).status_code
 
@@ -193,7 +193,7 @@ class SetupTests(Server):
         # Changing one's password ends the other sessions.
         from fastapi.testclient import TestClient
         with TestClient(self.app.app, base_url="https://203.0.113.10") as laptop:
-            laptop.post("/auth/login", content="email=colleague%40example.com&password=colleague-password-1",
+            laptop.post("/login", content="email=colleague%40example.com&password=colleague-password-1",
                         headers={"content-type": "application/x-www-form-urlencoded", **origin})
             self.assertEqual(laptop.get("/api/me").status_code, 200)
             changed = self.client.post("/api/me/password", headers=origin,
@@ -204,7 +204,7 @@ class SetupTests(Server):
         # Removing them ends their session and their API tokens.
         from sbx_control import auth
         token = auth.mint_token("colleague@example.com", "cli")
-        self.client.get("/auth/logout")
+        self.client.get("/logout")
         self.assertEqual(self.password_login("operator%40example.com"), 200)
         removed = self.client.delete("/api/users/colleague@example.com", headers=origin)
         self.assertEqual(removed.status_code, 200, removed.text)
@@ -385,7 +385,7 @@ class SetupTests(Server):
                                    ({"preferred_username": "admin@example.com"}, 403),
                                    ({"email": "dev@example.com", "email_verified": True}, 307)):
                 client.authorize_access_token = AsyncMock(return_value={"userinfo": claims})
-                self.client.get("/auth/logout")
+                self.client.get("/logout")
                 response = self.client.get("/auth/callback", follow_redirects=False)
                 self.assertEqual(response.status_code, status, claims)
 
@@ -406,17 +406,18 @@ class SetupTests(Server):
     def test_react_password_sign_in_preserves_destination_and_errors(self):
         self.choose_ip()
         self.create_admin()
-        self.client.get("/auth/logout")
-        response = self.client.get("/auth/login?next=/app/setup", follow_redirects=False)
-        self.assertEqual(response.headers["location"], "/app/sign-in")
+        self.client.get("/logout")
+        response = self.client.get("/login?next=/app/setup", follow_redirects=False)
+        self.assertNotIn("location", response.headers)   # the web app's sign-in page, at /login itself
+        self.assertIn("content-security-policy", response.headers)
         headers = {"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
                    "Origin": "https://203.0.113.10"}
-        wrong = self.client.post("/auth/login", headers=headers,
+        wrong = self.client.post("/login", headers=headers,
                                  content="email=operator%40example.com&password=wrong")
         self.assertEqual(wrong.status_code, 401)
         self.assertIn("incorrect", wrong.json()["detail"])
         self.assertFalse(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
-        correct = self.client.post("/auth/login", headers=headers,
+        correct = self.client.post("/login", headers=headers,
                                    content="email=operator%40example.com&password=test-only-password-123")
         self.assertEqual(correct.status_code, 200)
         self.assertEqual(correct.json(), {"next": "/app/setup"})
@@ -425,9 +426,9 @@ class SetupTests(Server):
     def test_sign_in_rejects_protocol_relative_redirect(self):
         self.choose_ip()
         self.create_admin()
-        self.client.get("/auth/logout")
-        self.client.get("/auth/login?next=//example.org")
-        response = self.client.post("/auth/login", content="email=operator%40example.com&password=test-only-password-123",
+        self.client.get("/logout")
+        self.client.get("/login?next=//example.org")
+        response = self.client.post("/login", content="email=operator%40example.com&password=test-only-password-123",
                                     headers={"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
                                              "Origin": "https://203.0.113.10"})
         self.assertEqual(response.json(), {"next": "/"})
@@ -440,11 +441,15 @@ class SetupTests(Server):
         self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
         self.assertTrue(self.setup.address_ready())
         view = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual(view["link"], "https://login.sbx.example.com/setup")
+        self.assertEqual(view["link"], "https://app.sbx.example.com/setup")
         self.assertEqual(view["access"]["needs_ports"], [80, 53])  # delegated DNS answers here, on 53
         self.assertEqual(view["host"]["address"], "203.0.113.10")
         self.expiry.return_value = datetime.now(timezone.utc) - timedelta(days=1)
         self.assertFalse(self.setup.address_ready())
+
+    def test_an_installation_that_saved_another_sign_in_host_moves_to_app(self):
+        self.settings.update("domain", {"name": "sbx.example.com", "login_host": "login"}, by="test")
+        self.assertEqual(self.settings.current().base_url, "https://app.sbx.example.com")
 
     def test_bad_dns_does_not_store_provider_credentials(self):
         from sbx_control.connections.domain import Domain

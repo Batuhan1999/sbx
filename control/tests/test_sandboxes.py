@@ -291,8 +291,8 @@ class WorkspaceTests(Server):
         response = self.client.get('/gate', headers=headers)
         self.assertEqual(response.status_code, 401)
         self.assertIn('%3Fone%3D1%26two%3D2', response.headers['x-sbx-login'])
-        self.assertEqual(self.client.get('/auth/login', params={'next': url + '/login'},
-                                        follow_redirects=False).status_code, 307)
+        self.assertEqual(self.client.get('/login', params={'next': url + '/login'},
+                                        follow_redirects=False).status_code, 200)   # the sign-in page itself
         with patch.object(core, 'sandboxes', return_value=[info]), patch.object(core, 'app_of', return_value=app), \
                 patch.object(core, 'attach') as resume:
             routing.slugs(fresh=True)

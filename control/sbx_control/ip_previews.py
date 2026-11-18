@@ -132,7 +132,7 @@ def login_url(public_port, path):
     if not path.startswith('/') or any(c in path for c in ('\\', '\r', '\n', '\x00')):
         path = '/'
     target = f'https://{host(address())}:{public_port}{path}'
-    return settings.current().base_url + '/auth/login?' + urlencode({'next': target})
+    return settings.current().base_url + '/login?' + urlencode({'next': target})
 
 
 def nginx(value, certificate):

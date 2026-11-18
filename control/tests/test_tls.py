@@ -94,7 +94,7 @@ if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     print(nginx(sys.argv[4], sys.argv[5]), end='')
     raise SystemExit(0)
 domain = os.environ["SBX_TEST_DOMAIN"]
-values = {"domain": domain, "login": "login." + domain, "bootstrap_address": "203.0.113.10",
+values = {"domain": domain, "login": "app." + domain, "bootstrap_address": "203.0.113.10",
           "email": "operator@example.com", "dns": "delegated", "services": ""}
 for name, value in values.items():
     print(name + "=" + shlex.quote(value))
@@ -191,7 +191,12 @@ path.write_text(path.read_text().replace(before, after))
         self.assertNotIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", config)
         self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", bootstrap)
         self.assertNotIn("listen 443", config + bootstrap)
-        self.assertEqual(config.count("listen 127.0.0.1:8442 ssl proxy_protocol"), 2)
+        self.assertEqual(config.count("listen 127.0.0.1:8442 ssl proxy_protocol"), 3)   # app., the login. fallback, sandboxes
+        # Where sbx-control was before: browsers go on, a CLI is told the fix as its error.
+        self.assertIn("server_name login.sbx.example.com;", config)
+        self.assertIn("location / { return 308 https://app.sbx.example.com$request_uri; }", config)
+        self.assertIn("location = /auth/login { return 308 https://app.sbx.example.com/login$is_args$args; }", config)
+        self.assertIn("curl -fsSL https://app.sbx.example.com/install | sh", config)
         front = (self.root / "tls/nginx/endpoints.stream").read_text()
         self.assertIn("listen 443;\n  ssl_preread on;", front)
         self.assertIn("default 127.0.0.1:8442;", front)

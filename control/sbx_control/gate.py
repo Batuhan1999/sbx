@@ -438,7 +438,7 @@ def _ready_or_page(found: Allow) -> Page:
 
 def _login() -> str:
     """The sign-in page a poll that lost its session goes to."""
-    return f"{settings.current().base_url}/auth/login"
+    return f"{settings.current().base_url}/login"
 
 
 def _home() -> str:

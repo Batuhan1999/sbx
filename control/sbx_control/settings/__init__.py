@@ -56,10 +56,12 @@ class ExtensionSection(Section):
 
 
 class Domain(Section):
+    # A stored login_host (the sign-in host was a setting before) is dropped.
+    model_config = ConfigDict(frozen=True, extra="ignore")
     applies = (HostUnit.TLS, HostUnit.RUNTIME_ENV, HostUnit.CONTROL)
+    login_host: ClassVar[str] = "app"  # sbx-control's host under the domain; every other name is a sandbox
     name: str = ""                     # "" until set: the installation answers on its address only
     address: str = ""                  # the IP chosen during setup; keeps bootstrap access during DNS setup
-    login_host: str = "login"
     acme_email: str = ""
     # How the wildcard certificate's DNS-01 challenge is answered: delegated
     # (one NS record hands _acme-challenge.<name> to this host, which answers
@@ -71,7 +73,7 @@ class Domain(Section):
         """The names reach the runtime and the session cookie; the rest only
         the certificate, and the firewall when the ports it needs change (opened_ports)."""
         guard = (HostUnit.HOST_GUARD,) if self.needs_ports() != before.needs_ports() else ()
-        if (self.name, self.login_host) != (before.name, before.login_host):
+        if self.name != before.name:
             return (*self.applies, *guard)
         return (HostUnit.TLS, *guard)
 
@@ -264,7 +266,7 @@ class Settings(BaseModel):
     @property
     def reserved_names(self) -> set:
         """Sandbox names a host of the installation's own would collide with."""
-        return {self.domain.login_host, "sandbox", *self.proxied.services}
+        return {self.domain.login_host, "login", "sandbox", *self.proxied.services}   # login: tls.sh's fallback
 
     def serves(self, repo: str) -> bool:
         return any(fnmatch.fnmatchcase(repo, pattern.lower()) for pattern in self.repos)

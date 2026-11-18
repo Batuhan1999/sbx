@@ -35,7 +35,7 @@ export const api = {
     setRepos: (name: string, repos: string[]) => put<Endpoint>(`/api/endpoints/${enc(name)}`, { repos }),
     remove: (name: string) => del<unknown>(`/api/endpoints/${enc(name)}`),
   },
-  signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
+  signIn: (email: string, password: string) => postForm<{ next: string }>('/login', { email, password }),
   /** A set-password link's person, while it is good. */
   passwordLink: (token: string) => post<{ email: string; login: Me['login'] }>('/auth/set-password/check', { token }),
   setPassword: (token: string, password: string) => post<{ email: string; next: string }>('/auth/set-password', { token, password }),

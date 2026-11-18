@@ -22,14 +22,14 @@ export default function SetPasswordPage() {
     onSubmit: async ({ value }) => {
       const result = await api.setPassword(token, value.password)
       form.reset()
-      location.assign(link.data?.login === 'password' ? result.next : '/auth/login?next=%2Fapp%2Frepos')
+      location.assign(link.data?.login === 'password' ? result.next : '/login?next=%2Fapp%2Frepos')
       await new Promise(() => {}) // stay busy while the browser navigates
     },
   })
   if (!token) return <AuthFrame title="Set your password"><ErrorState error="This page needs the link an admin gave you." compact /></AuthFrame>
   if (link.isPending) return <AuthFrame title="Set your password"><Loading /></AuthFrame>
   if (link.error) return <AuthFrame title="Set your password">
-    <div className="space-y-4"><ErrorState error={link.error} compact retry={() => link.refetch()} /><AnchorButton href="/auth/login" className="w-full">Go to sign-in</AnchorButton></div>
+    <div className="space-y-4"><ErrorState error={link.error} compact retry={() => link.refetch()} /><AnchorButton href="/login" className="w-full">Go to sign-in</AnchorButton></div>
   </AuthFrame>
   return <AuthFrame title="Set your password" description={`For ${link.data.email} on this server.`}>
     <AppForm form={form} className="space-y-4">

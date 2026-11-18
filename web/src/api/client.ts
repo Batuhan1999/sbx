@@ -60,7 +60,7 @@ export function setupToken(): string | null {
 }
 
 /** Pages that work signed out; a 401 there must not bounce to the sign-in. */
-const PUBLIC_PATHS = ['/app/setup', '/app/sign-in', '/app/set-password']
+const PUBLIC_PATHS = ['/app/setup', '/login', '/app/set-password']
 
 export async function request<T>(method: string, url: string, body?: unknown, accept: 'json' | 'text' = 'json'): Promise<T> {
   const headers: Record<string, string> = { accept: accept === 'json' ? 'application/json' : 'text/plain' }
@@ -75,7 +75,7 @@ export async function request<T>(method: string, url: string, body?: unknown, ac
   }
   if (!response.ok) {
     if (response.status === 401 && !token && !PUBLIC_PATHS.some(p => location.pathname.startsWith(p))) {
-      location.assign('/auth/login?next=' + encodeURIComponent(location.pathname + location.search))
+      location.assign('/login?next=' + encodeURIComponent(location.pathname + location.search))
     }
     const detail = data && typeof data === 'object' && 'detail' in data ? (data as { detail: unknown }).detail : data
     throw new ApiError(response.status, detail)

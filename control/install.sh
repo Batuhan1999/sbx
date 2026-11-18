@@ -1,6 +1,6 @@
 #!/bin/sh
 # Dev sandboxes: install sbx on a Mac.
-#   curl -fsSL https://<login host>/install | sh   (the server fills in @SBX_CONTROL@)
+#   curl -fsSL https://app.<domain>/install | sh   (the server fills in @SBX_CONTROL@)
 # Installs websocat (Homebrew) and the sbx CLI under ~/.local/share/sbx/<version>, puts sbx on PATH and signs in.
 set -eu
 control=${SBX_CONTROL:-@SBX_CONTROL@}

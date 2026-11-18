@@ -66,7 +66,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <div className="truncate text-[12.5px] font-medium" title={me.data.email}>{me.data.email}</div>
           <div className="text-[11.5px] text-muted">{me.data.admin ? 'Admin' : 'Member'} · {me.data.version}</div>
         </div> : <div className="grow space-y-1.5"><Skeleton className="h-3 w-32" /><Skeleton className="h-3 w-16" /></div>}
-        {me.data?.login !== 'none' && <a href="/auth/logout" className="grid size-7 place-items-center rounded-md text-muted hover:bg-hover hover:text-ink" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></a>}
+        {me.data?.login !== 'none' && <a href="/logout" className="grid size-7 place-items-center rounded-md text-muted hover:bg-hover hover:text-ink" aria-label="Sign out" title="Sign out"><LogOut className="size-4" /></a>}
       </div>
     </div>
   </div>

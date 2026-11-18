@@ -26,7 +26,7 @@
 # default, or the web app.
 #
 # Options:
-#   --domain D        previews at <name>.D, sbx-control at login.D (optional)
+#   --domain D        previews at <name>.D, sbx-control at app.D (optional)
 #   --email E         for Let's Encrypt when configuring a domain
 #   --dns P           how the wildcard certificate is issued: delegated (the
 #                     default: one NS record hands _acme-challenge.D to this

@@ -66,8 +66,8 @@ describe('missing values', () => {
 
 describe('sign in', () => {
   it('validates before sending and shows the server’s answer', async () => {
-    const calls = stubApi({ 'POST /auth/login': () => ({ status: 401, body: { detail: 'The email or password is incorrect.' } }) })
-    renderApp(<SignInPage />, '/app/sign-in')
+    const calls = stubApi({ 'POST /login': () => ({ status: 401, body: { detail: 'The email or password is incorrect.' } }) })
+    renderApp(<SignInPage />, '/login')
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByText('Enter a valid email address.')).toBeTruthy()

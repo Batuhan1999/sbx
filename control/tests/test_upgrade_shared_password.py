@@ -40,11 +40,11 @@ class SharedPasswordUpgrade(Server):
         from sbx_control import state
         self.shared()
         state.migrate()
-        login = self.client.post("/auth/login", content="email=first%40example.com&password=old-shared-password",
+        login = self.client.post("/login", content="email=first%40example.com&password=old-shared-password",
                                  headers={"content-type": "application/x-www-form-urlencoded",
                                           "accept": "application/json", "Origin": "https://203.0.113.10"})
         self.assertEqual(login.status_code, 200, login.text)
-        wrong = self.client.post("/auth/login", content="email=first%40example.com&password=not-the-password",
+        wrong = self.client.post("/login", content="email=first%40example.com&password=not-the-password",
                                  headers={"content-type": "application/x-www-form-urlencoded",
                                           "accept": "application/json", "Origin": "https://203.0.113.10"})
         self.assertEqual(wrong.status_code, 401)
