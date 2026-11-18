@@ -274,6 +274,8 @@ export type ReadinessStep = {
   detail: string
   /** The github step: the App's install URL while it is not done. */
   action?: string
+  /** The owner's how-to page for the step, if it has one. */
+  help_url?: string
 }
 /** agent: hand it to the coding agent; person: someone must enter or approve something; working: wait; ready: start sandboxes; live: one is running. */
 export type ReadinessStage = 'agent' | 'person' | 'working' | 'ready' | 'live'
@@ -433,8 +435,8 @@ export type Connection = {
   fields: ConnectionField[]
   actions: string[]
 }
-/** runtime: the kind of sandbox runtime it checks, null for the server's own checks. */
-export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null }
+/** runtime: the kind of sandbox runtime it checks, null for the server's own checks. help_url: the owner's how-to page for what it checks, if any. */
+export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null; help_url?: string }
 export type CheckResult = { ok: boolean; checks: Check[] }
 
 export type SetupState = {

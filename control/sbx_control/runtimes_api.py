@@ -107,7 +107,7 @@ def api_change_settings(kind: str, body: Values, who: str = Depends(setup_or_adm
 
 @router.post("/api/runtimes/{kind}/test")
 async def api_test(kind: str, who: str = Depends(setup_or_admin)):
-    """An enabled runtime's checks: {kind, ok, checks: [{name, ok, detail, fix, runtime}]}; 400 when not enabled."""
+    """An enabled runtime's checks: {kind, ok, checks: [{name, ok, detail, fix, runtime, help_url}]}; 400 when not enabled."""
     try:
         checks = await run_in_threadpool(runtimes.test, kind)
     except runtimes.Refused as error:

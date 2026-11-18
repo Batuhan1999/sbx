@@ -10,7 +10,7 @@ import socket
 import subprocess
 import urllib.request
 
-from .. import acme_dns, paths, settings, vault
+from .. import acme_dns, howto, paths, settings, vault
 from .base import Check, Connection, Field, Refused, Status
 
 
@@ -73,27 +73,30 @@ class Domain(Connection):
         probe = f"sbx-check-{pysecrets.token_hex(3)}.{name}"
         login_ips, probe_ips = _resolve(login), _resolve(probe)
         checks.append(Check(f"{login} resolves", bool(login_ips), ", ".join(login_ips) or "no address",
-                            f"an A record for {login} (or *.{name}) pointing at this host"))
+                            f"an A record for {login} (or *.{name}) pointing at this host", help_url=howto.DNS_RECORDS))
         checks.append(Check(f"*.{name} resolves", bool(probe_ips), ", ".join(probe_ips) or "no address",
-                            f"a wildcard A record *.{name} pointing at this host"))
+                            f"a wildcard A record *.{name} pointing at this host", help_url=howto.DNS_RECORDS))
         mine = _host_ips()
         if mine and login_ips:
             hit = sorted(set(login_ips) & mine)
             checks.append(Check("points at this host", bool(hit), f"{', '.join(hit)} is this host" if hit else
-                                f"this host is {', '.join(sorted(mine))}", "the records should point at this host's public address"))
+                                f"this host is {', '.join(sorted(mine))}", "the records should point at this host's public address",
+                                help_url=howto.DNS_RECORDS))
         expiry = _expiry(name)
+        mode = v.get("acme") or s.acme
         checks.append(Check("certificate", expiry is not None and expiry > datetime.datetime.now(datetime.timezone.utc),
                             f"valid until {expiry:%Y-%m-%d}" if expiry else "none issued",
-                            "tls.sh issues it (sudo sbx-apply tls) once the records resolve"))
-        mode = v.get("acme") or s.acme
+                            "tls.sh issues it (sudo sbx-apply tls) once the records resolve",
+                            help_url={"delegated": howto.DELEGATED_DNS, "cloudflare": howto.CLOUDFLARE_TOKEN}.get(mode, "")))
         if mode == "delegated":
             ns = _ns(f"_acme-challenge.{name}")
             ok = any(x.rstrip(".") == name for x in ns)
             checks.append(Check("delegation", ok, f"NS {', '.join(ns) or 'none'}" if ns else "no NS record yet",
-                                f"an NS record: _acme-challenge.{name} NS {name}."))
+                                f"an NS record: _acme-challenge.{name} NS {name}.", help_url=howto.DELEGATED_DNS))
         if mode == "cloudflare":
             has = bool(v.get("cloudflare_api_token")) or vault.facts(vault.CLOUDFLARE_API_TOKEN).set
-            checks.append(Check("Cloudflare token", has, "set" if has else "missing", "a token that may edit the zone's DNS"))
+            checks.append(Check("Cloudflare token", has, "set" if has else "missing", "a token that may edit the zone's DNS",
+                                help_url=howto.CLOUDFLARE_TOKEN))
         return checks
 
     def connect(self, values: dict, *, by: str) -> Status:

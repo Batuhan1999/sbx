@@ -35,7 +35,8 @@ plug in is described in [extensions](extensions.md#agent-connectors).
    [acceptance checklist](agent-install.md#acceptance-checklist). Amp uses the
    same recipe, services and variables; there is no separate Amp configuration
    for them.
-2. In Amp **Settings → Orbs**, add a self-hosted provider and turn **Repository
+2. In Amp **Settings → Orbs**, add a self-hosted provider (step by step, and
+   from the Amp CLI: [how-to](howto/amp.md)) and turn **Repository
    Setup** off: sbx puts the checkout at `/home/user/workspace/repo`, linked to
    the recipe's workdir, with renewable git credentials.
 3. In sbx **Extensions → Coding agents → Amp**, paste the provider token, choose a

@@ -506,6 +506,15 @@ class RuntimeCliTests(CliTests):
         self.assertEqual(code, 1)
         self.assertIn("ok  E2B Cloud API: answers; 3 template names", out)
         self.assertIn("NO  Base template: its last build failed: boom — build it again", out)
+        self.assertNotIn("how to:", out)   # no page for it
+        checks[0] = {**checks[0], "ok": False, "detail": "AuthenticationException: 401",
+                     "help_url": "https://github.com/o/sbx/blob/main/docs/howto/e2b.md#api-key"}
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud")
+        self.assertIn("NO  E2B Cloud API: AuthenticationException: 401\n    how to: "
+                      "https://github.com/o/sbx/blob/main/docs/howto/e2b.md#api-key", out)
+        code, out, err = self.run_cli("runtimes", "test", "e2b-cloud", "--json")
+        self.assertEqual(json.loads(out)["checks"][0]["help_url"], checks[0]["help_url"])
+        checks[0] = {**checks[0], "ok": True}
         self.routes[("POST", "/api/runtimes/e2b-cloud/test")] = lambda q, body: {"kind": "e2b-cloud", "ok": True, "checks": checks[:1]}
         code, out, err = self.run_cli("runtimes", "test", "e2b-cloud", "--json")
         self.assertEqual((code, json.loads(out)["ok"]), (0, True))
@@ -697,6 +706,17 @@ class SetupCliTests(CliTests):
         self.assertEqual(sent[("POST", "/api/runtimes")]["values"]["E2B_CLOUD_API_KEY"], CLOUD_KEY)
         self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
         self.assertNotIn("one-time-token", out + err)
+
+    def test_a_refused_domain_names_each_failed_check_and_its_how_to(self):
+        page = "https://github.com/o/sbx/blob/main/docs/howto/cloudflare.md#dns-records"
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (400, {"detail": {
+            "message": "Check the DNS records and certificate settings below.",
+            "checks": [{"name": "*.sbx.example.com resolves", "ok": False, "detail": "no address", "help_url": page},
+                       {"name": "delegation", "ok": False, "detail": "no NS record yet", "help_url": ""}]}})
+        code, out, err = self.run_cli("setup", "address", "--domain", "sbx.example.com", "--email", "a@example.com",
+                                      "--insecure")
+        self.assertEqual(code, "sbx-control: Check the DNS records and certificate settings below.; "
+                               f"*.sbx.example.com resolves: no address (how to: {page}); delegation: no NS record yet")
 
     def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
         self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]

@@ -97,8 +97,8 @@ class Client:
                 detail = json.loads(detail).get("detail", detail)
             except (ValueError, AttributeError):
                 pass
-            if isinstance(detail, dict):   # {message, checks}: what failed, each check that did
-                detail = "; ".join([detail.get("message") or "refused", *(f"{c.get('name')}: {c.get('detail')}"
+            if isinstance(detail, dict):   # {message, checks}: what failed, each check that did, and how to fix it
+                detail = "; ".join([detail.get("message") or "refused", *(check_line(c)
                                                                           for c in detail.get("checks") or [] if not c.get("ok"))])
             if error.code == 401:
                 raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a "
@@ -595,6 +595,11 @@ def runtimes_available(args, client):
             print(f"  can't remove: {r['remove_blocker']['message']}")
 
 
+def check_line(c) -> str:
+    """A failed check in one line: its name, what was found, and the how-to page when it has one."""
+    return f"{c.get('name')}: {c.get('detail')}" + (f" (how to: {c['help_url']})" if c.get("help_url") else "")
+
+
 def runtime_test(args, client):
     """sbx runtimes test KIND: the runtime's checks, as Settings and sbx-admin doctor run them; non-zero when any fails."""
     if not args.kind:
@@ -606,6 +611,8 @@ def runtime_test(args, client):
         for c in found["checks"]:
             print(f"{'ok ' if c['ok'] else 'NO '} {c['name']}: {c['detail']}"
                   + (f" — {c['fix']}" if not c["ok"] and c.get("fix") else ""))
+            if not c["ok"] and c.get("help_url"):
+                print(f"    how to: {c['help_url']}")
     if not found["ok"]:
         sys.exit(1)
 

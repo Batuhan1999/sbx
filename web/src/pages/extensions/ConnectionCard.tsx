@@ -6,6 +6,7 @@ import { keys, useAction } from '@/api/queries'
 import type { Check, Connection, ConnectionState } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { DocsLink } from '@/components/PackageLogo'
 import { ErrorState } from '@/components/states'
 import { AnchorButton, Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -33,7 +34,7 @@ export function Checks({ checks }: { checks: Check[] }) {
   return <ul className="space-y-1.5 text-[12.5px]">
     {checks.map(c => <li key={c.name} className="flex gap-2">
       <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', c.ok ? 'bg-ok' : 'bg-bad')} aria-hidden />
-      <span><span className="font-medium">{c.name}</span> <span className="text-muted">{c.detail}</span>{!c.ok && c.fix && <span className="block text-muted">Fix: {c.fix}</span>}</span>
+      <span><span className="font-medium">{c.name}</span> <span className="text-muted">{c.detail}</span>{!c.ok && c.fix && <span className="block text-muted">Fix: {c.fix}</span>}{!c.ok && c.help_url && <span className="block"><DocsLink href={c.help_url}>How to set it up</DocsLink></span>}</span>
       <span className="sr-only">{c.ok ? 'passed' : 'failed'}</span>
     </li>)}
   </ul>

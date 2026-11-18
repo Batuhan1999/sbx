@@ -2,6 +2,7 @@ import { AlertTriangle, RotateCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { describeError } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { DocsLink } from './PackageLogo'
 import { Button } from './ui/button'
 import { Skeleton, Spinner } from './ui/primitives'
 
@@ -25,7 +26,7 @@ export function ErrorState({ error, retry, compact, className }: { error: unknow
       <div className="min-w-0 grow">
         <p className="break-words text-bad">{message}{status && status >= 500 ? <span className="text-bad/70"> (HTTP {status})</span> : null}</p>
         {checks.length > 0 && <ul className="mt-2 space-y-1">
-          {checks.map(c => <li key={c.name} className="text-ink"><span className="font-medium">{c.name}</span>: <span className="text-muted">{c.detail}</span>{c.fix && <span className="block text-[12px] text-muted">Fix: {c.fix}</span>}</li>)}
+          {checks.map(c => <li key={c.name} className="text-ink"><span className="font-medium">{c.name}</span>: <span className="text-muted">{c.detail}</span>{c.fix && <span className="block text-[12px] text-muted">Fix: {c.fix}</span>}{c.help_url && <span className="block"><DocsLink href={c.help_url}>How to set it up</DocsLink></span>}</li>)}
         </ul>}
       </div>
       {retry && <Button size="sm" variant="ghost" onClick={retry} className="-my-0.5"><RotateCw />Retry</Button>}

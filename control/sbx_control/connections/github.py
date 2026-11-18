@@ -8,7 +8,7 @@ import re
 
 import httpx
 
-from .. import contributions, extensions, github_app, platform, settings, vault
+from .. import contributions, extensions, github_app, howto, platform, settings, vault
 from ..contributions import Check as Ready, Contribution, File, RuntimeLayer, TemplateLayer
 from .base import Check, Field, Refused, Status
 
@@ -109,7 +109,7 @@ class GitHub(extensions.Connector):
         s = github_app.settings()
         if not s:
             key = vault.facts(vault.GITHUB_DEPLOY_KEY)
-            return [Check("GitHub App", False, "not set up", "create it from Settings"),
+            return [Check("GitHub App", False, "not set up", "create it in Extensions → GitHub", help_url=howto.GITHUB_APP),
                     Check("deploy key", key.set, "set" if key.set else "not set", "")]
         checks = []
         try:
@@ -119,19 +119,21 @@ class GitHub(extensions.Connector):
             github_app.forget()
             owners = github_app.owners()
             checks.append(Check("installations", bool(owners), f"installed on {', '.join(owners)}" if owners else "installed nowhere",
-                                "Install it on repos: " + github_app.install_url()))
+                                "Install it on repos: " + github_app.install_url(), help_url=howto.GITHUB_REPOS))
             hook = app.json().get("external_url", "")
             base = settings.current().base_url
             checks.append(Check("URLs", hook.rstrip("/") == base, f"the App's URL is {hook}" if hook else "no URL",
-                                f"the installation is at {base}: recreate the App after a domain change"))
+                                f"the installation is at {base}: recreate the App after a domain change",
+                                help_url=howto.GITHUB_APP))
         except Exception as error:
-            checks.append(Check("App", False, f"GitHub refused the App's key: {error}", "recreate the App"))
+            checks.append(Check("App", False, f"GitHub refused the App's key: {error}", "recreate the App",
+                                help_url=howto.GITHUB_APP))
         for repo in settings.current().repos:
             if "*" in repo:
                 continue
             found = github_app.installation(repo)
             checks.append(Check(f"access to {repo}", bool(found), "installed" if found else "the App is not installed on it",
-                                github_app.install_url()))
+                                github_app.install_url(), help_url=howto.GITHUB_REPOS))
         return checks
 
     def connect(self, values: dict, *, by: str) -> Status:

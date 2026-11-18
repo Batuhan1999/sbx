@@ -6,6 +6,7 @@ import datetime
 import json
 import time
 
+from ... import howto
 from ..hosted import hosted_status
 from .plans import API_KEY, KEY_WARN_DAYS, KIND, TRIAL_NOTE
 
@@ -20,7 +21,7 @@ class Account:
         from ... import vault
         from ...connections.base import Check
         return [Check("Boat configured", bool(vault.runtime((API_KEY,)).get(API_KEY)), "a Boat API key",
-                      f"Add it: sbx-admin runtime add {KIND} (the key on stdin).")]
+                      f"Add it: sbx-admin runtime add {KIND} (the key on stdin).", help_url=self.help_url)]
 
     def _account(self) -> dict:
         """What Boat says of the account: its plan, and the key's expiry when Boat lists it."""
@@ -69,12 +70,15 @@ class Account:
             count = len(self.templates())
         except Exception as error:
             return [Check("Boat API", False, f"{type(error).__name__}: {error}",
-                          f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})")]
+                          f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})",
+                          help_url=self.help_url)]
         checks = [Check("Boat API", True, f"answers; plan {facts.get('plan') or 'unknown'}; {count} saved snapshots")]
         if facts.get("plan") == "trial":
             checks.append(Check("Boat plan", False, "the trial: 2 sandboxes at once, up to 2 hours, no saved snapshots",
                                 "Templates need the first payment: Boat answers \"Saved snapshots are not available "
-                                "during the free trial\". Pay in Boat's dashboard (Billing), then build again."))
+                                "during the free trial\". Pay in Boat's dashboard (Billing), then build again.",
+                                help_url=howto.BOAT_PLAN))
         if warning := self._expiry_warning(facts):
-            checks.append(Check("Boat API key", False, warning, "create a new key and add it again"))
+            checks.append(Check("Boat API key", False, warning, "create a new key and add it again",
+                                help_url=self.help_url))
         return checks

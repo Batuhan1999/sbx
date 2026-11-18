@@ -63,6 +63,10 @@ What the agent reads along the way, if you want the details yourself:
 - [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md) and
   [Extensions](docs/extensions.md): optional agent connectors, and how to add
   your own connector or catalog package.
+- How-to pages for what you set up outside sbx: [Cloudflare DNS and
+  token](docs/howto/cloudflare.md), [E2B Cloud](docs/howto/e2b.md) and
+  [Boat](docs/howto/boat.md) API keys, the [GitHub App](docs/howto/github.md)
+  and an [Amp orb provider](docs/howto/amp.md).
 
 ## How it is built
 

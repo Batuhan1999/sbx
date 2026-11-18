@@ -5,6 +5,7 @@ import { api } from '@/api/endpoints'
 import { keys, useAction, useRepoInfo, useRuntimeChoice, useSetupPr } from '@/api/queries'
 import type { Actor, ReadinessStage, ReadinessStep, ReadinessStepId } from '@/api/types'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
+import { DocsLink } from '@/components/PackageLogo'
 import { ErrorState } from '@/components/states'
 import { AnchorButton, Button, LinkButton } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -109,6 +110,7 @@ function StepRow({ step, isNext, children }: { step: ReadinessStep; isNext: bool
         <span className="sr-only">{step.status}</span>
       </div>
       <p className="mt-0.5 break-words text-[12.5px] text-muted">{step.detail}</p>
+      {step.help_url && step.status !== 'blocked' && <div className="mt-1"><DocsLink href={step.help_url}>How to set it up</DocsLink></div>}
       {children}
     </div>
   </li>

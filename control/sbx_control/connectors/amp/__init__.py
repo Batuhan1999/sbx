@@ -16,7 +16,7 @@ import zlib
 
 from pydantic import ValidationError
 
-from ... import core, extensions, host, paths, settings, vault
+from ... import core, extensions, host, howto, paths, settings, vault
 from ...connections.base import Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
 from .common import CLI, KIND, Settings, TOKEN
@@ -278,11 +278,12 @@ class Amp(extensions.Connector):
 
     def test(self, values: dict | None = None) -> list[Check]:
         token = bool((values or {}).get("provider_token")) or vault.facts(TOKEN).set
-        return [Check("provider token", token, "set" if token else "not set", "add a provider in Amp Settings → Orbs"),
+        return [Check("provider token", token, "set" if token else "not set", "add a provider in Amp Settings → Orbs",
+                      help_url=howto.AMP_PROVIDER),
                 Check("Amp CLI", CLI.is_file(), "installed" if CLI.is_file() else "missing", "save the enabled connection"),
                 self._tools_check(),
                 Check("provider service", active(), "check connection status in Amp Settings → Orbs",
-                      "journalctl -u sbx-amp; verify the token and outbound HTTPS")]
+                      "journalctl -u sbx-amp; verify the token and outbound HTTPS", help_url=howto.AMP_CONNECTION)]
 
     @staticmethod
     def _tools_check() -> Check:
