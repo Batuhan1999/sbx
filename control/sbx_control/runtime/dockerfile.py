@@ -1,10 +1,12 @@
 """A Dockerfile replayed in a shell: for a runtime that builds a template by
 running its steps in a sandbox (no Docker there). Its instructions become
 TemplateSpec steps; an ENV or ARG value becomes the shell word that expands
-it as Docker would (ShellWord), written to the env with export_line."""
+it as Docker would (ShellWord), written to the env with export_line.
+instructions() is what every runtime gets of a Dockerfile (TemplateSpec.dockerfile)."""
 from __future__ import annotations
 
 import json
+import re
 import shlex
 
 from .base import Failed
@@ -64,6 +66,40 @@ def export_line(pairs) -> str:
     return "export " + " ".join(f"{key}={value if isinstance(value, ShellWord) else shlex.quote(str(value))}"
                                 for key, value in pairs) + "\n"
 
+
+IGNORED = ("FROM", "CMD", "ENTRYPOINT")   # where an image starts and what it runs: a template has its own
+HEREDOC = re.compile(r"(?<!<)<<(-?)([\"']?)([A-Za-z_][A-Za-z0-9_]*)\2")
+
+
+def instructions(text: str) -> str:
+    """text without the instructions a template has no use for (IGNORED):
+    its FROM, optional and at most one, since a template starts from the
+    one before it, and CMD and ENTRYPOINT, since a template's VMs run its
+    start command. Every other line is kept as written, heredoc bodies and
+    continuations too. Raises ValueError for a second FROM (multi-stage)."""
+    kept, froms, keep, more, heredocs = [], 0, True, False, []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if heredocs:   # a heredoc's body, up to its delimiter
+            dash, word = heredocs[0]
+            if (line.lstrip("\t") if dash else line) == word:
+                heredocs.pop(0)
+            if keep:
+                kept.append(line)
+            continue
+        comment = not stripped or stripped.startswith("#")   # neither ends nor continues an instruction
+        if not more and not comment:   # an instruction starts
+            word = stripped.split(None, 1)[0].upper()
+            froms += word == "FROM"
+            if froms > 1:
+                raise ValueError("a second FROM: multi-stage Dockerfiles are not supported")
+            keep = word not in IGNORED
+        if not comment:
+            heredocs += [(m.group(1), m.group(3)) for m in HEREDOC.finditer(line)]
+            more = stripped.endswith("\\")
+        if keep or (comment and not more):
+            kept.append(line)
+    return "\n".join(kept) + ("\n" if kept else "")
 
 
 def dockerfile_steps(text: str) -> list:
