@@ -3,6 +3,7 @@ a sandbox can be in (signed out: the login, whatever is there), the page
 and its status for browsers and for anything else, the poll that hands
 over to the app, and the wake that never blocks nginx."""
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -437,6 +438,12 @@ class SshBridge(GateCase):
         sandbox_id = self.add("memos-b")
         origin = addressing.detected_origin("memos-b", sandbox_id, 5173, raw=True)
         self.assertEqual(addressing.raw_host(origin.removeprefix("https://")), (5173, sandbox_id))
+        from sbx_control import routing
+        with patch.dict(routing._detected, {sandbox_id: {5173: False}}), \
+                patch.dict(routing._detected_at, {sandbox_id: time.time()}):   # a server on 0.0.0.0:5173
+            response = self.ask(origin.removeprefix("https://"), self.owner)
+        self.assertEqual(response.status_code, 200, response.headers)
+        self.assertEqual(response.headers["x-sbx-upstream"], self.runtime.upstream_host(5173, sandbox_id))
 
     def test_the_bridge_answers_while_sbx_prepares_the_app_and_after_it_failed(self):
         from sbx_control import lifecycle
@@ -481,6 +488,35 @@ class SshBridge(GateCase):
         self.runtime.connect(self.vm)
         self.gate.sandbox_owner(self.vm, fresh=True)
         self.assertEqual(self.bridge(self.vm).status_code, 200)   # running: through during the app's restart
+
+    def test_the_bridge_waits_for_a_resume_only_until_its_runtime_is_restored(self):
+        from sbx_control import lifecycle
+        op = lifecycle.begin("memos-a", "resume")
+        op.advance("restoring_runtime")
+        self.assertEqual(self.bridge(self.vm).headers.get("x-sbx-page"), "waking")
+        op.advance("starting_app")   # the app starting after it: SSH works already
+        self.assertEqual(self.bridge(self.vm).status_code, 200)
+
+    def test_the_bridge_keeps_waiting_when_the_runtime_cannot_list_during_a_restart(self):
+        from sbx_control import core, lifecycle
+        self.runtime.pause(self.vm)
+        self.gate.sandbox_owner(self.vm, fresh=True)
+        lifecycle.begin("memos-a", "restart").advance("starting_app")
+        lifecycle.observe("memos-a", self.vm, "running")   # the refresh this calls for fails
+        with patch.object(core, "sandboxes", side_effect=RuntimeError("runtime down")), \
+                patch.object(core, "attach") as attach:
+            response = self.bridge(self.vm)
+        self.assertEqual((response.status_code, response.headers.get("x-sbx-page")), (403, "waking"))
+        attach.assert_not_called()
+
+    def test_the_bridge_starts_no_resume_of_its_own_while_a_restart_has_the_vm(self):
+        from sbx_control import core, lifecycle
+        lifecycle.begin("memos-a", "restart").advance("starting_app")
+        self.runtime.pause(self.vm)   # the listing still says running
+        with patch.object(core, "attach") as attach:
+            response = self.bridge(self.vm)
+        attach.assert_not_called()
+        self.assertNotEqual(response.headers.get("x-sbx-page"), "failed")
 
     def test_the_bridge_looks_again_once_the_restart_records_the_vm_resumed(self):
         from sbx_control import core, lifecycle

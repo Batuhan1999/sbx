@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -309,14 +310,32 @@ def ssh_config_lock():
         yield
 
 
+def write_atomic(path, text, mode=None):
+    """Replace the file in one step, so an ssh reading it never sees half of
+    it; through a symlink to its target, keeping its mode (or the given one)."""
+    target = pathlib.Path(os.path.realpath(path))
+    if mode is None:
+        mode = target.stat().st_mode & 0o777 if target.exists() else 0o600
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".sbx-tmp")
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        pathlib.Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def rewrite_ssh_config(block):
+    """block: the text of sbx's block, or a function making it, called
+    under the lock (so what it reads is what gets published)."""
     with ssh_config_lock():
         text = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
         begin, end = SSH_BLOCK
         if begin in text and end in text:
             text = text[:text.index(begin)] + text[text.index(end) + len(end):].lstrip("\n")
-        SSH_CONFIG.write_text(block + text)
-        SSH_CONFIG.chmod(0o600)
+        write_atomic(SSH_CONFIG, (block() if callable(block) else block) + text, 0o600)
 
 
 def claude_desktop_hosts(names):
@@ -346,12 +365,15 @@ def ssh_config_cmd(args):
         return
     confs = sorted(SSH_DIR.glob("*.conf"))
     begin, end = SSH_BLOCK
-    lines = [begin, f"Include \"{SSH_DIR}/*.conf\""]
-    if args.apps:
-        # Claude Desktop and the Codex app list hosts from this file and may
-        # not follow Include: copies, current until the next up or down.
-        lines += [conf.read_text().rstrip("\n") for conf in confs]
-    rewrite_ssh_config("\n".join(lines) + f"\n{end}\n\n")
+
+    def block():
+        lines = [begin, f"Include \"{SSH_DIR}/*.conf\""]
+        if args.apps:
+            # Claude Desktop and the Codex app list hosts from this file and may
+            # not follow Include: copies, current until the next up or down.
+            lines += [conf.read_text().rstrip("\n") for conf in confs]
+        return "\n".join(lines) + f"\n{end}\n\n"
+    rewrite_ssh_config(block)
     print(f"{SSH_CONFIG} includes {SSH_DIR}: ssh, VS Code, Cursor and Zed reach sbx-NAME")
     if args.apps:
         names = [conf.stem for conf in confs]
@@ -383,7 +405,8 @@ def tunnel(args):
 
 def bridge_status(url, token, timeout=30):
     """The status the gate answers a WebSocket upgrade to the bridge with
-    (101 once it is let through), and its Retry-After."""
+    (101 once it is let through), its Retry-After and the page sbx answered
+    with (X-Sbx-Page; None for any other answer)."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "wss":
         raise ValueError(f"not a wss:// URL: {url}")
@@ -393,17 +416,19 @@ def bridge_status(url, token, timeout=30):
             "Authorization": f"Bearer {token}", "Connection": "Upgrade", "Upgrade": "websocket",
             "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": base64.b64encode(secrets.token_bytes(16)).decode()})
         response = connection.getresponse()
-        return response.status, response.getheader("Retry-After")
+        return response.status, response.getheader("Retry-After"), response.getheader("X-Sbx-Page")
     finally:
         connection.close()
 
 
 def bridge_ready(host, url, token):
     """Before ssh's bytes go over the bridge: while the gate says the
-    sandbox is on its way (503: being made, waking up), wait, saying so on
+    sandbox is on its way (503: being made, waking up), or something past
+    it answers a 502 of its own (the bridge not up yet), wait, saying so on
     stderr (ssh shows it); a bridge that names no sandbox (404), refuses
-    (a sign-in, 403) or whose VM failed (502) exits with what to do. Anything else is websocat's to
-    meet. host: the sandbox, as ssh's %h names it."""
+    (a sign-in, 403) or whose VM failed (sbx's failed page, a 502) exits with
+    what to do. Anything else is websocat's to meet. host: the sandbox, as
+    ssh's %h names it."""
     deadline, said = time.monotonic() + SSH_REACH_SECONDS, False
     late = f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it"
     while True:
@@ -411,7 +436,7 @@ def bridge_ready(host, url, token):
         if remaining <= 0:   # no probe after the budget, and none outlasting it
             sys.exit(late)
         try:
-            status, retry = bridge_status(url, token, timeout=remaining)
+            status, retry, page = bridge_status(url, token, timeout=remaining)
         except (OSError, http.client.HTTPException) as error:
             sys.exit(f"{host}: the SSH bridge at {url} did not answer: {error}")
         if status == 404:
@@ -422,9 +447,9 @@ def bridge_ready(host, url, token):
         if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
             sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
                      f"not your sandbox")
-        if status == 502:   # the gate's "failed": the runtime reports an error for its VM
+        if status == 502 and page:   # sbx's page (failed, the app stopped): the runtime reports an error
             sys.exit(f"{host}: the sandbox's runtime reports an error; `sbx ls` shows it, restart or delete it in sbx")
-        if status != 503:
+        if status not in (502, 503):
             return
         if time.monotonic() >= deadline:
             sys.exit(late)
@@ -601,20 +626,26 @@ def refresh_host(name, info):
     def point(text):
         return re.sub(r"^(  ProxyCommand .* tunnel %h ).*$", lambda m: m.group(1) + info["ssh_url"], text, flags=re.M)
 
-    text = conf.read_text()
-    if point(text) != text:
-        conf.write_text(point(text))
+    with ssh_config_lock():   # so `sbx ssh-config --apps` copies it before or after, never half
+        text = conf.read_text()
+        if point(text) != text:
+            write_atomic(conf, point(text))
     # The copy `sbx ssh-config --apps` made for GUI apps, if there is one:
     # checked on every open, so one an earlier open could not update is now.
+    # Optional: ssh itself reads the file above, so a failure here only says so.
     begin, end = SSH_BLOCK
-    with ssh_config_lock():
-        copied = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
-        if begin not in copied or end not in copied:
-            return
-        start, stop = copied.index(begin), copied.index(end)
-        host = re.compile(rf"^Host sbx-{re.escape(name)}\n(?:  .*\n)*", re.M).search(copied, start, stop)
-        if host and point(host.group(0)) != host.group(0):
-            SSH_CONFIG.write_text(copied[:host.start()] + point(host.group(0)) + copied[host.end():])
+    try:
+        with ssh_config_lock():
+            copied = SSH_CONFIG.read_text() if SSH_CONFIG.exists() else ""
+            if begin not in copied or end not in copied:
+                return
+            start, stop = copied.index(begin), copied.index(end)
+            host = re.compile(rf"^Host sbx-{re.escape(name)}\n(?:  .*\n)*", re.M).search(copied, start, stop)
+            if host and point(host.group(0)) != host.group(0):
+                write_atomic(SSH_CONFIG, copied[:host.start()] + point(host.group(0)) + copied[host.end():])
+    except OSError as error:
+        note(f"the GUI apps' copy of sbx-{name} in {SSH_CONFIG} was not updated ({error}); "
+             f"`sbx ssh-config --apps` retries")
 
 
 def open_tool(name, tool):

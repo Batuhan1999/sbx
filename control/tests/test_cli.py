@@ -244,7 +244,7 @@ class CliTests(unittest.TestCase):
                                 "/run/sbx/codex/auth.json": '{"token": "codex"}'})
 
     def test_the_tunnel_waits_while_the_sandbox_gets_ready_then_hands_over_to_websocat(self):
-        answers = iter([(503, "1"), (503, None), (101, None)])
+        answers = iter([(503, "1", None), (503, None, None), (101, None, None)])
         with patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)) as status, \
                 patch.object(self.cli.time, "sleep") as sleep, \
                 patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
@@ -257,10 +257,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execv.call_args.args[1][-1], "wss://8081-bx-5f3f8tnb7k.sbx.example")
 
     def test_the_tunnel_says_what_to_do_when_the_bridge_names_no_sandbox_or_refuses(self):
-        for answer, words in (((404, None), "received its key, so use that Mac"),
-                              ((302, None), "`sbx login` again"),
-                              ((502, None), "runtime reports an error"),
-                              ((503, "2"), "still not ready")):
+        for answer, words in (((404, None, None), "received its key, so use that Mac"),
+                              ((302, None, None), "`sbx login` again"),
+                              ((502, None, "failed"), "runtime reports an error"),
+                              ((502, None, None), "still not ready"),   # a raw 502: the bridge not up yet
+                              ((503, "2", None), "still not ready")):
             now = [0.0]   # a fake clock: only the tunnel's own sleeps move it, up to the deadline
 
             def sleep(seconds, now=now):
@@ -285,6 +286,7 @@ class CliTests(unittest.TestCase):
                 seen.update(self.headers)
                 self.send_response(503)
                 self.send_header("Retry-After", "2")
+                self.send_header("X-Sbx-Page", "waking")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
@@ -298,7 +300,7 @@ class CliTests(unittest.TestCase):
         plain = lambda host, port, timeout: http.client.HTTPConnection(host, port, timeout=timeout)   # TLS aside
         with patch.object(self.cli.http.client, "HTTPSConnection", side_effect=plain):
             self.assertEqual(self.cli.bridge_status(f"wss://127.0.0.1:{server.server_address[1]}", "sbx_test"),
-                             (503, "2"))
+                             (503, "2", "waking"))
         self.assertEqual((seen["Authorization"], seen["Upgrade"]), ("Bearer sbx_test", "websocket"))
 
     def test_the_tunnel_sends_the_token_only_over_tls(self):
@@ -314,7 +316,7 @@ class CliTests(unittest.TestCase):
 
     def test_the_tunnel_keeps_to_its_deadline_and_reads_a_date_as_two_seconds(self):
         clock = iter([0, 115, 117, 117, 120])   # deadline, probe timeout, after the probe, the sleep, after it
-        with patch.object(self.cli, "bridge_status", return_value=(503, "Wed, 21 Oct 2026 07:28:00 GMT")), \
+        with patch.object(self.cli, "bridge_status", return_value=(503, "Wed, 21 Oct 2026 07:28:00 GMT", None)), \
                 patch.object(self.cli.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(self.cli.time, "sleep") as sleep, patch.object(self.cli.os, "execv") as execv, \
                 patch.object(self.cli, "websocat", return_value="/bin/websocat"):
@@ -353,31 +355,65 @@ class CliTests(unittest.TestCase):
 
     def test_edits_of_the_ssh_config_hold_its_lock(self):
         self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-old.sbx.example", "host_key": "k"})
-        held = []
-        real_write = pathlib.Path.write_text
+        held, reads, locked = [], [], [False]
+        real_lock, real_write, real_read = self.cli.ssh_config_lock, self.cli.write_atomic, pathlib.Path.read_text
 
-        def write_text(path, *args, **kwargs):
-            if path == self.cli.SSH_CONFIG:
-                held.append(locked[0])
+        @contextlib.contextmanager
+        def lock():
+            with real_lock():
+                locked[0] = True
+                try:
+                    yield
+                finally:
+                    locked[0] = False
+
+        def write_atomic(path, *args, **kwargs):
+            held.append((pathlib.Path(path).name, locked[0]))
             return real_write(path, *args, **kwargs)
 
-        locked = [False]
-        real_flock = self.cli.fcntl.flock
+        def read_text(path, *args, **kwargs):
+            if path.suffix == ".conf":
+                reads.append(locked[0])
+            return real_read(path, *args, **kwargs)
 
-        def flock(file, op):
-            locked[0] = True
-            return real_flock(file, op)
-
-        with patch.object(self.cli.fcntl, "flock", side_effect=flock), \
-                patch.object(pathlib.Path, "write_text", write_text):
+        with patch.object(self.cli, "ssh_config_lock", lock), patch.object(self.cli, "write_atomic", write_atomic), \
+                patch.object(pathlib.Path, "read_text", read_text):
             self.assertEqual(self.run_cli("ssh-config", "--apps")[0], 0)
-            locked[0] = False
             self.cli.refresh_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example"})
-        self.assertEqual(held, [True, True])
+        self.assertEqual(held, [("config", True), ("try.conf", True), ("config", True)])
+        self.assertTrue(reads and all(reads))   # the copies are read under the lock that publishes them
+
+    def test_the_ssh_config_is_replaced_whole_keeping_its_link_and_mode(self):
+        real = self.home / "dotfiles-ssh-config"
+        real.write_text("Host mine\n  User me\n")
+        real.chmod(0o640)
+        self.cli.SSH_CONFIG.unlink(missing_ok=True)
+        self.cli.SSH_CONFIG.symlink_to(real)
+        self.assertEqual(self.run_cli("ssh-config")[0], 0)
+        self.assertTrue(self.cli.SSH_CONFIG.is_symlink())
+        self.assertIn("Host mine", real.read_text())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o600)   # sbx's config: owner only
+        self.assertEqual([p.name for p in real.parent.glob("*.sbx-tmp")], [])
+
+    def test_open_still_starts_ssh_when_the_gui_copy_cannot_be_written(self):
+        self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-old.sbx.example", "host_key": "k"})
+        self.assertEqual(self.run_cli("ssh-config", "--apps")[0], 0)
+        real_write = self.cli.write_atomic
+
+        def write_atomic(path, *args, **kwargs):
+            if pathlib.Path(path).name == "config":
+                raise PermissionError("read-only")
+            return real_write(path, *args, **kwargs)
+
+        err = io.StringIO()
+        with patch.object(self.cli, "write_atomic", write_atomic), contextlib.redirect_stderr(err):
+            self.cli.refresh_host("try", {**SANDBOX, "ssh_url": "wss://8081-new.sbx.example"})
+        self.assertIn("tunnel %h wss://8081-new.sbx.example\n", (self.cli.SSH_DIR / "try.conf").read_text())
+        self.assertIn("was not updated", err.getvalue())
 
     def test_a_huge_retry_after_waits_the_cap_and_leading_zeros_count_as_seconds(self):
         for retry, wait in (("9" * 5000, 10.0), ("0003", 3.0), ("000", 0.0)):
-            answers = iter([(503, retry), (101, None)])
+            answers = iter([(503, retry, None), (101, None, None)])
             with self.subTest(retry=retry[:8]), \
                     patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)), \
                     patch.object(self.cli.time, "sleep") as sleep, \
@@ -388,7 +424,7 @@ class CliTests(unittest.TestCase):
 
     def test_the_tunnel_gives_the_last_probe_only_the_time_left(self):
         clock = iter([0, 119.5, 119.8, 119.8, 120])   # deadline, probe timeout, after it, the sleep, after it
-        with patch.object(self.cli, "bridge_status", return_value=(503, "2")) as status, \
+        with patch.object(self.cli, "bridge_status", return_value=(503, "2", None)) as status, \
                 patch.object(self.cli.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(self.cli.time, "sleep"), patch.object(self.cli.os, "execv") as execv, \
                 patch.object(self.cli, "websocat", return_value="/bin/websocat"):
@@ -400,7 +436,7 @@ class CliTests(unittest.TestCase):
 
     def test_the_tunnel_reads_only_nonnegative_integer_retry_after(self):
         for retry, wait in (("3", 3.0), ("60", 10.0), ("0", 0.0), ("-1", 2.0), ("1.5", 2.0), ("nan", 2.0), ("²", 2.0)):
-            answers = iter([(503, retry), (101, None)])
+            answers = iter([(503, retry, None), (101, None, None)])
             with self.subTest(retry=retry), \
                     patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)), \
                     patch.object(self.cli.time, "sleep") as sleep, \
