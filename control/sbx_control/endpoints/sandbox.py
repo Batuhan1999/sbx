@@ -229,6 +229,7 @@ class Layer(sandbox_layers.SandboxLayer):
     def _routes(self, write) -> Routes:
         mine = write.of(self)
         if "routes" not in mine:
+            mine["generation"] = generation()   # read before the routes: a grant after it is caught at the write
             found = routes(write.kind, write.repo)
             if found.rows and write.sbx is not None:
                 taken, own = listening_and_own(write.sbx)
@@ -260,8 +261,8 @@ class Layer(sandbox_layers.SandboxLayer):
         its certificates issued and written, the forwarder running. A sandbox
         that may use none holds none."""
         from .. import sandbox_runtime
-        seen = generation()   # before the endpoints are read: a grant after it is caught below
         found, mine = self._routes(write), write.of(self)
+        seen = mine["generation"]   # from before the routes were first read for this write
         if not found.rows:
             with lock():
                 certs.forget(write.name)

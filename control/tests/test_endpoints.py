@@ -666,17 +666,16 @@ class RouteTests(Setup, Installation):
         self.assertEqual(self.endpoints.used_by(), {"dev-pg": ["owner/app"], "temporal": ["owner/app"]})
         self.assertIn(f"{self.endpoints.sandbox.RENEWED}/.push/temporal.bundle.pem", written)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.endpoints.describe()))
-        # A grant or revoke during the write: it is issued again for every endpoint the repo may use
-        # now, not only those its config named, so a newer grant's bundle stays.
+        # A grant between the routes this write read and its certificates: issued again for every
+        # endpoint the repo may use now, so a newer grant's bundle that another delivery wrote stays.
         sandbox, issued = self.endpoints.sandbox, []
         real = sandbox._issue
-        # Read before the endpoints, then a grant moves it before the issue: issued again for all.
-        moved = iter(["seen", "moved", "moved", "moved", "moved"])
-        with provider(self.runtime), \
-                patch.object(sandbox, "_issue", lambda *a, **kw: issued.append(a[3:]) or real(*a, **kw)), \
-                patch.object(sandbox, "generation", lambda: next(moved)), \
-                patch.object(sandbox, "_staging", return_value=".push"):
-            self.endpoints.LAYER.after_write(write, vm)
+        later = self.write()
+        with provider(self.runtime):
+            self.endpoints.LAYER.contribution(later)              # its routes, read now
+            self.endpoints.grant("temporal", "third/repo")       # a grant lands
+            with patch.object(sandbox, "_issue", lambda *a, **kw: issued.append(a[3:]) or real(*a, **kw)):
+                self.endpoints.LAYER.after_write(later, vm)
         self.assertEqual(issued, [({"dev-pg", "temporal"},), ()])
 
     def test_a_public_repo_may_use_what_it_was_granted_and_nothing_else(self):
