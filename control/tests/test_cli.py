@@ -256,12 +256,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execv.call_args.args[1][-1], "wss://8081-bx-5f3f8tnb7k.sbx.example")
 
     def test_the_tunnel_says_what_to_do_when_the_bridge_names_no_sandbox_or_refuses(self):
-        for answer, words in (((404, None), "`sbx down NAME && sbx up NAME`"),
+        for answer, words in (((404, None), "deletes it and its work"),
                               ((302, None), "`sbx login` again"),
                               ((502, None), "runtime reports an error"),
                               ((503, "2"), "still not ready")):
+            now = [0.0]   # a fake clock: only the tunnel's own sleeps move it, up to the deadline
+
+            def sleep(seconds, now=now):
+                now[0] += seconds
+
             with self.subTest(answer=answer), patch.object(self.cli, "bridge_status", return_value=answer), \
-                    patch.object(self.cli, "SSH_REACH_SECONDS", 0.05), patch.object(self.cli.time, "sleep"), \
+                    patch.object(self.cli.time, "monotonic", side_effect=lambda now=now: now[0]), \
+                    patch.object(self.cli.time, "sleep", side_effect=sleep), \
                     patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
                     patch.object(self.cli.os, "execv") as execv:
                 with self.assertRaises(SystemExit) as exit:

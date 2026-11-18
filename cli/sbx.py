@@ -406,7 +406,8 @@ def bridge_ready(host, url, token):
             sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If its address changed, "
                      f"`sbx open NAME ssh` points its SSH config at it again (`sbx up NAME` if it is gone). If ssh "
                      f"then reports a changed host key, it was recreated: only the `sbx up` that made it received "
-                     f"its key, so use that Mac, or `sbx down NAME && sbx up NAME` to make one this Mac trusts")
+                     f"its key, so use that Mac. Recreating it here deletes it and its work: note its repository, branch "
+                     f"and runtime (`sbx ls`), then `sbx down NAME` and `sbx up NAME` with those same options")
         if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
             sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
                      f"not your sandbox")

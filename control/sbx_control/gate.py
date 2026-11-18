@@ -356,11 +356,11 @@ def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
         # sbx paused it since the last listing: look again, so it is woken
         # here (the page) rather than by whatever connects to it next.
         sandbox = listed(sandbox_id, fresh=True) or sandbox
-    if sandbox.state == runtime.FAILED:
-        return Show(preview_pages.failed(name, "Its runtime reports an error. Restart or delete it in sbx.", mine))
     if record and record["active"] and sandbox.state != "running" and record.get("runtime") == "running":
         # The restart resumed it since the last listing: look again.
         sandbox = listed(sandbox_id, fresh=True) or sandbox
+    if sandbox.state == runtime.FAILED:
+        return Show(preview_pages.failed(name, "Its runtime reports an error. Restart or delete it in sbx.", mine))
     if record and record["active"] and sandbox.state != "running":
         # The SSH bridge while sbx works on a paused VM (a restart resumes
         # it): wait for that, since a resume of our own would collide with it.
