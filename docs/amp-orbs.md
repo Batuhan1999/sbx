@@ -84,6 +84,22 @@ continue in sbx. Amp still runs the repository's `.agents/setup` and
 or server starts there. sbx writes `.amp/portals/sbx-previews.json` (excluded
 from git) so Amp's Portal tab links to the sandbox's preview URLs.
 
+A spawn that fails after it created its sandbox deletes it again, as a delete
+job would, so no VM is left running for a thread that never started; Amp's next
+spawn starts over. A spawn counts as failed when Amp's bootstrap is not seen
+running in the sandbox within 20 seconds of its launch; each launch carries a
+non-secret id, so a bootstrap an earlier spawn left running does not count. A spawn that resumed an
+existing orb's sandbox keeps it on failure, and the cleanup never touches a
+registration under the orb's name that it did not make itself. If the cleanup
+itself fails, the control service's log says so, and the spawn's error tells
+Amp to delete the orb before it spawns again. A delete job
+(`ORB_OPERATION=delete`) uses the same path, so it fails for the same reason
+while the cause is there (the runtime not answering, say): fix what the log
+names, send the delete again
+(`ORB_OPERATION=delete ORB_ID=ID sbx-admin amp dispatch`) until it succeeds and prints
+`"state": "deleted"`, and only then spawn again. `sbx-admin amp list` lists VMs only, so an empty list
+shows the VM is gone, not that the orb's registration and generated values are.
+
 ## Desktop tools
 
 The Wayland desktop tools (`/opt/amp-wayland`) come from Amp's orb image,

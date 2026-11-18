@@ -310,7 +310,7 @@ def _resolve(request: Request, mode: Mode) -> Target | Outcome:
         return nothing(lambda: _unlisted(name or addressing.host_label(original_host), port, email))
     # Only what the app's sbx.yaml and the settings expose and, unless
     # detected_previews is off, what a server listens on on 0.0.0.0; also on
-    # raw <port>-<id> hosts. A team-shared sandbox's owner-only previews (the
+    # raw <port>-<host id> hosts. A team-shared sandbox's owner-only previews (the
     # desktop) are the team's.
     preview = addressing.preview_on(sandbox.app, port)
     if preview is None and not (preflight and not ip_route):   # a domain host's preflight: declared ones only
@@ -323,22 +323,64 @@ def _resolve(request: Request, mode: Mode) -> Target | Outcome:
     return Target(sandbox_id, port, sandbox, email or "", how, ip_route is not None)
 
 
+# Operations during which the VM is being made, going away or coming back:
+# the SSH bridge waits on them like any preview. A resume only until its
+# runtime is restored: the app it then starts is the app's, not the VM's.
+_VM_OPERATIONS = ("create", "pause", "resume", "delete")
+_RESTORING = ("queued", "restoring_runtime")
+
+
+def _vm_busy(record: dict) -> bool:
+    return record["active"] and record["operation"] in _VM_OPERATIONS and \
+        (record["operation"] != "resume" or record["phase"] in _RESTORING)
+
+
+def _record_page(target: Target, record: dict | None) -> Page | None:
+    """The page sbx's record of the sandbox calls for. The SSH bridge is
+    the platform's, not the app's: it answers while sbx prepares or restarts
+    the app (creating a sandbox returns once SSH works, and the developer's
+    agent logins go in then) and after the app or its preparation failed,
+    when SSH is how to look; only while its VM is made, pauses or has its
+    runtime restored does it wait like any preview. Once it is being
+    deleted, it is gone (404) for SSH too: nothing to wait for."""
+    if record is not None and target.port == addressing.ports(target.listed.app).get("-ssh") and \
+            record["phase"] not in ("deleting", "deleted") and not _vm_busy(record):
+        return None
+    return preview_pages.page_for(target.name, record, target.mine)
+
+
+def _fresh(sandbox_id: str, cached: Listed) -> Listed:
+    """A new listing's view of the sandbox; the cached one when the runtime does not list it now."""
+    try:
+        return listed(sandbox_id, fresh=True) or cached
+    except Exception as error:   # whatever the runtime raised: the last listing still stands
+        print(f"gate: could not list {sandbox_id} again: {error!r}", flush=True)
+        return cached
+
+
 def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
     """What keeps the request from the app now: an operation of sbx's, the
     runtime's error, a resume, the provider's desktop, a navigation before
     the app's port listens; None when nothing does."""
     sandbox_id, name, mine = target.sandbox_id, target.name, target.mine
     record = lifecycle.get(name, sandbox_id=sandbox_id) if name else None
-    page = preview_pages.page_for(name, record, mine)   # an operation runs, or the last one failed
+    page = _record_page(target, record)   # an operation runs, or the last one failed
     if page is not None:
         return Show(page)
     sandbox = _snapshot.by_id.get(sandbox_id) or target.listed
     if sandbox.state == "running" and record and record.get("runtime") == "paused":
         # sbx paused it since the last listing: look again, so it is woken
         # here (the page) rather than by whatever connects to it next.
-        sandbox = listed(sandbox_id, fresh=True) or sandbox
+        sandbox = _fresh(sandbox_id, sandbox)
+    if record and record["active"] and sandbox.state != "running" and record.get("runtime") == "running":
+        # The restart resumed it since the last listing: look again.
+        sandbox = _fresh(sandbox_id, sandbox)
     if sandbox.state == runtime.FAILED:
         return Show(preview_pages.failed(name, "Its runtime reports an error. Restart or delete it in sbx.", mine))
+    if record and record["active"] and sandbox.state != "running":
+        # The SSH bridge while sbx works on a paused VM (a restart resumes
+        # it): wait for that, since a resume of our own would collide with it.
+        return Show(Page("waking", name, step="Waking up"))
     could_not_wake = Show(preview_pages.failed(name, "It could not wake up. Restart it in sbx.", mine))
     if mode is Mode.POLL:
         sandbox = listed(sandbox_id, fresh=time.time() - _snapshot.fetched_at > STATUS_FRESH_SECONDS) or sandbox
@@ -347,10 +389,14 @@ def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
         if sandbox.state != "running":
             # Nothing resuming it (it paused again since): the page reloads, and that navigation wakes it.
             return Show(Page("waking", name, step="Waking up", reload=not waking.busy(sandbox_id)))
+    elif record and record["active"]:
+        # sbx's own operation (the SSH bridge during a restart) has the VM,
+        # running as listed: a resume of ours would collide with it.
+        pass
     elif not waking.wake(sandbox_id, lambda fresh: listed(sandbox_id, fresh)):
         return could_not_wake if waking.failed(sandbox_id) else Show(Page("waking", name, step="Waking up"))
     record = lifecycle.get(name, sandbox_id=sandbox_id) if name else None
-    page = preview_pages.page_for(name, record, mine)   # the resume may have started a restart
+    page = _record_page(target, record)   # the resume may have started a restart
     if page is not None:
         return Show(page)
     if target.port == _desktop_port(target.listed.app) and runtime.desktop(runtime.kind_of(target.listed.info)) == "provider":

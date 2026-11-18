@@ -5,6 +5,7 @@ import importlib
 import hashlib
 import hmac
 import json
+import os
 import tarfile
 import tempfile
 import threading
@@ -543,6 +544,53 @@ class DeliveryTests(Server):
         with patch.object(core, "refresh_env", side_effect=deliver):
             self.deliver("delivery-test", ["FIRST"])
         self.assertEqual(len(calls), 2)  # the change that came in meanwhile is delivered too
+        self.assertIsNone(self.delivery.pending("delivery-test"))
+
+    def test_a_delivery_waits_for_the_sandbox_s_create_or_delete(self):
+        """A spawn holding the sandbox's operation lock (creating it, then
+        starting its app) is not interrupted by an env_update."""
+        import threading
+        from sbx_control import core
+        delivered, contending = threading.Event(), threading.Event()
+        flock = core.fcntl.flock
+        worker, held, requested = None, [], []
+
+        def observed(fd, operation):   # the worker reaching the real lock, before it blocks on it
+            identity = (os.fstat(fd.fileno()).st_dev, os.fstat(fd.fileno()).st_ino)
+            if threading.current_thread() is worker:
+                requested.append((identity, operation))
+                contending.set()
+            else:
+                held.append(identity)
+            return flock(fd, operation)
+        blocked = []
+
+        def refresh(name, restart):   # delivery still holds the lock while it refreshes
+            with (core.paths.state_dir() / "locks" / f"sandbox-{name}.lock").open("a") as other:
+                try:
+                    flock(other, core.fcntl.LOCK_EX | core.fcntl.LOCK_NB)
+                    blocked.append(False)
+                except BlockingIOError:
+                    blocked.append(True)
+            delivered.set()
+            return {"changed": [], "restarted": False}
+        with patch.object(core, "refresh_env", side_effect=refresh), \
+                patch.object(core.fcntl, "flock", observed):
+            try:
+                with core.sandbox_operation("delivery-test"):
+                    self.delivery.queue("delivery-test", ["FIRST"], True)
+                    worker = threading.Thread(target=self.sandboxes.deliver_pending, args=("delivery-test",),
+                                              daemon=True)
+                    worker.start()
+                    self.assertTrue(contending.wait(5))
+                    self.assertEqual(requested[0], (held[-1], core.fcntl.LOCK_EX))   # the same file, blocking
+                    self.assertFalse(delivered.wait(0.3))
+            finally:   # after the lock is released, before the patches are undone
+                if worker is not None:
+                    worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(delivered.is_set())
+        self.assertEqual(blocked, [True])
         self.assertIsNone(self.delivery.pending("delivery-test"))
 
     def test_a_value_the_sandbox_no_longer_gets_leaves_its_env(self):
