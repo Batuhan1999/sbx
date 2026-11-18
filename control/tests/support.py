@@ -81,13 +81,13 @@ class Installation(unittest.TestCase):
         from sbx_control import recipes, runtime, settings, state, users
         users.forget()
         self.enterContext(patch.dict(runtime._index, clear=True))   # which runtime saw which sandbox: per test
-        self.addCleanup(_builds_settled)
         # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
         self.remote_head = recipes.remote_head
         self.enterContext(patch.object(recipes, "remote_head", return_value=None))
         # Every base template build serves Amp's desktop tools; no test reads them from Amp's registry.
         from sbx_control.connectors.amp import registry
         self.enterContext(patch.object(registry, "extract", return_value=amp_tools()))
+        self.addCleanup(_builds_settled)   # after the patch: cleanups run last first, so builds settle before it goes
         with state.db() as conn:
             present = state.tables(conn)
             for table in self.RESET:

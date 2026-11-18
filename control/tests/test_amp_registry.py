@@ -173,6 +173,30 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(registry.Refused, "holds more than 16 bytes"):
             self.extract(FakeRegistry([layer(TOOLS)]), limit=16)
 
+    def test_an_opaque_marker_at_the_image_root_hides_every_lower_layer(self):
+        fake = FakeRegistry([layer(TOOLS + [("opt/amp-wayland/share/old", b"old")]),
+                             layer([(".wh..wh..opq", b"")] + TOOLS)])
+        self.assertNotIn("amp-wayland/share/old", names(self.extract(fake)))
+
+    def test_a_file_in_place_of_a_lower_folder_drops_what_was_inside_it(self):
+        fake = FakeRegistry([layer(TOOLS + [("opt/amp-wayland/share", None), ("opt/amp-wayland/share/old", b"old")]),
+                             layer([("opt/amp-wayland/share", b"a file now")])])
+        found = names(self.extract(fake))
+        self.assertEqual(found["amp-wayland/share"], b"a file now")
+        self.assertNotIn("amp-wayland/share/old", found)
+
+    def test_a_hard_link_counts_as_the_copy_it_becomes(self):
+        tools = TOOLS + [("opt/amp-wayland/bin/alias", ("link", "opt/amp-wayland/bin/labwc"))]
+        size = sum(len(c) for _, c in TOOLS if isinstance(c, bytes))
+        self.extract(FakeRegistry([layer(tools)]), limit=size + len(b"\x7fELF labwc"))
+        with self.assertRaisesRegex(registry.Refused, "holds more than"):
+            self.extract(FakeRegistry([layer(tools)]), limit=size + 1)
+
+    def test_a_long_path_is_renamed_from_its_parent_too(self):
+        long = "opt/amp-wayland/share/" + "d" * 120 + "/tool"
+        found = names(self.extract(FakeRegistry([layer(TOOLS + [(long, b"deep")])])))
+        self.assertEqual(found[long.removeprefix("opt/")], b"deep")
+
     def test_an_image_reference_without_a_digest_is_refused(self):
         for image in (f"{HOST}/{REPO}:latest", f"{HOST}/{REPO}@sha256:short", "orb@sha256:" + "0" * 64):
             with self.assertRaises(registry.Refused):

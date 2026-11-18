@@ -119,7 +119,8 @@ class _Verified(io.RawIOBase):
 
 
 def _inside(path: str, root: str) -> bool:
-    return path == root or path.startswith(root + "/")
+    """path is root or below it; the image's root ("") holds everything."""
+    return root == "" or path == root or path.startswith(root + "/")
 
 
 def _normal(name: str) -> str:
@@ -156,6 +157,13 @@ def _layer(member_stream, prefix: str) -> tuple[list, dict]:
     return removed, kept
 
 
+def _payload(tree: dict, member, data: bytes) -> int:
+    """The bytes an entry writes: a hard link becomes a copy of its target."""
+    if member.islnk() and member.linkname in tree:
+        return len(tree[member.linkname][1])
+    return len(data)
+
+
 def extract(image: str, directory: str, *, limit: int, opener=None) -> bytes:
     """The gzipped tarball of directory (a path in the image, such as
     opt/amp-wayland) in image, entries named from its parent. Refused on a
@@ -190,8 +198,12 @@ def extract(image: str, directory: str, *, limit: int, opener=None) -> bytes:
         for path, opaque in removed:   # a layer hides lower layers' entries, never its own
             for old in [p for p in tree if _inside(p, path) and not (opaque and p == path)]:
                 del tree[old]
+        for path, (member, _) in kept.items():   # a file or link in place of a lower layer's folder
+            if not member.isdir():
+                for old in [p for p in tree if p.startswith(path + "/")]:
+                    del tree[old]
         tree.update(kept)
-        if sum(len(data) for _, data in tree.values()) > limit:
+        if sum(_payload(tree, member, data) for member, data in tree.values()) > limit:
             raise Refused(f"{directory} in {image} holds more than {limit} bytes")
     if not tree:
         raise Refused(f"{image} has no {directory}")
@@ -207,5 +219,7 @@ def extract(image: str, directory: str, *, limit: int, opener=None) -> bytes:
                 member = copy.copy(member)
                 member.type, member.linkname, member.size = tarfile.REGTYPE, "", len(data)
             member.name = posixpath.relpath(path, parent) if parent else path
+            # A pax path or linkpath would win over the new name.
+            member.pax_headers = {k: v for k, v in member.pax_headers.items() if k not in ("path", "linkpath")}
             tar.addfile(member, io.BytesIO(data) if member.isfile() else None)
     return out.getvalue()
