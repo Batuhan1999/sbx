@@ -66,6 +66,12 @@ class Refused(Exception):
         self.status = status
 
 
+def tls_or_loopback(url):
+    """https, or http only to this machine itself (a tunnel)."""
+    url = urllib.parse.urlsplit(url)
+    return url.scheme == "https" or (url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1"))
+
+
 class Client:
     """sbx-control at base, signed in with the session's API token from the
     Keychain, or with a first-run setup link's token (Authorization: Setup)
@@ -76,6 +82,9 @@ class Client:
         self.base, self.setup_token, self.context = base, setup_token, context
 
     def _authorization(self):
+        if not tls_or_loopback(self.base):   # a token never crosses a network in plain text
+            raise Refused(f"{self.base} is neither https nor this machine: sbx sends no token to it" if self.base
+                          else "no server: set SBX_CONTROL to its https address")
         if self.setup_token:
             return f"Setup {self.setup_token}"
         token = keychain_get(API_TOKEN_SERVICE)
@@ -149,28 +158,32 @@ def follow(fetch, verdict, timeout, *, interval=2.0, first=None, retry_statuses=
     connection while there are any, is tried again; any other refusal exits.
     Past timeout: exits with late (or late(found))."""
     deadline, said = time.monotonic() + timeout, None
-    found = fetch() if first is None else first
+    found, fetching = first, first is None
     while True:
-        progress, done = verdict(found)
-        if progress and progress != said:
-            note(progress)
-            said = progress
-        if isinstance(done, str):
-            sys.exit(done)
-        if done:
-            return found
+        if fetching:   # the first fetch too is tried again as the later ones are
+            try:
+                found = fetch()
+            except Refused as error:
+                if error.status not in retry_statuses:
+                    sys.exit(str(error))
+            except OSError:   # refused or dropped connections while it restarts
+                if not retry_statuses:
+                    raise
+        fetching = True
+        if found is not None:
+            progress, done = verdict(found)
+            if progress and progress != said:
+                note(progress)
+                said = progress
+            if isinstance(done, str):
+                sys.exit(done)
+            if done:
+                return found
         if time.monotonic() > deadline:
-            sys.exit(late(found) if callable(late) else late)
+            sys.exit(late(found) if callable(late) and found is not None else late if isinstance(late, str)
+                     else "still waiting")
         if interval:
-            time.sleep(interval)
-        try:
-            found = fetch()
-        except Refused as error:
-            if error.status not in retry_statuses:
-                sys.exit(str(error))
-        except OSError:   # refused or dropped connections while it restarts
-            if not retry_statuses:
-                raise
+            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
 
 def login_control():
@@ -928,7 +941,8 @@ def secrets_client(args):
 def secrets_cmd(args):
     """sbx secrets request | status | ls | cancel | submit (admins; request, status, ls and cancel also with
     the setup link)."""
-    client = secrets_client(args)
+    # Submitting takes an admin signed in as themselves; the setup link is refused there.
+    client = Client(CONTROL) if args.action == "submit" else secrets_client(args)
     if args.action == "request":
         return secrets_request(args, client)
     if args.action == "ls":
@@ -1028,12 +1042,12 @@ def wait_secrets(client, path, first, timeout):
         if state in ("expired", "cancelled"):
             return None, f"the key request {found['id']} is {state}; {found['remaining']} key(s) never came"
         total = len(found["items"])
+        applying = _applying(found)
+        if applying == "failed":   # a runtime key submitted earlier, even while others are still to come
+            return None, (f"the server did not apply the runtime keys: "
+                          f"{found['runtime_changes'].get('message') or 'see sbx runtimes'}")
         if state != "completed":
             return f"waiting for the owner: {total - found['remaining']}/{total} keys in", False
-        applying = _applying(found)
-        if applying == "failed":
-            return None, (f"every key is in, but the server did not apply the runtime keys: "
-                          f"{found['runtime_changes'].get('message') or 'see sbx runtimes'}")
         if applying in APPLYING:
             return f"every key is in; the runtime keys are {APPLYING[applying]}", False
         return None, True
@@ -1185,7 +1199,7 @@ def signed_in_client(args):
     if args.admin or not CONTROL or not keychain_get(API_TOKEN_SERVICE):
         return None
     link = _setup_link(args)
-    if link and urllib.parse.urlsplit(link).netloc != urllib.parse.urlsplit(CONTROL).netloc:
+    if link and urllib.parse.urlsplit(link)[:2] != urllib.parse.urlsplit(CONTROL)[:2]:   # scheme and authority
         return None
     return Client(CONTROL)
 
@@ -1200,8 +1214,7 @@ def setup_client(args):
     url = urllib.parse.urlsplit(link)
     token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
     # http only to this machine itself (a tunnel): the token never crosses a network in plain text.
-    plain_ok = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
-    if not (url.scheme == "https" or plain_ok) or not url.netloc or not token:
+    if not tls_or_loopback(link) or not url.netloc or not token:
         sys.exit("that is not a setup link: https://HOST/setup#t=TOKEN")
     context = None
     if args.insecure:
@@ -1553,11 +1566,13 @@ def recipe_cmd(args):
               + ("; it has a template of its own: sbx template build" if r["prebuilt"] else ""))
         return
     if not args.yes:
-        print(f"Open a draft setup PR on {repo} through the server's GitHub App:")
+        out = sys.stderr if args.json else sys.stdout   # with --json, stdout holds the answer alone
+        print(f"Open a draft setup PR on {repo} through the server's GitHub App:", file=out)
         for path in files:
-            print(f"  {path}")
-        print("Review these files first. Credentials belong on the sandbox server, not in the PR.")
-        if input("Publish this proposal? [y/N] ").strip().lower() not in ("y", "yes"):
+            print(f"  {path}", file=out)
+        print("Review these files first. Credentials belong on the sandbox server, not in the PR.", file=out)
+        print("Publish this proposal? [y/N] ", end="", file=out, flush=True)
+        if input().strip().lower() not in ("y", "yes"):
             return
     r = api("POST", f"/api/repos/{repo}/setup-pr", {"files": files, "executable": executable, "title": args.title})
     print(json.dumps(r) if args.json else recipe_pr_line(r))
@@ -1991,7 +2006,7 @@ def parser():
     p.add_argument("--wait", action="store_true", help="request, status: until every key is in; non-zero when the "
                    "request expires or is cancelled")
     p.add_argument("--timeout", type=int, help="seconds to wait (default: until the request expires)")
-    p.add_argument("--expires", default="24h", help="request: how long the page works (30m .. 7d; default 24h)")
+    p.add_argument("--expires", default="24h", help="request: how long the page works (5m .. 7d; default 24h)")
     p.add_argument("--note", help="request: a line for the owner on the page")
     p.add_argument("--help-url", action="append", metavar="TARGET=URL",
                    help="request: where the owner learns to get that key (default: sbx's guide for it)")

@@ -17,6 +17,9 @@ from . import runtime, setup, templates
 from . import template_builds as builds
 
 _kicked = threading.Lock()
+# One round at a time (the scheduler's and a kicked one): a round lists what is stale only
+# once the one before has built it, so the same template is never built twice.
+_round = threading.Lock()
 
 
 def start_detached(kind: str, keys=None, *, if_stale: bool = True) -> tuple[str, bool]:
@@ -72,7 +75,13 @@ def _build_quietly(key: str, kind: str | None = None) -> bool:
 
 def build_stale(stop: threading.Event | None = None, kinds=None):
     """One round: the stale templates on each runtime of kinds (default:
-    every enabled one), one at a time; nothing while setup.templates_blocked."""
+    every enabled one), one at a time; nothing while setup.templates_blocked.
+    It waits for a round already running."""
+    with _round:
+        _build_stale(stop, kinds)
+
+
+def _build_stale(stop, kinds):
     if setup.templates_blocked():
         return
     for kind in kinds or runtime.enabled():

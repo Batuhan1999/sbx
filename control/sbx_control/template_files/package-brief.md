@@ -89,7 +89,7 @@ timeout: 5m
 | --- | --- | --- |
 | `kind`, `name`, `title`, `description`, `docs` | all | Identity and help, written for people: the title names what you get (the web app shows the kind itself, so no "(per sandbox)"), and the description names other packages by what they give, not by their package name. The name is lowercase letters, digits, `-` and `_`. `docs` is the provider's page on getting the key or account the inputs ask for. |
 | `logo` | all | An `.svg` file in the folder (at most 32 KiB): the provider's official mark, in its version for light backgrounds. The web app shows it small on a white tile in both themes; without one it shows a generic icon. A copy made with `--from` keeps the example's logo: replace it, or remove the file and the key. |
-| `inputs` | all | `NAME: {label, required, default, secret, help, choices, type, min, max, advanced, hidden}`. Scripts get `INPUT_<NAME>`; `secret: true` values are never shown. `label` is the field's name in the web app (else the name in words); `help` is one short fragment, only where the label is not enough. `choices` lists the only values allowed, as `value: label` (or a list of values), and the web app offers them as a list; the default must be one. `type` is `text` (the default), `number` or `integer` (with optional `min` and `max`), `boolean` (`"true"`/`"false"`, a switch; a default of either implies it), `email` or `url` (http or https); the server refuses other values. `advanced: true` folds a rarely changed input under More options; `hidden: true` leaves an operator's input out of the web app's forms. |
+| `inputs` | all | `NAME: {label, required, default, secret, help, choices, type, min, max, advanced, hidden}`. Scripts get `INPUT_<NAME>`; `secret: true` values are never shown. `label` is the field's name in the web app (else the name in words); `help` is one short fragment, only where the label is not enough. `choices` lists the only values allowed, as `value: label` (or a list of values), and the web app offers them as a list; the default must be one; an input with `choices` is text (no other `type`). `type` is `text` (the default), `number` or `integer` (with optional `min` and `max`), `boolean` (`"true"`/`"false"`, a switch; a default of either implies it), `email` or `url` (http or https); the server refuses other values. `advanced: true` folds a rarely changed input under More options; `hidden: true` leaves an operator's input out of the web app's forms. |
 | `check` | connection | Shell text run with the inputs (exit 0 means usable), or a `.py` file whose `check(values)` returns an error message or `""`. |
 | `connect` | connection | A `.py` file whose `connect(before, given)` returns the inputs to save on an update. |
 | `identity` | connection | Inputs that name the endpoint; they cannot change while resources use the connection. |
@@ -106,7 +106,9 @@ timeout: 5m
 
 Check: every input has a `label` where its name does not read as words, and
 `help` only where the label can't say what to enter or where to get it; every
-input with a fixed set of values has `choices`, every number or URL its `type`,
+input with a fixed set of values has `choices` (text only: such an input takes
+no other `type`, and its `true`/`false` default does not make it a switch),
+every other number or URL its `type`,
 an operator-only input `hidden: true` (the API and CLI set it); every output
 `create` writes is declared, and
 every value that is a credential is `secret` (inputs) or `sensitive` (outputs).

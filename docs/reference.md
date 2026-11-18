@@ -100,7 +100,7 @@ is refused while the repository has sandboxes. The repository stays served
 and reads its default branch's `.sbx/` again, or needs a recipe; a template
 it no longer has a use for is deleted with it.
 
-`sbx recipe pr` publishes reviewed `.sbx` files as a draft pull request through
+`sbx recipe pr` (admins) publishes reviewed `.sbx` files as a draft pull request through
 the GitHub App (`POST /api/repos/OWNER/NAME/setup-pr`; `--yes` skips the
 question, `--json` prints the API's answer). Each repository has one such pull
 request, on the branch `sbx/setup`: while it is open, publishing again adds a
@@ -112,7 +112,7 @@ sandbox comes up healthy from it (its `health:` URLs answer), the server
 publishes that recipe the same way, and does again after a later healthy
 launch from a changed recipe. When the GitHub App is not connected, not
 installed on the repository, or may not push or open pull requests there, the
-server records why instead. `sbx recipe pr --status` (`GET
+server records why instead. `sbx recipe pr --status` (admins; `GET
 /api/repos/OWNER/NAME/setup-pr`) prints the pull request's link or that reason,
 and exits 1 on the reason; `sbx repo status` (`recipe_pr`), the repository's
 readiness (the `recipe_pr` step) and the web app's checklist show the same.
@@ -198,9 +198,9 @@ page works only for a signed-in admin (an installation without sign-in can't
 use it), never by its link alone.
 
 ```sh
-sbx secrets request [--wait] [--expires 24h] [--note TEXT] [--help-url TARGET=URL ...] [--json] \
+sbx secrets request [--wait [--timeout SECONDS]] [--expires 24h] [--note TEXT] [--help-url TARGET=URL ...] [--json] \
   TARGET LABEL [TARGET LABEL ...]
-sbx secrets status ID [--wait] [--json]
+sbx secrets status ID [--wait [--timeout SECONDS]] [--json]
 sbx secrets ls [--json]
 sbx secrets cancel ID [--json]
 sbx secrets submit ID [TARGET ...]     # the keys yourself, one line of stdin each
@@ -225,7 +225,7 @@ sbx names it). Targets:
 | `runtime:KIND[:KEY]` | A runtime's secret setting (`KEY` defaults to its API key), as [from the web app](#from-the-web-app): the runtime is added on its first plan when it is not enabled yet (as `sbx runtimes add`), else its key is replaced. The runtime keys of one save are one change the host applies, then it restarts sbx-control (below). | The provider, with the runtime's own checks. |
 | `dns:cloudflare` | The Cloudflare API token the certificate's DNS-01 challenge uses (`sbx setup address --dns cloudflare` then needs no `--secret`). | Cloudflare's API (`/user/tokens/verify`, or listing the zones for an account token). |
 | `connector:KIND[:FIELD]` | An extension's secret field (`FIELD` defaults to its first secret one), through its own connect with its other settings unchanged. | The connector's connect. |
-| `repo:OWNER/NAME:VAR` | A trusted repository's value `VAR`, as `sbx env set` stores it (secret unless it was set plain), delivered to its sandboxes. | |
+| `repo:OWNER/NAME:VAR` | A trusted repository's value `VAR`, as `sbx env set` stores it (always secret, its audience kept when it was set before), delivered to its sandboxes. | |
 | `repo:OWNER/NAME:VAR=from:SOURCE` | The same, with a key the server already holds instead of a paste: `SOURCE` is `runtime:KIND[:KEY]`, `dns:cloudflare` or `repo:OWNER/NAME:VAR`, held now or asked for in the same request (then the pasted value is used for both). | |
 
 A target the server can't take is refused when the request is made: an
@@ -236,7 +236,7 @@ the built-in runtimes, Cloudflare and Amp; `--help-url TARGET=https://...`
 names another).
 
 `sbx secrets request` prints the page's URL (`https://LOGIN-HOST/keys/ID`) on
-stdout; give it to the owner. A request expires after `--expires` (30m to 7d;
+stdout; give it to the owner. A request expires after `--expires` (5m to 7d;
 default 24h) and is done once every key is in; it never holds or returns a
 value, only which keys are in. The page saves the keys pasted so far: one
 that is refused (the provider says no) shows why under its field and stays to
@@ -1028,7 +1028,7 @@ or API answer holds its value, and the web app shows a set secret only as
 
 | Route | What |
 | --- | --- |
-| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `edit_blocker` (why the web app can't add or change it now: `{code, message, sandboxes}`, `code` one of `host`, `local_store`, `needs_domain`; `null` when it can), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text` or `int`, `optional`, `limit`), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `remove_blocker` (why it can't be removed now: `code` one of `host`, `last_runtime`, `unlisted`, `has_sandboxes` with the sandboxes named; `null` when it can be), `limit_hit`. |
+| `GET /api/runtimes/available` | Every runtime an installed package provides: `kind`, `title`, `host`, `enabled`, `default`, `can_run` and `why_not` (Embed: `/dev/kvm`, memory, disk, as `install.sh` checks), `managed_by` (`install.sh` for Embed), `edit_blocker` (why the web app can't add or change it now: `{code, message, sandboxes}`, `code` one of `host`, `local_store`, `needs_domain`; `null` when it can), `settings` (`key`, `label`, `secret`, `default`, `help`, `kind`: `text`, `int` (with `min`, `max`, `step`, `unit`), `hostname` (with its `pattern`) or `url`, `optional`, `limit`, `rekey`, `hidden`: an operator's setting the web app's form leaves out), `presets` (`name`, `title`, `values`, `source`), `values` (the non-secret ones now), `secrets_set`, `facts` (Embed's host facts), `sandboxes` (an enabled one's, by name), `remove_blocker` (why it can't be removed now: `code` one of `host`, `last_runtime`, `unlisted`, `has_sandboxes` with the sandboxes named; `null` when it can be), `limit_hit`. |
 | `POST /api/runtimes` | `{"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": "...", ...}}`: add a provider's runtime. `plan` (optional) is a preset's name or `custom`: the server sets the limits the plan fixes and refuses values for them; the ones it leaves adjustable start at the plan's values unless given. 202 with the change's state. |
 | `PUT /api/runtimes/KIND` | `{"plan": "pro", "values": {...}}`: change an enabled provider's settings; a secret left out or empty keeps its value, another empty value goes back to its default. With `plan`, its limits as when adding, the adjustable ones keeping their values now. |
 | `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
@@ -1104,6 +1104,7 @@ sbx setup runtime available
 sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
 sbx setup agents                               # the coding agents offered
 sbx setup agents amp claude                    # or: sbx setup agents none
+sbx login                                      # once the admin exists: the browser signs them in
 sbx setup finish                               # as the admin sbx login signed in: no password
 sbx setup finish --admin ops@example.com < password-file   # or with the link and that admin's password
 ```

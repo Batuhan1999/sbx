@@ -172,6 +172,7 @@ class WebApiTests(Server):
         self.assertEqual((domain["name"]["kind"], domain["acme_email"]["kind"], domain["acme"]["kind"]), ("hostname", "email", "choice"))
         self.assertEqual(domain["cloudflare_api_token"]["when"], {"acme": ["cloudflare"]})
         self.assertNotIn("login_host", domain)   # the sign-in host is fixed (app.<domain>), not a setting
+        self.assertTrue({"id", "pem", "slug", "webhook_secret", "deploy_key"} <= set(github))
         self.assertTrue(all(f["hidden"] for f in github.values()))   # the App manifest fills them: API and CLI only
         self.assertNotIn("owner", github)   # the App manifest's organization is its own form, not a value saved here
         self.assertTrue(fields("codex")["version"]["hidden"])   # pinned by sbx: settable with the CLI, no form field

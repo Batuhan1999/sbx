@@ -203,8 +203,9 @@ not read until it gets there.
   repository on its own: its GitHub App opens a draft pull request with
   `.sbx/`, and moves that pull request to the recipe that runs after every
   later healthy launch. You do not open it yourself.
-- Otherwise, publish it with `sbx recipe pr --yes`; once the owner merges
-  the pull request, `sbx template build` imports the default branch's recipe.
+- Otherwise, ask an admin to publish it: `sbx recipe pr --yes` in this
+  checkout (publishing is an admin's). Once the owner merges the pull
+  request, `sbx template build` imports the default branch's recipe.
 
 Then run `sbx repo status` again. For each name under `secrets_missing`, ask
 the owner to run `sbx env set NAME` (it asks for the value, hidden) or
@@ -266,22 +267,24 @@ hand-over.
 
 ## 9. Hand over
 
-Run `sbx recipe pr --status` once more: the pull request must carry the
-recipe you verified (`sbx repo status` shows `recipe_pr` without "the recipe
-changed since").
+Run `sbx repo status` once more (an admin may also run `sbx recipe pr
+--status`): the pull request must carry the recipe you verified
+(`recipe_pr` without "the recipe changed since").
 
-Tell the owner, with evidence: the recipe's pull request link (or, if sbx
-could not open it, the reason it printed and who fixes it), `check-b`'s
+Tell the owner, with evidence: the recipe's pull request link (or that the
+default branch has the recipe already, or, if sbx could not open it, the
+reason it printed and who fixes it), `check-b`'s
 preview links, what you verified and what you did not (optional providers left unconfigured, for example), the
 optional variables the app reads that the recipe leaves out, and the
 everyday commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`,
 `sbx down NAME` (`sbx down check-b` once they are done with it). A value the
 recipe generates, such as an admin password from `${random:32}`, is per
 sandbox; give the command that reads it, not the value:
-`echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox exec SANDBOX`. Ask
-the owner to review and merge the recipe's pull request: until then the
+`echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox exec SANDBOX`. When
+a pull request is open, ask the owner to review and merge it: until then the
 recipe lives only on this server. PR previews and a prebuilt template come
 later, and only when asked.
 
 Done means every item of the acceptance checklist below is checked and
-reported, and the hand-over names the recipe's pull request link.
+reported, and the hand-over names the recipe's pull request link (or that
+the default branch has the recipe already).

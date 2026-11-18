@@ -127,12 +127,13 @@ class Package:
         if missing:
             raise PackageError(f"{label}: needs {', '.join(missing)}")
         for name, value in out.items():
+            shown = "" if self.secret(name) else f", not {value!r}"   # a secret's value never goes into an error
             allowed = [c["value"] for c in self.inputs.get(name, {}).get("choices", ())]
             if allowed and value not in allowed:
-                raise PackageError(f"{label}: {name} is one of {', '.join(c or '(blank)' for c in allowed)}, not {value!r}")
+                raise PackageError(f"{label}: {name} is one of {', '.join(c or '(blank)' for c in allowed)}{shown}")
             problem = _type_problem(self.inputs.get(name, {}), value)
             if problem:
-                raise PackageError(f"{label}: {name} {problem}, not {value!r}")
+                raise PackageError(f"{label}: {name} {problem}{shown}")
         return out
 
     def secret(self, name: str) -> bool:

@@ -15,8 +15,9 @@ labels below.
    page your agent sends you ([below](#add-it-to-sbx)). sbx checks it with
    Boat and keeps it in its secret store.
 
-If the key has an expiry, sbx warns 14 days before it. Create a new key then
-and add it again (below).
+If the key has an expiry, sbx warns 14 days before it, when Boat lets the key
+look itself up; otherwise note the expiry yourself. Create a new key then and
+add it again (below).
 
 ## Plan
 

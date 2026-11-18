@@ -240,10 +240,14 @@ curl -fsS -H @$HOME/.sbx-install/api-header https://app.D/api/me    # -k for the
 ## 6. One key page for every key
 
 Request every key the owner holds in **one** page: the runtime's API key, the
-DNS token, an agent's token, a repository's variables. `sbx secrets request`
+DNS token, an agent's token. A repository's variables come later, in a key
+request of their own once step 9 has connected it: a request that names a
+repository the server does not trust yet is refused whole. `sbx secrets request`
 returns a URL on the web app that writes each key into the right store; the
 owner, signed in, submits it there. With `--wait` it returns when all are
-saved, non-zero when a key is refused or the request is cancelled. During the
+saved, non-zero when the request expires or is cancelled, or the server
+does not apply a runtime key. A key the page refuses (the provider says no)
+stays asked for, and the wait goes on until the owner saves a good one. During the
 setup it works with the setup link (`--link-file` or `SBX_SETUP_LINK`, for
 `request`, `status`, `ls` and `cancel`), or as the signed-in admin:
 
@@ -255,7 +259,7 @@ sbx secrets request --wait --link-file ~/.sbx-install/setup-link \
 
 Targets: `runtime:KIND` (`e2b-cloud`, `boat`; one not enabled yet is enabled
 on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
-`repo:OWNER/NAME:VAR` (`sbx secrets request --help` lists them). Send the
+`repo:OWNER/NAME:VAR` (a connected repository only, step 9; `sbx secrets request --help` lists them). Send the
 owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
 the owner's plan if it is not the first one: `sbx runtimes set KIND --plan
 PLAN`. Send the owner the guide's
@@ -282,8 +286,14 @@ sbx setup status --link-file ~/.sbx-install/setup-link              # every step
 sbx setup finish                                                    # as the signed-in admin: no password
 ```
 
-Without the desktop CLI: `curl -fsS -X POST -H @$HOME/.sbx-install/api-header
-https://app.D/api/setup/complete`. The owner may press **Finish setup** on
+Without the desktop CLI, record the agents, then finish:
+
+```sh
+curl -fsS -X PUT -H @$HOME/.sbx-install/api-header -H 'Content-Type: application/json' \
+  -d '{"agents": ["amp", "claude"]}' https://app.D/api/setup/agents   # {"agents": []} for none
+curl -fsS -X POST -H @$HOME/.sbx-install/api-header https://app.D/api/setup/complete
+```
+ The owner may press **Finish setup** on
 the setup page instead; both work. `finish` runs the server's checks
 (`The server needs attention` lists each failed one: fix it and run `finish`
 again), then prints `set up: https://app.D; ... the templates build now`.
@@ -343,7 +353,10 @@ starts.
    you can't generate goes on the key page (`repo:OWNER/NAME:VAR`, step 6).
 3. **The recipe PR.** Once the recipe passes its first launch, the GitHub App
    opens the pull request that adds `.sbx/` to the repository. Report its link
-   to the owner.
+   to the owner. Without the App (a public repository cloned anonymously) no
+   pull request opens: `sbx repo status` says why under `recipe_pr`; report
+   that, and that `.sbx/` reaches the repository only once the App is
+   connected or someone commits it.
 4. **Coding agents.** Start one session of each chosen agent to confirm its
    sandbox comes up ([Claude Code](claude-code.md), [Amp](amp-orbs.md)).
    Other agents reach sandboxes over SSH (`sbx ssh-config`) or with

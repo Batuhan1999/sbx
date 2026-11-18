@@ -121,11 +121,16 @@ def status() -> dict:
             return _view("applying", record)
         if found == "applying":
             return _view("failed", {**record, "message": "the change stopped before it finished; nothing to wait for"})
+    return _view(found, record, _restarting(record))
+
+
+def _restarting(record: dict) -> bool:
+    """A done change whose sbx-control restart has not happened yet. A failed
+    batch that made some of its changes restarts sbx-control too (finished is
+    set when any was made)."""
     finished = record.get("finished")
-    # A failed batch that made some of its changes restarts sbx-control too (finished is set when any was made).
-    restarting = (found in ("done", "failed") and finished is not None and STARTED < finished
-                  and time.time() - finished < RESTART_SECONDS)
-    return _view(found, record, restarting)
+    return (record.get("state") in ("done", "failed") and finished is not None and STARTED < finished
+            and time.time() - finished < RESTART_SECONDS)
 
 
 def busy() -> bool:
@@ -188,7 +193,12 @@ def outcome(change_id: str) -> dict | None:
     if change_id and found.get("id") == change_id:
         return found
     recent = next((r for r in host_requests.last(KEY).get("recent") or [] if r.get("id") == change_id), None)
-    return {**recent, "restarting": False} if recent else None
+    if recent:
+        return {**recent, "restarting": _restarting(recent)}
+    if change_id and host_requests.applying(KEY):
+        # The root side took a request and has not recorded it yet: this one, being applied.
+        return _view("applying", {"id": change_id})
+    return None
 
 
 def checked(operation: str, kind: str, check, *, by: str) -> dict:

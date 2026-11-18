@@ -263,10 +263,11 @@ class RecipePrTests(Server):
         self.assertEqual((one.json()["changed"], two.json()["changed"]), (True, False))
         self.assertEqual(two.json()["url"], one.json()["url"])
         self.assertEqual(len(self.github.pulls), 1)
+        writes = list(self.github.writes)
         for path in ("../file", ".sbx/../file", ".sbx/.env", ".sbx/private.key"):
             result = self.client.post("/api/repos/owner/app/setup-pr", json={"files": {**files, path: "no"}})
             self.assertEqual(result.status_code, 400)
-        self.assertEqual(len(self.github.pulls), 1)
+        self.assertEqual(self.github.writes, writes)   # nothing written to GitHub
 
     def test_a_pull_request_event_keeps_the_recipe_prs_state(self):
         self.apply()

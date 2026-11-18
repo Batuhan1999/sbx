@@ -419,11 +419,14 @@ def submit(request_id: str, values: dict, *, by: str) -> dict:
                     outcome[item["target"]] = errors[target.own]
                 else:
                     done(item, value, change)
+        asked = {t.own: i for i, t in ((i, targets[i["target"]]) for i in row["items"]) if isinstance(t, Target)}
         for item in waiting:
             target = targets[item["target"]]
             if not isinstance(target, Target) or not target.source:
                 continue
-            value = pasted.get(str(target.source)) or held(target.source)
+            # A key this request asks for anew that is not in yet: never the one it replaces.
+            source = asked.get(str(target.source))
+            value = pasted.get(str(target.source)) or (None if source and not source["done_at"] else held(target.source))
             if not value:
                 outcome[item["target"]] = f"this uses {_source_words(target.source)}, which is not saved yet"
             elif error := apply(target, value, by=by):
@@ -504,10 +507,11 @@ def _queue_runtimes(found: list, *, by: str) -> tuple[str, dict]:
         return "", errors
     try:
         queued = runtime_changes.request_batch([c for c, _ in changes], by=by)
-    except runtimes.Refused as error:   # Busy: another change was queued meanwhile
+    except (runtimes.Refused, OSError) as error:   # Busy (another change was queued meanwhile), or not written
+        why = str(error) if isinstance(error, runtimes.Refused) else f"not queued: {type(error).__name__}"
         for change, pairs in changes:
             runtime_changes.discard_references(change["values"])
-            errors.update({t.own: f"{error}; save this key again once it is done" for t, _ in pairs})
+            errors.update({t.own: f"{why}; save this key again once it is done" for t, _ in pairs})
         return "", errors
     return queued["id"], errors
 
@@ -607,15 +611,16 @@ def _apply_connector(target: Target, value: str, by: str) -> str:
 
 
 def _apply_repo(target: Target, value: str, by: str) -> str:
-    """A repo's secret value, as `sbx env set` stores it (its settings kept
-    when it is set already), delivered to its sandboxes."""
+    """A repo's secret value, as `sbx env set` stores it (its audience and
+    agent kept when it is set already; always a secret, even over a plain
+    variable), delivered to its sandboxes."""
     from . import sandboxes, settings, variables
     if settings.trust(target.name) != "trusted":
         return f"{target.name} is not a trusted repo here any more"
     before = next((e for e in variables.entries(target.name) if e["name"] == target.key and not e["mine"]), None)
     audience = before["audience"] if before else "all"
     try:
-        variables.put(target.name, target.key, value, by, secret=before["secret"] if before else True,
+        variables.put(target.name, target.key, value, by, secret=True,
                       audience=audience, agent=before["agent"] if before else True)
     except ValueError as error:
         return str(error)

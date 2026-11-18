@@ -197,7 +197,8 @@ def _publish(repo: str, entries: list, title: str) -> dict:
 def create_pr(repo: str, files: dict[str, str], title: str, executable=()) -> dict:
     entries = validate_files(files, executable)
     try:
-        return publish(repo, entries, title)
+        with _lock(repo):   # not while a launch publishes the same repo
+            return publish(repo, entries, title)
     except Unpublished as error:
         raise HTTPException(400, str(error)) from None
     except httpx.HTTPError:
@@ -205,9 +206,15 @@ def create_pr(repo: str, files: dict[str, str], title: str, executable=()) -> di
                                  'proposal changes the default branch, then retry.') from None
 
 
-# One publish of a repo at a time: two sandboxes coming up together publish once.
+# One publish of a repo at a time: two sandboxes coming up together publish once, and
+# `sbx recipe pr` waits for a launch's publish of the same repo.
 _locks: dict[str, threading.Lock] = {}
 _guard = threading.Lock()
+
+
+def _lock(repo: str) -> threading.Lock:
+    with _guard:
+        return _locks.setdefault(repo, threading.Lock())
 
 
 def _published(repo: str, sha: str) -> bool:
@@ -239,9 +246,7 @@ def after_launch(repo: str, background: bool = True):
 def publish_server_recipe(repo: str) -> dict | None:
     """Publish the operator's copy of the repo's recipe unless it is
     already; what happened is in record(repo)."""
-    with _guard:
-        lock = _locks.setdefault(repo, threading.Lock())
-    with lock:
+    with _lock(repo):
         a = recipes.load(repo)
         if not a.has_recipe or not a.operator:
             return None

@@ -22,6 +22,8 @@ class TemplateGate(Server):
         self.choose_ip()
         self.create_admin()
         self.assertIn("coding agents", self.setup.templates_blocked())
+        # sbx templates says why while the setup is open (not the setup gate's 503).
+        self.assertIn("coding agents", self.client.get("/api/templates", headers=self.headers).json()["blocked"])
         with patch.object(self.scheduler, "_build_quietly") as build, \
                 patch.object(self.scheduler, "start_detached") as detached, \
                 patch.object(self.builds, "build_now") as build_now:

@@ -29,9 +29,10 @@ amp orb provider create NAME                # a provider of your own
 amp orb provider create NAME --workspace    # a provider for the workspace
 ```
 
-It saves the token with Amp's credentials instead of printing it. Orb types
-(step 3) are still set in the Amp web app, under the provider in Settings →
-Orbs.
+It saves the token with Amp's credentials instead of printing it, so it gives
+you no token to paste into sbx: to connect sbx, create the provider in the web
+app (steps 1 to 4) instead. Orb types (step 3) are set in the Amp web app
+either way, under the provider in Settings → Orbs.
 
 ## Give the token to sbx
 

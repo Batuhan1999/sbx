@@ -46,9 +46,11 @@ def configured() -> bool:
 
 def infer_complete() -> bool:
     """sbx-admin setup-infer (host-install.sh on every deploy, and
-    install-report.sh): an installation that is configured counts as set
-    up. Returns whether it marked anything."""
-    if complete() or not configured():
+    install-report.sh): an installation that is configured and has its
+    coding agents chosen counts as set up. Without that choice the setup
+    stays open (a redeploy mid-wizard never skips the agents step). Returns
+    whether it marked anything."""
+    if complete() or not configured() or AGENTS.get() is None:
         return False
     mark_complete("infer")
     return True

@@ -22,8 +22,10 @@ SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/
 # check fetches from inside a sandbox (reachability.PATH); the sign-in page
 # and sign-out; the desktop CLI's installer and `sbx login` (/cli/: a session
 # or a one-time code), so an agent signs in as the admin once the account
-# exists and finishes the setup itself; /api/me answers only a sign-in.
-SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me")
+# exists and finishes the setup itself; /api/me answers only a sign-in;
+# /api/templates (admins) says why nothing builds yet.
+SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me",
+                    "/api/templates")
 
 
 async def setup_gate(request: Request, call_next):
@@ -125,14 +127,16 @@ class Agents(BaseModel):
 @router.put("/api/setup/agents")
 def api_setup_agents(body: Agents, request: Request, who: str = Depends(setup_or_admin)):
     """The coding agents every template is built with (state()'s agents: the
-    ones offered; [] for none); their own keys may come later."""
-    if setup.complete():
-        raise HTTPException(409, "Server setup is complete. Turn coding agents on or off under Extensions "
-                                 "(sbx extensions).")
-    try:
-        setup.choose_agents(body.agents, by=_email(request, who) or who)
-    except ValueError as error:
-        raise HTTPException(400, str(error))
+    ones offered; [] for none); their own keys may come later. Under the
+    setup lock, as finishing is: never saved after the setup completed."""
+    with _setup_lock:
+        if setup.complete():
+            raise HTTPException(409, "Server setup is complete. Turn coding agents on or off under Extensions "
+                                     "(sbx extensions).")
+        try:
+            setup.choose_agents(body.agents, by=_email(request, who) or who)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
     return setup.state(_email(request, who), request.url.hostname or "")
 
 
@@ -159,15 +163,16 @@ def finishing_admin(request: Request, body: Finish | None = None, who: str = Dep
 @router.post("/api/setup/complete")
 def api_setup_complete(request: Request, email: str | None = Depends(finishing_admin),
                        who: str = Depends(setup_or_admin)):
-    s = setup.state(email, request.url.hostname or "")
-    if needed := setup.missing(s):
-        raise HTTPException(400, needed)
-    if settings.current().sign_in.method != "none" and not email:
-        raise HTTPException(400, "sign in with the method you chose; that makes you the first admin, then finish")
-    checks = setup.readiness()
-    if not checks["ok"]:
-        raise HTTPException(400, {"message": "The server needs attention before setup can finish.",
-                                  "checks": checks["checks"]})
-    setup.mark_complete(email or who)
+    with _setup_lock:   # the agents chosen are the ones the first build gets
+        s = setup.state(email, request.url.hostname or "")
+        if needed := setup.missing(s):
+            raise HTTPException(400, needed)
+        if settings.current().sign_in.method != "none" and not email:
+            raise HTTPException(400, "sign in with the method you chose; that makes you the first admin, then finish")
+        checks = setup.readiness()
+        if not checks["ok"]:
+            raise HTTPException(400, {"message": "The server needs attention before setup can finish.",
+                                      "checks": checks["checks"]})
+        setup.mark_complete(email or who)
     template_scheduler.kick()   # the first templates, with the chosen agents' layers, now
     return setup.state(email, request.url.hostname or "")

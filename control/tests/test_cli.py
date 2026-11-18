@@ -994,17 +994,20 @@ class SetupCliTests(CliTests):
 
     def test_finish_as_the_admin_sbx_login_signed_in_needs_no_password(self):
         self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
-        with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):   # neither the link nor a password
+        def finish():
+            before = len(self.control.calls)
             code, out, err = self.run_cli("setup", "finish")
-        self.assertEqual(code, 0, err)
-        self.assertIn("set up: https://203.0.113.7", out)
-        self.assertEqual(self.control.calls[-1][1:5:2], ("/api/setup/complete", None))
-        self.assertEqual(self.control.calls[-1][4], "Bearer sbx_test")
-        code, out, err = self.run_cli("setup", "finish")       # the link names this server too: still signed in
-        self.assertEqual(self.control.calls[-1][4], "Bearer sbx_test")
+            self.assertEqual(code, 0, err)
+            self.assertIn("set up: https://203.0.113.7", out)
+            made = [c for c in self.control.calls[before:] if c[1] == "/api/setup/complete"]
+            self.assertEqual(len(made), 1)
+            return made[0]
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):   # neither the link nor a password
+            call = finish()
+        self.assertEqual((call[3], call[4]), (None, "Bearer sbx_test"))
+        self.assertEqual(finish()[4], "Bearer sbx_test")        # the link names this server too: still signed in
         with patch.object(self.cli, "keychain_get", return_value=None):   # not signed in: the setup link
-            self.run_cli("setup", "finish")
-        self.assertEqual(self.control.calls[-1][4], "Setup one-time-token")
+            self.assertEqual(finish()[4], "Setup one-time-token")
 
     def test_the_coding_agents_are_chosen_before_finishing(self):
         self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
@@ -1060,7 +1063,8 @@ class ExtensionCliTests(CliTests):
         self.routes[("GET", "/api/templates")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
 
     def test_set_says_what_rebuilds_and_waits_for_it(self):
-        self.polls(templates("stale"), templates("building", "current"), templates("current"))
+        # The first poll meets sbx-control restarting: tried again, the change itself is not sent again.
+        self.polls((503, b"restarting"), templates("stale"), templates("building", "current"), templates("current"))
         code, out, err = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--secret", "provider_token",
                                       "--wait", stdin="aop_live_test-only-value\n")
         self.assertEqual(code, 0, err)
@@ -1071,6 +1075,7 @@ class ExtensionCliTests(CliTests):
         put = next(c for c in self.control.calls if c[0] == "PUT")
         self.assertEqual(put[3], {"values": {"enabled": "true", "provider_token": "aop_live_test-only-value"}})
         self.assertNotIn("aop_live_test-only-value", out + err)
+        self.assertEqual(sum(c[0] == "PUT" for c in self.control.calls), 1)
 
     def test_a_failed_rebuild_exits_non_zero(self):
         self.polls(templates("stale"), templates("stuck", "current", error="apt-get failed"))
@@ -1093,6 +1098,7 @@ class ExtensionCliTests(CliTests):
     def test_secrets_never_come_from_argv_and_fields_are_checked(self):
         code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "provider_token=aop_live_x")
         self.assertIn("--secret provider_token reads it from stdin", code)
+        self.assertFalse(any(c[0] == "PUT" for c in self.control.calls))   # nothing sent
         code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "colour=blue")
         self.assertIn("has no field colour", code)
         code, _, _ = self.run_cli("extensions", "set", "nope")
@@ -1125,6 +1131,7 @@ class SecretsCliTests(CliTests):
     def setUp(self):
         super().setUp()
         self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.enterContext(patch.dict(os.environ, {"SBX_SETUP_LINK": ""}))   # never one this shell has set
         self.routes[("POST", "/api/secret-requests")] = lambda q, body: (201, key_request())
 
     def polls(self, *answers):
@@ -1172,13 +1179,17 @@ class SecretsCliTests(CliTests):
         self.assertIn("did not apply the runtime keys: boat was not changed: Boat API: 401 key revoked", str(code))
         code, out, err = self.run_cli("secrets", "status", "req12345")   # no --wait: said, and non-zero
         self.assertEqual(code, 1)
+        # A runtime key in early that the server refused: said at once, not after the other keys come.
+        self.polls(key_request(done=(0,), runtime_changes={"state": "failed", "message": "Boat API: 401 key revoked"}))
+        code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+        self.assertIn("did not apply the runtime keys: Boat API: 401 key revoked", str(code))
 
     def test_wait_exits_non_zero_when_the_request_expires_or_is_cancelled(self):
         for state in ("expired", "cancelled"):
             with self.subTest(state):
                 self.polls(key_request(state))
                 code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
-                self.assertNotEqual(code, 0)
+                self.assertIn(f"is {state}", str(code))
                 self.polls(key_request(), key_request(state))
                 code, out, err = self.run_cli("secrets", "request", "--wait", "dns:cloudflare", "DNS token")
                 self.assertIn(f"is {state}", str(code))
@@ -1201,8 +1212,10 @@ class SecretsCliTests(CliTests):
                                                                 "dns:cloudflare": "test-only-dns"}})
         self.assertIn("NO  dns:cloudflare: Cloudflare refused the token", out)
         self.assertNotIn("test-only", out + err)
+        posts = sum(c[0] == "POST" for c in self.control.calls)
         code, out, err = self.run_cli("secrets", "submit", "req12345", "dns:cloudflare", stdin="")
         self.assertIn("no value for dns:cloudflare", str(code))
+        self.assertEqual(sum(c[0] == "POST" for c in self.control.calls), posts)   # nothing submitted
 
     def test_ls_and_cancel(self):
         self.routes[("GET", "/api/secret-requests")] = lambda q, body: {"requests": [key_request()]}
@@ -1219,6 +1232,21 @@ class SecretsCliTests(CliTests):
             code, out, err = self.run_cli("secrets", "request", "dns:cloudflare", "DNS token")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.control.calls[-1][4], "Setup one-time-token")
+        # Submitting is the signed-in admin's, even with the link still set: the server refuses the link there.
+        self.polls(key_request())
+        self.routes[("POST", "/api/secret-requests/req12345/submit")] = lambda q, body: {
+            "ok": True, "request": key_request(), "results": []}
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"{self.control.url}/setup#t=one-time-token"}):
+            code, out, err = self.run_cli("secrets", "submit", "req12345", "dns:cloudflare", stdin="test-only-dns\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c[4] for c in self.control.calls[-2:]], ["Bearer sbx_test", "Bearer sbx_test"])
+
+    def test_no_token_goes_to_a_plain_http_server_other_than_this_machine(self):
+        before = len(self.control.calls)
+        for base in ("http://203.0.113.7", ""):
+            with self.subTest(base), self.assertRaises(self.cli.Refused):
+                self.cli.Client(base).request("GET", "/api/me")
+        self.assertEqual(len(self.control.calls), before)
 
 
 class CliApiTests(Server):

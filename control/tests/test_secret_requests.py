@@ -203,6 +203,22 @@ class Keys(TwoRuntimes, Server):
         self.assertEqual(progress["runtime_changes"], {"state": "done", "message": progress["runtime_changes"]["message"]})
         self.assertIn("Boat (boat) is enabled", progress["items"][1]["applied"]["message"])
 
+    def test_a_batch_stays_followed_while_the_host_takes_it_and_until_the_restart(self):
+        found = self.ask(("runtime:e2b-cloud", ""))
+        self.submit(found["id"], {"runtime:e2b-cloud": CLOUD_KEY})
+        from sbx_control import host_requests, runtime_changes
+        payload = self.request_file.read_text()
+        self.request_file.unlink()   # taken by the root side, not recorded yet
+        with patch.object(host_requests, "applying", return_value=True):
+            self.assertEqual(self.status(found["id"])["items"][0]["applied"]["state"], "applying")
+        self.request_file.write_text(payload)
+        self.assertEqual(self.apply()[0], 0)
+        # Another change queued before sbx-control restarted: this batch still waits for the restart.
+        self.assertEqual(self.client.put("/api/runtimes/default", json={"kind": "fake"}).status_code, 202)
+        self.assertEqual(self.status(found["id"])["items"][0]["applied"]["state"], "restarting")
+        with patch.object(runtime_changes, "STARTED", runtime_changes.time.time() + 1):
+            self.assertEqual(self.status(found["id"])["items"][0]["applied"]["state"], "done")
+
     def test_a_runtime_change_the_host_refuses_is_reported_and_the_others_are_made(self):
         found = self.ask(("runtime:e2b-cloud", ""), ("runtime:boat", ""))
         self.effects()   # only what the change asks for counts
@@ -269,6 +285,23 @@ class Keys(TwoRuntimes, Server):
         other = self.ask(("repo:owner/app:COPY=from:repo:owner/app:FAKE_TOKEN", ""))
         self.submit(other["id"], {})
         self.assertEqual(variables.values("owner/app")["COPY"], CLOUD_KEY)
+
+    def test_a_copy_of_a_key_the_request_replaces_waits_for_the_new_key(self):
+        self.file.write_text(self.RUNTIME_ENV.replace("FAKE_RUNTIME_TOKEN=test-only-fake",
+                                                      f"FAKE_RUNTIME_TOKEN={CLOUD_KEY}"))
+        found = self.ask(("runtime:fake", ""), ("repo:owner/app:FAKE_TOKEN=from:runtime:fake", ""))
+        self.assertEqual(self.client.put("/api/runtimes/default", json={"kind": "fake"}).status_code, 202)
+        done = self.submit(found["id"], {found["items"][0]["target"]: APP_VALUE})   # refused: a change is queued
+        self.assertFalse(any(r["ok"] for r in done["results"]), done)
+        from sbx_control import variables
+        self.assertNotIn("FAKE_TOKEN", variables.values("owner/app"))   # not the key being replaced
+
+    def test_a_key_over_a_plain_variable_is_kept_secret(self):
+        from sbx_control import variables
+        variables.put("owner/app", "APP_SECRET", "placeholder", "operator@example.com", secret=False)
+        found = self.ask(("repo:owner/app:APP_SECRET", ""))
+        self.assertTrue(self.submit(found["id"], {"repo:owner/app:APP_SECRET": APP_VALUE})["ok"])
+        self.assertTrue(next(e for e in variables.entries("owner/app") if e["name"] == "APP_SECRET")["secret"])
 
     def test_a_connector_s_secret_goes_through_its_connect_and_its_settings_stay(self):
         found = self.ask(("connector:amp", "Amp provider token"))
