@@ -24,6 +24,6 @@ export default function RepoSandboxes() {
     {list.error ? <ErrorState error={list.error} retry={() => list.refetch()} />
       : !list.data ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows rows={3} /></div>
       : list.data.sandboxes.length ? <SandboxTable sandboxes={list.data.sandboxes} showRepo={false} />
-      : <div className="rounded-lg border border-dashed border-line"><EmptyState icon={Boxes} title="No sandboxes for this repository">Start one for a branch, or run sbx up in a checkout.</EmptyState></div>}
+      : <div className="rounded-lg border border-dashed border-line"><EmptyState icon={Boxes} title="No sandboxes for this repository" /></div>}
   </div>
 }

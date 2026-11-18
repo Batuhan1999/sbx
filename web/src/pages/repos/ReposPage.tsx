@@ -17,14 +17,12 @@ export default function ReposPage() {
   const list = repos.data ?? []
   const needAgent = list.filter(r => r.trust && !r.configured)
   return <>
-    <PageHeader title="Repositories" description="Each repository's recipe (.sbx/) says how its sandboxes run. Your coding agent writes it; this page shows what is still missing."
+    <PageHeader title="Repositories"
       actions={admin && <LinkButton variant="primary" to="/app/repos/new"><Plus />Connect repository</LinkButton>} />
     {repos.error ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
       : repos.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
       : list.length === 0 ? <div className="rounded-lg border border-dashed border-line">
-        <EmptyState icon={FolderGit2} title="No repositories yet" action={admin ? <LinkButton variant="primary" size="sm" to="/app/repos/new"><Plus />Connect repository</LinkButton> : undefined}>
-          {admin ? 'Connect a GitHub repository, then hand its setup to your coding agent.' : 'An admin connects repositories to this server.'}
-        </EmptyState>
+        <EmptyState icon={FolderGit2} title="No repositories yet" action={admin ? <LinkButton variant="primary" size="sm" to="/app/repos/new"><Plus />Connect repository</LinkButton> : undefined} />
       </div>
       : <div className="space-y-4">
         {needAgent.length > 0 && <AgentCallout repos={needAgent} />}
@@ -41,7 +39,7 @@ function AgentCallout({ repos }: { repos: RepoSummary[] }) {
       <span className="grid size-8 shrink-0 place-items-center rounded-md bg-accent text-accent-ink"><Bot className="size-4" /></span>
       <div className="min-w-0 grow">
         <p className="font-medium">{repos.length === 1 ? `${repos[0].repo} needs a recipe` : `${repos.length} repositories need a recipe`}</p>
-        <p className="mt-0.5 text-[13px] text-muted">In a checkout of the repository, start your coding agent with this server's setup brief. It writes .sbx/, tries it in a sandbox and opens a pull request.</p>
+        <p className="mt-0.5 text-[13px] text-muted">In a checkout:</p>
         <CopyCommand command="sbx repo connect --agent" className="mt-3 max-w-md bg-panel" label="agent setup command" />
       </div>
     </div>

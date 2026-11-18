@@ -263,7 +263,7 @@ def _check(backend, kind: str, merged: dict) -> None:
     if secret and not merged.get(secret):
         label = fields(backend)[secret].label
         raise Refused(f"{backend.title} needs its {label} ({secret}); on the server it comes on stdin "
-                      f"(sbx-admin runtime add {kind})")
+                      f"(sbx-admin runtime add {kind})" + _how_to(backend.help_url))
     plain = {k: secret_store.unseal(v) if secret_store.is_reference(v) else v for k, v in merged.items()}
     try:
         backend.configure(plain)
@@ -272,7 +272,12 @@ def _check(backend, kind: str, merged: dict) -> None:
     failed = [c for c in backend.test() if not c.ok]
     if failed:
         raise Refused(f"{backend.title} did not take the settings: "
-                      + "; ".join(f"{c.name}: {c.detail}" for c in failed) + "; nothing was changed")
+                      + "; ".join(f"{c.name}: {c.detail}" for c in failed) + "; nothing was changed"
+                      + _how_to(next((c.help_url for c in failed if c.help_url), "")))
+
+
+def _how_to(url: str) -> str:
+    return f" (how to: {url})" if url else ""
 
 
 def _validated(backend, kind: str, values: dict, current: dict, *, changing: bool) -> dict:

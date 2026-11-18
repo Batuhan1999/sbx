@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys, useMe, useRepoInfo, useRepos, useRuntimeChoice } from '@/api/queries'
-import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
+import { AppForm, MoreOptions, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { nameFromBranch, sandboxNameError } from '@/lib/validation'
 
 /** How long to wait for a fast refusal (bad name, repo not served) before showing the sandbox while it is created. */
@@ -46,16 +46,17 @@ export function NewSandboxForm({ repo: fixedRepo, branch: initialBranch = '', on
       const name = fieldApi.form.getFieldValue('name')
       if (!fieldApi.form.getFieldMeta('name')?.isDirty || name === '') fieldApi.form.setFieldValue('name', nameFromBranch(value), { dontUpdateMeta: true })
     } }}>
-      {field => <field.TextField label="Branch" optional placeholder="default branch" autoComplete="off" spellCheck={false} help="Checked out from GitHub. Empty uses the repository's default branch." />}
+      {field => <field.TextField label="Branch" optional placeholder="default branch" autoComplete="off" spellCheck={false} />}
     </form.AppField>
     <form.AppField name="name" validators={{ onChange: ({ value }) => sandboxNameError(value) }}>
-      {field => <field.TextField label="Name" autoComplete="off" spellCheck={false} placeholder="feature-login" help="Lowercase letters, digits and hyphens. Also its preview hostname." />}
+      {field => <field.TextField label="Name" autoComplete="off" spellCheck={false} placeholder="feature-login" />}
     </form.AppField>
-    {runtimes && <form.AppField name="runtime">{field => <field.SelectField label="Runtime" help="Where it runs, until it is deleted.">
-      <option value="">{repoInfo.data?.runtime ? 'Repository’s choice' : 'Installation default'} ({fallbackTitle})</option>
-      {runtimes.runtimes.map(r => <option key={r.kind} value={r.kind}>{r.title}</option>)}
-    </field.SelectField>}</form.AppField>}
-    <p className="text-[12.5px] text-muted">The sandbox runs {target || 'the repository'}'s recipe: services, setup, then the app. You can follow each step on its page.</p>
+    {runtimes && <MoreOptions>
+      <form.AppField name="runtime">{field => <field.SelectField label="Runtime">
+        <option value="">{repoInfo.data?.runtime ? 'Repository’s choice' : 'Installation default'} ({fallbackTitle})</option>
+        {runtimes.runtimes.map(r => <option key={r.kind} value={r.kind}>{r.title}</option>)}
+      </field.SelectField>}</form.AppField>
+    </MoreOptions>}
     <div className="flex justify-end gap-2 pt-1">
       {onCancel && <button type="button" className="h-8 rounded-md px-3 text-[13px] text-muted hover:bg-hover hover:text-ink" onClick={onCancel}>Cancel</button>}
       <SubmitButton form={form} disabled={!fixedRepo && choices.length === 0}>Create sandbox</SubmitButton>

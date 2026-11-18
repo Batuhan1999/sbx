@@ -7,14 +7,14 @@ description: >
   admin user that can create databases and users.
 inputs:
   url:
+    type: url
     label: URL
-    help: "HTTP(S) endpoint, such as http://host:8123"
+    help: "Such as http://host:8123"
     required: true
   user:
-    help: An admin user that can create databases and users.
+    help: "One that can create databases and users."
     default: default
   password:
-    help: That user's password.
     secret: true
     required: false
 check: |

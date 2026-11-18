@@ -14,12 +14,16 @@ requires:
 inputs:
   parent:
     label: Copy from
-    help: A branch name or ID. Blank copies the project's default branch.
+    help: "Blank: the project's default branch."
     default: ''
-  database: { default: "", description: "database to connect to; blank discovers a single application database" }
+  database:
+    advanced: true
+    help: "Blank: the single application database."
+    default: ""
   role:
+    advanced: true
     label: Login role
-    help: migration-capable role; blank uses the selected database owner with password login
+    help: "Blank: the database owner."
     default: ''
 outputs:
   url: { sensitive: true }

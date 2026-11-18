@@ -74,7 +74,7 @@ function Actions({ s, preview }: { s: SandboxDetail; preview?: string }) {
       {can.resume && <Button busy={resume.isPending} onClick={() => resume.mutate()}><Play />Resume</Button>}
       {can.restart && <Button busy={restart.isPending} onClick={() => restart.mutate()} title="Run setup again and restart the app"><RotateCw />Restart</Button>}
       {can.remove && <ConfirmDialog trigger={<Button variant="danger" aria-label="Delete sandbox"><Trash2 /><span className="hidden sm:inline">Delete</span></Button>}
-        title={`Delete ${s.name}?`} description="Deletes the VM, its workspace and every service resource it owns (databases, buckets). Unpushed work is lost."
+        title={`Delete ${s.name}?`} description="Its databases and unpushed work are lost."
         confirm="Delete sandbox" onConfirm={async () => {
           await api.sandboxes.remove(s.name)
           await qc.invalidateQueries({ queryKey: keys.sandboxes })
@@ -90,7 +90,7 @@ function FailedNotice({ s }: { s: SandboxDetail }) {
   const error = s.error || s.lifecycle?.error
   return <div role="alert" className="mb-4 rounded-lg border border-bad/25 bg-bad-soft px-4 py-3 text-[13px]">
     <p className="font-medium text-bad">{error || 'The last operation failed.'}</p>
-    <p className="mt-1 text-muted">Read the logs below, or let your coding agent investigate: it can run <Code>sbx logs {s.name}</Code> and fix the recipe. Restart retries setup on the same workspace.</p>
+    <p className="mt-1 text-muted">See the logs below; Restart retries setup.</p>
   </div>
 }
 
@@ -131,9 +131,9 @@ function Progress({ s }: { s: SandboxDetail }) {
 function Previews({ s }: { s: SandboxDetail }) {
   const declared = new Set(s.previews.map(p => p.name))
   const detected = Object.entries(s.urls).filter(([k, v]) => !declared.has(k) && /^https?:/.test(v))
-  return <Panel title="Previews" description={s.preview_access?.mode === 'ip' ? 'Served on this server’s IP; each opens behind sign-in unless the recipe makes it public.' : 'Each opens behind sign-in unless the recipe makes it public. Opening one resumes a paused sandbox.'} bodyClassName="p-0">
+  return <Panel title="Previews" bodyClassName="p-0">
     {s.previews.length === 0 && detected.length === 0
-      ? <EmptyState title="No previews" className="py-8">The recipe declares none, and no server is listening yet.</EmptyState>
+      ? <EmptyState title="No previews" className="py-8" />
       : <ul className="divide-y divide-line">
         {s.previews.map(p => <PreviewRow key={p.name} name={p.name} url={p.url} port={p.port} access={p.access} />)}
         {detected.map(([k, url]) => <PreviewRow key={k} name={k} url={url} detected />)}
@@ -158,7 +158,7 @@ const SERVICE_TONE: Record<string, 'ok' | 'progress' | 'bad' | 'idle'> = { ready
 
 function Services({ s }: { s: SandboxDetail }) {
   if (!s.services.length) return null
-  return <Panel title="Services" description="What the recipe's packages provisioned for this sandbox. Deleted with it." bodyClassName="p-0">
+  return <Panel title="Services" bodyClassName="p-0">
     <ul className="divide-y divide-line">
       {s.services.map(svc => <li key={svc.key} className="px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -225,7 +225,7 @@ function Details({ s }: { s: SandboxDetail }) {
 
 export function Connect({ s }: { s: Pick<SandboxDetail, 'name'> }) {
   const agents = useAgents()
-  return <Panel title="Work in it" description="From a checkout on your machine, with the sbx CLI signed in.">
+  return <Panel title="Work in it" description="From a checkout, with the sbx CLI.">
     <div className="space-y-2">
       <CopyCommand command={`sbx open ${s.name} code`} label="open in VS Code" />
       {agents.map(a => <CopyCommand key={a.command} command={`sbx open ${s.name} ${a.command}`} label={`open ${a.title} inside`} />)}
@@ -237,7 +237,7 @@ export function Connect({ s }: { s: Pick<SandboxDetail, 'name'> }) {
 function Resources({ s }: { s: SandboxDetail }) {
   const res = useResources(s.name, !!s.sandbox_id)
   if (!s.sandbox_id) return null
-  return <Panel title="Resources" description="CPU and memory come from the recipe's resources section.">
+  return <Panel title="Resources">
     {res.isPending ? <Loading className="py-4" /> : res.error ? <ErrorState error={res.error} compact retry={() => res.refetch()} /> : res.data && <div className="space-y-3">
       <Facts items={[
         ['Recipe asks', res.data.recipe.cpu || res.data.recipe.memory_mb ? `${res.data.recipe.cpu ?? '—'} vCPU · ${memory(res.data.recipe.memory_mb)}${res.data.recipe.swap_mb ? ` · ${memory(res.data.recipe.swap_mb)} swap` : ''}` : 'platform defaults'],

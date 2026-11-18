@@ -20,7 +20,6 @@ inputs:
     choices:
       schema: Resources without data
       last_partition: Include the latest partition
-    help: The latest partition is the newest eligible partition of each data source.
     default: schema
 outputs:
   url: {}

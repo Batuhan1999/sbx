@@ -43,12 +43,13 @@ class Installation(unittest.TestCase):
     settings and what a test leaves in the tables named in RESET."""
     SETTINGS: dict = {}
     RUNTIME_ENV = RUNTIME   # /etc/sbx/runtime.env as install.sh writes it
+    SET_UP = False          # the first-run setup is complete (templates may build: setup.templates_blocked)
     RESET = ("settings", "config", "config_history", "repos", "sealed", "store_values", "template_builds",
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
              "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
              "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials", "users",
-             "user_links")
+             "user_links", "secret_requests")
 
     @classmethod
     def setUpClass(cls):
@@ -93,6 +94,9 @@ class Installation(unittest.TestCase):
                 if table in present:
                     conn.execute(f"delete from {table}")
         settings.forget()
+        if self.SET_UP:
+            from sbx_control import setup
+            setup.COMPLETE.set("1")
         for section, value in self.SETTINGS.items():
             if section == "repos":
                 settings.set_repos(value, by="test")
@@ -132,6 +136,10 @@ class Server(Installation):
         self.ip_expiry = self.enterContext(patch("sbx_control.connections.domain._ip_expiry", return_value=
                                                  datetime.now(timezone.utc) + timedelta(hours=160)))
         self.enterContext(patch("sbx_control.connections.domain.ip_certificate_error", return_value=""))
+        # A round of template builds the setup's end (or an extension's change) starts: recorded, not run.
+        from sbx_control import template_scheduler
+        self.real_kick = template_scheduler.kick
+        self.kick = self.enterContext(patch.object(template_scheduler, "kick", return_value=True))
 
     def choose_ip(self):
         response = self.client.post("/api/setup/address", headers=self.headers, json={"address": "203.0.113.10"})
@@ -145,8 +153,14 @@ class Server(Installation):
         self.assertNotIn("test-only-password-123", response.text)
         return response.json()
 
+    def choose_agents(self, *kinds):
+        response = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": list(kinds)})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
     def repo_admin(self):
         """Set up, with operator@example.com the signed-in admin."""
         self.choose_ip()
         self.create_admin()
+        self.choose_agents()
         self.assertEqual(self.client.post('/api/setup/complete', headers=self.headers).status_code, 200)

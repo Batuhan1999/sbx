@@ -8,7 +8,7 @@ description: >
 docs: https://openrouter.ai/docs/guides/overview/auth/management-api-keys
 inputs:
   management_key:
-    help: A read/write management key from openrouter.ai/settings/management-keys, not an inference API key.
+    help: "From openrouter.ai/settings/management-keys."
     required: true
     secret: true
 check: |

@@ -12,7 +12,7 @@ export function RepoRuntime({ repo }: { repo: string }) {
   const info = useRepoInfo(repo, !!choice)
   const save = useAction((runtime: string) => api.repos.setRuntime(repo, runtime || null), keys.repoInfo(repo), keys.template(repo), keys.readiness(repo))
   if (!choice) return null
-  return <Panel title="Runtime" description="Where new sandboxes of this repository run, unless one is started on another. Existing sandboxes stay where they are; to move one, delete it and create it again.">
+  return <Panel title="Runtime" description="Where its new sandboxes run. Existing ones stay where they are.">
     <QueryView query={info} inline>{d => <RuntimeForm key={d.runtime ?? ''} current={d.runtime ?? ''} choice={choice} save={save} />}</QueryView>
   </Panel>
 }

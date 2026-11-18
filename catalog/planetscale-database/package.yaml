@@ -9,20 +9,18 @@ description: >
 docs: https://planetscale.com/docs/api/service-tokens
 inputs:
   organization:
-    help: The organization's slug.
     required: true
   database:
     required: true
-    help: PostgreSQL database slug; Vitess/MySQL and Neki need different adapters
+    help: "A PostgreSQL database's slug."
   service_token_id:
     label: Service token ID
-    help: ID of a database-scoped service token
     required: true
     secret: true
   service_token:
     required: true
     secret: true
-    help: Database-scoped token with read_database, read_branch, create_branch, delete_branch and connect_branch; never put it in the recipe
+    help: "Database-scoped, able to read, create, delete and connect branches."
 check: |
   python3 - <<'CHECK'
   import json, os, sys

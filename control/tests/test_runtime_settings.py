@@ -137,7 +137,9 @@ class Web(TwoRuntimes, Server):
         self.assertFalse((self.root / "state/runtime-change.json").exists())   # the root side records
         busy = self.call("PUT", "/api/runtimes/default", {"kind": "fake"})
         self.assertEqual(busy.status_code, 409)                         # one change at a time
-        code, said = self.apply()
+        from sbx_control import setup
+        with patch.object(setup, "templates_blocked", return_value=""):   # set up: an added runtime builds now
+            code, said = self.apply()
         self.assertEqual(code, 0, said)
         self.assertFalse(self.request_file.exists())
         text = self.file.read_text()
@@ -237,10 +239,13 @@ class Web(TwoRuntimes, Server):
                 response = self.call(method, url, body)
                 self.assertEqual(response.status_code, status, response.text)
                 self.assertIn(said, response.json()["detail"])
-        self.checks = [Check("E2B Cloud API", False, "HTTP 401")]
+        from sbx_control import howto
+        self.assertIn(f"(how to: {howto.E2B_KEY})", self.call("POST", "/api/runtimes", cases[3][2]).json()["detail"])
+        self.checks = [Check("E2B Cloud API", False, "HTTP 401", help_url=howto.E2B_KEY)]
         response = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}})
         self.assertEqual(response.status_code, 400)
         self.assertIn("HTTP 401", response.json()["detail"])
+        self.assertIn(f"(how to: {howto.E2B_KEY})", response.json()["detail"])   # the page for a refused key
         self.assertNotIn(KEY, response.text)
         self.assertEqual(self.store, {})
         self.assertFalse(self.request_file.exists())
@@ -469,7 +474,7 @@ class Web(TwoRuntimes, Server):
         reach.assert_called_once_with("fake")
         self.assertFalse(found["ok"])
         self.assertEqual(found["checks"][-1], {"name": "Reaches this server", "ok": False, "detail": "timed out",
-                                               "fix": "open 443", "runtime": "fake"})
+                                               "fix": "open 443", "runtime": "fake", "help_url": ""})
         refused = self.call("POST", "/api/runtimes/e2b-cloud/test")
         self.assertEqual(refused.status_code, 400)
         self.assertIn("not enabled", refused.json()["detail"])
@@ -728,6 +733,7 @@ class SetupWithoutABrowser(Server):
         from fastapi.testclient import TestClient
         self.choose_ip()
         self.create_admin()
+        self.choose_agents()
         fresh = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session cookie: an agent's CLI
         self.addCleanup(fresh.close)
         wrong = fresh.post("/api/setup/complete", headers=self.headers,

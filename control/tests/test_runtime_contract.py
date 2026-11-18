@@ -28,6 +28,11 @@ class Settings(unittest.TestCase):
         self.assertEqual(host.parse("E2B.App."), "e2b.app")
         with self.assertRaisesRegex(ValueError, "host name"):
             host.parse("not a host")
+        url = SettingField("X_API_URL", "API URL", kind="url")
+        self.assertEqual(url.parse(" https://api.example.com/v1 "), "https://api.example.com/v1")
+        for bad in ("api.example.com", "ftp://api.example.com", "https://", "https://a b"):
+            with self.subTest(bad), self.assertRaisesRegex(ValueError, "URL"):
+                url.parse(bad)
 
     def test_limits_and_presets_by_field(self):
         found = Limits.read(SPECS, {"X_CPU": "4"}, "your plan")

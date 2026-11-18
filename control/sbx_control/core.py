@@ -734,6 +734,9 @@ def _run_app(sbx, info, operation=None, *, setup: bool = False, finish: bool = F
     open_desktop_browser(sbx, a, addressing.urls(slug_of(info), a).get("web"))
     if operation:
         operation.advance(lifecycle.started(bool(a.health)), finish=finish)
+    if a.health and a.operator:   # healthy from the server's copy of the recipe: commit it to the repo
+        from . import setup_pr   # it imports auth, which imports this module
+        setup_pr.after_launch(a.repo)
 
 
 def mask(text: str, info, used: dict | None = None) -> str:

@@ -17,14 +17,13 @@ requires:
 inputs:
   region:
     label: Primary region
-    help: Provider primary_region, such as eu-central-1; select from the account's supported regions.
+    help: "Such as eu-central-1."
     required: true
   platform:
     label: Cloud
     choices:
       aws: AWS
       gcp: Google Cloud
-    help: Cloud platform, aws or gcp; the selected region must belong to it.
     default: aws
   plan:
     label: Plan
@@ -38,11 +37,11 @@ inputs:
       fixed_50gb: Fixed 50 GB
       fixed_100gb: Fixed 100 GB
       fixed_500gb: Fixed 500 GB
-    help: A paid plan is never chosen for you.
     default: free
   budget:
+    type: integer
+    min: 1
     label: Monthly budget (USD)
-    help: A whole number, sent to Upstash when the database is made.
     default: '1'
 outputs:
   url: { sensitive: true }

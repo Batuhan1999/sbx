@@ -36,14 +36,13 @@ export default function ConnectRepoPage() {
       navigate(`/app/repos/${result.repo}`)
     } catch (e) { setConnectError(e) } finally { setConnecting(false) }
   }
-  if (me.data && !me.data.admin) return <EmptyState title="Admins connect repositories" action={<LinkButton to="/app/repos">Back to repositories</LinkButton>}>Ask an admin of this server to connect the repository.</EmptyState>
+  if (me.data && !me.data.admin) return <EmptyState title="Admins connect repositories" action={<LinkButton to="/app/repos">Back to repositories</LinkButton>} />
   return <div className="max-w-2xl">
-    <PageHeader title="Connect a repository" crumbs={[{ label: 'Repositories', to: '/app/repos' }]}
-      description="The server clones it into sandboxes and serves its previews. Nothing runs until its recipe exists; your coding agent writes that next." />
+    <PageHeader title="Connect a repository" crumbs={[{ label: 'Repositories', to: '/app/repos' }]} />
     <div className="space-y-4">
       {connections.data && !appReady && <div className="rounded-lg border border-warn/30 bg-warn-soft px-4 py-3 text-[13px]">
         <p className="font-medium text-warn">GitHub is not connected</p>
-        <p className="mt-0.5 text-muted">Public repositories work without it. Private ones need this server's GitHub App: <Link to="/app/extensions#github" className="text-accent hover:underline">connect GitHub</Link>.</p>
+        <p className="mt-0.5 text-muted">Private repositories need it: <Link to="/app/extensions#github" className="text-accent hover:underline">connect GitHub</Link>.</p>
       </div>}
       <Panel title="Repository">
         <AppForm form={form} className="flex flex-col gap-3 sm:flex-row sm:items-start">
@@ -68,10 +67,10 @@ export default function ConnectRepoPage() {
         </div>}
         <ErrorState error={connectError} compact className="mt-3" />
       </Panel>
-      {appReady && <Panel title="From the GitHub App" description="Repositories this server's GitHub App can read." bodyClassName="p-0">
+      {appReady && <Panel title="From the GitHub App" bodyClassName="p-0">
         {available.isPending ? <div className="p-4"><Spinner label="Asking GitHub…" /></div>
           : available.error ? <div className="p-4"><ErrorState error={available.error} compact retry={() => available.refetch()} /></div>
-          : !available.data?.length ? <EmptyState title="No repositories" className="py-8">Install the App on a repository in GitHub.</EmptyState>
+          : !available.data?.length ? <EmptyState title="No repositories" className="py-8" />
           : <ul className="max-h-96 divide-y divide-line overflow-y-auto">
             {available.data.map(r => <li key={r.repo} className="flex items-center gap-3 px-4 py-2.5">
               <div className="min-w-0 grow">

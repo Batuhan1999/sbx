@@ -116,6 +116,12 @@ class Connector(Connection):
     activity: tuple[str, ...] = ()    # directories of agent transcripts: a recent *.jsonl there is use
     busy: tuple[str, ...] = ()        # process command lines (pgrep -f patterns): one running is use
     login: Login | None = None        # a developer's own login for it (`sbx login`, `sbx open`)
+    choosable = False                 # offered as a coding agent in the first-run setup (setup.choose_agents)
+
+    def choose(self, on: bool, *, by: str):
+        """Chosen (or not) as a coding agent in the setup, before any template
+        is built: from now on its contribution has what its sandboxes need in
+        every template, though its own key may come later."""
 
     def settings(self):
         """Its section of the settings now (its model's defaults until saved)."""

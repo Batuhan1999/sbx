@@ -10,10 +10,10 @@ inputs:
   api_key:
     required: true
     secret: true
-    help: a project-scoped key that can manage branches/endpoints and read role passwords
+    help: "A project-scoped key."
   project:
     label: Project ID
-    help: the existing project ID from Neon project settings
+    help: "From Neon's project settings."
     required: true
 check: |
   python3 - <<'CHECK'

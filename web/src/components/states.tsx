@@ -2,6 +2,7 @@ import { AlertTriangle, RotateCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { describeError } from '@/api/client'
 import { cn } from '@/lib/utils'
+import { DocsLink } from './PackageLogo'
 import { Button } from './ui/button'
 import { Skeleton, Spinner } from './ui/primitives'
 
@@ -16,6 +17,27 @@ export function EmptyState({ icon: Icon, title, children, action, className }: {
   </div>
 }
 
+const TECHNICAL = /:\/\/|Error\(|Exception|Traceback|Caused by|ConnectionPool|Max retries|errno|host=/i
+
+/** A message, and its technical part (addresses, exception text) apart: what is wrong reads first, the rest is
+ * behind Details. A message without technical detail comes back whole, with no detail. */
+export function splitDetail(text: string): { head: string; detail: string } {
+  const t = (text ?? '').trim()
+  if (!TECHNICAL.test(t) && t.length <= 160) return { head: t, detail: '' }
+  const cut = t.search(/: |; | \(/)
+  if (cut <= 0 || TECHNICAL.test(t.slice(0, cut))) return { head: t.length > 160 ? `${t.slice(0, 120).trim()}…` : t, detail: t }
+  return { head: t.slice(0, cut), detail: t.slice(cut).replace(/^[:;]\s*|^\s*/, '') }
+}
+
+/** Text that may carry technical detail: its head, and the detail under a Details disclosure. */
+export function DetailText({ text, className }: { text: string; className?: string }) {
+  const { head, detail } = splitDetail(text)
+  return <span className={className}>{head}{detail && <details className="mt-1 text-[12px] [&>summary]:cursor-pointer">
+    <summary className="w-fit text-muted hover:text-ink">Details</summary>
+    <span className="mt-1 block break-all font-mono text-[11.5px] text-muted">{detail}</span>
+  </details>}</span>
+}
+
 export function ErrorState({ error, retry, compact, className }: { error: unknown; retry?: () => void; compact?: boolean; className?: string }) {
   if (!error) return null
   const { message, checks, status } = describeError(error)
@@ -23,9 +45,9 @@ export function ErrorState({ error, retry, compact, className }: { error: unknow
     <div className="flex items-start gap-2.5">
       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-bad" />
       <div className="min-w-0 grow">
-        <p className="break-words text-bad">{message}{status && status >= 500 ? <span className="text-bad/70"> (HTTP {status})</span> : null}</p>
+        <div className="break-words text-bad"><DetailText text={message} />{status && status >= 500 ? <span className="text-bad/70"> (HTTP {status})</span> : null}</div>
         {checks.length > 0 && <ul className="mt-2 space-y-1">
-          {checks.map(c => <li key={c.name} className="text-ink"><span className="font-medium">{c.name}</span>: <span className="text-muted">{c.detail}</span>{c.fix && <span className="block text-[12px] text-muted">Fix: {c.fix}</span>}</li>)}
+          {checks.map(c => <li key={c.name} className="text-ink"><span className="font-medium">{c.name}</span>: <DetailText className="text-muted" text={c.detail} />{c.fix && <span className="block text-[12px] text-muted">Fix: {c.fix}</span>}{c.help_url && <span className="block"><DocsLink href={c.help_url}>How to set it up</DocsLink></span>}</li>)}
         </ul>}
       </div>
       {retry && <Button size="sm" variant="ghost" onClick={retry} className="-my-0.5"><RotateCw />Retry</Button>}

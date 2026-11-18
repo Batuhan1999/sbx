@@ -180,11 +180,13 @@ export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
-export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname' | 'url'; optional: boolean; limit: string; rekey?: boolean
   /** A hostname's pattern, the server's own (runtime.base.HOSTNAME). */
   pattern?: string
   /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
-  min?: number | null; max?: number | null; step?: number | null; unit?: string }
+  min?: number | null; max?: number | null; step?: number | null; unit?: string
+  /** An operator's rare setting: set through the API and CLI (sbx runtimes set), no form field. */
+  hidden?: boolean }
 /** adjustable: keys the plan does not fix (no published number), set from values; note says why. */
 export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string; adjustable?: string[]; note?: string }
 /** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
@@ -224,7 +226,7 @@ export type HostRequestState = 'idle' | 'queued' | 'applying' | 'done' | 'failed
  * restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
 export type HostRequestStatus = { state: HostRequestState; message: string; at: string; restarting?: boolean }
 /** unchanged: done at once, nothing to apply (the default already). */
-export type RuntimeChange = HostRequestStatus & { operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; unchanged?: boolean }
+export type RuntimeChange = HostRequestStatus & { operation: '' | 'add' | 'change' | 'remove' | 'default' | 'batch'; kind: string; unchanged?: boolean }
 /** What a runtime's form sends: a plan (its limits resolved by the server), or none, and the values set. */
 export type RuntimeValues = { plan?: string; values: Record<string, string> }
 
@@ -257,12 +259,27 @@ export type RepoInfo = {
   github: 'app' | 'key' | 'anonymous' | '-'
   github_app_install: string
   github_anonymous: boolean
+  /** server: the operator's copy (sbx recipe apply); repository: imported from the default branch. */
+  recipe_source?: 'server' | 'repository' | ''
+  /** The recipe's pull request as last recorded; current: it carries the recipe the server runs. */
+  recipe_pr?: RecipePr | null
+}
+
+export type RecipePr = {
+  number: number | null
+  url: string | null
+  state: 'open' | 'merged' | 'closed' | 'in_repository' | null
+  draft: boolean
+  recipe_sha256: string
+  /** Why the last try could not publish it (GitHub access), when it failed. */
+  problem: string | null
+  current?: boolean
 }
 
 /** GET /api/repos/{repo}: runtime is the repo's own setting, null for the installation's default. */
 export type RepoDetail = RepoInfo & { runtime?: string | null }
 
-export type ReadinessStepId = 'served' | 'github' | 'configured' | 'template' | 'services' | 'env' | 'sandbox'
+export type ReadinessStepId = 'served' | 'github' | 'configured' | 'template' | 'services' | 'env' | 'sandbox' | 'recipe_pr'
 export type ReadinessStepStatus = 'done' | 'todo' | 'working' | 'blocked'
 export type ReadinessStep = {
   step: ReadinessStepId
@@ -272,8 +289,12 @@ export type ReadinessStep = {
   /** Names of what is missing: env variables, attachment keys. */
   missing: string[]
   detail: string
-  /** The github step: the App's install URL while it is not done. */
+  /** The github and recipe_pr steps: the App's install URL while it is not done. */
   action?: string
+  /** The owner's how-to page for the step, if it has one. */
+  help_url?: string
+  /** The recipe_pr step: the pull request. */
+  url?: string
 }
 /** agent: hand it to the coding agent; person: someone must enter or approve something; working: wait; ready: start sandboxes; live: one is running. */
 export type ReadinessStage = 'agent' | 'person' | 'working' | 'ready' | 'live'
@@ -312,7 +333,7 @@ export type RecipeFiles = { files: { path: string; text: string | null }[] }
 
 export type GitHubRepository = { repo: string; description: string; private: boolean; branch: string }
 export type RepoInspection = { repo: string; description: string; branch: string; private: boolean; github_app: boolean; registered: boolean; url: string }
-export type SetupPr = { available: boolean; pull_request: null | { number: number; url: string; state: string; title?: string; draft?: boolean; merged?: boolean } }
+export type SetupPr = { available: boolean; pull_request: null | { number: number; url: string; state: string; title?: string; draft?: boolean; merged?: boolean }; record?: RecipePr | null }
 
 export type EnvKind = 'service' | 'sbx.yaml' | 'installation' | 'repo' | 'mine'
 export type Audience = 'all' | 'previews' | 'sessions'
@@ -370,10 +391,14 @@ export type EnvView = {
 export type EnvChange = { running: number; paused: number; pending?: boolean; detail?: string }
 export type SetVariable = { value: string | null; secret?: boolean | null; audience?: Audience; agent?: boolean; mine?: boolean; restart?: boolean }
 
-/** label: the field's name for people; choices: the only values allowed, in order, each with its label. */
+/** label: the field's name for people; choices: the only values allowed, in order, each with its label; type: what
+ * it holds (min/max for numbers); advanced: folded under More options. */
 export type PackageInput = {
   required: boolean; secret: boolean; agent: boolean; help: string; default?: string
   label?: string; choices?: { value: string; label: string }[]
+  type?: 'text' | 'number' | 'integer' | 'boolean' | 'email' | 'url'; min?: number; max?: number; advanced?: boolean
+  /** An operator's input: set through the API and CLI, no form field. */
+  hidden?: boolean
 }
 export type CatalogPackage = {
   name: string
@@ -418,7 +443,16 @@ export type AttachBody = { package: string; key?: string; inputs: Record<string,
 
 // Connections: platform connections and agent connectors share one shape.
 export type ConnectionState = 'connected' | 'attention' | 'not_connected' | 'off'
-export type ConnectionField = { name: string; label: string; secret: boolean; set: boolean; value: string | null; help: string }
+/** What a connection field holds, so the form draws the right control (connections/base.py FieldKind). */
+export type ConnectionFieldKind = 'text' | 'multiline' | 'int' | 'email' | 'url' | 'hostname' | 'choice' | 'bool'
+/** advanced: folded under More options; hidden: API and CLI only, no form field; when: shown only while each named
+ * field has one of the values. */
+export type ConnectionField = {
+  name: string; label: string; secret: boolean; set: boolean; value: string | null; help: string
+  kind?: ConnectionFieldKind; options?: { value: string; label: string }[]
+  min?: number | null; max?: number | null; step?: number | null; unit?: string; placeholder?: string
+  optional?: boolean; advanced?: boolean; hidden?: boolean; when?: Record<string, string[]>
+}
 export type Connection = {
   kind: string
   title: string
@@ -433,15 +467,58 @@ export type Connection = {
   fields: ConnectionField[]
   actions: string[]
 }
-/** runtime: the kind of sandbox runtime it checks, null for the server's own checks. */
-export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null }
+/** runtime: the kind of sandbox runtime it checks, null for the server's own checks. help_url: the owner's how-to page for what it checks, if any. */
+export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null; help_url?: string }
 export type CheckResult = { ok: boolean; checks: Check[] }
 
+/** A key request an agent made (GET /api/secret-requests/ID): where each key goes, never a value. */
+export type SecretRequestItem = {
+  target: string
+  label: string
+  help_url: string
+  what: string
+  hint: string
+  /** The target of the held key this item reuses (nothing to paste), or null. */
+  reuse: string | null
+  reuse_from: string | null
+  done: boolean
+  done_at: string | null
+  done_by: string | null
+  /** A runtime key's change on the server, once queued; null for any other key. */
+  applied: RuntimeApply | null
+}
+/** How far the server is with runtime keys: queued and applied by the host, which then restarts sbx-control. */
+export type RuntimeApply = { state: 'none' | 'queued' | 'applying' | 'restarting' | 'done' | 'failed' | 'unknown'; message: string }
+export type SecretRequest = {
+  id: string
+  url: string
+  state: 'pending' | 'completed' | 'cancelled' | 'expired'
+  created_by: string
+  created_at: string
+  expires_at: string
+  note: string
+  finished_at: string | null
+  finished_by: string | null
+  remaining: number
+  items: SecretRequestItem[]
+  runtime_changes: RuntimeApply
+}
+export type SecretSubmitResult = { request: SecretRequest; ok: boolean; results: { target: string; ok: boolean; error: string }[] }
+
+/** What saving or disconnecting an extension does to the templates (PUT/DELETE /api/connections/{kind}, extensions
+ * only): how many rebuild on each runtime, whether they build now, and the server's sentence for it. */
+export type Rebuilds = { runtimes: Record<string, number>; keys: Record<string, string[]>; building: boolean; message: string }
+export type ConnectionChange = Connection & { rebuilds?: Rebuilds }
+/** A coding agent the setup offers; chosen ones are in every template from the first build on. */
+export type SetupAgent = { kind: string; title: string; chosen: boolean }
 export type SetupState = {
   complete: boolean
-  steps: { step: 'address' | 'sign_in' | 'runtime'; done: boolean; optional: boolean; summary: string }[]
+  steps: { step: 'address' | 'sign_in' | 'runtime' | 'agents'; done: boolean; optional: boolean; summary: string }[]
   signed_in: boolean
   email: string | null
+  /** Nobody signs in (a private network): no admin account to create. */
+  open_access: boolean
+  agents: SetupAgent[]
   can_complete: boolean
   host: { address: string }
   access: { mode: 'ip' | 'domain'; domain: string; url: string; certificate: string; certificate_email: string; certificate_ready: boolean; certificate_error: string; needs_ports: number[] }

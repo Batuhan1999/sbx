@@ -51,7 +51,21 @@ def _read(payload: str | None) -> dict:
 def _view(state: str, record: dict, restarting: bool = False) -> dict:
     return {"state": state, "operation": record.get("operation", ""), "kind": record.get("kind", ""),
             "message": record.get("message", ""), "at": record.get("at", ""), "restarting": restarting,
-            "unchanged": False}
+            "unchanged": False, "id": record.get("id", ""), "results": record.get("results") or []}
+
+
+RECENT = 10
+
+
+def _record(found: dict) -> None:
+    """host_requests.record, keeping the outcomes of the last RECENT changes
+    that carry an id (a batch: request_batch), so outcome(id) finds one
+    after later changes."""
+    recent = host_requests.last(KEY).get("recent") or []
+    if found.get("id") and found.get("state") in ("done", "failed"):
+        mine = {k: found.get(k) for k in ("id", "state", "message", "results", "at", "finished")}
+        recent = [r for r in recent if r.get("id") != found["id"]][-(RECENT - 1):] + [mine]
+    host_requests.record(KEY, {**found, "recent": recent})
 
 
 def _give_up() -> None:
@@ -66,9 +80,11 @@ def _give_up() -> None:
             if payload is None:
                 return
             request = _read(payload)
-            discard_references(request.get("values") or {})
-            host_requests.record(KEY, {"operation": request.get("operation", ""), "kind": request.get("kind", ""),
-                                       "by": request.get("by", ""), "state": "failed", "at": _now(), "message": (
+            for values in [request.get("values"), *(c.get("values") for c in request.get("changes") or [])]:
+                discard_references(values or {})
+            _record({"operation": request.get("operation", ""), "kind": request.get("kind", ""),
+                     "id": request.get("id", ""), "by": request.get("by", ""), "state": "failed", "at": _now(),
+                     "message": (
                 "the root side did not pick up the change: check sbx-apply-runtime-change.path "
                 "(systemctl status sbx-apply-runtime-change.path) and try again")})
     except BlockingIOError:   # the root side took it just now
@@ -105,10 +121,16 @@ def status() -> dict:
             return _view("applying", record)
         if found == "applying":
             return _view("failed", {**record, "message": "the change stopped before it finished; nothing to wait for"})
+    return _view(found, record, _restarting(record))
+
+
+def _restarting(record: dict) -> bool:
+    """A done change whose sbx-control restart has not happened yet. A failed
+    batch that made some of its changes restarts sbx-control too (finished is
+    set when any was made)."""
     finished = record.get("finished")
-    restarting = (found == "done" and finished is not None and STARTED < finished
-                  and time.time() - finished < RESTART_SECONDS)
-    return _view(found, record, restarting)
+    return (record.get("state") in ("done", "failed") and finished is not None and STARTED < finished
+            and time.time() - finished < RESTART_SECONDS)
 
 
 def busy() -> bool:
@@ -140,6 +162,60 @@ def request(operation: str, kind: str, values: dict | None = None, *, by: str) -
                                              "by": by, "at": _now()}))
     print(f"runtimes: {by} asked to {operation} {kind}", flush=True)
     return status()
+
+
+def request_batch(changes: list, *, by: str) -> dict:
+    """Queue several checked changes ([{operation, kind, values}], each as
+    request() takes one) as one request: the root side applies them in
+    order, each on its own (one refused leaves the others made), then
+    regenerates nginx and restarts sbx-control once. Busy while another is
+    queued. The status, with the batch's id to follow it by (outcome)."""
+    import secrets
+    for change in changes:
+        if change.get("operation") not in ("add", "change"):
+            raise runtimes.Refused(f"no runtime change {change.get('operation')} in a batch")
+    change_id = secrets.token_hex(8)
+    kinds = ",".join(c["kind"] for c in changes)
+    with host_requests.lock(KEY):
+        if host_requests.requested(KEY):
+            raise Busy("a runtime change is being applied already; wait for it to finish")
+        host_requests.queue(KEY, json.dumps({"operation": "batch", "kind": kinds, "changes": changes, "id": change_id,
+                                             "by": by, "at": _now()}))
+    print(f"runtimes: {by} asked to apply {len(changes)} change(s): {kinds}", flush=True)
+    return {**status(), "id": change_id}
+
+
+def outcome(change_id: str) -> dict | None:
+    """Where the change with this id is: the status while it is the queued,
+    applying or last one; else its recorded outcome ({state: done|failed,
+    message, results}); None when it is known no more."""
+    found = status()
+    if change_id and found.get("id") == change_id:
+        return found
+    recent = next((r for r in host_requests.last(KEY).get("recent") or [] if r.get("id") == change_id), None)
+    if recent:
+        return {**recent, "restarting": _restarting(recent)}
+    if change_id and host_requests.applying(KEY):
+        # The root side took a request and has not recorded it yet: this one, being applied.
+        return _view("applying", {"id": change_id})
+    return None
+
+
+def checked(operation: str, kind: str, check, *, by: str) -> dict:
+    """check() (runtime_settings.prepare and the like: the values to queue),
+    then request(); a secret check() sealed is discarded again when queueing
+    is refused. Busy while another change is queued or applied; Refused as
+    check() refuses."""
+    values = None
+    try:
+        if busy():
+            raise Busy("a runtime change is being applied already; wait for it to finish")
+        values = check()
+        return request(operation, kind, values, by=by)
+    except BaseException:
+        if values:
+            discard_references(values)
+        raise
 
 
 _PLANS = {"add": runtime_settings.add, "change": runtime_settings.add,
@@ -227,21 +303,59 @@ def apply_request(payload: str | None) -> int:
         return 2
     request = _read(payload)
     if not request:
-        host_requests.record(KEY, {"state": "failed", "operation": "", "kind": "",
+        _record({"state": "failed", "operation": "", "kind": "",
                                    "message": "the request was unreadable", "at": _now()})
         return 1
+    if request.get("changes"):
+        return _apply_batch(request)
     operation, kind, values = request.get("operation", ""), request.get("kind", ""), request.get("values") or {}
     record = {"operation": operation, "kind": kind, "by": request.get("by", ""), "at": _now()}
-    host_requests.record(KEY, {**record, "state": "applying", "message": ""})
+    _record({**record, "state": "applying", "message": ""})
     try:
-        commit(operation, kind, values, made=lambda said: host_requests.record(
-            KEY, {**record, "state": "done", "message": said, "at": _now(), "finished": time.time()}))
+        commit(operation, kind, values, made=lambda said: _record(
+            {**record, "state": "done", "message": said, "at": _now(), "finished": time.time()}))
     except (Exception, SystemExit) as error:
         _discard_unused(values)
-        host_requests.record(KEY, {**record, "state": "failed", "message": str(error), "at": _now()})
+        _record({**record, "state": "failed", "message": str(error), "at": _now()})
         print(f"runtime change refused: {error}", file=sys.stderr, flush=True)
         return 1
     return 0
+
+
+def _apply_batch(request: dict) -> int:
+    """A batch (request_batch): each change made in order (perform), each
+    outcome kept (results); done when all were made, else failed naming
+    each refusal. nginx and sbx-control once, after the outcome is
+    recorded, when any change was made. 0 when all were."""
+    changes = request.get("changes") or []
+    record = {"operation": "batch", "kind": request.get("kind", ""), "id": request.get("id", ""),
+              "by": request.get("by", ""), "at": _now()}
+    _record({**record, "state": "applying", "message": ""})
+    results, made = [], []
+    for change in changes:
+        operation, kind, values = change.get("operation", ""), change.get("kind", ""), change.get("values") or {}
+        try:
+            said = perform(operation, kind, values)
+        except (Exception, SystemExit) as error:
+            _discard_unused(values)
+            results.append({"operation": operation, "kind": kind, "ok": False, "message": str(error)})
+            print(f"runtime change {operation} {kind} refused: {error}", file=sys.stderr, flush=True)
+            continue
+        print(said, flush=True)
+        results.append({"operation": operation, "kind": kind, "ok": True, "message": said})
+        made.append((operation, kind))
+    failed = [r for r in results if not r["ok"]]
+    message = "; ".join(r["message"] if r["ok"] else f"{r['kind']} was not changed: {r['message']}" for r in results)
+    _record({**record, "state": "failed" if failed else "done", "message": message, "results": results,
+             "at": _now(), **({"finished": time.time()} if made else {})})
+    if made:
+        settings.request_effects(HostUnit.TLS, HostUnit.CONTROL)
+        print("nginx is regenerated and sbx-control restarts within seconds", flush=True)
+        from .template_scheduler import start_template_builds
+        for operation, kind in made:
+            if operation == "add":
+                start_template_builds(kind)
+    return 1 if failed else 0
 
 
 def apply_pending() -> int:

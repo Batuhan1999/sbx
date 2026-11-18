@@ -13,12 +13,6 @@ import { sandboxStatus } from '@/lib/status'
 import { NewSandboxForm } from './NewSandboxForm'
 import { SandboxTable } from './SandboxTable'
 
-const EMPTY: Record<SandboxScope, string> = {
-  mine: 'Sandboxes you start appear here: from this page, from sbx up on your machine, or from a repository.',
-  previews: 'Pull requests on repositories with previews get a sandbox each; none are running.',
-  sessions: 'Sandboxes your coding agent sessions (Claude Code, Amp) started appear here.',
-  all: 'Nobody has a sandbox on this server yet.',
-}
 
 /** The room for sandboxes: the default runtime's, or with several runtimes one line per runtime that knows its room. */
 export function CapacityNote({ list }: { list?: Pick<SandboxList, 'capacity' | 'capacities'> }) {
@@ -72,9 +66,9 @@ export default function SandboxesPage() {
     ...(me.data?.admin ? [{ value: 'all' as const, label: 'Everyone' }] : []),
   ]
   return <>
-    <PageHeader title="Sandboxes" description="Each sandbox is one branch running in its own VM: workspace, services, app and preview URLs."
+    <PageHeader title="Sandboxes"
       meta={<CapacityNote list={list.data} />}
-      actions={<Dialog open={creating} onOpenChange={setCreating} title="New sandbox" description="A development environment for one branch."
+      actions={<Dialog open={creating} onOpenChange={setCreating} title="New sandbox"
         trigger={<Button variant="primary"><Plus />New sandbox</Button>}>
         <NewSandboxForm onCancel={() => setCreating(false)} />
       </Dialog>} />
@@ -91,7 +85,7 @@ export default function SandboxesPage() {
       : filtered.length ? <SandboxTable sandboxes={filtered} />
       : <div className="rounded-lg border border-dashed border-line">
         {query ? <EmptyState title="No sandboxes match" action={<Button size="sm" onClick={() => setQuery('')}>Clear filter</Button>} />
-          : <EmptyState icon={Boxes} title="No sandboxes" action={scope === 'mine' && <><Button variant="primary" size="sm" onClick={() => setCreating(true)}><Plus />New sandbox</Button><LinkButton size="sm" to="/app/cli">Use the CLI</LinkButton></>}>{EMPTY[scope]}</EmptyState>}
+          : <EmptyState icon={Boxes} title="No sandboxes" action={scope === 'mine' && <><Button variant="primary" size="sm" onClick={() => setCreating(true)}><Plus />New sandbox</Button><LinkButton size="sm" to="/app/cli">Use the CLI</LinkButton></>} />}
       </div>}
   </>
 }

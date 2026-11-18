@@ -28,6 +28,7 @@ import pathlib
 import re
 import shlex
 import abc
+import urllib.parse
 from typing import Any, Callable, ContextManager, Literal, Mapping, Protocol
 
 RUNNING, PAUSED = "running", "paused"
@@ -233,7 +234,7 @@ class SettingField:
     secret: bool = False
     default: str = ""          # what it is when not set ("": nothing)
     help: str = ""
-    kind: str = "text"         # "text", "int" (a whole number, at least 1) or "hostname"
+    kind: str = "text"         # "text", "int" (a whole number, at least 1), "hostname" or "url" (http or https)
     optional: bool = False     # may stay empty (its default applies)
     limit: str = ""            # the Limits field it sets, for an int limit
     rekey: bool = False
@@ -243,6 +244,9 @@ class SettingField:
     max: int | None = None
     step: int | None = None
     unit: str = ""
+    # An operator's rare setting (another API, a self-hosted provider): the API and CLI
+    # (sbx runtimes set) take it, the web app's form does not show it.
+    hidden: bool = False
 
     def view(self) -> dict:
         """As the API shows it; a hostname's pattern (HOSTNAME) for the web app's own check."""
@@ -264,6 +268,10 @@ class SettingField:
             if (self.min is not None and int(value) < self.min) or (self.max is not None and int(value) > self.max):
                 raise ValueError(f"{self.label} ({self.key}) is from {self.min} to {self.max}"
                                  f"{' ' + self.unit if self.unit else ''}, not {value}")
+        if self.kind == "url":
+            parsed = urllib.parse.urlsplit(value)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname or any(c.isspace() for c in value):
+                raise ValueError(f"{self.label} ({self.key}) is a URL such as https://example.com, not {value!r}")
         if self.kind == "hostname":
             value = value.lower().rstrip(".")
             if not HOSTNAME.fullmatch(value):
@@ -427,6 +435,7 @@ class Backend(abc.ABC):
     kind: str
     title: str
     capabilities: Capabilities = Capabilities()
+    help_url = ""         # the owner's how-to page for its account and API key (howto), for its failing checks and the keys page
     host = False          # it runs on this server (its host part does something)
     disk_path = ""        # where it keeps templates and snapshots, as messages name it
     # The last hop of a preview: nginx proxies to ingress with the Host

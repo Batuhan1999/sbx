@@ -45,6 +45,7 @@ class ClaudeCode(extensions.Connector):
     title = "Claude Code"
     shown = ("version", "sessions_running")
     section = Settings
+    choosable = True   # its CLI is in every template already (contribution): choosing it changes no template
     ports = (RUNNER_HEALTH_PORT,)
     activity = (f"{platform.HOME}/.claude/projects",)
     busy = ("self-hosted-runner",)           # a session's runner (runner.start)
@@ -128,18 +129,20 @@ class ClaudeCode(extensions.Connector):
     def status(self) -> Status:
         s = self.settings()
         secret = vault.facts(SECRET)
-        facts = {"version": s.version}
+        facts = {}
         if not s.enabled:
-            state_, summary = "off", "off"
+            state_, summary = "off", ""
         elif not secret.set:
-            state_, summary = "not_connected", "waiting for the environment secret from claude.ai"
+            state_, summary = "not_connected", "Needs its environment secret"
+            facts["chosen"] = True   # in every template already: listed as added, waiting on its secret
         else:
-            state_, summary = "connected", f"connected · version {s.version}"
+            state_, summary = "connected", ""
             facts["sessions_running"] = _sessions_running()
+        # Saving the secret turns it on and Disconnect turns it off; the version is
+        # pinned by sbx and set from the CLI (sbx extensions set claude --set version=...).
         fields = (Field("environment_secret", "Environment secret", secret=True, set=secret.set,
                         help="From claude.ai: Settings → Self-hosted environments"),
-                  Field("enabled", "Enabled", value="true" if s.enabled else "false"),
-                  Field("version", "Claude Code version", value=s.version))
+                  Field("version", "Version", value=s.version, hidden=True))
         return Status(self.kind, self.title, state_, summary, facts, fields, ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:

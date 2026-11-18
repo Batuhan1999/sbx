@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from . import connections, github_app, setup
+from . import connections, extensions, github_app, setup, template_builds, template_scheduler
 from .auth import admin_user, api_user
 from .setup_api import setup_or_admin
 
@@ -37,24 +37,52 @@ async def api_connection_test(kind: str, body: Values | None = None, email: str 
     return {"ok": connections.checks_ok(checks), "checks": [c.__dict__ for c in checks]}
 
 
+def _changing_templates(connection, change):
+    """change() for an extension, and what it did to the templates
+    (template_builds.rebuilds: how many rebuild on each runtime), whose
+    builds then start; (status, None) for any other connection."""
+    if extensions.get(connection.kind) is not connection:
+        return change(), None
+    before = template_builds.planned()
+    status = change()
+    report = template_builds.rebuilds(before)
+    if report["building"]:
+        template_scheduler.kick()
+    return status, report
+
+
+def _view(connection, status, report) -> dict:
+    view = connection.view(status)
+    return view if report is None else {**view, "rebuilds": report}
+
+
 @router.put("/api/connections/{kind}")
 async def api_connection_put(kind: str, body: Values, email: str = Depends(setup_or_admin)):
     connection = _connection(kind)
     try:
-        status = await run_in_threadpool(connection.connect, body.values, by=email)
+        status, report = await run_in_threadpool(
+            _changing_templates, connection, lambda: connection.connect(body.values, by=email))
     except connections.Refused as error:
         raise HTTPException(400, {"message": str(error), "checks": [c.__dict__ for c in error.checks]})
-    return connection.view(status)
+    return _view(connection, status, report)
 
 
 @router.delete("/api/connections/{kind}")
 async def api_connection_delete(kind: str, email: str = Depends(admin_user)):
     connection = _connection(kind)
     try:
-        status = await run_in_threadpool(connection.disconnect, by=email)
+        status, report = await run_in_threadpool(
+            _changing_templates, connection, lambda: connection.disconnect(by=email))
     except connections.Refused as error:
         raise HTTPException(400, str(error))
-    return connection.view(status)
+    return _view(connection, status, report)
+
+
+@router.get("/api/templates")
+def api_templates(email: str = Depends(admin_user)):
+    """Every template sandboxes start from, per enabled runtime, and where its
+    build stands (template_builds.progress); what `sbx extensions ... --wait` follows."""
+    return template_builds.progress()
 
 
 # The web app's pages GitHub may send the browser back to after the App is installed.

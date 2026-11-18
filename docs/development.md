@@ -324,7 +324,12 @@ provider's domain): changing it needs the secret typed again, so a stored
 one never goes to a new place. A backend that declares nothing has its `secret_key`
 as its one setting. A runtime on this host (`host = True`) declares none:
 `install.sh` sets it up, and `can_run(facts)` says why this server can't run
-it (`""` when it can) from `setup.host_facts()`.
+it (`""` when it can) from `setup.host_facts()`. `help_url` (an https link,
+`sbx_control.howto` for the built-in guides) says how to get its secret;
+the keys page links it for a `runtime:<kind>`
+[key request](reference.md#asking-the-owner-for-keys)
+(`secret_requests.py`), which saves the value through `prepare` and the
+host's queue like the web app's form.
 
 When the provider refuses a request for a limit of its plan, the backend
 raises `LimitRefused(message, field=..., asked=..., allowed=...)` for a

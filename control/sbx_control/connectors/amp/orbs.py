@@ -110,8 +110,6 @@ def resolve_repo(orb_type: str = "", snapshot_key: str = "") -> str:
         matches = [r["repo"] for r in available if orb_type in (r["orb_type"], r["repo"])]
     elif cached_repo:
         matches = [r["repo"] for r in available if r["repo"] == cached_repo]
-    elif current().repo:
-        matches = [r["repo"] for r in available if r["repo"] == current().repo]
     else:
         matches = [r["repo"] for r in available]
     if len(matches) != 1:

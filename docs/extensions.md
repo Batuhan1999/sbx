@@ -47,7 +47,15 @@ A template is the platform layer, the template layers of every enabled
 extension, and the repository's recipe. Their digest is the template's
 fingerprint, so enabling a connector or changing a pinned version makes
 templates stale and they are rebuilt ([templates](reference.md#templates)). An
-extension never adds steps to the template builder itself.
+extension never adds steps to the template builder itself. Saving or
+disconnecting an extension answers how many templates that rebuilds on each
+runtime (`rebuilds`; `sbx extensions set KIND --wait` waits for them).
+
+A connector with `choosable = True` is offered in the first-run setup's
+coding-agents step, before any template is built. `choose(on, by=...)` records
+the choice in its own settings, so its `contribution` already has its template
+layer for the first build even when its own key comes later (Amp: its
+`chosen` setting; Claude Code's CLI is in every template anyway).
 
 An extension can instead put its layer into the base template of every
 installation, whatever its settings, with `base_contribution()`: a
@@ -91,6 +99,7 @@ are plain values rather than part of the contribution:
 | `login` | `extensions.Login`: where a developer's own login for the agent goes in a sandbox, and how `sbx login <kind>` gets it (a pasted token kept in the Keychain, or the agent's own login file). The CLI reads these from `GET /api/me`; the server never sees the login. |
 | `section` | Its settings: a `settings.ExtensionSection` model, stored under its kind; `settings()` reads it and `save_settings()` writes it, asking for the host effects the model's `applies` names. |
 | `cli` | A function run as `sbx-admin <kind> ...`. |
+| `help_url` | An https link that says how to get its secret field's value; the keys page links it for a `connector:<kind>` [key request](reference.md#asking-the-owner-for-keys), which saves the value through `connect()` with its other fields unchanged. |
 
 | Method | Use |
 | --- | --- |

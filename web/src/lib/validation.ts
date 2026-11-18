@@ -39,3 +39,17 @@ export const repoError = (value: string) => {
 
 export const domainError = (value: string) =>
   /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(value.trim()) ? undefined : 'Enter a domain such as sbx.example.com.'
+
+export const urlError = (value: string) =>
+  /^https?:\/\/[^\s/]+\S*$/.test(value.trim()) ? undefined : 'Enter a URL starting with https://.'
+
+/** A number within min and max; integer: a whole number. */
+export const numberError = (value: string, { min, max, integer }: { min?: number | null; max?: number | null; integer?: boolean } = {}) => {
+  const v = value.trim()
+  const n = Number(v)
+  if (!v || !Number.isFinite(n)) return integer ? 'Enter a whole number.' : 'Enter a number.'
+  if (integer && !Number.isInteger(n)) return 'Enter a whole number.'
+  if (min != null && n < min) return `Enter at least ${min}.`
+  if (max != null && n > max) return `Enter at most ${max}.`
+  return undefined
+}

@@ -15,9 +15,7 @@ import tarfile
 import time
 import zlib
 
-from pydantic import ValidationError
-
-from ... import core, extensions, host, paths, settings, vault
+from ... import core, extensions, host, howto, paths, vault
 from ...connections.base import Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
 from . import registry
@@ -197,7 +195,14 @@ def _refused_by(kind: str, error: BaseException) -> bool:
 class Amp(extensions.Connector):
     kind = KIND
     title = "Amp"
+    help_url = howto.AMP_PROVIDER
     section = Settings
+    choosable = True
+
+    def choose(self, on: bool, *, by: str):
+        """Its layer in every template from the first build on; the provider runs once its token is added."""
+        if self.settings().chosen != on:
+            self.save_settings({**self.settings().model_dump(), "chosen": on}, by=by)
 
     @property
     def cli(self):
@@ -284,26 +289,25 @@ class Amp(extensions.Connector):
         state = "not_connected" if not token.set else "off" if not amp.enabled else "attention"
         if token.set and amp.enabled and active():
             state = "connected"
-        summary = {"not_connected": "Add an orb provider token from Amp Settings → Orbs",
-                   "off": "Provider stopped; existing orb disks are retained",
-                   "attention": "Provider configured; check its service and Amp connection",
-                   "connected": "Provider running · verify its connection in Amp Settings → Orbs"}[state]
-        return Status(self.kind, self.title, state, summary, {}, (
+        summary = {"not_connected": "Needs its provider token"
+                   if amp.chosen else "Needs a provider token",
+                   "off": "Off",
+                   "attention": "Provider not running",
+                   "connected": "Provider running"}[state]
+        # chosen: in every template already (the setup chose it), so it is listed as added, waiting on its token.
+        return Status(self.kind, self.title, state, summary, {"chosen": True} if amp.chosen else {}, (
             Field("provider_token", "Orb provider token", secret=True, set=token.set,
-                  help="From Amp Settings → Orbs → Add Provider; stored in the secret vault"),
-            Field("repo", "Default repository", value=amp.repo,
-                  help="owner/repository; with multiple repos, Amp orb types use the routes shown by sbx-admin amp routes"),
-            Field("enabled", "Enabled", value="true" if amp.enabled else "false",
-                  help="Runs the provider; Amp is in every template either way, so this rebuilds nothing"),
+                  help="From Amp Settings → Orbs → Add Provider"),
         ), ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:
         token = bool((values or {}).get("provider_token")) or vault.facts(TOKEN).set
-        return [Check("provider token", token, "set" if token else "not set", "add a provider in Amp Settings → Orbs"),
+        return [Check("provider token", token, "set" if token else "not set", "add a provider in Amp Settings → Orbs",
+                      help_url=howto.AMP_PROVIDER),
                 Check("Amp CLI", CLI.is_file(), "installed" if CLI.is_file() else "missing", "save the enabled connection"),
                 self._tools_check(),
                 Check("provider service", active(), "check connection status in Amp Settings → Orbs",
-                      "journalctl -u sbx-amp; verify the token and outbound HTTPS")]
+                      "journalctl -u sbx-amp; verify the token and outbound HTTPS", help_url=howto.AMP_CONNECTION)]
 
     @staticmethod
     def _tools_check() -> Check:
@@ -324,21 +328,14 @@ class Amp(extensions.Connector):
                                             f"or fetched on {runtime.title(kind)} if that fails")
 
     def connect(self, values: dict, *, by: str) -> Status:
-        amp = self.settings().model_dump()
-        amp["enabled"] = str(values.get("enabled", "true")).lower() in ("true", "1", "on", "yes")
-        if "repo" in values:
-            amp["repo"] = str(values["repo"]).strip()
-        try:
-            validated = Settings.model_validate(amp)
-        except ValidationError:
-            raise Refused("enter a GitHub owner/repository")
-        if validated.repo and settings.trust(validated.repo) != "trusted":
-            raise Refused("connect and prepare that repository in sbx first")
+        # Connecting turns Amp on; Disconnect turns it off. An orb's repository
+        # comes from its Amp orb type (sbx-admin amp routes), not from a setting.
+        validated = Settings.model_validate({**self.settings().model_dump(), "enabled": True})
         token = str(values.get("provider_token") or "").strip()
         if token and (not token.startswith("aop_live_") or len(token) < 16 or any(c.isspace() for c in token)):
             raise Refused("enter the orb provider token from Amp Settings → Orbs")
-        if validated.enabled and not (token or vault.facts(TOKEN).set):
-            raise Refused("add an orb provider token before enabling Amp")
+        if not (token or vault.facts(TOKEN).set):
+            raise Refused("add an orb provider token from Amp Settings → Orbs")
         if token:  # a rotation restarts the provider even when the settings stay: the key asks for it
             vault.put(TOKEN, token, by=by)
         self.save_settings(validated, by=by)
@@ -346,5 +343,5 @@ class Amp(extensions.Connector):
 
     def disconnect(self, *, by: str) -> Status:
         vault.delete(TOKEN, by=by)
-        self.save_settings({**self.settings().model_dump(), "enabled": False}, by=by)
+        self.save_settings({**self.settings().model_dump(), "enabled": False, "chosen": False}, by=by)
         return self.status()
