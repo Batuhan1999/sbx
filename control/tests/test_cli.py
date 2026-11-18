@@ -113,6 +113,31 @@ class CliTests(unittest.TestCase):
                 code = exit.code
         return code, out.getvalue(), err.getvalue()
 
+    def test_a_renamed_sign_in_host_is_followed_and_remembered(self):
+        new = self.control.url
+        class Moved(http.server.BaseHTTPRequestHandler):
+            def answer(self):
+                self.send_response(308)
+                self.send_header("Location", new + self.path)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_POST = answer
+            def log_message(self, *args):
+                pass
+        old = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Moved)
+        threading.Thread(target=old.serve_forever, daemon=True).start()
+        self.addCleanup(old.server_close)
+        self.addCleanup(old.shutdown)
+        self.cli.CONTROL = f"http://127.0.0.1:{old.server_address[1]}"
+        self.routes[("POST", "/api/repos/owner/app/setup-pr")] = lambda q, body: {"url": "https://pr.example/1"}
+        self.assertEqual(self.cli.request("POST", "/api/repos/owner/app/setup-pr", {"files": {}})["url"],
+                         "https://pr.example/1")   # urllib follows only a GET; a POST is sent again
+        self.assertEqual(self.cli.CONTROL, new)
+        self.assertEqual((self.cli.INSTALL_ROOT / "control").read_text().strip(), new)
+        self.cli.CONTROL = f"http://127.0.0.1:{old.server_address[1]}"
+        self.assertEqual(self.cli.request("GET", "/api/me")["email"], ME["email"])
+        self.assertEqual(self.cli.CONTROL, new)
+
     def test_up_uses_what_the_server_returns_and_leaves_ssh_config_alone(self):
         (self.home / ".ssh/config").write_text("Host mine\n  User me\n")
         phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"},

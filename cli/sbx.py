@@ -78,19 +78,36 @@ class Client:
             raise Refused("not signed in: run `sbx login`")
         return f"Bearer {token}"
 
-    def request(self, method, path, body=None, raw=False, timeout=600):
+    def _moved(self, url):
+        """The sign-in host was renamed (its old one answers 308): use the new
+        one from now on, and remember it when this is the installed CLI's server."""
+        parts = urllib.parse.urlsplit(url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+        if not parts.netloc or origin == self.base:
+            return False
+        if self.base == CONTROL:
+            moved(origin)
+        self.base = origin
+        return True
+
+    def request(self, method, path, body=None, raw=False, timeout=600, _retry=True):
         call = urllib.request.Request(f"{self.base}{path}", method=method,
                                       data=json.dumps(body).encode() if body is not None else None,
                                       headers={"Authorization": self._authorization(),
                                                "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(call, timeout=timeout, context=self.context) as response:
+                if response.url != call.full_url:  # a GET followed the 308
+                    self._moved(response.url)
                 server = response.headers.get("X-Sbx-Version")
                 if server and VERSION not in ("dev", server):
                     print(f"sbx {server} is available (you have {VERSION}): sbx update", file=sys.stderr)
                 data = response.read()
                 return data.decode() if raw else json.loads(data or b"null")
         except urllib.error.HTTPError as error:
+            if error.code in (307, 308) and _retry and self._moved(error.headers.get("Location", "")):
+                error.close()
+                return self.request(method, path, body, raw, timeout, _retry=False)  # urllib follows only a GET
             detail = error.read().decode(errors="replace")
             try:
                 detail = json.loads(detail).get("detail", detail)
@@ -115,6 +132,21 @@ class Client:
             reason = getattr(error, "reason", None) or error
             hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
             sys.exit(f"cannot reach {self.base}: {reason}{hint}")
+
+
+def moved(url):
+    """sbx-control is at url's origin now: the installed CLI's server from now on."""
+    global CONTROL
+    parts = urllib.parse.urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    if not parts.netloc or origin == CONTROL:
+        return False
+    CONTROL = origin
+    if not os.environ.get("SBX_CONTROL"):
+        INSTALL_ROOT.mkdir(parents=True, exist_ok=True)
+        (INSTALL_ROOT / "control").write_text(origin + "\n")
+    note(f"sbx-control moved to {origin}")
+    return True
 
 
 def request(method, path, body=None, raw=False, timeout=600):
@@ -169,6 +201,11 @@ def login_control():
     code, which is exchanged here, with the verifier only this process
     knows, for the API token."""
     state, verifier = secrets.token_urlsafe(16), secrets.token_urlsafe(48)
+    try:
+        with urllib.request.urlopen(f"{CONTROL}/dist/version", timeout=30) as response:
+            moved(response.url)  # sign in where sbx-control is now, not through a redirect
+    except (urllib.error.URLError, OSError):
+        pass
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     received = {}
 

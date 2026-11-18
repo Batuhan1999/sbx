@@ -3,6 +3,7 @@
 # nginx and Certbot, using
 # HTTP-01 for an IP or DNS-01 for a wildcard domain, serving
 #   <login_host>.<domain>  sbx-control: the login, the API, /install
+#   a former login_host    a 308 to the current one, after a rename
 #   <service>.<domain>     the operator's services, behind the login
 #   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
 #   <endpoint>.<domain>    this host's private services for sandboxes on provider runtimes,
@@ -275,6 +276,20 @@ server {
   server_name $login;
   include /etc/nginx/conf.d/control.inc;
 }
+NGINX
+# A renamed sign-in host sends its requests on, POSTs too (308 keeps the method).
+for former in $former_logins; do
+  cat >> "$dir/nginx/default.conf" <<NGINX
+
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name $former;
+  return 308 https://$login\$request_uri;
+}
+NGINX
+done
+cat >> "$dir/nginx/default.conf" <<NGINX
 
 # Sandboxes: every other name under the domain.
 server {

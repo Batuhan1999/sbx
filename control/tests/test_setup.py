@@ -440,11 +440,27 @@ class SetupTests(Server):
         self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
         self.assertTrue(self.setup.address_ready())
         view = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual(view["link"], "https://login.sbx.example.com/setup")
+        self.assertEqual(view["link"], "https://app.sbx.example.com/setup")
         self.assertEqual(view["access"]["needs_ports"], [80, 53])  # delegated DNS answers here, on 53
         self.assertEqual(view["host"]["address"], "203.0.113.10")
         self.expiry.return_value = datetime.now(timezone.utc) - timedelta(days=1)
         self.assertFalse(self.setup.address_ready())
+
+    def test_a_renamed_sign_in_host_keeps_redirecting(self):
+        from sbx_control.connections.domain import Domain
+        self.settings.update("domain", {"name": "sbx.example.com", "login_host": "login"}, by="test")
+        with patch.object(Domain, "test", return_value=[]):
+            Domain().connect({"login_host": "app"}, by="test")
+            domain = self.settings.current().domain
+            self.assertEqual((domain.login_host, domain.former_login_hosts), ("app", ("login",)))
+            self.assertEqual(self.settings.current().base_url, "https://app.sbx.example.com")
+            self.assertIn("login", self.settings.current().reserved_names)   # no sandbox takes the old name
+            lines = self.settings.shell_lines(self.settings.current())
+            self.assertIn("former_logins=login.sbx.example.com", lines)
+            Domain().connect({"login_host": "login"}, by="test")   # renamed back: app redirects now
+            self.assertEqual(self.settings.current().domain.former_login_hosts, ("app",))
+            Domain().connect({"name": "other.example.com"}, by="test")   # a new domain's certificate covers none of them
+            self.assertEqual(self.settings.current().domain.former_login_hosts, ())
 
     def test_bad_dns_does_not_store_provider_credentials(self):
         from sbx_control.connections.domain import Domain

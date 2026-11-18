@@ -63,7 +63,7 @@ class InstallReportTests(unittest.TestCase):
 
     def test_set_up_installations_print_the_control_url_without_first_run_instructions(self):
         for domain, login in (('', '203.0.113.10'), ('', '[2001:db8::10]'),
-                              ('sbx.example.com', 'login.sbx.example.com')):
+                              ('sbx.example.com', 'app.sbx.example.com')):
             with self.subTest(login=login):
                 result, link_requested = self.report(state=self.SET_UP, domain=domain, login=login)
                 self.assertEqual(result.returncode, 0, result.stderr)

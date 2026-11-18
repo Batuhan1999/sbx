@@ -103,6 +103,7 @@ class Domain(Connection):
                "login_host": (values.get("login_host") or s.login_host).strip(),
                "acme_email": (values.get("acme_email") or s.acme_email).strip(),
                "acme": values.get("acme") or s.acme}
+        new["former_login_hosts"] = former_hosts(s, new["name"], new["login_host"])
         if not new["name"]:
             raise Refused("a domain is needed")
         try:
@@ -120,6 +121,15 @@ class Domain(Connection):
                 vault.put(key, values[field].strip(), by=by)
         settings.update("domain", new, by=by)
         return self.status()
+
+
+def former_hosts(before: settings.Domain, name: str, login_host: str) -> tuple[str, ...]:
+    """The sign-in hosts to keep redirecting: the one being renamed away from
+    joins them; none survive a change of domain (its certificate covers only the new one)."""
+    if name != before.name:
+        return ()
+    hosts = (before.login_host, *before.former_login_hosts) if login_host != before.login_host else before.former_login_hosts
+    return tuple(h for h in dict.fromkeys(hosts) if h != login_host)
 
 
 PUBLIC_RESOLVER = "1.1.1.1"  # what the world sees, not a cloud's private zone for the same names

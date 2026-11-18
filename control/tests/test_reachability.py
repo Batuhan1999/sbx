@@ -26,15 +26,15 @@ class ReachabilityTests(Installation):
     def test_a_sandbox_that_fetches_this_servers_version_passes_and_is_killed(self):
         check = self.answer("0 200\ndev")
         self.assertTrue(check.ok, check)
-        self.assertIn("https://login.sbx.example.com/dist/version", check.detail)
+        self.assertIn("https://app.sbx.example.com/dist/version", check.detail)
         self.assertEqual(self.create.call_args.args[0], "sbx-base-1234")
         self.assertEqual(self.create.call_args.kwargs["on_timeout"], "kill")
         self.assertNotIn("sbx", self.create.call_args.kwargs["metadata"])   # not a workspace (core.find)
-        self.assertIn("https://login.sbx.example.com/dist/version", self.sandbox.commands.run.call_args.args[0])
+        self.assertIn("https://app.sbx.example.com/dist/version", self.sandbox.commands.run.call_args.args[0])
         self.sandbox.kill.assert_called_once()
 
     def test_each_failure_is_named_with_what_to_fix_and_the_sandbox_is_killed(self):
-        cases = [("6 000\n", "curl: (6) Could not resolve host: login.sbx.example.com", "does not resolve", "DNS record"),
+        cases = [("6 000\n", "curl: (6) Could not resolve host: app.sbx.example.com", "does not resolve", "DNS record"),
                  ("7 000\n", "curl: (7) Failed to connect", "refused or is unreachable", "port 443"),
                  ("28 000\n", "curl: (28) Connection timed out", "timed out", "firewall"),
                  ("60 000\n", "curl: (60) SSL certificate problem", "TLS", "certificate"),

@@ -94,7 +94,8 @@ if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     print(nginx(sys.argv[4], sys.argv[5]), end='')
     raise SystemExit(0)
 domain = os.environ["SBX_TEST_DOMAIN"]
-values = {"domain": domain, "login": "login." + domain, "bootstrap_address": "203.0.113.10",
+values = {"domain": domain, "login": "app." + domain, "bootstrap_address": "203.0.113.10",
+          "former_logins": "login." + domain if domain else "",
           "email": "operator@example.com", "dns": "delegated", "services": ""}
 for name, value in values.items():
     print(name + "=" + shlex.quote(value))
@@ -219,6 +220,8 @@ path.write_text(path.read_text().replace(before, after))
         self.assertNotIn("_preflight", config)
         self.assertIn("auth_request_set $sbx_runtime $upstream_http_x_sbx_runtime;", config)
         self.assertIn("proxy_pass $sbx_ingress;", config)
+        # The sign-in host's former name sends everything on, POSTs too.
+        self.assertIn("server_name login.sbx.example.com;\n  return 308 https://app.sbx.example.com$request_uri;", config)
 
 
 if __name__ == "__main__":

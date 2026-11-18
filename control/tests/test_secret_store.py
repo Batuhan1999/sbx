@@ -327,7 +327,7 @@ class SecretStoreTests(Server):
         self.infisical()
         self.settings.update("domain", {**self.settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
         self.sync()
-        self.assertEqual(self.fake.webhooks, [{"url": "https://login.sbx.example.com/webhooks/infisical", "secretPath": "/**"}])
+        self.assertEqual(self.fake.webhooks, [{"url": "https://app.sbx.example.com/webhooks/infisical", "secretPath": "/**"}])
         self.assertTrue(self.vault.get(self.vault.INFISICAL_WEBHOOK_TOKEN))
         infisical_api.sync()
         self.assertEqual(len(self.fake.webhooks), 1)
