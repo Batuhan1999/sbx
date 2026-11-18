@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from support import Server
+from support import Server, live_pid
 
 
 def done(stdout=""):
@@ -812,10 +812,9 @@ class WorkspaceTests(Server):
         self.assertEqual(template_builds.state(key)['status'], 'built')
 
     def test_a_build_whose_pid_was_reused_reads_interrupted(self):
-        import os
         from sbx_control import template_builds, templates
         key = templates.DEFAULT
-        other = os.getppid()   # a live process that isn't this one
+        other = live_pid(self)   # a live process that isn't this one
         with patch.object(template_builds, '_birth', return_value='100'):
             template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=other,
                                         pid_birth='100')
