@@ -52,7 +52,8 @@ export default function SetupPage() {
   const [step, setStep] = useState<Step | null>(() => { const asked = new URLSearchParams(location.search).get('step'); return isStep(asked) ? asked : null })
   const s = setup.data
   const stepDone = (x: string) => !!s?.steps.find(st => st.step === x)?.done
-  const addressSaved = !!s?.access.domain || (s?.access.mode === 'ip' && stepDone('address'))
+  // The domain step is done only with a domain: the installer may have set IP access for the first visit's certificate.
+  const addressSaved = !!s?.access.domain
   const runtimeDone = stepDone('runtime')
   const done: Record<Step, boolean> = {
     address: !!addressSaved, runtime: runtimeDone, account: !!s?.complete, github: false,

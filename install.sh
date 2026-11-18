@@ -84,10 +84,17 @@
 # nested virtualization enabled. With --domain D: A records for D and *.D pointing
 # here, and for --dns delegated also the record `_acme-challenge.D NS D.` and
 # inbound UDP and TCP port 53 (this host answers the certificate's DNS
-# challenge). Without a domain: inbound TCP port 80 for the IP certificate.
+# challenge). Without a domain: inbound TCP port 80 for the IP certificate,
+# which the installer gets (on a public IP, while the setup is open and has
+# no address yet) before it prints the onboarding link.
 # The public interface accepts only SSH, HTTPS and what the certificate needs
 # (network.public_ports: sbx-admin config get network); open the same in a
 # cloud firewall.
+#
+# While the first-run setup is open, the last line is the onboarding link,
+# `==> Open the onboarding: https://ADDRESS/app/setup#t=TOKEN` (a one-time
+# token: keep it out of shared logs); the line before it says when the
+# browser will warn. An installation that is set up prints its address instead.
 set -eu
 
 domain="" email="" dns="" sign_in="" repos="" public_repos="" admin="" hugepages="" internal="" skip_templates="" check=""
@@ -470,4 +477,15 @@ fi
 
 [ -z "$none" ] || echo "
 No sandbox runtime yet: add a sandbox runtime in the setup wizard (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
+# While the first-run setup is open on a server with no address yet: IP
+# access with a trusted certificate (Let's Encrypt over port 80), so the
+# onboarding link below opens without a browser warning; without it, the
+# self-signed one until the setup chooses an address (setup.first_certificate).
+setup_open=0
+sbx-admin setup-infer >/dev/null || setup_open=$?
+if [ "$setup_open" = 3 ]; then
+  say "HTTPS for the first visit"
+  (cd /opt/sbx-control/current && venv/bin/python -m sbx_control.setup first-certificate) ||
+    echo "self-signed for now: could not get the IP certificate (above)"
+fi
 SBX_PASSWORD=$password SBX_ROLLBACK=${rollback:-} sh /opt/sbx-control/current/install-report.sh

@@ -7,7 +7,7 @@ repository running in sandboxes. It ends with the
 **How to work.** Check first, then decide. Ask the owner **once**, in one
 message (step 2), for everything only they can give, and wait for the
 answers before you do anything that depends on them. After that, the owner
-gets two links from you: the setup link to create their account (step 4) and
+gets two links from you: the onboarding link the installer prints, to create their account (step 4), and
 one key page for every key (step 6). Don't stop for approval between routine
 steps. Keep the current step visible and resolve a failed step before you
 call it done.
@@ -22,7 +22,7 @@ password), `IP` (the server's public IP, step 1), `D` (the domain),
 In step 8, `dev-pg`, `temporal`, `10.0.0.5:7233`, `10.0.0.0/24` and
 `owner/app` are examples.
 
-**Secrets.** API keys, tokens, passwords and the setup link never go into the
+**Secrets.** API keys, tokens, passwords and the onboarding (setup) link never go into the
 chat, a command line, a recipe, a commit or a log. The owner types keys into
 sbx's own key page (step 6), which stores each one where it belongs. The
 setup link lives in a file under `~/.sbx-install` on your machine:
@@ -158,50 +158,64 @@ dig +short CNAME _acme-challenge.D @1.1.1.1                   # nothing
 ## 3. Install
 
 The same command in every case. It takes several minutes on a provider host
-and longer with Embed. Until the server has an address (`--domain`, or the
-one setup chooses), its base templates wait (`WAITING` in the log) and then
-build by themselves. Start it detached, so a dropped connection can't stop
-it, then check every minute or two until it prints an exit status:
+and longer with Embed. No template builds yet: templates build once the setup
+is finished, with the coding agents chosen (step 7). Start it detached, so a
+dropped connection can't stop it, then check every minute or two until it
+prints an exit status:
 
 ```sh
 ssh HOST 'cd ~/sbx && sudo rm -f /root/sbx-install.exit && sudo nohup sh -c "sh install.sh > /root/sbx-install.log 2>&1; echo \$? > /root/sbx-install.exit" < /dev/null > /dev/null 2>&1 &'
-ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 5; sudo cat /root/sbx-install.exit 2>/dev/null || echo running'
+ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 8; sudo cat /root/sbx-install.exit 2>/dev/null || echo running'
 ```
 
-The `grep` keeps the setup link out of your output.
+The log is root's alone; the `grep` keeps the onboarding link (step 4) out of
+your output.
 
-- **`0`**: done. `==> Done: finish the setup in your browser`; a provider host
-  also says `No sandbox runtime yet` (the key page adds it). Templates build
-  as soon as the server has an address and a sandbox runtime, whether the
-  setup is finished or not: `install.sh` builds them when it already has both
-  (`--domain` on an Embed host), otherwise they start once the setup chooses
-  the address and adds the runtime.
+- **`0`**: done. Before its link, the installer says how the first visit's
+  HTTPS went (`==> HTTPS for the first visit`):
+  - `ok: trusted certificate for IP`: it chose IP access and got a trusted
+    certificate for the IP (Let's Encrypt over TCP 80), so the link opens
+    without a browser warning.
+  - `self-signed for now: ...` with the reason (no public IP, port 80 in
+    use, or Certbot's error: usually TCP 80 closed in a cloud firewall), and
+    `Your browser will warn once: ...` above the link. Open the port and set
+    the address in step 4, or set a domain there.
+
+  A provider host also says `No sandbox runtime yet` (the key page adds it).
+  Templates build as soon as the server has a domain and a sandbox runtime,
+  whether the setup is finished or not.
 - **Another number**: read the `FAILED: ...` line and
   `ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 40'`, fix the
   cause and start the same command again: every step is safe to repeat.
 
-## 4. The setup link: the owner creates their account
+## 4. The onboarding link: the owner creates their account
 
-Fetch the setup link into a file without printing it. Each call prints the
-same link until the setup finishes; `sbx-admin setup-link --new` replaces it,
-and the previous one stops working:
+The installer's last line is the onboarding link,
+`==> Open the onboarding: https://IP/app/setup#t=TOKEN`, with a one-time token.
+It is also the setup link that `sbx setup` and `sbx secrets` take below. Save
+it into a file without printing it:
+`sudo sbx-admin setup-link` prints the same link again until the setup
+finishes; `--new` replaces it, and the previous one stops working.
 
 ```sh
-ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link
-python3 ~/.sbx-install/sbx.py setup status --link-file ~/.sbx-install/setup-link --insecure
+(umask 077; ssh HOST 'sudo tail -n 1 /root/sbx-install.log' | sed -n 's/^==> Open the onboarding: //p' > ~/.sbx-install/setup-link)
+python3 ~/.sbx-install/sbx.py setup status --link-file ~/.sbx-install/setup-link
 ```
 
-`--insecure` accepts the self-signed certificate the server uses until it has
-an address. **First set the address** when it needs no credential, so the link
-opens on the account step. Each line waits until HTTPS works (up to 15
-minutes):
+When the installer said `self-signed for now`, add `--insecure` to every
+`sbx.py` command until the address is ready: it accepts the self-signed
+certificate. `setup status` shows the address `done` when the installer got
+the IP certificate. Otherwise, **first set the address** when it needs no
+credential, so the link opens on the account step. Each line waits until HTTPS
+works (up to 15 minutes; `--timeout SECONDS` changes it, and it notes its
+progress at least every 30 seconds):
 
 | Decision | Command |
 | --- | --- |
 | domain (`delegated`) | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --domain D` |
 | domain, `route53` on EC2 | the same with `--dns route53` |
 | domain, `cloudflare` | first the token on a key page (step 6's command with the target `dns:cloudflare "Cloudflare API token"` and `--insecure`), then the same with `--dns cloudflare` |
-| IP only | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --ip` |
+| IP only, the installer's certificate missing | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --ip` (once TCP 80 is open) |
 | quick test | the same as the domain with `--dns none` (keep `--insecure` on every command after it) |
 
 `address ready: https://app.D` means done. `Check the DNS records ...` names
@@ -215,7 +229,7 @@ out is usually a closed port 80. Then fetch the link again, which now names
 the trusted address:
 
 ```sh
-ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link
+sed -i.old 's|^https://[^/]*|https://app.D|' ~/.sbx-install/setup-link && rm ~/.sbx-install/setup-link.old
 ```
 
 Send the owner the link (`cat ~/.sbx-install/setup-link` in a terminal of
