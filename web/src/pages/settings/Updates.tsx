@@ -1,11 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, CircleAlert, ExternalLink, RefreshCw, TriangleAlert, X } from 'lucide-react'
-import { useId, useState } from 'react'
+import { type ReactNode, useId, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { keys } from '@/api/queries'
 import type { Release, Updates as UpdatesView, Upgrade, UpgradeStep } from '@/api/types'
 import { ProgressBar, useUpgradeFollow } from '@/app/UpdateNotice'
 import { CopyCommand } from '@/components/CopyCommand'
+import { LinkedText } from '@/components/LinkedText'
 import { ErrorState, QueryView } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -13,7 +14,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog } from '@/components/ui/dialog'
 import { Badge, Code, Facts, Panel, Spinner } from '@/components/ui/primitives'
 import { ago, dateTime, plural } from '@/lib/format'
-import { parseNotes, type NoteItem } from '@/lib/releaseNotes'
+import { parseNotes, type NoteItem, type NoteSection } from '@/lib/releaseNotes'
 import { cn } from '@/lib/utils'
 
 /** Settings → Updates: this server's release, what is newer and what changed,
@@ -140,18 +141,12 @@ function ReleaseCard({ release }: { release: Release }) {
       <a href={release.url} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 text-[12.5px] text-accent hover:underline">
         On GitHub<ExternalLink className="size-3" /></a>
     </header>
-    {!!notes.steps.length && <div className="rounded-md border border-line bg-sunken px-3 py-2 text-[13px]">
-      <div className="mb-1 text-[12px] font-medium uppercase tracking-wide text-muted">Upgrade notes</div>
+    {!!notes.steps.length && <div className="space-y-1.5 text-[13px]">
       {notes.steps.map((s, i) => <Item key={i} item={s} />)}
     </div>}
     {notes.sections.map((s, i) => <div key={i} className="space-y-1.5">
-      <h4 className={cn('text-[12px] font-medium uppercase tracking-wide', s.breaking ? 'text-warn' : 'text-muted')}>{s.title}</h4>
-      <ul className="space-y-1 text-[13px]">
-        {s.items.map((item, j) => item.code ? <li key={j}><Item item={item} /></li> : <li key={j} className="flex gap-2">
-          <span aria-hidden className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', s.breaking ? 'bg-warn' : 'bg-faint')} />
-          <span className="min-w-0">{item.text}{item.pr && <> <a href={item.pr.url} target="_blank" rel="noreferrer" className="text-muted hover:text-accent hover:underline">#{item.pr.number}</a></>}</span>
-        </li>)}
-      </ul>
+      <SectionTitle section={s} />
+      <SectionItems section={s} />
     </div>)}
     {!notes.steps.length && !notes.sections.length && <p className="text-[13px] text-muted">No notes.</p>}
     {notes.compare && <a href={notes.compare} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-accent hover:underline">
@@ -159,10 +154,67 @@ function ReleaseCard({ release }: { release: Release }) {
   </section>
 }
 
+/** GitHub's categories as small labels; the release's own headings as headings
+ * below the card's h3, by depth. */
+function SectionTitle({ section: s }: { section: NoteSection }) {
+  if (!s.title) return null
+  if (s.generated)
+    return <h4 className={cn('text-[12px] font-medium uppercase tracking-wide', s.breaking ? 'text-warn' : 'text-muted')}>{s.title}</h4>
+  const tone = s.breaking ? 'text-warn' : undefined
+  const title = <NoteText text={s.title} />
+  if (s.depth <= 1) return <h4 className={cn('border-t border-line pt-3 text-[14px] font-semibold', tone)}>{title}</h4>
+  if (s.depth === 2) return <h5 className={cn('pt-1 text-[13px] font-semibold', tone)}>{title}</h5>
+  return <h6 className={cn('text-[13px] font-medium', tone)}>{title}</h6>
+}
+
+/** Paragraphs and code as they are; each run of bullets as one list, in order. */
+function SectionItems({ section: s }: { section: NoteSection }) {
+  const blocks: (NoteItem | NoteItem[])[] = []
+  for (const item of s.items) {
+    const last = blocks.at(-1)
+    if (item.code || item.para) blocks.push(item)
+    else if (Array.isArray(last)) last.push(item)
+    else blocks.push([item])
+  }
+  return <>{blocks.map((block, i) => !Array.isArray(block)
+    ? <div key={i} className="text-[13px]"><Item item={block} /></div>
+    : <ul key={i} className="space-y-1 text-[13px]">
+      {block.map((item, j) => <li key={j} className="flex gap-2">
+        <span aria-hidden className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', s.breaking ? 'bg-warn' : 'bg-faint')} />
+        <span className="min-w-0"><NoteText text={item.text} />{item.pr && <> <a href={item.pr.url} target="_blank" rel="noreferrer" className="text-muted hover:text-accent hover:underline">#{item.pr.number}</a></>}</span>
+      </li>)}
+    </ul>)}</>
+}
+
 function Item({ item }: { item: NoteItem }) {
   return item.code
     ? <pre className="my-1 overflow-x-auto rounded border border-line bg-panel px-2.5 py-1.5 text-[12px]"><code>{item.text}</code></pre>
-    : <p>{item.text}</p>
+    : <p className={item.para ? 'text-muted' : undefined}><NoteText text={item.text} /></p>
+}
+
+// Inline Markdown in release notes: **bold**, `code` and [text](https://…), whose
+// address may hold balanced parentheses; bare addresses through LinkedText. Built as
+// elements, never as HTML. In a link's text (plain) nothing more becomes a link.
+const INLINE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g
+
+function NoteText({ text, plain = false }: { text: string; plain?: boolean }) {
+  const parts: ReactNode[] = []
+  let last = 0
+  const prose = (at: number, end: number) => {
+    const chunk = text.slice(at, end)
+    parts.push(plain ? chunk : <LinkedText key={`t${at}`} text={chunk} />)
+  }
+  for (const m of text.matchAll(INLINE)) {
+    const at = m.index ?? 0
+    if (m[3] !== undefined && plain) continue   // no link inside a link
+    if (at > last) prose(last, at)
+    if (m[1] !== undefined) parts.push(<strong key={at} className="font-semibold"><NoteText text={m[1]} plain={plain} /></strong>)
+    else if (m[2] !== undefined) parts.push(<code key={at} className="rounded bg-sunken px-1 py-px font-mono text-[12px]">{m[2]}</code>)
+    else parts.push(<a key={at} href={m[4]} target="_blank" rel="noreferrer" className="text-accent hover:underline"><NoteText text={m[3]} plain /></a>)
+    last = at + m[0].length
+  }
+  if (last < text.length) prose(last, text.length)
+  return <>{parts}</>
 }
 
 function Install({ latest, disabled }: { latest: string; disabled: boolean }) {
