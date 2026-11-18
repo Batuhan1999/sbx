@@ -34,10 +34,23 @@ const typing = () => [...document.querySelectorAll<HTMLInputElement>('main input
 
 /** Once the certificate is ready, carry on at the server's own address (with the setup token and the step):
  * one link, start to end. */
+/** Origins that answered over HTTPS from this browser: the certificate is on the file system a moment before
+ * nginx serves it, so the page moves only once its new address really answers (no certificate error). */
+const answering = new Set<string>()
+const asking = new Set<string>()
+function askOrigin(origin: string) {
+  if (asking.has(origin) || answering.has(origin)) return
+  asking.add(origin)
+  fetch(`${origin}/dist/version`, { mode: 'no-cors', cache: 'no-store' })
+    .then(() => { answering.add(origin) }, () => {})
+    .finally(() => asking.delete(origin))
+}
+
 function moveToOwnAddress(s: SetupState, step: Step) {
   if (s.complete || !s.access.certificate_ready || !s.link) return false
   const target = new URL(s.link)
   if (target.origin === location.origin) return false
+  if (!answering.has(target.origin)) { askOrigin(target.origin); return false }
   const token = setupToken()
   target.pathname = '/app/setup'
   target.search = step === 'address' ? '' : `?step=${step}`
