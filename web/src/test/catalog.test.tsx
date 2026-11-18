@@ -43,7 +43,7 @@ describe('the Add group', () => {
     const add = await group('Add')
     const tile = (await add.findByText('Postgres server')).closest('li')!
     expect(tile.querySelector('img')?.getAttribute('src')).toBe(LOGO)
-    expect(within(tile).getByText('Postgres server for sandboxes')).toBeTruthy()
+    expect(within(tile).queryByText('Postgres server for sandboxes')).toBeNull()   // the description sits in its dialog
     expect(add.queryByText('Static values')).toBeNull()
     expect(screen.queryByText(/Not connected/)).toBeNull()
   })

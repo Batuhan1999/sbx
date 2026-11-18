@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ago, plural } from '@/lib/format'
-import { repositories, sandboxes, suggestKey, summary } from '@/lib/packages'
+import { repositories, sandboxes, suggestKey } from '@/lib/packages'
 import { keyError, required } from '@/lib/validation'
 import { Checks, ConnectionForm, formFields } from './ConnectionCard'
 
@@ -95,7 +95,7 @@ function AdminExtensions() {
         : <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {addable.map(c => <Tile key={c.kind} id={c.kind} icon={<ConnectorIcon kind={c.kind} />} title={c.title} line={PURPOSE[c.kind] ?? (c.group === 'agent' ? 'Coding agent' : undefined)}
             onAdd={() => setAdding(c.kind)} />)}
-          {newAccounts.map(p => <Tile key={p.name} icon={<PackageLogo logo={p.logo} large />} title={p.title} line={summary(p.description)}
+          {newAccounts.map(p => <Tile key={p.name} icon={<PackageLogo logo={p.logo} large />} title={p.title}
             onAdd={() => setAdding(`package:${p.name}`)} />)}
         </ul>}
     </Group>
@@ -368,7 +368,7 @@ function Available() {
   return <Group id="available" title="Packages">
     <QueryView query={catalog}>{list => list.length === 0 ? <EmptyState icon={Package} title="The catalog is empty" />
       : <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {list.filter(p => p.kind === 'provision').map(p => <Tile key={p.name} icon={<PackageLogo logo={p.logo} large />} title={p.title} line={summary(p.description)} />)}
+        {list.filter(p => p.kind === 'provision').map(p => <Tile key={p.name} icon={<PackageLogo logo={p.logo} large />} title={p.title} />)}
       </ul>}</QueryView>
   </Group>
 }
