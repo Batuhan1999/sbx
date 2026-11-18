@@ -207,7 +207,7 @@ function RuntimeStep({ done, onBack, onAddress, onNext }: { done: boolean; onBac
 }
 
 /** The owner's own account, first: once signed in they can add the keys (a key page needs a sign-in) and choose. */
-function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; onNext: () => void }) {
+export function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; onNext: () => void }) {
   const qc = useQueryClient()
   const existing = !!s.steps.find(x => x.step === 'sign_in')?.done  // someone can sign in already
   const ready = s.signed_in || (existing && s.open_access)
@@ -239,7 +239,7 @@ function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; o
     {!ready && existing && <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in to continue<ArrowRight /></AnchorButton>}
     <div className="flex justify-between gap-3 border-t border-line pt-5">
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
-      {!ready && !existing && <SubmitButton form={form}>Create account<ArrowRight /></SubmitButton>}
+      {!ready && !existing && <SubmitButton form={form} formId="setup-admin">Create account<ArrowRight /></SubmitButton>}
       {ready && <Button variant="primary" onClick={onNext}>Continue<ArrowRight /></Button>}
     </div>
   </div>

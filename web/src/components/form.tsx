@@ -206,9 +206,10 @@ export function AppForm({ form, children, ...props }: Omit<ComponentProps<'form'
   </form>
 }
 
-export function SubmitButton({ form, busy, ...props }: Omit<ButtonProps, 'form'> & { form: AnyFormApi }) {
+/** Submits its form. Outside the <AppForm> (in a footer row, say), pass that form's id as formId, or the browser never submits. */
+export function SubmitButton({ form, formId, busy, ...props }: Omit<ButtonProps, 'form'> & { form: AnyFormApi; formId?: string }) {
   const submitting = useStore(form.store, s => s.isSubmitting)
-  return <Button variant="primary" {...props} type="submit" busy={busy || submitting} />
+  return <Button variant="primary" {...props} form={formId} type="submit" busy={busy || submitting} />
 }
 
 /** What a saved secret's empty field says. */
