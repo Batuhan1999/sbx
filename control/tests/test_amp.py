@@ -384,6 +384,63 @@ sudo() {
             with self.state.db() as conn:
                 conn.execute('delete from amp_snapshots where key=?', ('cached-spawn-test',))
 
+    def test_amp_spawn_that_fails_after_its_vm_exists_deletes_it_and_can_be_repeated(self):
+        """The VM was made, then the SSH-key step failed: the spawn deletes it
+        (the VM, its services and its row) as Amp's delete would."""
+        self.amp_fixture()
+        from sbx_control import sandboxes, variables
+        created = self.created.side_effect
+
+        def made_then_failed(*args, **kwargs):
+            created(*args, **kwargs)
+            raise RuntimeError("workspace SSH listener identity changed")
+        self.created.side_effect = made_then_failed
+        self.sdk.kill.side_effect = lambda sandbox_id: self.items.clear()
+        with patch.object(variables, "forget") as forget:
+            self.assertEqual(self.amp_job(self.env).status_code, 503)
+        self.sdk.kill.assert_called_once_with("amp-test-vm")
+        forget.assert_called_once_with(self.name)
+        self.assertIsNone(sandboxes.registered_owner(self.name))
+        self.started.assert_not_called()
+        # The next spawn starts over; a delete after the cleanup has nothing left to do.
+        self.created.side_effect = created
+        self.assertEqual(self.amp_job(self.env).status_code, 200)
+        self.started.assert_called_once()   # the app is prepared once the spawn succeeded
+        self.items.clear()
+        self.assertEqual(self.amp_job({"ORB_OPERATION": "delete", "ORB_ID": self.env["ORB_ID"]}).status_code, 200)
+
+    def test_amp_spawn_that_fails_in_its_vm_deletes_it_before_preparing_the_app(self):
+        self.amp_fixture()
+        from sbx_control import core
+        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
+        with patch.object(core, "delete") as delete:
+            self.assertEqual(self.amp_job(self.env).status_code, 503)
+        delete.assert_called_once_with(self.name, self.name)
+        self.started.assert_not_called()
+
+    def test_amp_spawn_that_fails_on_an_existing_vm_keeps_it(self):
+        """A paused thread's VM resumed for a new spawn holds the thread's
+        work: a failure leaves it for Amp to spawn again or delete."""
+        self.amp_fixture()
+        self.assertEqual(self.amp_job(self.env).status_code, 200)
+        from sbx_control import core
+        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
+        with patch.object(core, "delete") as delete:
+            self.assertEqual(self.amp_job({**self.env, "ORB_TOKEN": "test-only-new-token"}).status_code, 503)
+        delete.assert_not_called()
+
+    def test_amp_failed_cleanup_keeps_the_spawn_s_own_error(self):
+        self.amp_fixture()
+        from sbx_control import core
+        from sbx_control.connectors.amp import orbs as amp_orbs
+        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
+        with patch.object(core, "delete", side_effect=RuntimeError("runtime unreachable")), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            with self.assertRaisesRegex(RuntimeError, "bootstrap did not start"):
+                amp_orbs.handle_job(self.env)
+        self.assertIn("ORB_OPERATION=delete", said.getvalue())
+        self.assertNotIn("test-only-orb-token", said.getvalue())
+
     def test_amp_sdk_failure_does_not_leak_token_or_request(self):
         self.amp_fixture()
         self.created.side_effect = RuntimeError("test-only-orb-token private SDK request")

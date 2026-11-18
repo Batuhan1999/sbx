@@ -396,6 +396,55 @@ def listener_alive():
         return False
 
 
+SETTLE_SECONDS = 60   # within initialize_ssh_identity's 120 s, with key generation and the reload after it
+
+
+def settled_listener(timeout=SETTLE_SECONDS):
+    """(pid, pidfd) of the workspace's sshd. A runtime's own agent may be
+    restarting services, sshd among them, while a VM resumes from a snapshot
+    (slower the more start at once): a listener that is briefly gone or not
+    sshd is looked at again, with a growing pause. One that is still not
+    sshd after timeout seconds is refused, so only sshd ever gets the
+    workspace's keys or its signal; the pidfd keeps a pid that is reused
+    after this check from getting it either."""
+    deadline = time.monotonic() + timeout
+    pause, restarted = 0.2, False
+    while True:
+        handle = None
+        try:
+            pid = listener_pid()
+            if not restarted and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)":
+                # sshd started before its binary was replaced (an upgrade, a disk
+                # restored under a running VM): no session yet, so start it again
+                # from the binary there now.
+                restarted = True
+                restart_listener()
+                pid = listener_pid()
+            handle = os.pidfd_open(pid)
+            if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd":
+                return pid, handle
+            refusal = GuestError("workspace SSH listener identity changed")
+        except GuestError as error:
+            refusal = error
+        except (OSError, ValueError, subprocess.SubprocessError):   # between two sshds: no pid, or one gone already
+            refusal = GuestError("workspace SSH listener is not running")
+        if handle is not None:
+            os.close(handle)
+        if time.monotonic() + pause > deadline:
+            raise refusal
+        time.sleep(pause)
+        pause = min(pause * 2, 5)
+
+
+def reload_keys(handle):
+    """SIGHUP: sshd reads its host keys again. False when it is gone."""
+    try:
+        signal.pidfd_send_signal(handle, signal.SIGHUP)
+        return True
+    except ProcessLookupError:
+        return False
+
+
 def identity(workspace, ssh_port):
     if os.geteuid() != 0 or not re.fullmatch(r"[a-f0-9]{32}", workspace):
         raise GuestError("fresh workspace SSH identity requires an owned logical identity")
@@ -420,17 +469,8 @@ def identity(workspace, ssh_port):
                                   capture_output=True, text=True, check=True, timeout=10)
         if sessions.stdout.strip():
             raise GuestError("fresh workspace has an unexpected SSH session")
-        pid = listener_pid()
-        if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)":
-            # sshd started before its binary was replaced (an upgrade, a disk
-            # restored under a running VM): no session yet, so start it again
-            # from the binary there now.
-            restart_listener()
-            pid = listener_pid()
-        handle = os.pidfd_open(pid)
+        pid, handle = settled_listener()
         try:
-            if str((PROC / str(pid) / "exe").resolve()) != "/usr/sbin/sshd":
-                raise GuestError("workspace SSH listener identity changed")
             ticks = start_ticks(pid)
             write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
             with tempfile.TemporaryDirectory(prefix=".sbx-hostkeys-", dir=SSH) as temporary:
@@ -442,13 +482,20 @@ def identity(workspace, ssh_port):
                 key_permissions(temporary)
                 for path in temporary.iterdir():
                     os.replace(path, SSH / path.name)
-            if start_ticks(pid) != ticks:
-                raise GuestError("workspace SSH listener changed during initialization")
-            signal.pidfd_send_signal(handle, signal.SIGHUP)
+            reloaded = start_ticks(pid) == ticks and reload_keys(handle)
         finally:
             os.close(handle)
+        if not reloaded:
+            # sshd started again while its keys were replaced (a runtime's
+            # agent restarting services): the one there now, checked the
+            # same way, reads them.
+            pid, handle = settled_listener()
+            try:
+                reload_keys(handle)
+            finally:
+                os.close(handle)
         expected = public.read_text().split()[:2]
-        if not wait_until(lambda: serves(expected), 15):
+        if not wait_until(lambda: serves(expected), 30):
             raise GuestError("workspace SSH listener did not adopt its fresh identity")
         keep_host_keys()
         write_json(IDENTITY, {"workspace_id": workspace, "phase": "ready", "ed25519_public": expected})

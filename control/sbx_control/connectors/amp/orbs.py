@@ -139,55 +139,79 @@ def handle_job(env: dict) -> dict:
             if info and core.runtime_state(info) == "running":
                 core.pause(name, info, **({"before_pause": checkpoint} if checkpoint else {}))
             return {"name": name, "state": "paused" if info else "missing"}
-        retry_preparation = False
         if info:
             current = lifecycle.get(name)
-            retry_preparation = bool(current and not current["active"]
-                                     and current["phase"] in ("failed", "interrupted", "workspace_ready"))
-        else:
-            repo = resolve_repo(job.get("ORB_TYPE", ""), job.get("ORB_SNAPSHOT_ID", ""))
-            owners = settings.current().access.admins
-            if not owners:
-                raise JobError("finish sbx administrator setup first")
-            cache = snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo)
+            return start_orb(name, info, job, retry_preparation=bool(
+                current and not current["active"] and current["phase"] in ("failed", "interrupted", "workspace_ready")))
+        repo = resolve_repo(job.get("ORB_TYPE", ""), job.get("ORB_SNAPSHOT_ID", ""))
+        owners = settings.current().access.admins
+        if not owners:
+            raise JobError("finish sbx administrator setup first")
+        cache = snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo)
+        try:
+            # The app is prepared once the spawn has succeeded: a failed one is
+            # never left busy with a preparation its cleanup would wait for.
             sandboxes.create_locked(
                 sandboxes.CreateSandbox(name=name, repo=repo, branch=recipes.default_branch(repo), public_keys="",
                                         runtime=cache.runtime if cache else None),
-                owners[0], start_from=cache.snapshot_id if cache else None,
+                owners[0], start_app=False, start_from=cache.snapshot_id if cache else None,
                 # Registered to an admin, driven by any Amp user: no admin's own values.
                 metadata={"connector": KIND, "orbId": orb_id, "personal": "off"})
             info = core.find(name)
             if info is None:
                 raise RuntimeError("the core lifecycle did not produce a sandbox")
-        try:
-            sandbox = core.attach(name, "for its Amp thread", info=info, run_app=not retry_preparation, ready=True)
-        except core.NotReady as error:
-            raise JobError(f"{error} (sbx-admin amp build)") from None
-        if retry_preparation:
+            result = start_orb(name, info, job)
             sandboxes.restart(name, info, prepare=True)
-        recipe = sandbox.app
-        # Amp's Repository Setup=false expects this path and a fresh Git
-        # credential helper. Keep the actual .sbx workdir unchanged.
-        root = shlex.quote(recipe.workdir)
-        link = (f"mkdir -p {Path(WORKSPACE).parent} && test ! -e {WORKSPACE} -o -L {WORKSPACE} && "
-                f"ln -sfnT {root} {WORKSPACE} && " if recipe.workdir != WORKSPACE else "")
-        sandbox.run(link + f"git -C {root} remote set-head origin -a", timeout=60)
-        sandbox.run(f"cd {root} && mkdir -p .amp/portals && "
-                    f"! git ls-files --error-unmatch {PREVIEWS} >/dev/null 2>&1 && "
-                    f"(grep -qxF /{PREVIEWS} .git/info/exclude || printf '\\n/{PREVIEWS}\\n' >> .git/info/exclude)",
-                    timeout=30)
-        sandbox.write(recipe.workdir + "/" + PREVIEWS, json.dumps({"links": [
-            {"label": label, "url": url} for label, url in addressing.urls(name, recipe).items()
-            if label != "desktop"
-        ]}))
-        envs = {"ORB_TOKEN": job["ORB_TOKEN"], "AMP_URL": job.get("AMP_URL") or "https://ampcode.com",
-                "BASH_ENV": f"{platform.RUN}/env"}
-        helper = f"{platform.RUN}/amp-bootstrap.py"
-        sandbox.ship_guest()   # the bootstrap imports it
-        sandbox.write(helper, BOOTSTRAP.read_text(), user="user")
-        sandbox.spawn(f"python3 {helper}", envs)
-        return {"name": name, "sandbox_id": info.sandbox_id, "repo": recipe.repo,
-                "urls": addressing.urls(name, recipe), "state": "running"}
+            return result
+        except Exception:
+            discard(name)
+            raise
+
+
+def discard(name: str):
+    """A spawn that failed after it began creating the orb's sandbox deletes
+    it again, as Amp's delete does: a VM no thread will use must not keep
+    running. The name is this orb's alone (sandbox_name, under its lock). A
+    cleanup that fails is logged; the spawn's own error is what Amp sees."""
+    try:
+        if core.find(name) or sandboxes.registered_owner(name):
+            sandboxes.delete_locked(name)
+    except Exception as error:
+        print(f"amp: {name} was not deleted after its spawn failed ({type(error).__name__}); "
+              "ORB_OPERATION=delete removes it", file=sys.stderr, flush=True)
+
+
+def start_orb(name: str, info, job: dict, retry_preparation: bool = False) -> dict:
+    """The orb's sandbox running, with Amp's bootstrap started in it."""
+    try:
+        sandbox = core.attach(name, "for its Amp thread", info=info, run_app=not retry_preparation, ready=True)
+    except core.NotReady as error:
+        raise JobError(f"{error} (sbx-admin amp build)") from None
+    if retry_preparation:
+        sandboxes.restart(name, info, prepare=True)
+    recipe = sandbox.app
+    # Amp's Repository Setup=false expects this path and a fresh Git
+    # credential helper. Keep the actual .sbx workdir unchanged.
+    root = shlex.quote(recipe.workdir)
+    link = (f"mkdir -p {Path(WORKSPACE).parent} && test ! -e {WORKSPACE} -o -L {WORKSPACE} && "
+            f"ln -sfnT {root} {WORKSPACE} && " if recipe.workdir != WORKSPACE else "")
+    sandbox.run(link + f"git -C {root} remote set-head origin -a", timeout=60)
+    sandbox.run(f"cd {root} && mkdir -p .amp/portals && "
+                f"! git ls-files --error-unmatch {PREVIEWS} >/dev/null 2>&1 && "
+                f"(grep -qxF /{PREVIEWS} .git/info/exclude || printf '\\n/{PREVIEWS}\\n' >> .git/info/exclude)",
+                timeout=30)
+    sandbox.write(recipe.workdir + "/" + PREVIEWS, json.dumps({"links": [
+        {"label": label, "url": url} for label, url in addressing.urls(name, recipe).items()
+        if label != "desktop"
+    ]}))
+    envs = {"ORB_TOKEN": job["ORB_TOKEN"], "AMP_URL": job.get("AMP_URL") or "https://ampcode.com",
+            "BASH_ENV": f"{platform.RUN}/env"}
+    helper = f"{platform.RUN}/amp-bootstrap.py"
+    sandbox.ship_guest()   # the bootstrap imports it
+    sandbox.write(helper, BOOTSTRAP.read_text(), user="user")
+    sandbox.spawn(f"python3 {helper}", envs)
+    return {"name": name, "sandbox_id": info.sandbox_id, "repo": recipe.repo,
+            "urls": addressing.urls(name, recipe), "state": "running"}
 
 
 def provider():

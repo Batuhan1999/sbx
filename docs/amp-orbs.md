@@ -82,6 +82,12 @@ continue in sbx. Amp still runs the repository's `.agents/setup` and
 or server starts there. sbx writes `.amp/portals/sbx-previews.json` (excluded
 from git) so Amp's Portal tab links to the sandbox's preview URLs.
 
+A spawn that fails after it created its sandbox deletes it again, as a delete
+job would, so no VM is left running for a thread that never started; Amp's next
+spawn starts over. A spawn that resumed an existing orb's sandbox keeps it on
+failure. If that cleanup itself fails, the control service's log says so, and
+a delete job (`ORB_OPERATION=delete`) removes the sandbox.
+
 ## Project snapshots
 
 Amp can ask for a project snapshot (`ORB_SNAPSHOT_ID`) when a thread pauses, and

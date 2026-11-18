@@ -4,6 +4,7 @@ real Linux process, without E2B or systemd."""
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import shlex
 import shutil
 import signal
@@ -203,6 +204,92 @@ class IdentityTests(unittest.TestCase):
                 self.assertEqual(restarted, restarts)
                 self.assertTrue((kept / "ssh_host_ed25519_key.pub").exists())
 
+    def listener_root(self):
+        """A fake /proc: 456 and 458 are sshd, 457 a pid another program has now."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-guest-listener-")))
+        for pid, exe in ((456, "/usr/sbin/sshd"), (457, "/usr/bin/agent"), (458, "/usr/sbin/sshd")):
+            (root / str(pid)).mkdir()
+            (root / str(pid) / "exe").symlink_to(exe)
+        clock = [0.0]
+        self.slept = []
+        self.enterContext(patch.object(sbx_guest, "PROC", root))
+        self.enterContext(patch.object(sbx_guest, "time", SimpleNamespace(
+            monotonic=lambda: clock[0], sleep=lambda s: (self.slept.append(s), clock.__setitem__(0, clock[0] + s)))))
+        self.opened, self.closed = [], []
+        self.enterContext(patch.object(sbx_guest.os, "pidfd_open", lambda pid: self.opened.append(pid) or 1000 + pid,
+                                       create=True))
+        self.enterContext(patch.object(sbx_guest.os, "close", self.closed.append))
+        return root
+
+    def listeners(self, *answers):
+        """listener_pid answering each of answers in turn (an exception is raised), then the last one."""
+        answers = list(answers)
+
+        def answer():
+            one = answers.pop(0) if len(answers) > 1 else answers[0]
+            if isinstance(one, BaseException):
+                raise one
+            return one
+        return patch.object(sbx_guest, "listener_pid", answer)
+
+    def test_a_listener_restarting_as_the_vm_resumes_is_waited_for(self):
+        """A runtime's agent restarting sshd as a snapshot resumes: no pid,
+        no pid file, a pid that is not sshd for a moment, then sshd again."""
+        self.listener_root()
+        with self.listeners(sbx_guest.GuestError("workspace SSH listener is not running"),
+                            FileNotFoundError("/run/sshd.pid"), 457, 457, 456):
+            self.assertEqual(sbx_guest.settled_listener(), (456, 1456))
+        self.assertEqual(self.opened, [457, 457, 456])
+        self.assertEqual(self.closed, [1457, 1457])   # every handle but the one returned
+        self.assertEqual(len(self.slept), 4)
+        self.assertEqual(self.slept, sorted(self.slept))   # backing off
+
+    def test_a_listener_that_stays_something_other_than_sshd_is_refused(self):
+        self.listener_root()
+        with self.listeners(457), self.assertRaisesRegex(sbx_guest.GuestError, "listener identity changed"):
+            sbx_guest.settled_listener()
+        self.assertLessEqual(sum(self.slept), sbx_guest.SETTLE_SECONDS)
+        self.assertGreater(sum(self.slept), sbx_guest.SETTLE_SECONDS / 2)
+        self.assertEqual(len(self.opened), len(self.closed))
+        with self.listeners(sbx_guest.GuestError("workspace SSH listener is not running")), \
+                self.assertRaisesRegex(sbx_guest.GuestError, "is not running"):
+            sbx_guest.settled_listener()
+
+    def fresh_identity(self, root, ticks, listeners):
+        """identity() for a fresh workspace, with fake ssh-keygen, ss and keyscan; what was sent SIGHUP."""
+        ssh = root / "ssh"
+        self.host_keys(ssh, "template")
+
+        def run(command, **kwargs):
+            if command[0] == "ssh-keygen":
+                path = Path(command[command.index("-f") + 1])
+                path.write_text("private fresh\n")
+                path.with_name(path.name + ".pub").write_text(f"ssh-{command[3]} fresh-{command[3]} root@box\n")
+            return SimpleNamespace(stdout="")
+        signalled = []
+        with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", root / "kept"), \
+                patch.object(sbx_guest, "IDENTITY", root / "identity.json"), \
+                patch.object(sbx_guest, "IDENTITY_LOCK", root / "identity.lock"), \
+                patch.object(sbx_guest.os, "geteuid", return_value=0), \
+                patch.object(sbx_guest.os, "umask", return_value=0o022), \
+                patch.object(sbx_guest.subprocess, "run", run), \
+                patch.object(sbx_guest, "start_ticks", side_effect=ticks), \
+                patch.object(sbx_guest.signal, "pidfd_send_signal", lambda fd, sig: signalled.append(fd), create=True), \
+                patch.object(sbx_guest, "serves", lambda expected: expected == ["ssh-ed25519", "fresh-ed25519"]), \
+                self.listeners(*listeners):
+            sbx_guest.identity("b" * 32, 22)
+        self.assertEqual(json.loads((root / "identity.json").read_text())["phase"], "ready")
+        return signalled
+
+    def test_a_fresh_identity_waits_for_sshd_to_come_back(self):
+        root = self.listener_root()
+        self.assertEqual(self.fresh_identity(root, ["1", "1"], [sbx_guest.GuestError("not running"), 457, 456]), [1456])
+
+    def test_sshd_restarted_while_its_keys_are_replaced_is_checked_again_and_reloaded(self):
+        root = self.listener_root()
+        # 456 restarted as 458 during the rotation; between them, a pid that is not sshd.
+        self.assertEqual(self.fresh_identity(root, ["1", None], [456, 457, 458]), [1458])
+
     def test_ssh_listener_is_systemd_s_or_the_standalone_sshd(self):
         """A fake / (its /proc/1/comm and /run/sshd.pid) and a fake systemctl."""
         for init, managed, standalone, expected in [("systemd", "123", "456", 123), ("systemd", "0", "456", 456),
@@ -302,6 +389,7 @@ class ProcessTests(unittest.TestCase):
         child = self.root / "worker.py"
         child.write_text('''import os, signal, time
 from pathlib import Path
+from types import SimpleNamespace
 Path("started").write_text(os.environ["LITMUS_VALUE"])
 def stop(*_):
     Path("stopped").write_text("graceful")
@@ -344,6 +432,7 @@ while True: time.sleep(0.1)
         detached = self.root / "detached.py"
         detached.write_text('''import os, signal, time
 from pathlib import Path
+from types import SimpleNamespace
 def stop(*_):
     Path("detached-stopped").write_text("stopped")
     raise SystemExit(0)
