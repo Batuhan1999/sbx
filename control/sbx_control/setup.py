@@ -3,10 +3,10 @@ runtime (added here when install.sh enabled none), the coding agents, and
 live runtime checks. Repository and provider connections follow after the
 server is ready.
 
-No template builds until the setup is complete (templates_blocked), so the
-first build starts from the finished settings. The coding agents' layers are
-in every template whether chosen or not (Amp's in the base); the choice
-decides which keys the setup asks for."""
+Templates build as soon as there is a runtime and an address, during the
+setup too: the coding agents' layers are in every template whether chosen or
+not (Amp's in the base), so the choice decides only which keys the setup
+asks for, and the setup's reachability check needs a built base template."""
 from __future__ import annotations
 
 import hashlib
@@ -71,8 +71,8 @@ def agents_chosen() -> bool:
 
 
 def choose_agents(kinds, by: str) -> list:
-    """Record the coding agents (kinds of offered_agents) for the first
-    template build; each one's own key may come later (Connector.choose)."""
+    """Record the coding agents (kinds of offered_agents): which keys the
+    setup asks for; each one's own key may come later (Connector.choose)."""
     offered = {c.kind: c for c in offered_agents()}
     kinds = sorted({k.strip().lower() for k in kinds if k.strip()})
     unknown = [k for k in kinds if k not in offered]
@@ -82,18 +82,6 @@ def choose_agents(kinds, by: str) -> list:
         connector.choose(kind in kinds, by=by)
     AGENTS.set(kinds)
     return kinds
-
-
-def templates_blocked() -> str:
-    """Why no template may build yet ("" once they may): until the setup is
-    complete, which needs the coding-agent choice, whose layers every
-    template includes. The scheduler, a runtime just added and install.sh's
-    builds wait for it."""
-    if complete():
-        return ""
-    if not agents_chosen():
-        return "templates build once the coding agents are chosen and the setup is finished"
-    return "templates build once the setup is finished"
 
 
 def mark_complete(by: str):
@@ -184,7 +172,12 @@ def address_ready() -> bool:
 
 
 def readiness() -> dict:
+    """The setup's checks. The reachability check starts a sandbox from the
+    base template, so a base not built yet (its address or runtime just
+    chosen) starts building now rather than on the scheduler's next round."""
+    from . import template_scheduler
     from .connections import runtime as runtime_connection
+    template_scheduler.kick()
     checks = [*runtime.readiness(host_facts()), *runtime_connection.Runtime().test()]
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
@@ -193,7 +186,7 @@ def readiness() -> dict:
 NEEDED = {"address": "Choose the server address and configure admin access first.",
           "sign_in": "Choose the server address and configure admin access first.",
           "runtime": "Add a sandbox runtime first: sandboxes need one to run on.",
-          "agents": "Choose the coding agents first (none is a choice): every template is built with them."}
+          "agents": "Choose the coding agents first (none is a choice): sbx asks for their keys."}
 
 
 def missing(found: dict) -> str:

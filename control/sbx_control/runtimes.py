@@ -191,10 +191,7 @@ def test(kind: str) -> list:
         found.append(Check("Base template", False, f"its last build failed: {(row or {}).get('error') or '?'}",
                            f"build it again: sbx-admin jobs run template@{kind}:{templates.BASE}", runtime=kind))
     else:
-        from . import setup
-        blocked = build != "building" and setup.templates_blocked()
         found.append(Check("Base template", True, "building" if build == "building" else
-                           f"not built yet; {blocked}" if blocked else
                            "not built yet; the scheduler builds it within minutes", runtime=kind))
     if build == "built" and all(c.ok for c in found):
         found.append(reachability.check(kind))

@@ -63,7 +63,7 @@ class Installation(unittest.TestCase):
     settings and what a test leaves in the tables named in RESET."""
     SETTINGS: dict = {}
     RUNTIME_ENV = RUNTIME   # /etc/sbx/runtime.env as install.sh writes it
-    SET_UP = False          # the first-run setup is complete (templates may build: setup.templates_blocked)
+    SET_UP = False          # the first-run setup is complete
     RESET = ("settings", "config", "config_history", "repos", "sealed", "store_values", "template_builds",
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",

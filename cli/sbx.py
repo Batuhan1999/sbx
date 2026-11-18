@@ -1175,8 +1175,6 @@ def templates_cmd(args):
     if args.json:
         print(json.dumps(found))
         return
-    if found.get("blocked"):
-        print(f"none builds yet: {found['blocked']}")
     for kind, listed in found["runtimes"].items():
         for t in listed:
             print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}"
@@ -1254,8 +1252,8 @@ def setup_status(args, client):
 
 
 def setup_agents(args, client):
-    """The coding agents every template is built with (none is a choice); no
-    template builds before this is chosen and the setup is finished."""
+    """The coding agents the setup asks keys for (none is a choice); every
+    template has their layers whether chosen or not."""
     if not args.kinds:
         state = client.api("GET", "/api/setup")
         if args.json:
@@ -1270,8 +1268,8 @@ def setup_agents(args, client):
     if args.json:
         print(json.dumps(state))
         return
-    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'}; every template is built "
-          "with them once the setup is finished (their own keys may come later)")
+    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'}; every template has "
+          "their layers already (their own keys may come later)")
 
 
 def setup_address(args, client):
@@ -1335,7 +1333,7 @@ def setup_finish(args, client):
     if args.json:
         print(json.dumps(state))
         return
-    print(f"set up: {state['access']['url']}; the setup link no longer works, and the templates build now "
+    print(f"set up: {state['access']['url']}; the setup link no longer works. Templates build on their own "
           "(about 10 minutes the first time; sbx templates). Next, if not signed in yet: sbx login")
 
 
@@ -2041,8 +2039,8 @@ def parser():
     change_flags(s)
     s = steps.add_parser("admin", parents=[link], help="the first admin's own account: the email, their password on stdin")
     s.add_argument("email")
-    s = steps.add_parser("agents", parents=[link], help="the coding agents every template is built with: KIND ... "
-                         "or none (no template builds before this); without one, what is offered")
+    s = steps.add_parser("agents", parents=[link], help="the coding agents the setup asks keys for (every template has them): "
+                         "KIND ... or none; without one, what is offered")
     s.add_argument("kinds", nargs="*", metavar="KIND")
     s.add_argument("--json", action="store_true")
     s = steps.add_parser("finish", parents=[link], help="finish: as the admin sbx login signed in, or with the "

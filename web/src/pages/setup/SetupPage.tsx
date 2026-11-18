@@ -245,8 +245,8 @@ export function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => 
   </div>
 }
 
-/** The coding agents every template is built with, chosen before the first build so it needs no rebuild; then the
- * server's checks and finishing, which starts the templates. An agent's own key can come later, under Extensions. */
+/** The coding agents the setup asks keys for (every template has their layers, chosen or not); then the server's
+ * checks and finishing. An agent's own key can come later, under Extensions. */
 function AgentsStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boolean; onBack: () => void }) {
   const qc = useQueryClient()
   const checks = useSetupChecks()

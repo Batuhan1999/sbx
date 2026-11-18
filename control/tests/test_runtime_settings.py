@@ -138,8 +138,8 @@ class Web(TwoRuntimes, Server):
         busy = self.call("PUT", "/api/runtimes/default", {"kind": "fake"})
         self.assertEqual(busy.status_code, 409)                         # one change at a time
         from sbx_control import setup
-        with patch.object(setup, "templates_blocked", return_value=""):   # set up: an added runtime builds now
-            code, said = self.apply()
+        self.assertFalse(setup.complete())
+        code, said = self.apply()   # the setup is not finished: an added runtime builds all the same
         self.assertEqual(code, 0, said)
         self.assertFalse(self.request_file.exists())
         text = self.file.read_text()

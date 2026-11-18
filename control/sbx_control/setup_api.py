@@ -19,12 +19,14 @@ _setup_lock = threading.Lock()
 SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/api/settings", "/api/catalog",
               "/api/runtimes", "/api/secret-requests", "/keys/", "/connections/github", "/auth/", "/cli/")
 # Open by exact path: the release string, which the setup's reachability
-# check fetches from inside a sandbox (reachability.PATH); the sign-in page
+# check fetches from inside a sandbox (reachability.PATH); what a template
+# build downloads under its one-time token (/bundles: templates build during
+# the setup, the base's Amp tools among them); the sign-in page
 # and sign-out; the desktop CLI's installer and `sbx login` (/cli/: a session
 # or a one-time code), so an agent signs in as the admin once the account
 # exists and finishes the setup itself; /api/me answers only a sign-in;
-# /api/templates (admins) says why nothing builds yet.
-SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me",
+# /api/templates (admins) shows the builds.
+SETUP_OPEN_EXACT = ("/dist/version", "/bundles", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me",
                     "/api/templates")
 
 
@@ -126,7 +128,7 @@ class Agents(BaseModel):
 
 @router.put("/api/setup/agents")
 def api_setup_agents(body: Agents, request: Request, who: str = Depends(setup_or_admin)):
-    """The coding agents every template is built with (state()'s agents: the
+    """The coding agents the setup asks keys for (state()'s agents: the
     ones offered; [] for none); their own keys may come later. Under the
     setup lock, as finishing is: never saved after the setup completed."""
     with _setup_lock:
@@ -163,7 +165,7 @@ def finishing_admin(request: Request, body: Finish | None = None, who: str = Dep
 @router.post("/api/setup/complete")
 def api_setup_complete(request: Request, email: str | None = Depends(finishing_admin),
                        who: str = Depends(setup_or_admin)):
-    with _setup_lock:   # the agents chosen are the ones the first build gets
+    with _setup_lock:   # one finish at a time
         s = setup.state(email, request.url.hostname or "")
         if needed := setup.missing(s):
             raise HTTPException(400, needed)
@@ -174,5 +176,5 @@ def api_setup_complete(request: Request, email: str | None = Depends(finishing_a
             raise HTTPException(400, {"message": "The server needs attention before setup can finish.",
                                       "checks": checks["checks"]})
         setup.mark_complete(email or who)
-    template_scheduler.kick()   # the first templates, with the chosen agents' layers, now
+    template_scheduler.kick()   # what is still stale builds now, not on the scheduler's next round
     return setup.state(email, request.url.hostname or "")
