@@ -793,6 +793,19 @@ class CliApiTests(Server):
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(recipes.load("owner/app").spec["previews"]["web"], 3000)
 
+    def test_an_admin_reads_the_setup_brief_before_the_repo_is_served(self):
+        from sbx_control import auth, settings
+        self.repo_admin()
+        self.assertIsNone(settings.trust("owner/new"))
+        response = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("# Set up owner/new", response.text)
+        self.app.app.dependency_overrides[auth.api_user] = lambda: "someone@example.test"
+        self.addCleanup(self.app.app.dependency_overrides.clear)
+        refused = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("not served here", refused.text)
+
     def test_an_applied_recipe_is_removed_once_its_sandboxes_are_gone(self):
         from types import SimpleNamespace
         from sbx_control import core, recipes, settings, template_builds

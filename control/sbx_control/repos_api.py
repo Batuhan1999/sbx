@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from . import readiness, recipes, repo_path, repos, runtimes, template_builds, views
+from . import readiness, recipes, repo_path, repos, runtimes, settings, template_builds, views
 from .auth import admin_user, api_user, is_admin
 
 router = APIRouter()
@@ -47,7 +47,11 @@ async def api_readiness(email: str = Depends(api_user), repo: str = Depends(repo
 
 
 @router.get("/api/repos/{owner}/{name}/setup-brief", response_class=PlainTextResponse)
-def api_setup_brief(email: str = Depends(api_user), repo: str = Depends(repo_path.served)):
+def api_setup_brief(email: str = Depends(api_user), repo: str = Depends(repo_path.named)):
+    """The brief for a served repo; an admin gets it before the repo is
+    served too, since it explains the recipe that serves it."""
+    if not settings.trust(repo) and not is_admin(email):
+        raise HTTPException(400, f"{repo} is not served here")
     return repos.setup_brief(repo, email)
 
 
