@@ -323,7 +323,7 @@ class Keys(TwoRuntimes, Server):
         found = self.ask(("connector:amp", "Amp provider token"))
         self.assertTrue(self.submit(found["id"], {"connector:amp": "aop_live_test-only-0123456789"})["ok"])
         self.assertTrue(amp.settings().enabled)   # the provider runs once its token is in
-        self.assertIsNotNone(amp.contribution(None))   # and its layer is still in every template
+        self.assertIsNotNone(amp.base_contribution())   # and its layer is in every base template
 
     def test_a_request_expires_or_is_cancelled_and_then_takes_nothing(self):
         found = self.ask(("dns:cloudflare", ""))

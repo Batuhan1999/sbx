@@ -57,6 +57,15 @@ the choice in its own settings, so its `contribution` already has its template
 layer for the first build even when its own key comes later (Amp: its
 `chosen` setting; Claude Code's CLI is in every template anyway).
 
+An extension can instead put its layer into the base template of every
+installation, whatever its settings, with `base_contribution()`: a
+`Contribution` whose `template`, `ready` and `scrub_paths` are read (its
+`runtime` is not). It is part of the base's fingerprint, so only a change to
+the layer itself (a new pinned version) rebuilds the base and the templates on
+it; connecting, enabling or disabling the extension rebuilds nothing. Amp does
+this, so choosing Amp never waits for a build. Use it for what is large or
+slow to build, at the cost of every template carrying it.
+
 ## Agent connectors
 
 A connector lets an agent product start sessions in sandboxes: Claude Code's
@@ -94,6 +103,7 @@ are plain values rather than part of the contribution:
 
 | Method | Use |
 | --- | --- |
+| `base_contribution()` | Its layer in every installation's base template, whatever its settings ([contributions](#contributions)). |
 | `migrate(conn)` | Create or update the connector's own tables in `sbx.db` (run by `state.migrate()`). |
 | `on_restore(conn)` | Settle its own rows after a backup is restored on another host. |
 | `router()` | A FastAPI `APIRouter` for its routes (for example job or order endpoints). |

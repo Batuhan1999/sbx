@@ -23,6 +23,21 @@ def _builds_settled(seconds: float = 10.0) -> None:
         raise AssertionError(f"template builds still running after {seconds:g} s: {sorted(template_builds._running)}")
 
 
+def amp_tools(gateway: bool = True, executable: bool = True) -> bytes:
+    """A gzipped amp-wayland tarball with the files Amp's ready check runs."""
+    import io
+    import tarfile
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for path in ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-wayland/libexec/waymote-streamd"):
+            if not gateway and path.endswith("waymote-gateway"):
+                continue
+            entry = tarfile.TarInfo(path)
+            entry.size, entry.mode = 4, 0o755 if executable else 0o644
+            tar.addfile(entry, io.BytesIO(b"\x7fELF"))
+    return out.getvalue()
+
+
 class Installation(unittest.TestCase):
     """setUpClass makes the installation and migrates it; setUp empties the
     settings and what a test leaves in the tables named in RESET."""
@@ -43,6 +58,8 @@ class Installation(unittest.TestCase):
         cls.environment = patch.dict(os.environ, {
             "SBX_ETC": str(cls.root / "etc"), "SBX_STATE_DIR": str(cls.root / "state"),
             "SBX_STATE": str(cls.root / "state/sbx.db"), "SBX_RUN_DIR": str(cls.root / "run"),
+            # Where builds fetch what this server serves them (the base's Amp tools among them).
+            "SBX_TEMPLATE_BUNDLE_ORIGIN": "https://sbx.example.test",
         })
         cls.environment.start()
         (cls.root / "etc").mkdir()
@@ -64,10 +81,13 @@ class Installation(unittest.TestCase):
         from sbx_control import recipes, runtime, settings, state, users
         users.forget()
         self.enterContext(patch.dict(runtime._index, clear=True))   # which runtime saw which sandbox: per test
-        self.addCleanup(_builds_settled)
         # No test asks GitHub for a repo's default branch (self.remote_head: the real lookup).
         self.remote_head = recipes.remote_head
         self.enterContext(patch.object(recipes, "remote_head", return_value=None))
+        # Every base template build serves Amp's desktop tools; no test reads them from Amp's registry.
+        from sbx_control.connectors.amp import registry
+        self.enterContext(patch.object(registry, "extract", return_value=amp_tools()))
+        self.addCleanup(_builds_settled)   # after the patch: cleanups run last first, so builds settle before it goes
         with state.db() as conn:
             present = state.tables(conn)
             for table in self.RESET:

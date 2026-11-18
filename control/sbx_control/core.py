@@ -602,12 +602,14 @@ def verify_ready(sbx, info):
     """The ready check of what the extension that made the sandbox
     contributes (metadata connector): NotReady when its template lacks it."""
     connector = extensions.connector_of(info)
-    c = connector.contribution(target_of(info)) if connector else None
-    # Judged by its exit status: a check may print (command -v does).
-    if c and c.ready and run_in(sbx, f"{{ {c.ready.command}; }} >/dev/null 2>&1 && echo ready || true",
-                                timeout=c.ready.timeout).stdout.strip() != "ready":
-        raise NotReady(f"this sandbox's template has no working {c.name} (its ready check failed); "
-                       "build its template again")
+    if connector is None:
+        return
+    for c in (connector.base_contribution(), connector.contribution(target_of(info))):
+        # Judged by its exit status: a check may print (command -v does).
+        if c and c.ready and run_in(sbx, f"{{ {c.ready.command}; }} >/dev/null 2>&1 && echo ready || true",
+                                    timeout=c.ready.timeout).stdout.strip() != "ready":
+            raise NotReady(f"this sandbox's template has no working {c.name} (its ready check failed); "
+                           "build its template again")
 
 
 def attach(name: str, why: str, *, info=None, run_app: bool = True, wait: bool = True,

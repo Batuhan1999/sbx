@@ -3,9 +3,10 @@ runtime (added here when install.sh enabled none), the coding agents, and
 live runtime checks. Repository and provider connections follow after the
 server is ready.
 
-No template builds until the setup is complete (templates_blocked): the
-coding agents chosen here put their layers into every template, so the
-first build already has them instead of rebuilding everything later."""
+No template builds until the setup is complete (templates_blocked), so the
+first build starts from the finished settings. The coding agents' layers are
+in every template whether chosen or not (Amp's in the base); the choice
+decides which keys the setup asks for."""
 from __future__ import annotations
 
 import hashlib

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 
-from support import Installation, Server
+from support import Installation, Server, amp_tools
 
 
 class AmpTests(Server):
@@ -638,25 +638,13 @@ sudo() {
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
 
 
-def _tarball(gateway: bool = True, executable: bool = True) -> bytes:
-    import io
-    import tarfile
-    out = io.BytesIO()
-    with tarfile.open(fileobj=out, mode="w:gz") as tar:
-        for path in ("amp-wayland/bin/labwc", "amp-wayland/bin/waymote-gateway", "amp-wayland/libexec/waymote-streamd"):
-            if not gateway and path.endswith("waymote-gateway"):
-                continue
-            entry = tarfile.TarInfo(path)
-            entry.size, entry.mode = 4, 0o755 if executable else 0o644
-            tar.addfile(entry, io.BytesIO(b"\x7fELF"))
-    return out.getvalue()
-
-
+_tarball = amp_tools
 TARBALL = _tarball()
 
 
 class AmpToolsTests(Installation):
-    """Amp's desktop tools come from its container image: fetched once on a
+    """Amp's desktop tools come from its container image: read from its
+    registry, or (here, where the registry can't be read) fetched once on a
     runtime that imports images, whichever is the default, and kept on the
     host for every runtime's builds."""
 
@@ -683,6 +671,8 @@ class AmpToolsTests(Installation):
 
         self.runtime, self.amp, self.boat, self.fake = runtime, amp, BoatLike(), Fake()
         self.fake.respond = tools
+        self.registry = self.enterContext(patch.object(amp.registry, "extract",
+                                                       side_effect=amp.registry.Refused("HTTP 503")))
         self.enterContext(patch.dict(runtime._backends, {"boat": self.boat, "fake": self.fake}))
         self.enterContext(patch.object(runtime, "enabled", return_value=["boat", "fake"]))
         self.enterContext(patch.object(runtime, "default", return_value="boat"))
@@ -695,7 +685,8 @@ class AmpToolsTests(Installation):
 
     def test_a_default_runtime_without_image_import_fetches_on_one_that_has_it(self):
         self.assertEqual(self.amp.tools_runtime(), "fake")
-        self.assertEqual(self.amp.Amp._tools_check().detail, "fetched on Fake runtime at the next template build")
+        self.assertEqual(self.amp.Amp._tools_check().detail, "read from Amp's registry at the next base template "
+                                                             "build, or fetched on Fake runtime if that fails")
         self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual((self.fetches(self.fake), self.boat.ran, self.boat.boxes), (1, [], {}))
         self.assertEqual((self.fake.boxes, self.fake.built), ({}, {}))   # its builder and template are gone
@@ -714,15 +705,48 @@ class AmpToolsTests(Installation):
             self.assertEqual(self.amp.wayland_tools(), TARBALL)
         self.assertEqual(self.fetches(self.fake), 1)
 
-    def test_no_runtime_that_imports_images_says_what_to_enable(self):
+    def test_no_registry_and_no_runtime_that_imports_images_says_what_to_do(self):
         with patch.object(self.runtime, "enabled", return_value=["boat"]):
             self.assertIsNone(self.amp.tools_runtime())
             check = self.amp.Amp._tools_check()
-            with self.assertRaisesRegex(RuntimeError, "no enabled sandbox runtime builds templates from one"):
+            with self.assertRaises(RuntimeError) as raised:
                 self.amp.wayland_tools()
-        self.assertFalse(check.ok)
-        self.assertIn("Enable a runtime that does (E2B Embed, E2B Cloud", check.fix)
+        self.assertTrue(check.ok)   # the registry is tried first: nothing to enable until it fails
+        self.assertEqual(check.detail, "read from Amp's registry at the next base template build")
+        message = str(raised.exception)
+        self.assertIn("could not be read from its registry (Refused: HTTP 503)", message)
+        self.assertIn("reach us-central1-docker.pkg.dev over HTTPS", message)
+        self.assertIn("enable a runtime that builds from images (E2B Embed, E2B Cloud", message)
         self.assertEqual((self.boat.ran, self.boat.built), ([], {}))
+        self.assertFalse(self.amp.cached_tools().exists())
+
+    def test_the_registry_is_read_first_and_no_runtime_is_used(self):
+        self.registry.side_effect, self.registry.return_value = None, TARBALL
+        with patch.object(self.runtime, "enabled", return_value=["boat"]):   # Boat alone: no image import needed
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.registry.assert_called_once_with(self.amp.IMAGE, "opt/amp-wayland", limit=self.amp.TOOLS_FILES_LIMIT)
+        self.assertEqual((self.fetches(self.fake), self.boat.ran, self.fake.built), (0, [], {}))
+        self.assertEqual(self.amp.cached_tools().read_bytes(), TARBALL)
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.registry.call_count, 1)   # kept on the host
+
+    def test_a_registry_answer_without_the_tools_falls_back_to_a_runtime(self):
+        self.registry.side_effect, self.registry.return_value = None, _tarball(gateway=False)
+        self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 1)
+
+    def test_any_registry_failure_falls_back_to_a_runtime(self):
+        for error in (OSError("no route to host"), ValueError("not json"), KeyError("layers")):
+            self.amp.cached_tools().unlink(missing_ok=True)
+            self.registry.side_effect = error
+            self.assertEqual(self.amp.wayland_tools(), TARBALL)
+        self.assertEqual(self.fetches(self.fake), 3)
+
+    def test_tools_larger_than_the_cap_are_refused(self):
+        self.registry.side_effect, self.registry.return_value = None, TARBALL
+        with patch.object(self.amp, "TOOLS_LIMIT", len(TARBALL) - 1), \
+                self.assertRaisesRegex(RuntimeError, "exceed the expected build artifact size"):
+            self.amp.wayland_tools()
         self.assertFalse(self.amp.cached_tools().exists())
 
     def test_a_damaged_kept_copy_is_fetched_again(self):

@@ -68,22 +68,22 @@ class TemplateGate(Server):
             self.assertTrue(self.real_kick())
             self.assertTrue(ran.wait(5))
 
-    def test_an_agent_chosen_in_the_setup_is_in_the_first_template_before_its_key(self):
+    def test_amp_is_in_the_base_template_whether_it_is_chosen_or_not(self):
         from sbx_control import vault
         from sbx_control.connectors.amp.common import TOKEN
-        default = self.builds.plan(self.templates.DEFAULT)
+        base, default = self.builds.plan(self.templates.BASE), self.builds.plan(self.templates.DEFAULT)
+        self.assertIn("amp", [c.name for c in base.contributions])
         self.assertNotIn("amp", [c.name for c in default.contributions])
         self.choose_ip()
         self.create_admin()
         self.choose_agents("amp", "claude")
         self.assertFalse(vault.facts(TOKEN).set)
-        chosen = self.builds.plan(self.templates.DEFAULT)
-        self.assertIn("amp", [c.name for c in chosen.contributions])
-        self.assertNotEqual(chosen.fingerprint, default.fingerprint)
+        self.assertEqual(self.builds.plan(self.templates.BASE).fingerprint, base.fingerprint)   # choosing it rebuilds nothing
+        self.assertEqual(self.builds.plan(self.templates.DEFAULT).fingerprint, default.fingerprint)
         self.assertFalse(self.amp().settings().enabled)        # the provider waits for its token
         self.assertTrue(self.amp().status().facts["chosen"])   # listed as added, waiting on its token
-        self.choose_agents()                                    # changed before finishing: out again
-        self.assertEqual(self.builds.plan(self.templates.DEFAULT).fingerprint, default.fingerprint)
+        self.choose_agents()
+        self.assertEqual(self.builds.plan(self.templates.BASE).fingerprint, base.fingerprint)
 
     def test_the_choice_is_checked_and_belongs_to_the_setup(self):
         self.choose_ip()
@@ -104,7 +104,7 @@ class TemplateGate(Server):
         self.assertEqual(self.setup.templates_blocked(), "")
         self.assertEqual(self.setup.state(None)["steps"][-1]["summary"], "as enabled under Extensions")
 
-    def test_turning_an_agent_off_later_says_what_rebuilds_and_starts_it(self):
+    def test_turning_amp_off_later_rebuilds_nothing(self):
         self.choose_ip()
         self.create_admin()
         self.choose_agents("amp")
@@ -113,26 +113,17 @@ class TemplateGate(Server):
         response = self.client.delete("/api/connections/amp")
         self.assertEqual(response.status_code, 200, response.text)
         report = response.json()["rebuilds"]
-        self.assertEqual(report["keys"], {"embed": [self.templates.DEFAULT]})   # the base has no extensions
-        self.assertEqual(report["runtimes"], {"embed": 1})
-        self.assertTrue(report["building"])
-        self.assertIn("1 template rebuilds (E2B Embed: 1)", report["message"])
-        self.assertIn("Existing sandboxes keep the templates they started from", report["message"])
-        self.kick.assert_called_once()
-        self.assertNotIn("amp", [c.name for c in self.builds.plan(self.templates.DEFAULT).contributions])
-        again = self.client.delete("/api/connections/amp").json()["rebuilds"]
-        self.assertEqual((again["runtimes"], again["building"]), ({}, False))
-        self.assertIn("nothing rebuilds", again["message"])
-        self.assertNotIn("rebuilds", self.client.put("/api/connections/domain", json={"values": {}}).json())
+        self.assertEqual((report["runtimes"], report["building"]), ({}, False))
+        self.assertIn("nothing rebuilds", report["message"])
+        self.kick.assert_not_called()
+        self.assertIn("amp", [c.name for c in self.builds.plan(self.templates.BASE).contributions])
 
     def test_a_change_before_the_setup_is_finished_builds_nothing(self):
         self.choose_ip()
         self.create_admin()
         self.choose_agents("amp")
         report = self.client.delete("/api/connections/amp", headers=self.headers).json()["rebuilds"]
-        self.assertEqual(report["runtimes"], {"embed": 1})
         self.assertFalse(report["building"])
-        self.assertIn("none is built yet", report["message"])
         self.kick.assert_not_called()
 
     def test_the_templates_and_where_their_builds_stand(self):

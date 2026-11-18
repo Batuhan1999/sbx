@@ -600,12 +600,16 @@ command that survived the crash.
 A template is composed from three layers:
 
 1. the **platform layer**: the OS, SSH and its WebSocket bridge, the desktop,
-   Node, Chromium and the start contract (the `sbx-base` template);
+   Node, Chromium and the start contract (the `sbx-base` template), with
+   what extensions build into every installation's base whatever their
+   settings: the [Amp](amp-orbs.md) CLI and desktop tools, whether Amp is
+   enabled or not;
 2. the **recipe**: `.sbx/Dockerfile`, the checkout and `.sbx/build` when
    `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
    template);
 3. **contributions** of the extensions: `gh` when GitHub is connected, each
-   agent connector's CLI (Claude Code, Codex for `sbx open codex`), and the
+   agent connector's CLI (Claude Code, Codex for `sbx open codex`; Amp's is
+   in the base), and the
    template layers of catalog packages a trusted repository attaches
    ([extensions](extensions.md#contributions)). They are added after the
    recipe, so `.sbx/Dockerfile` and `.sbx/build` cannot use them.
@@ -643,6 +647,14 @@ again on its next round):
   `/var/lib/e2b/storage/templates` and in its orchestrator's
   `/orchestrator/build`, so a large app's build needs far more while it runs:
   n8n's (15 steps at 8 GiB) used over 60 GB.
+
+A build that fetches files this server serves it (the base template, for
+Amp's desktop tools) also waits, rather than failing, until the server has an
+address its builders can reach (a domain or an IP address, or
+`SBX_TEMPLATE_BUNDLE_ORIGIN`): `install.sh` and `sbx-admin template build` say
+`WAITING`, and the scheduler starts it once the address is chosen. Its
+download retries for three minutes while the server's certificate is still
+being issued.
 
 Embed cannot stop a build once it runs (deleting its template lets it run to
 the end), and a disk that fills during one crashes Embed's orchestrator and

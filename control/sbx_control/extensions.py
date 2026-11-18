@@ -136,6 +136,14 @@ class Connector(Connection):
     def contribution(self, target: Target) -> contributions.Contribution | None:
         return None
 
+    def base_contribution(self) -> contributions.Contribution | None:
+        """What it builds into the base template of every installation,
+        whether it is connected and enabled or not: a template layer, a
+        ready check and scrub_paths (a runtime layer here is ignored). Its
+        settings never reach the base's fingerprint unless the layer itself
+        changes (a new pinned version), so enabling it rebuilds nothing."""
+        return None
+
     def git_access(self, repo: str):
         """A context giving git on this host its (url, env) for the repo,
         when this extension is how the installation reaches repos; else None."""
@@ -256,12 +264,17 @@ def contributions_for(target: Target) -> list:
     return [c for c in out if c is not None]
 
 
+def base_contributions() -> list:
+    """What every extension builds into the base template (Connector.base_contribution)."""
+    return [c for c in (connector.base_contribution() for connector in connectors()) if c is not None]
+
+
 def scrub_paths(target: Target) -> list:
     """What no reusable snapshot of the sandbox keeps: every contribution's
     scrub_paths, read from its template contribution (name ""), so no
     runtime layer is built and no package's host code runs."""
     template = Target(repo=target.repo, trusted=target.trusted, connector=target.connector)
-    found = [templates.PLATFORM, *(c.contribution(template) for c in connectors())]
+    found = [templates.PLATFORM, *base_contributions(), *(c.contribution(template) for c in connectors())]
     return sorted({p for c in found if c is not None for p in c.scrub_paths} | packages().scrub_paths(target.name))
 
 

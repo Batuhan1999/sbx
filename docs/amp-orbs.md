@@ -9,10 +9,13 @@ plug in is described in [extensions](extensions.md#agent-connectors).
 
 ## What the connector contributes
 
-- **Template layer**, while Amp is enabled: the Amp CLI, the Wayland desktop
-  tools taken from Amp's published image, and their packages. Enabling or
-  disabling Amp changes the template fingerprint, so templates rebuild by
-  themselves. See [Desktop tools](#desktop-tools) for where the tools come
+- **Base template layer**, in every installation whether Amp is enabled or
+  not: the Amp CLI, the Wayland desktop tools taken from Amp's published
+  image, and their packages (about 0.6 to 0.7 GB per template). Connecting,
+  enabling or disabling Amp changes no template's fingerprint, so it rebuilds
+  nothing; only a new pinned CLI release (`cli_version` in the `amp`
+  settings) or image digest does, and then the base and every template on it
+  rebuild once. See [Desktop tools](#desktop-tools) for where the tools come
   from.
 - **A host service**, `sbx-amp`, that runs Amp's outbound provider controller.
   Only outbound HTTPS/WSS to Amp is needed; no public port is opened.
@@ -52,8 +55,10 @@ plug in is described in [extensions](extensions.md#agent-connectors).
 
 4. Check that the provider shows as connected in Amp. A running `sbx-amp`
    service alone does not prove Amp accepted the token.
-5. To build the templates now instead of waiting for the scheduler:
-   `sbx-admin amp build [--repo owner/repository]`.
+
+Nothing needs building for Amp: it is in every template already. To build a
+routed repository's template now rather than wait for the scheduler (after
+adding a repository, say): `sbx-admin amp build [--repo owner/repository]`.
 
 Use one controller per provider token; do not run another `amp orb provider`
 beside the service.
@@ -103,12 +108,27 @@ shows the VM is gone, not that the orb's registration and generated values are.
 ## Desktop tools
 
 The Wayland desktop tools (`/opt/amp-wayland`) come from Amp's orb image,
-pinned by digest in the connector. The first template build that needs them
-starts a throwaway template and sandbox from that image, copies the directory
-out as a tarball and deletes both. Only a runtime that builds templates from
-container images can do that (`image_import`: E2B Embed and E2B Cloud, not
-Boat), so sbx uses the default runtime when it can and otherwise the first
-enabled runtime that can.
+pinned by digest in the connector. The first base template build that needs
+them reads them straight from the image's registry
+(`us-central1-docker.pkg.dev`) over HTTPS, anonymously: the manifest by the
+pinned digest, then every layer, each checked against its sha256 digest,
+keeping only `opt/amp-wayland`. That downloads the whole image once per
+digest (about 1.8 GB compressed, under two minutes on a fast link); no
+runtime is involved, so a host whose only runtime is Boat gets them too.
+
+If the registry can't be read (no outbound HTTPS to it, a refused or
+malformed answer, a digest that does not match), sbx falls back to a runtime
+that builds templates from container images (`image_import`: E2B Embed and
+E2B Cloud, not Boat): the default runtime when it can, otherwise the first
+enabled one that can. It starts a throwaway template and sandbox from the
+image, copies the directory out as a tarball and deletes both.
+
+The host serves the tarball to the base template's build, so that build,
+like any build with a checkout, needs to reach this server's address
+(`SBX_TEMPLATE_BUNDLE_ORIGIN` when builds can't reach the normal URL; see
+[templates](reference.md#sandbox-size)). On a first install the base waits
+for the address to be chosen and then builds by itself
+([templates](reference.md#templates)).
 
 The host keeps the tarball in `$SBX_STATE_DIR/cache/amp-tools/<digest>.tar.gz`
 (`/var/lib/sbx/cache/amp-tools/` by default).
@@ -117,14 +137,11 @@ copy instead of fetching again; when the pinned digest changes, the next build
 fetches the new image and removes the copies of other digests. A copy that is
 empty, damaged or missing one of the tools is fetched again the same way. Clearing the folder only makes
 the next build fetch again, but do it only while no template build is running
-(a running build holds the folder's lock file), and on a host whose only
-runtime is Boat, enable a runtime that imports images first (see below).
+(a running build holds the folder's lock file).
 
-An installation whose only runtime is Boat therefore needs a runtime that
-imports images for the first fetch of each digest: enable E2B Cloud (or E2B
-Embed) for it, build, and disable it again if you like. Until then, template
-builds with Amp enabled fail with a message that says so, and the Amp
-connection test shows **desktop tools** as not ready.
+When neither the registry nor a runtime that imports images can provide the
+tools, the base template build fails with a message naming the registry's
+error and what to enable; no template builds on that runtime until it can.
 
 ## Project snapshots
 

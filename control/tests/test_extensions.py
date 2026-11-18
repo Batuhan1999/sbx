@@ -167,25 +167,69 @@ class ExtensionTests(Installation):
         self.assertEqual(template_builds.state(templates.DEFAULT)["status"], "failed")
         self.assertEqual(template_builds.stale(), [])
         before = template_builds.plan(templates.DEFAULT).fingerprint
-        connector_settings("amp", enabled=True)
+        connector_settings("codex", version="0.161.0")
         self.assertNotEqual(template_builds.plan(templates.DEFAULT).fingerprint, before)
-        self.assertIn("amp", [c.name for c in template_builds.plan(templates.DEFAULT).contributions])
         self.assertEqual(template_builds.stale(), [templates.DEFAULT])
 
     def test_a_new_codex_or_amp_cli_release_makes_templates_stale(self):
         # The F5 rule: what a template installs is pinned, so the fingerprint follows it.
         from sbx_control import template_builds, templates
-        connector_settings("amp", enabled=True)
         before = template_builds.plan(templates.DEFAULT).fingerprint
         connector_settings("codex", version="0.160.0")
         codex = next(c for c in template_builds.plan(templates.DEFAULT).contributions if c.name == "codex")
         self.assertIn("@openai/codex@0.160.0", codex.template.root[0])
         self.assertNotEqual(template_builds.plan(templates.DEFAULT).fingerprint, before)
-        before = template_builds.plan(templates.DEFAULT).fingerprint
+        before = {key: template_builds.plan(key).fingerprint for key in (templates.BASE, templates.DEFAULT)}
         connector_settings("amp", cli_version="0.0.1700000000-gabcdef")
-        amp = next(c for c in template_builds.plan(templates.DEFAULT).contributions if c.name == "amp")
+        amp = next(c for c in template_builds.plan(templates.BASE).contributions if c.name == "amp")
         self.assertIn("AMP_VERSION=0.0.1700000000-gabcdef ", amp.template.root[0])
-        self.assertNotEqual(template_builds.plan(templates.DEFAULT).fingerprint, before)
+        for key in (templates.BASE, templates.DEFAULT):   # the base, and every template on it
+            self.assertNotEqual(template_builds.plan(key).fingerprint, before[key])
+
+    def test_amp_is_in_the_base_template_whether_enabled_or_not(self):
+        from sbx_control import extensions, template_builds, templates
+        from sbx_control.connectors import amp
+        base = template_builds.plan(templates.BASE)
+        layer = next(c for c in base.contributions if c.name == "amp")
+        self.assertEqual(layer.template.apt, amp.APT)
+        self.assertEqual([a.label for a in layer.template.artifacts], [f"amp-wayland from {amp.IMAGE}"])
+        self.assertEqual(layer.ready.command, amp.READY)
+        self.assertNotIn("amp", [c.name for c in template_builds.plan(templates.DEFAULT).contributions])
+        self.assertIn("$HOME/.amp", extensions.scrub_paths(extensions.Target(repo="owner/app")))
+
+    def test_a_build_that_serves_files_waits_for_the_server_s_address(self):
+        # A first install builds before its address is chosen: the base serves Amp's tools, so it waits.
+        import contextlib
+        import io
+        from sbx_control import template_builds, templates
+        with patch.object(templates, "bundle_origin", side_effect=ValueError("no origin")), \
+                patch.object(templates, "build") as build:
+            self.assertIn("has no address yet", template_builds.no_address(templates.BASE))
+            for key in (templates.BASE, templates.DEFAULT):   # the default builds on the base, which builds first
+                with self.assertRaises(template_builds.NoAddress):
+                    template_builds.build_now(key)
+            self.assertEqual(template_builds.state(templates.BASE), {})   # nothing started, nothing failed
+            with contextlib.redirect_stderr(io.StringIO()) as said:
+                self.assertEqual(template_builds.main(["base"]), 0)   # install.sh goes on
+            self.assertIn("WAITING sbx-base", said.getvalue())
+        build.assert_not_called()
+        self.assertEqual(template_builds.no_address(templates.BASE), "")
+        with patch.object(templates, "build"):
+            template_builds.build_now(templates.BASE)
+        self.assertEqual(template_builds.state(templates.BASE)["status"], "built")
+        with patch.object(templates, "bundle_origin", side_effect=ValueError("no origin")):
+            self.assertEqual(template_builds.no_address(templates.DEFAULT), "")   # the default serves nothing itself
+
+    def test_connecting_or_enabling_amp_changes_no_template(self):
+        from sbx_control import settings, template_builds, templates
+        self.recipe("owner/app", "template: yes\n")
+        settings.set_repos(["owner/app"], by="test")
+        keys = (templates.BASE, templates.DEFAULT, "owner/app")
+        before = {key: template_builds.plan(key).fingerprint for key in keys}
+        connector_settings("amp", enabled=True, repo="")
+        self.assertEqual({key: template_builds.plan(key).fingerprint for key in keys}, before)
+        connector_settings("amp", enabled=False)
+        self.assertEqual({key: template_builds.plan(key).fingerprint for key in keys}, before)
         from sbx_control import settings
         with self.assertRaises(settings.Invalid):
             connector_settings("codex", version="1.0; rm -rf /")
@@ -383,6 +427,31 @@ class ExtensionTests(Installation):
             with self.assertRaisesRegex(recipes.RecipeError, r"\.sbx/Dockerfile: .*multi-stage"):
                 templates.recipe_layer(runtime.TemplateSpec(), recipes.load("owner/app"), "curl x")
 
+    def test_the_base_build_carries_what_extensions_build_into_every_base(self):
+        from sbx_control import platform, templates
+        from sbx_control.contributions import Artifact, Check, Contribution, TemplateLayer
+        layer = Contribution("tool", template=TemplateLayer(apt=("jq",), artifacts=(
+            Artifact("tools v1", lambda: b"tarball", "/opt"),)), ready=Check("tool --version"))
+        plain = templates.plan(templates.BASE, [])
+        p = templates.plan(templates.BASE, [], [layer])
+        self.assertNotEqual(p.fingerprint, plain.fingerprint)
+        self.assertEqual(templates.plan(templates.BASE, [], [Contribution("runtime-only")]).fingerprint,
+                         plain.fingerprint)
+        self.assertEqual(templates.plan(templates.DEFAULT, [], [layer]).base, p)
+        self.assertTrue(templates.serves_files(p))
+        self.assertFalse(templates.serves_files(templates.plan(templates.DEFAULT, [], [layer])))
+        with patch.object(templates.runtime, "build_template") as build, \
+                patch.object(templates, "bundles", return_value=Path(self.enterContext(tempfile.TemporaryDirectory()))):
+            templates.build(p)
+        steps = build.call_args.args[0].steps
+        self.assertEqual(steps[0], ("image", "ubuntu:24.04"))
+        commands = [value for what, value in steps if what == "run"]
+        self.assertTrue(any("apt-get install" in c and " jq " in c for c in commands))
+        self.assertTrue(any("tar -xzf /tmp/sbx-artifact -C /opt" in c and "--retry" in c for c in commands))
+        self.assertEqual(commands[-1], "tool --version")
+        self.assertIn(("workdir", platform.HOME), steps[-3:])
+        self.assertEqual(build.call_args.kwargs["alias"], p.name)
+
     def test_a_build_runs_contributions_and_their_ready_checks(self):
         from sbx_control import templates
         from sbx_control.contributions import Artifact, Check, Contribution, File, TemplateLayer
@@ -397,7 +466,7 @@ class ExtensionTests(Installation):
         commands = [value for what, value in steps if what == "run"]
         self.assertTrue(any("apt-get install" in c and " gh " in c for c in commands))
         self.assertTrue(any("/usr/local/bin/tool" in c and "chmod 755" in c for c in commands))
-        self.assertTrue(any("tar -xz -C /opt" in c for c in commands))
+        self.assertTrue(any("tar -xzf /tmp/sbx-artifact -C /opt" in c for c in commands))
         self.assertEqual(commands[-1], "tool --version")
         self.assertEqual(("template", p.base.name), steps[0])
         self.assertEqual(build.call_args.kwargs["alias"], p.name)

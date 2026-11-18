@@ -155,7 +155,9 @@ dig +short NS _acme-challenge.D @1.1.1.1                      # delegated: D.
 ## 3. Install
 
 The same command in every case. It takes several minutes on a provider host
-and longer with Embed. Start it detached, so a dropped connection can't stop
+and longer with Embed. Until the server has an address (`--domain`, or the
+one setup chooses), its base templates wait (`WAITING` in the log) and then
+build by themselves. Start it detached, so a dropped connection can't stop
 it, then check every minute or two until it prints an exit status:
 
 ```sh
@@ -277,8 +279,9 @@ anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 ## 7. Coding agents, then finish: the first template build
 
 Record the owner's answer from step 2, then finish. Nothing has built yet:
-templates wait for this choice, so the first build already has every chosen
-agent's layer and nothing rebuilds when its key arrives:
+templates wait for the setup to finish. Every template already has the coding
+agents' layers (Amp's is in the base), so the choice only decides which keys
+sbx asks for, and nothing rebuilds when a key arrives:
 
 ```sh
 sbx setup agents amp claude --link-file ~/.sbx-install/setup-link   # or: sbx setup agents none

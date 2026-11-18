@@ -73,6 +73,12 @@ class BaseNotReady(NoRoom):
     built again or its plan changes); nothing started."""
 
 
+class NoAddress(NoRoom):
+    """The build (or the base's, which builds first) fetches files this
+    server serves it, and the server has no address its builders can reach
+    yet; nothing started. The scheduler starts it once there is one."""
+
+
 class Busy(RuntimeError):
     """The template is building; what was asked waits for the build to end."""
 
@@ -253,7 +259,7 @@ def plan(key: str) -> templates.Plan:
     platform_owned = key == templates.BASE or templates.is_default(key)
     target = (extensions.Target(repo="") if platform_owned else
               extensions.Target(repo=key, trusted=settings.trust(key) == "trusted"))
-    return templates.plan(key, extensions.contributions_for(target))
+    return templates.plan(key, extensions.contributions_for(target), extensions.base_contributions())
 
 
 def state(key: str, kind: str | None = None) -> dict:
@@ -428,6 +434,26 @@ def base_not_ready(key: str, kind: str | None = None) -> str:
     return ""
 
 
+def no_address(key: str, kind: str | None = None) -> str:
+    """Why key's build can't start until this server has an address: its
+    plan, or the base's when the base builds first, serves its builder files
+    (templates.serves_files); "" when it can start."""
+    keys = [key] if key == templates.BASE or _base_ready(kind) is not None else [templates.BASE, key]
+    for one in keys:
+        try:
+            serves = templates.serves_files(plan(one))
+        except (recipes.RecipeError, OSError):
+            continue   # the build fails on the recipe and says so
+        if serves:
+            try:
+                templates.bundle_origin()
+            except ValueError:
+                return (f"the {one} template's build fetches files from this server, which has no address yet: "
+                        "choose a domain or an IP address (or set SBX_TEMPLATE_BUNDLE_ORIGIN), and the scheduler "
+                        "builds it")
+    return ""
+
+
 def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     """Start key's build unless it is running or failed on this plan; what a refused create says."""
     on = _on(kind)
@@ -531,6 +557,8 @@ def start(key: str, kind: str | None = None) -> bool:
 def _begin(key: str, kind: str | None = None):
     if why := base_not_ready(key, kind):
         raise BaseNotReady(why)
+    if why := no_address(key, kind):
+        raise NoAddress(why)
     if key == templates.BASE or templates.is_default(key) or own(key):  # else only a default one is built
         check_room(key, kind)
     with _lock:
@@ -880,6 +908,9 @@ def main(argv=None) -> int:
         return 0
     try:
         build_now(key, kind)
+    except NoAddress as error:   # an install before its address is chosen: not a failure
+        print(f"WAITING {key}: {error}", file=sys.stderr)
+        return 0
     except NoRoom as error:
         if row and row["built_template"]:   # an upgrade: the template built before serves until there is room
             print(f"KEPT {row['built_template']}: {key} is stale and not rebuilt now: {error}; the scheduler "
