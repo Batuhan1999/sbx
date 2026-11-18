@@ -33,6 +33,7 @@ export default function RepoRecipe() {
         {readiness.info.prebuilt ? <div className="space-y-3">
           <BuildWhen t={t} />
           {t?.status === 'failed' && t.error && <p className="rounded-md bg-bad-soft px-3 py-2 text-[12.5px] text-bad">{t.error}</p>}
+          {t?.status === 'interrupted' && t.error && <p className="text-[12.5px] text-muted">{t.error}</p>}
           {admin && <Button busy={build.isPending} disabled={t?.status === 'building'} onClick={() => build.mutate()}><Hammer />{t?.status === 'built' ? 'Rebuild now' : 'Build now'}</Button>}
           <ErrorState error={build.error || template.error} compact />
         </div> : <div className="space-y-3">
@@ -59,9 +60,9 @@ function OtherRuntimes({ states, title }: { states: TemplateOnRuntime[]; title: 
 }
 
 function BuildWhen({ t }: { t: TemplateState | undefined }) {
-  const when = t?.status === 'building' ? t.started_at : t?.finished_at
+  const when = t?.status === 'building' || t?.status === 'interrupted' ? t.started_at : t?.finished_at
   if (!when) return null
-  const verb = t?.status === 'building' ? 'Started' : t?.status === 'failed' ? 'Failed' : 'Built'
+  const verb = t?.status === 'building' || t?.status === 'interrupted' ? 'Started' : t?.status === 'failed' ? 'Failed' : 'Built'
   return <p className="text-[13px] text-muted"><span title={dateTime(when)}>{verb} {ago(when)}</span></p>
 }
 
