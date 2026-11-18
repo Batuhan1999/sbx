@@ -6,7 +6,8 @@ Sandboxes go provisioning -> ready on the next look, a stop archiving ->
 archived, a resume is a cold boot (a new machine: /run and /tmp empty, the
 boot counted). Commands answer through respond(sandbox_id, command) ->
 stdout or (stdout, exit code); detached ones finish on their second poll.
-fail(method, path_regex, status, code) makes the next matching call fail."""
+fail(method, path_regex, status, code) makes the next matching call fail
+(raw=payload: answered with that body, not Boat's error envelope)."""
 from __future__ import annotations
 
 import base64
@@ -50,6 +51,8 @@ class FakeBoat:
         for index, (m, pattern, status, code, extra) in enumerate(self.failures):
             if m == method and re.fullmatch(pattern, path):
                 del self.failures[index]
+                if "raw" in extra:   # an answer that is not Boat's envelope (a proxy's, a gateway's)
+                    return self._response(status, extra["raw"])
                 return self._response(status, {"ok": False, "type": "sandbox.error", "status": status, "code": code,
                                                "message": code, "error": {"code": code, "message": code,
                                                                           "status": status, **extra}})

@@ -60,7 +60,7 @@ class Builds:
                   sandbox_id=sandbox_id)
         deadline = time.monotonic() + seconds
         while True:
-            found = self.call(lambda: self.api().get_saved_snapshot(name)).snapshot
+            found = self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot
             if found.status == "ready":
                 return name
             if found.status == "failed":
@@ -77,7 +77,7 @@ class Builds:
         """Boat's plan key for the account ("trial" before the first payment), a few minutes old at most."""
         when, found = self._plan
         if fresh or not found or time.monotonic() - when > PLAN_CACHE_SECONDS:
-            found = self.call(lambda: self.api().limits(**self._org_args())).sandbox_plan_key or ""
+            found = self.call(lambda: self.api().limits(**self._org_args()), read=True).sandbox_plan_key or ""
             self._plan = (time.monotonic(), found)
         return found
 
@@ -90,7 +90,7 @@ class Builds:
         self.delete_template(snapshot_id)
 
     def templates(self):
-        found = self.call(lambda: self.api().list_saved_snapshots())
+        found = self.call(lambda: self.api().list_saved_snapshots(), read=True)
         return [(s.name, s.status) for s in found.snapshots]
 
     def delete_template(self, name):
@@ -154,7 +154,7 @@ class Builds:
         build that died with sbx-control left them (labelled sbx_build)."""
         try:
             found = self.call(lambda: self.api().sandboxes(limit=200, label=[f"{INSTALL_LABEL}={_installation()}"],
-                                                          **self._org_args())).sandboxes
+                                                          **self._org_args()), read=True).sandboxes
         except Exception as error:   # the build goes on; the next one looks again
             log(f"Boat: could not list old builders: {error}")
             return

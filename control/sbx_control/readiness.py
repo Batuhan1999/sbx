@@ -17,6 +17,8 @@ TEMPLATE = {
     "default": ("done", None, "idle", "Platform default", "Platform default image; no build needed"),
     "building": ("working", "platform", "progress", "Building", "Building from the default branch"),
     "failed": ("todo", "agent", "bad", "Build failed", "The last build failed; read its log, fix the recipe, build again"),
+    "interrupted": ("working", "platform", "progress", "Interrupted", "A restart of the control service cut the "
+                    "build off; it builds again on its own within minutes"),
     "missing": ("todo", "admin", "warn", "Not built", "Not built yet"),
     "stale": ("todo", "admin", "warn", "Stale", "Stale: the recipe or an extension changed since the last build. "
               "It rebuilds on its own; an admin can rebuild now"),
@@ -33,8 +35,9 @@ def template_key(prebuilt: bool, build: dict) -> str:
     whether that is one of its own (template_builds.own)."""
     status = build.get("status")
     if not prebuilt:  # the platform's default: usable once any build of it is
-        return "default" if build.get("template") else "building" if status == "building" else "missing"
-    if status in ("building", "failed"):
+        return ("default" if build.get("template") else "building" if status in ("building", "interrupted")
+                else "missing")
+    if status in ("building", "failed", "interrupted"):
         return status
     if status != "built" or not build.get("template"):   # a row without a built template: none to start from
         return "missing"

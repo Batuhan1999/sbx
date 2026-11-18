@@ -757,7 +757,7 @@ class WorkspaceTests(Server):
         import importlib
         import threading
         import time
-        from sbx_control import template_builds, templates
+        from sbx_control import runtime, template_builds, templates
         key = templates.DEFAULT
 
         def settle(status):
@@ -785,11 +785,16 @@ class WorkspaceTests(Server):
             result = template_builds.state(key)
             release.set()
             worker.join(5)  # the cut-off build's thread, before the next test: it can't settle the build now
-        self.assertEqual(result['status'], 'failed')
+        # Cut off, not failed: the scheduler builds it again soon after the start, whatever it built before.
+        self.assertEqual(result['status'], 'interrupted')
         self.assertIn('restarted', result['error'])
-        self.assertEqual(template_builds.state(key)['status'], 'failed')
+        self.assertEqual(template_builds.state(key)['status'], 'interrupted')
+        self.assertIn(key, template_builds.stale())
+        self.assertIn((runtime.default(), key), template_builds.interrupted())
+        self.assertEqual(template_builds.first_wait(), template_builds.RESUME_SECONDS)
         with patch('sbx_control.templates.build'):
             template_builds.build_now(key)  # retryable
+        self.assertEqual(template_builds.first_wait(), template_builds.CHECK_SECONDS)
         self.assertEqual(template_builds.state(key)['status'], 'built')
 
     def test_setup_pr_is_draft_scoped_to_sbx_and_idempotent(self):

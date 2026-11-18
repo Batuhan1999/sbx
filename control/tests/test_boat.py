@@ -469,6 +469,40 @@ class Backend(unittest.TestCase):
         handle.files.write("/home/user/a", "x")
         self.assertEqual(handle.files.read("/home/user/a"), "x")   # a file read gives the same again
 
+    def test_an_answer_that_is_not_boats_envelope_is_a_runtime_failure_and_a_listing_tries_again(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES, BoatError
+        self.create()
+        # A proxy's answer: error is a string, not Boat's object (was AttributeError: 'str' ... 'get').
+        self.fake.fail("GET", "/sandboxes", 502, "", raw={"error": "Bad Gateway"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)   # read again
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 503, "", raw={"error": "upstream timeout"})
+        with self.assertRaises(BoatError) as raised:
+            self.backend.sandboxes()
+        self.assertIn("upstream timeout", str(raised.exception))
+        self.assertEqual(raised.exception.status, 503)
+        # A body the SDK can't read at all, on a 200.
+        self.fake.fail("GET", "/sandboxes", 200, "", raw="oops")
+        self.assertEqual(len(self.backend.sandboxes()), 1)
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 200, "", raw={"ok": True, "sandboxes": "none"})
+        with self.assertRaises(BoatError):
+            self.backend.sandboxes()
+
+    def test_a_create_is_not_sent_again_on_a_strange_error_and_odd_details_are_read(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/sandboxes", 500, "", raw={"error": "internal"})
+        with self.assertRaises(BoatError) as raised:
+            self.create()
+        self.assertIn("internal", str(raised.exception))
+        self.assertEqual(sum(m == "POST" and p == "/sandboxes" for m, p, _, _ in self.fake.calls[before:]), 1)
+        handle = self.create()
+        self.fake.fail("POST", f"/sandboxes/{handle.sandbox_id}/commands", 502, "", raw={
+            "code": "sandbox_direct_failed", "error": {"code": "sandbox_direct_failed", "details": "reset"}})
+        with self.assertRaises(BoatError):
+            handle.commands.run("true")
+
     def test_saved_names_follow_boats_rules(self):
         name = self.boat_module.build.saved_name
         self.assertEqual(name("abcd1234--default-0f0f0f0f"), "abcd1234--default-0f0f0f0f")

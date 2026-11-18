@@ -71,7 +71,9 @@ def schedule(stop: threading.Event):
     runtime, and at NIGHTLY_REBUILD_HOUR the moved repos', one at a time,
     for the disk's sake."""
     night = None
-    while not stop.wait(builds.CHECK_SECONDS):
+    wait = builds.first_wait()   # soon, when a restart cut a build off
+    while not stop.wait(wait):
+        wait = builds.CHECK_SECONDS
         try:
             for kind in runtime.enabled():
                 try:

@@ -78,6 +78,24 @@ class TemplateRoomTests(Installation):
         build.assert_called_once_with("owner/app", "embed")
         self.assertEqual(self.builds.moved(), ["owner/app"])
 
+    def test_a_build_a_restart_cut_off_is_built_again_on_the_first_round_soon_after_the_start(self):
+        from sbx_control import runtime, template_scheduler
+        with self.state.db() as conn:   # a build whose process is gone: the service restarted
+            conn.execute("insert into template_builds (runtime, repo, status, pid) values ('embed', ?, 'building', "
+                         "null)", (self.templates.DEFAULT,))
+        waits = []
+        stop = SimpleNamespace(is_set=lambda: False)
+        stop.wait = lambda seconds: waits.append(seconds) or len(waits) > 2
+        with patch.object(runtime, "enabled", return_value=["embed"]), patch.object(self.builds, "forget_missing"), \
+                patch.object(self.builds, "keys", return_value=[self.templates.BASE, self.templates.DEFAULT]), \
+                patch.object(self.builds, "_current", return_value=True), patch.object(self.builds, "prune"), \
+                patch.object(self.builds, "build_now") as build:
+            template_scheduler.schedule(stop)
+        self.assertEqual(waits, [self.builds.RESUME_SECONDS, self.builds.CHECK_SECONDS, self.builds.CHECK_SECONDS])
+        self.assertEqual(self.builds.state(self.templates.DEFAULT)["status"], "interrupted")
+        build.assert_called_with(self.templates.DEFAULT, "embed")   # interrupted, not failed: built again
+        self.assertEqual(build.call_count, 2)                       # each round (build_now is patched out)
+
     def test_a_build_left_running_after_a_test_fails_it_by_name(self):
         with patch.object(self.builds, "_running", {("embed", "owner/app")}):
             with self.assertRaisesRegex(AssertionError, "still running after 0.1 s: .*owner/app"):
