@@ -298,9 +298,9 @@ class Review(GateCase):
 
     def test_a_poll_that_lost_its_session_goes_to_the_login_and_errors_keep_polling(self):
         from sbx_control.preview_pages import Page, render
-        text = render(Page("starting", "memos-a"), login="https://sbx.example.test/auth/login")
+        text = render(Page("starting", "memos-a"), login="https://sbx.example.test/login")
         self.assertIn("r.status === 401 && d.login", text)
-        self.assertIn('"login": "https://sbx.example.test/auth/login"', text)
+        self.assertIn('"login": "https://sbx.example.test/login"', text)
         self.assertIn("encodeURIComponent(location.href)", text)
         self.assertIn("if (!r.ok) return again();", text)
         self.assertIn(".catch(again)", text)

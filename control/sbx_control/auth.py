@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import addressing, core, ip_previews, platform, sandboxes, settings, setup, state, users, vault
+from . import addressing, core, ip_previews, platform, sandboxes, settings, setup, spa, state, users, vault
 from .state import db
 
 ANONYMOUS = "anonymous"
@@ -233,8 +233,9 @@ def oidc_client():
     return _oidc["client"]
 
 
-@router.get("/auth/login")
-async def auth_login(request: Request, next: str = "/"):
+@router.get("/login")
+async def sign_in_page(request: Request, next: str = "/"):
+    """The sign-in page: the provider's with OIDC, the web app's own with passwords."""
     target = urllib.parse.urlparse(next)
     local_path = next.startswith("/") and not next.startswith("//") and not target.netloc and "\\" not in next and not any(ord(c) < 32 or ord(c) == 127 for c in next)
     request.session["next"] = next if local_path or addressing.on_our_hosts(target) or ip_previews.allowed_url(next) else "/"
@@ -246,7 +247,7 @@ async def auth_login(request: Request, next: str = "/"):
         return await client.authorize_redirect(request, f"{settings.current().base_url}/auth/callback")
     if settings.current().sign_in.method == "none":
         return RedirectResponse(request.session.pop("next", "/"))
-    return RedirectResponse("/app/sign-in")
+    return spa.index()
 
 
 
@@ -261,7 +262,7 @@ def may_sign_in(email: str) -> bool:
         return users.generation(email.lower()) is not None
     return True
 
-@router.post("/auth/login")
+@router.post("/login")
 async def auth_password(request: Request):
     if settings.current().sign_in.method != "password":
         raise HTTPException(404)
@@ -331,7 +332,7 @@ async def auth_callback(request: Request):
     return RedirectResponse(target)
 
 
-@router.get("/auth/logout")
+@router.get("/logout")
 async def auth_logout(request: Request):
     request.session.clear()
     return RedirectResponse("/")
@@ -353,7 +354,7 @@ async def cli_login(request: Request, port: int, state: str, challenge: str):
     email = session_email(request)
     query = urlencode({"port": port, "state": state, "challenge": challenge})
     if not email:
-        return RedirectResponse(f"/auth/login?{urlencode({'next': f'/cli/login?{query}'})}")
+        return RedirectResponse(f"/login?{urlencode({'next': f'/cli/login?{query}'})}")
     if not 0 < port < 65536 or not re.fullmatch(r"[A-Za-z0-9_-]{43}", challenge):
         raise HTTPException(400, "sbx login sends a loopback port and a challenge")
     code = secrets.token_urlsafe(32)

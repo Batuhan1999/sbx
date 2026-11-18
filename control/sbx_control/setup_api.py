@@ -20,7 +20,7 @@ SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/
               "/api/runtimes", "/connections/github", "/auth/")
 # Open by exact path: the release string, which the setup's reachability
 # check fetches from inside a sandbox (reachability.PATH).
-SETUP_OPEN_EXACT = ("/dist/version",)
+SETUP_OPEN_EXACT = ("/dist/version", "/login", "/logout")
 
 
 async def setup_gate(request: Request, call_next):

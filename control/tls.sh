@@ -2,8 +2,7 @@
 # HTTPS on the host, run in a release by host-install.sh and sbx-apply tls:
 # nginx and Certbot, using
 # HTTP-01 for an IP or DNS-01 for a wildcard domain, serving
-#   <login_host>.<domain>  sbx-control: the login, the API, /install
-#   a former login_host    a 308 to the current one, after a rename
+#   app.<domain>           sbx-control: the login, the API, /install
 #   <service>.<domain>     the operator's services, behind the login
 #   everything else        sandboxes, through their runtime's ingress (Embed's client-proxy on 3002)
 #   <endpoint>.<domain>    this host's private services for sandboxes on provider runtimes,
@@ -248,7 +247,7 @@ location = /_sbx_gate {
   proxy_cache_valid 200 1s;
   proxy_cache_valid 401 403 404 5s;
 }
-location @login { return 302 https://$login/auth/login?next=https://\$host\$request_uri; }
+location @login { return 302 https://$login/login?next=https://\$host\$request_uri; }
 # A preview link that is right from sbx's side always shows a page: what the
 # gate refused (a sandbox starting, waking, stopped, deleted, no access) and
 # what the sandbox's runtime could not answer (502, 504: the app not up yet)
@@ -276,20 +275,6 @@ server {
   server_name $login;
   include /etc/nginx/conf.d/control.inc;
 }
-NGINX
-# A renamed sign-in host sends its requests on, POSTs too (308 keeps the method).
-for former in $former_logins; do
-  cat >> "$dir/nginx/default.conf" <<NGINX
-
-server {
-  listen $https_listen;
-  http2 on;
-  server_name $former;
-  return 308 https://$login\$request_uri;
-}
-NGINX
-done
-cat >> "$dir/nginx/default.conf" <<NGINX
 
 # Sandboxes: every other name under the domain.
 server {

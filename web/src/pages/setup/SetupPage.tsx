@@ -83,7 +83,7 @@ function NoToken({ error, retry }: { error: unknown; retry: () => void }) {
     <p className="text-muted">The installer printed a one-time link. To get a new one, run this on the server:</p>
     <CopyCommand command="sudo sbx-admin setup-link" />
     <ErrorState error={error} compact />
-    <div className="flex flex-wrap gap-2"><Button onClick={retry}>Try again</Button><AnchorButton variant="ghost" href="/auth/login?next=%2Fapp%2Fsetup">Sign in as an admin</AnchorButton></div>
+    <div className="flex flex-wrap gap-2"><Button onClick={retry}>Try again</Button><AnchorButton variant="ghost" href="/login?next=%2Fapp%2Fsetup">Sign in as an admin</AnchorButton></div>
   </div>
 }
 
@@ -236,7 +236,7 @@ function AdminStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: boo
         </form.AppField>
       </div>
     </AppForm>}
-    {!ready && existing && <AnchorButton variant="primary" href="/auth/login?next=%2Fapp%2Fsetup">Sign in to continue<ArrowRight /></AnchorButton>}
+    {!ready && existing && <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in to continue<ArrowRight /></AnchorButton>}
     <ServerChecks checks={checks} runtimes={runtimes.data?.runtimes ?? []} />
     {ready && <ErrorState error={error} compact />}
     <div className="flex justify-between gap-3 border-t border-line pt-5">

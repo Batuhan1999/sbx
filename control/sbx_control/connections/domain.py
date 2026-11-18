@@ -52,7 +52,7 @@ class Domain(Connection):
             summary = f"{s.name} · certificate valid until {expiry:%Y-%m-%d} · {s.acme}"
         aws = vault.facts(vault.AWS_ACCESS_KEY_ID)
         cf = vault.facts(vault.CLOUDFLARE_API_TOKEN)
-        fields = (Field("name", "Domain", value=s.name), Field("login_host", "Sign-in host", value=s.login_host),
+        fields = (Field("name", "Domain", value=s.name),
                   Field("acme_email", "Certificate email", value=s.acme_email),
                   Field("acme", "How the certificate is issued", value=s.acme,
                         help="delegated (one NS record, no credential), route53, cloudflare, or none (self-signed)"),
@@ -69,7 +69,7 @@ class Domain(Connection):
         if not name:
             return [Check("domain", False, "none given", "")]
         checks = []
-        login = f"{v.get('login_host') or s.login_host}.{name}"
+        login = f"{s.login_host}.{name}"
         probe = f"sbx-check-{pysecrets.token_hex(3)}.{name}"
         login_ips, probe_ips = _resolve(login), _resolve(probe)
         checks.append(Check(f"{login} resolves", bool(login_ips), ", ".join(login_ips) or "no address",
@@ -100,10 +100,8 @@ class Domain(Connection):
         s = settings.current().domain
         new = {"name": (values.get("name") or s.name).strip().lower(),
                "address": values.get("address") or s.address,
-               "login_host": (values.get("login_host") or s.login_host).strip(),
                "acme_email": (values.get("acme_email") or s.acme_email).strip(),
                "acme": values.get("acme") or s.acme}
-        new["former_login_hosts"] = former_hosts(s, new["name"], new["login_host"])
         if not new["name"]:
             raise Refused("a domain is needed")
         try:
@@ -121,15 +119,6 @@ class Domain(Connection):
                 vault.put(key, values[field].strip(), by=by)
         settings.update("domain", new, by=by)
         return self.status()
-
-
-def former_hosts(before: settings.Domain, name: str, login_host: str) -> tuple[str, ...]:
-    """The sign-in hosts to keep redirecting: the one being renamed away from
-    joins them; none survive a change of domain (its certificate covers only the new one)."""
-    if name != before.name:
-        return ()
-    hosts = (before.login_host, *before.former_login_hosts) if login_host != before.login_host else before.former_login_hosts
-    return tuple(h for h in dict.fromkeys(hosts) if h != login_host)
 
 
 PUBLIC_RESOLVER = "1.1.1.1"  # what the world sees, not a cloud's private zone for the same names
