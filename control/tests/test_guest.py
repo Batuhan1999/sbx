@@ -277,13 +277,15 @@ class IdentityTests(unittest.TestCase):
         self.assertLess(self.slept[-1], 5)
 
     def fresh_identity(self, root, ticks, listeners, fresh_on=(), gone=(), sessions=("",), keygen_session=False,
-                       keyscan_hangs=0):
+                       keyscan_hangs=0, partial_on=(), keygen_seconds=0):
         """identity() for a fresh workspace, with fake ssh-keygen, ss and keyscan.
         Each sshd serves the key it last read: the template's, the fresh one
         once it is sent SIGHUP, or the fresh one from the start for a pid in
         fresh_on (started after the keys were replaced). A pidfd in gone has
         exited before its signal. With keygen_session, a session opens while
-        the keys are made; the first keyscan_hangs scans time out. Returns
+        the keys are made; the first keyscan_hangs scans time out. A pid in
+        partial_on started between two replacements: fresh ed25519, an old
+        key of another type. Returns
         the (pidfd, signal) pairs sent."""
         ssh = root / "ssh"
         self.host_keys(ssh, "template")
@@ -297,6 +299,7 @@ class IdentityTests(unittest.TestCase):
                 return SimpleNamespace(stdout="ESTAB 0 0 127.0.0.1:22")
             if command[0] == "ssh-keygen":
                 keygen.append(True)
+                self.clock[0] += keygen_seconds
                 path = Path(command[command.index("-f") + 1])
                 path.write_text("private fresh\n")
                 path.with_name(path.name + ".pub").write_text(f"ssh-{command[3]} fresh-{command[3]} root@box\n")
@@ -312,8 +315,15 @@ class IdentityTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired("ssh-keyscan", 3)
             pid = self.listening[0]
             if pid not in served:
-                served[pid] = on_disk() if pid in fresh_on else ["ssh-ed25519", "template-ed25519"]
+                served[pid] = on_disk() if pid in fresh_on or pid in partial_on else ["ssh-ed25519", "template-ed25519"]
+                complete[pid] = pid in fresh_on
             return served[pid] == expected
+        complete = {}
+
+        def serves_all(expected, timeout=3):
+            fresh = [(ssh / f"ssh_host_{kind}_key.pub").read_text().split()[:2] for kind in sbx_guest.HOST_KEYS]
+            self.assertEqual(expected, fresh)   # every rotated type, not only ed25519
+            return serves(fresh[0], timeout) and complete[self.listening[0]]
         signalled = []
 
         def send(fd, sig):
@@ -321,7 +331,7 @@ class IdentityTests(unittest.TestCase):
                 raise ProcessLookupError(fd)
             signalled.append((fd, sig))
             if sig == signal.SIGHUP:
-                served[fd - 1000] = on_disk()
+                served[fd - 1000], complete[fd - 1000] = on_disk(), True
         with patch.object(sbx_guest, "SSH", ssh), patch.object(sbx_guest, "KEPT_KEYS", root / "kept"), \
                 patch.object(sbx_guest, "IDENTITY", root / "identity.json"), \
                 patch.object(sbx_guest, "IDENTITY_LOCK", root / "identity.lock"), \
@@ -330,7 +340,7 @@ class IdentityTests(unittest.TestCase):
                 patch.object(sbx_guest.subprocess, "run", run), \
                 patch.object(sbx_guest, "start_ticks", side_effect=ticks), \
                 patch.object(sbx_guest.signal, "pidfd_send_signal", send, create=True), \
-                patch.object(sbx_guest, "serves", serves), \
+                patch.object(sbx_guest, "serves", serves), patch.object(sbx_guest, "serves_all", serves_all), \
                 self.listeners(*listeners):
             sbx_guest.identity("b" * 32, 22)
         self.assertEqual(json.loads((root / "identity.json").read_text())["phase"], "ready")
@@ -351,6 +361,12 @@ class IdentityTests(unittest.TestCase):
         root = self.listener_root()
         self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458], fresh_on={458}), [])
 
+    def test_sshd_that_started_with_only_some_fresh_keys_is_reloaded(self):
+        """A fresh ed25519 key but an old one of another type: still signalled."""
+        root = self.listener_root()
+        self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458], partial_on={458}),
+                         [(1458, signal.SIGHUP)])
+
     def test_a_replacement_sshd_gone_before_its_signal_is_looked_for_again(self):
         root = self.listener_root()
         self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458, 459], gone={1458}),
@@ -369,6 +385,25 @@ class IdentityTests(unittest.TestCase):
             self.fresh_identity(root, ["1", "1"], [456], keygen_session=True)
         self.assertEqual((root / "ssh" / "ssh_host_ed25519_key.pub").read_text().split()[1], "template-ed25519")
         self.assertFalse((root / "identity.json").exists())
+
+    def test_keys_made_too_late_leave_the_live_keys_alone(self):
+        """Keys ready only once the time kept for sshd to adopt them has begun: refused, never rotated."""
+        root = self.listener_root()
+        with self.assertRaisesRegex(sbx_guest.GuestError, "no time left"):
+            self.fresh_identity(root, ["1", "1"], [456], keygen_seconds=sbx_guest.IDENTITY_SECONDS / 3)
+        self.assertEqual((root / "ssh" / "ssh_host_ed25519_key.pub").read_text().split()[1], "template-ed25519")
+        self.assertFalse((root / "identity.json").exists())
+
+    def test_a_restart_counts_only_once_it_begins(self):
+        """The look after the session check times out: the stale sshd still gets its one restart."""
+        root = self.listener_root()
+        (root / "460").mkdir()
+        (root / "460" / "exe").symlink_to("/usr/sbin/sshd (deleted)")
+        restarted = []
+        with self.listeners(460, subprocess.TimeoutExpired("ss", 10), 460, 460, 456), \
+                patch.object(sbx_guest, "restart_listener", lambda **kw: restarted.append(kw)):
+            self.assertEqual(sbx_guest.settled_listener(60, lambda: None), (456, 1456))
+        self.assertEqual(len(restarted), 1)
 
     def test_a_replacement_sshd_whose_key_scan_times_out_is_signalled(self):
         root = self.listener_root()

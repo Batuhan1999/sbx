@@ -94,8 +94,9 @@ Amp to delete the orb before it spawns again. A delete job
 (`ORB_OPERATION=delete`) uses the same path, so it fails for the same reason
 while the cause is there (the runtime not answering, say): fix what the log
 names, send the delete again
-(`ORB_OPERATION=delete ORB_ID=ID sbx-admin amp dispatch`), then check with `sbx-admin amp list` that the
-sandbox is gone.
+(`ORB_OPERATION=delete ORB_ID=ID sbx-admin amp dispatch`) until it succeeds and prints
+`"state": "deleted"`, and only then spawn again. `sbx-admin amp list` lists VMs only, so an empty list
+shows the VM is gone, not that the orb's registration and generated values are.
 
 ## Project snapshots
 

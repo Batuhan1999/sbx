@@ -81,11 +81,15 @@ def dispatch(env: dict):
         response = client.post(f"http://127.0.0.1:{platform.CONTROL_PORT}/internal/amp/jobs", json=job)
         if response.status_code == 400:
             raise JobError(response.json()["detail"])
+        if response.status_code == 503 and response.headers.get(ERROR_CODE) == SpawnNotCleanedUp.code:
+            # The fixed recovery step, not the server's text: Amp must see it.
+            raise JobError(f"Amp job failed; {SpawnNotCleanedUp()}")
         response.raise_for_status()
         return response.json()
 
 
 STARTED_PROBE = 60   # seconds a spawn waits for its bootstrap to say it started
+ERROR_CODE = "X-Sbx-Amp-Error"   # a 503's stable reason, for failures dispatch explains itself
 
 
 def sandbox_name(orb_id: str) -> str:
@@ -189,6 +193,7 @@ class SpawnNotCleanedUp(Exception):
     """A spawn failed and its sandbox could not be deleted again. The message
     is fixed (never the cause's, which may carry a token): Amp is told to
     delete the orb first; the cause stays in the server's own log."""
+    code = "spawn-not-cleaned-up"
 
     def __init__(self):
         super().__init__("its sandbox was not deleted: send ORB_OPERATION=delete for this orb, then spawn again")

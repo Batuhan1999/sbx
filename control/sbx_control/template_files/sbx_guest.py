@@ -431,13 +431,13 @@ def settled_listener(deadline, unwatched):
                 # sshd started before its binary was replaced (an upgrade, a disk
                 # restored under a running VM): no session yet, so start it again
                 # from the binary there now.
-                restarted = True
                 unwatched()
                 # Looked at again: the runtime may have put a healthy sshd
                 # there meanwhile, which is left running.
                 pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
                 if (deadline > time.monotonic()
                         and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
+                    restarted = True   # one attempt, counted once it begins
                     restart_listener(timeout=deadline - time.monotonic())
                     pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
             handle = os.pidfd_open(pid)
@@ -493,9 +493,10 @@ def identity(workspace, ssh_port):
         deadline = time.monotonic() + IDENTITY_SECONDS
 
         def unwatched():
+            # Always ahead of a step that needs KEYS_SECONDS after it: never eats into them.
             sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
                                       capture_output=True, text=True, check=True,
-                                      timeout=max(0.1, min(10, deadline - time.monotonic())))
+                                      timeout=max(0.1, min(10, deadline - KEYS_SECONDS - time.monotonic())))
             if sessions.stdout.strip():
                 raise SessionOpen("fresh workspace has an unexpected SSH session")
         unwatched()
@@ -512,6 +513,8 @@ def identity(workspace, ssh_port):
                 # sshd may have taken a session while it was waited for or the
                 # keys were made: looked at last, just before they replace its own.
                 unwatched()
+                if time.monotonic() >= deadline - KEYS_SECONDS:   # live keys left alone
+                    raise GuestError("no time left for the workspace SSH listener to take its fresh identity")
                 write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
                 for path in temporary.iterdir():
                     os.replace(path, SSH / path.name)
@@ -519,15 +522,18 @@ def identity(workspace, ssh_port):
         finally:
             os.close(handle)
         expected = public.read_text().split()[:2]
+        fresh = [(SSH / f"ssh_host_{kind}_key.pub").read_text().split()[:2] for kind in HOST_KEYS]
         while not reloaded:
             # sshd started again while its keys were replaced (a runtime's
             # agent restarting services): the one there now, checked the same
             # way, reads them, unless it started with them already. One that
-            # is gone again before its signal is looked for again.
+            # is gone again before its signal is looked for again. Every key
+            # type is checked: one that started between two replacements
+            # serves a fresh ed25519 key and an old one of another type.
             pid, handle = settled_listener(deadline - KEYS_SECONDS, unwatched)
             try:
                 try:
-                    served = serves(expected)
+                    served = serves_all(fresh)
                 except subprocess.TimeoutExpired:   # inconclusive: signal it and look again below
                     served = False
                 reloaded = served or reload_keys(handle)
@@ -551,6 +557,14 @@ def serves(expected, timeout=3):
     scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", "ed25519", "127.0.0.1"],
                              capture_output=True, text=True, timeout=timeout)
     return any(line.split()[1:3] == expected for line in scanned.stdout.splitlines() if not line.startswith("#"))
+
+
+def serves_all(expected, timeout=3):
+    """Whether sshd on this machine answers with every [type, key] expected."""
+    scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", ",".join(HOST_KEYS), "127.0.0.1"],
+                             capture_output=True, text=True, timeout=timeout)
+    found = [line.split()[1:3] for line in scanned.stdout.splitlines() if not line.startswith("#")]
+    return all(key in found for key in expected)
 
 
 def keep_host_keys():

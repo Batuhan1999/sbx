@@ -585,6 +585,30 @@ sudo() {
         self.assertNotIn("test-only-orb-token", response.text)
         self.assertNotIn("private SDK", response.text)
 
+    def test_amp_dispatch_shows_the_recovery_step_when_a_failed_spawn_was_not_cleaned_up(self):
+        self.amp_fixture()
+        from sbx_control.connectors.amp import orbs as amp_orbs
+        self.created.side_effect = RuntimeError("test-only-orb-token private SDK request")
+        with patch.object(amp_orbs, "discard", return_value=False):
+            response = self.amp_job(self.env)
+        self.assertEqual(response.status_code, 503, response.text)
+        client = MagicMock()
+        client.__enter__.return_value.post.return_value = response
+        with patch.object(amp_orbs.httpx, "Client", return_value=client), \
+                patch.dict(amp_orbs.os.environ, self.env), \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(amp_orbs.main(["dispatch"]), 1)
+        self.assertIn("send ORB_OPERATION=delete for this orb, then spawn again", output.getvalue())
+        self.assertNotIn("test-only-orb-token", output.getvalue())
+        # Any other 503 keeps the generic message.
+        client.__enter__.return_value.post.return_value = amp_orbs.httpx.Response(
+            503, json={"detail": "Amp job failed"}, request=amp_orbs.httpx.Request("POST", "http://127.0.0.1/"))
+        with patch.object(amp_orbs.httpx, "Client", return_value=client), \
+                patch.dict(amp_orbs.os.environ, self.env), \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(amp_orbs.main(["dispatch"]), 1)
+        self.assertNotIn("ORB_OPERATION=delete", output.getvalue())
+
     def test_amp_dispatch_forwards_only_contract_fields_to_control(self):
         from sbx_control.connectors.amp import orbs as amp_orbs
         client = MagicMock()
