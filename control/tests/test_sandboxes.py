@@ -824,6 +824,20 @@ class WorkspaceTests(Server):
         with patch.object(template_builds, '_birth', return_value=None):    # no /proc: the pid alone decides
             self.assertEqual(template_builds.state(key)['status'], 'building')
 
+    def test_a_new_build_owner_never_keeps_the_last_one_s_start_time(self):
+        from sbx_control import template_builds, templates
+        from sbx_control.state import db
+        key = templates.DEFAULT
+        template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=live_pid(self),
+                                    pid_birth=None)
+        with db() as conn:   # the last owner's start time, as the scheduler's own build stores it
+            conn.execute("update template_builds set pid_birth = '100' where repo = ?", (key,))
+        with patch.object(template_builds, '_birth', return_value='100'):
+            template_builds._transition(key, 'failed', finished_at=template_builds._utc(), error='x')
+        with patch.object(template_builds, '_birth', return_value='300'):   # another process, given only its pid
+            template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=live_pid(self))
+            self.assertEqual(template_builds.state(key)['status'], 'building')
+
     def test_a_pid_birth_reads_past_any_process_name(self):
         import tempfile
         from pathlib import Path
