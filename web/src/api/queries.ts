@@ -104,7 +104,11 @@ export const useRecipeFiles = (repo: string) => useQuery({ queryKey: keys.files(
 export const useTemplate = (repo: string) => useQuery({
   queryKey: keys.template(repo),
   queryFn: () => api.repos.template(repo),
-  refetchInterval: q => (q.state.data?.status === 'building' || q.state.data?.status === 'interrupted' ? 4_000 : false),
+  refetchInterval: q => {
+    const t = q.state.data
+    const active = (s?: string) => s === 'building' || s === 'interrupted'
+    return t && (active(t.status) || t.runtimes?.some(r => active(r.status))) ? 4_000 : false
+  },
 })
 export const useSetupPr = (repo: string, enabled: boolean) => useQuery({
   queryKey: keys.setupPr(repo), queryFn: () => api.repos.setupPr(repo), enabled, retry: false, staleTime: 60_000,

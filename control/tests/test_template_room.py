@@ -96,6 +96,27 @@ class TemplateRoomTests(Installation):
         build.assert_called_with(self.templates.DEFAULT, "embed")   # interrupted, not failed: built again
         self.assertEqual(build.call_count, 2)                       # each round (build_now is patched out)
 
+    def test_a_failed_check_on_one_runtime_does_not_keep_the_next_from_building(self):
+        from sbx_control import runtime, template_scheduler
+        stop = SimpleNamespace(is_set=lambda: False)
+        stop.wait = lambda seconds: getattr(stop, "ran", False) or setattr(stop, "ran", True)
+        with patch.object(runtime, "enabled", return_value=["broken", "embed"]), \
+                patch.object(self.builds, "forget_missing"), patch.object(self.builds, "first_wait", return_value=0), \
+                patch.object(self.builds, "stale", side_effect=[OSError("recipe unreadable"), ["owner/app"]]), \
+                patch.object(self.builds, "_on", return_value=""), patch.object(self.builds, "prune"), \
+                patch.object(self.builds, "build_now") as build:
+            template_scheduler.schedule(stop)
+        build.assert_called_once_with("owner/app", "embed")
+
+    def test_only_a_cut_off_build_the_scheduler_builds_is_announced(self):
+        with self.state.db() as conn:   # cut off, of a template nothing starts from any more
+            conn.execute("insert into template_builds (runtime, repo, status, pid) values ('embed', 'sbx-default-x', "
+                         "'building', null)")
+        with patch.object(self.builds.runtime, "enabled", return_value=["embed"]), \
+                patch.object(self.builds, "keys", return_value=[self.templates.BASE, self.templates.DEFAULT]):
+            self.assertEqual(self.builds.interrupted(), [])
+            self.assertEqual(self.builds.first_wait(), self.builds.CHECK_SECONDS)
+
     def test_a_build_left_running_after_a_test_fails_it_by_name(self):
         with patch.object(self.builds, "_running", {("embed", "owner/app")}):
             with self.assertRaisesRegex(AssertionError, "still running after 0.1 s: .*owner/app"):

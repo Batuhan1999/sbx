@@ -18,7 +18,7 @@ TEMPLATE = {
     "building": ("working", "platform", "progress", "Building", "Building from the default branch"),
     "failed": ("todo", "agent", "bad", "Build failed", "The last build failed; read its log, fix the recipe, build again"),
     "interrupted": ("working", "platform", "progress", "Interrupted", "A restart of the control service cut the "
-                    "build off; it builds again on its own within minutes"),
+                    "build off; the scheduler builds it again when it can"),
     "missing": ("todo", "admin", "warn", "Not built", "Not built yet"),
     "stale": ("todo", "admin", "warn", "Stale", "Stale: the recipe or an extension changed since the last build. "
               "It rebuilds on its own; an admin can rebuild now"),

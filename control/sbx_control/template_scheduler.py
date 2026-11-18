@@ -80,7 +80,12 @@ def schedule(stop: threading.Event):
                     builds.forget_missing(kind)   # one listing; what is gone is stale below
                 except Exception as error:
                     print(f"template check{builds._on(kind)}: {error!r}", flush=True)
-                for key in builds.stale(kind):
+                try:
+                    stale = builds.stale(kind)
+                except Exception as error:   # one runtime's check must not keep the others from building
+                    print(f"template check{builds._on(kind)}: {error!r}", flush=True)
+                    continue
+                for key in stale:
                     if stop.is_set():
                         return
                     _build_quietly(key, kind)

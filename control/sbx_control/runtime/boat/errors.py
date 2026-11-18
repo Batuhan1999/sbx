@@ -12,8 +12,8 @@ from ..base import Failed, LimitRefused, NoRoom, NotRunning
 from .plans import TRIAL_NOTE
 
 POLL_SECONDS = 2
-TRANSIENT_STATUSES = (500, 502, 503, 504)
 TRANSIENT_TRIES = 3   # how often a read is sent when Boat's answer was a transient failure
+MESSAGE_CHARS = 300   # the most of a body that is not Boat's envelope kept as the message
 
 
 class BoatError(Failed):
@@ -34,12 +34,16 @@ class BoatError(Failed):
         return self.code in ("snapshot_not_found", "snapshot_data_expired") or self.gone()
 
 
-def _body(error) -> dict:
+def _parsed(error):
     try:
-        found = json.loads(getattr(error, "body", None) or "{}")
-        return found if isinstance(found, dict) else {}
+        return json.loads(getattr(error, "body", None) or "{}")
     except (TypeError, ValueError):
         return {}
+
+
+def _body(error) -> dict:
+    found = _parsed(error)
+    return found if isinstance(found, dict) else {}
 
 
 def _part(found, name: str) -> dict:
@@ -51,9 +55,13 @@ def _part(found, name: str) -> dict:
 
 
 def code(error) -> str:
-    """Boat's error code ("" for anything that is not an answer of Boat's)."""
+    """Boat's error code ("" for anything that is not an answer of Boat's):
+    a nonempty string, never a gateway's number ({"code": 502})."""
     body = _body(error)
-    return str(body.get("code") or _part(body, "error").get("code") or "")
+    for found in (body.get("code"), _part(body, "error").get("code")):
+        if isinstance(found, str) and found:
+            return found
+    return ""
 
 
 def status(error) -> int | None:
@@ -62,10 +70,10 @@ def status(error) -> int | None:
 
 
 def _message(error) -> str:
-    body = _body(error)
+    body, raw = _body(error), _parsed(error)
     said = body.get("error")
     return str(body.get("message") or _part(body, "error").get("message") or (said if isinstance(said, str) else "")
-               or getattr(error, "reason", "") or error)
+               or (raw[:MESSAGE_CHARS] if isinstance(raw, str) else "") or getattr(error, "reason", "") or error)
 
 
 def _retryable(error, replays: bool = True) -> bool:
@@ -117,7 +125,8 @@ def is_failure(error) -> bool:
 def _transient(error) -> bool:
     """A gateway's or an overloaded server's answer that names no code of
     Boat's: the same call may well work a moment later."""
-    return status(error) in TRANSIENT_STATUSES and not code(error)
+    found = status(error)
+    return found is not None and 500 <= found < 600 and not code(error)
 
 
 def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, retry_seconds: float = 180,
@@ -128,11 +137,14 @@ def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, 
     retry (a sandbox still starting or restoring its disk) are retried;
     replays False for a command, which is not sent again once it may have run.
     read: the call only reads, so a transient failure (a gateway's 5xx, an
-    answer the SDK could not read) is sent again, TRANSIENT_TRIES times at most."""
+    answer the SDK could not read) is sent again, TRANSIENT_TRIES times at most,
+    counted apart from Boat's retries. Those resends are bounded by their count,
+    not by a caller's deadline: a caller polling until a deadline (_save,
+    _ready, _settle) may wait up to (TRANSIENT_TRIES - 1) * POLL_SECONDS past
+    it, and gets the BoatError, not its Timeout, when they all fail."""
     deadline = time.monotonic() + retry_seconds
-    tries = 0
+    tries = 0   # sends that failed transiently
     while True:
-        tries += 1
         try:
             return function()
         except Failed:
@@ -141,14 +153,17 @@ def call(function, *, sandbox_id: str | None = None, asked: dict | None = None, 
             if status(error) is None:
                 if not is_failure(error):
                     raise
+                tries += 1
                 if read and tries < TRANSIENT_TRIES:
                     time.sleep(POLL_SECONDS)
                     continue
                 raise BoatError(f"Boat did not answer as asked: {type(error).__name__}: {str(error)[:300]}") \
                     from error
-            if read and _transient(error) and tries < TRANSIENT_TRIES:
-                time.sleep(POLL_SECONDS)
-                continue
+            if read and _transient(error):
+                tries += 1
+                if tries < TRANSIENT_TRIES:
+                    time.sleep(POLL_SECONDS)
+                    continue
             if _retryable(error, replays) and time.monotonic() < deadline:
                 time.sleep(POLL_SECONDS)
                 continue

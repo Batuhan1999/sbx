@@ -489,6 +489,36 @@ class Backend(unittest.TestCase):
         with self.assertRaises(BoatError):
             self.backend.sandboxes()
 
+    def test_a_listing_reads_again_on_any_codeless_5xx_and_keeps_a_string_body(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES, BoatError
+        self.create()
+        self.fake.fail("GET", "/sandboxes", 522, "", raw={"code": 522, "message": "origin timed out"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)   # 522, and a number is no code of Boat's
+        for _ in range(TRANSIENT_TRIES):
+            self.fake.fail("GET", "/sandboxes", 502, "", raw="upstream timeout")
+        with self.assertRaises(BoatError) as raised:
+            self.backend.sandboxes()
+        self.assertIn("upstream timeout", str(raised.exception))
+        self.assertEqual(raised.exception.code, "")
+
+    def test_boats_own_retries_do_not_use_up_a_reads_transient_ones(self):
+        from sbx_control.runtime.boat.errors import TRANSIENT_TRIES
+        self.create()
+        for _ in range(3):
+            self.fake.fail("GET", "/sandboxes", 409, "sandbox_starting")
+        for _ in range(TRANSIENT_TRIES - 1):
+            self.fake.fail("GET", "/sandboxes", 502, "", raw={"error": "Bad Gateway"})
+        self.assertEqual(len(self.backend.sandboxes()), 1)
+
+    def test_a_save_waits_for_an_earlier_save_under_its_name_then_saves(self):
+        handle = self.create()
+        self.fake.saved["cache"] = {"name": "cache", "status": "saving", "sourceSandboxId": "gone",
+                                    "createdAt": "2026-11-17T12:00:00Z", "type": "standard", "files": {}}
+        self.fake.fail("POST", "/saved-snapshots", 409, "save_in_progress")
+        self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(self.fake.saved["cache"]["sourceSandboxId"], handle.sandbox_id)   # saved again, its own
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls), 2)
+
     def test_a_create_is_not_sent_again_on_a_strange_error_and_odd_details_are_read(self):
         from sbx_control.runtime.boat.errors import BoatError
         before = len(self.fake.calls)

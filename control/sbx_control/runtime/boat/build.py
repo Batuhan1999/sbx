@@ -56,9 +56,19 @@ class Builds:
     def _save(self, sandbox_id: str, name: str, seconds: float = 3600) -> str:
         from boat_sdk.models import SavedSnapshotSaveRequest
         name = saved_name(name)
-        self.call(lambda: self.api().save_saved_snapshot(SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)),
-                  sandbox_id=sandbox_id)
         deadline = time.monotonic() + seconds
+        while True:
+            try:
+                self.call(lambda: self.api().save_saved_snapshot(
+                    SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)), sandbox_id=sandbox_id)
+                break
+            except BoatError as error:
+                # 409 while an earlier save under this name runs (a build a restart cut off,
+                # whose builder Boat still saves): wait for it to settle, then save this one.
+                if error.status != 409 or time.monotonic() > deadline or \
+                        self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot.status != "saving":
+                    raise
+                time.sleep(POLL_SECONDS)
         while True:
             found = self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot
             if found.status == "ready":

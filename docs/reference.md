@@ -496,8 +496,9 @@ build and is refused with 503 ("the ... template is building", `Retry-After`);
 the repository's readiness shows the template as not built meanwhile. After a
 failed build the 503 names the failure and nothing restarts it on its own. A
 build that a restart of sbx-control cut off (its process is gone) is not a
-failure: it shows as `interrupted`, and the scheduler builds it again 30 seconds
-after sbx-control starts.
+failure: it shows as `interrupted`. The scheduler looks for such builds 30
+seconds after sbx-control starts and builds them again when it can, after any
+build ahead of them.
 
 A build starts only when the host has room for it, and is refused before
 anything starts otherwise, saying what is missing (`POST

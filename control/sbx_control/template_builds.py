@@ -16,7 +16,8 @@ it would build now (templates.plan) has another fingerprint than the one
 built: a connector enabled, a version bumped, .sbx/ changed, the platform
 layer changed. The scheduler builds stale templates one at a time (a build
 that failed is tried again when its inputs change, or on request; one a
-restart of sbx-control cut off, RESUME_SECONDS after the start), and at
+restart of sbx-control cut off, when it can: the first round after a start
+comes RESUME_SECONDS in), and at
 night those whose repo's default branch moved since (template_moved): a
 build takes minutes and writes gigabytes, which stalls running sandboxes.
 
@@ -40,7 +41,7 @@ from .state import Schema, columns, db, tables
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
 CHECK_SECONDS = 300
-RESUME_SECONDS = 30  # how soon after a start the scheduler builds again what a restart cut off
+RESUME_SECONDS = 30  # how soon after a start the scheduler looks for what a restart cut off
 
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
           "built_memory_mb")
@@ -253,8 +254,8 @@ def state(key: str, kind: str | None = None) -> dict:
     out = {f: row[f] for f in ("started_at", "finished_at", "error", "built_template")}
     out["status"] = status(key, row, kind)
     if out["status"] == "interrupted":
-        out["error"] = ("The control service restarted during this build; it builds again on its own within "
-                        "minutes.")
+        out["error"] = ("The control service restarted during this build; the scheduler looks for such builds "
+                        "soon after a start and builds it again when it can.")
     out["template"] = row["built_template"]
     try:
         out["stale"] = bool(row["built_fingerprint"]) and plan(key).fingerprint != row["built_fingerprint"]
@@ -273,13 +274,17 @@ def builds(kind: str | None = None) -> dict:
 
 def interrupted() -> list:
     """(kind, key) of every build on an enabled runtime whose process is
-    gone: what a restart of sbx-control cut off, for the scheduler to build
-    again soon after a start (template_scheduler.schedule)."""
+    gone and that the scheduler builds there (keys): what a restart of
+    sbx-control cut off, for it to build again soon after a start
+    (template_scheduler.schedule). One of a template nothing starts from any
+    more is left to prune."""
     found = []
     for kind in runtime.enabled():
         with db() as conn:
             rows = _rows(conn, kind)
-        found += [(kind, key) for key, row in rows.items() if status(key, row, kind) == "interrupted"]
+        served = set(keys(kind))
+        found += [(kind, key) for key, row in rows.items()
+                  if key in served and status(key, row, kind) == "interrupted"]
     return found
 
 
@@ -292,8 +297,8 @@ def first_wait() -> int:
         print(f"template scheduler: {error!r}", flush=True)
         return CHECK_SECONDS
     for kind, key in found:
-        print(f"template build {key}{_on(kind)}: a restart cut it off; it builds again in {RESUME_SECONDS} s",
-              flush=True)
+        print(f"template build {key}{_on(kind)}: a restart cut it off; the scheduler looks again in "
+              f"{RESUME_SECONDS} s and builds it when it can", flush=True)
     return RESUME_SECONDS if found else CHECK_SECONDS
 
 
