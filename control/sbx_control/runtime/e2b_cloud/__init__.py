@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 
+from ... import howto
 from ..base import HOSTNAME, Capabilities, Failed, LimitRefused, LimitSpec, Preset, SettingField, TokenPlace
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute, Handle
 from ..hosted import PerSandbox, hosted_status, limit_settings, limits_from, wrapped
@@ -109,6 +110,7 @@ def refused_limit(error: BaseException, asked: dict) -> LimitRefused | None:
 class Cloud(Compute):
     kind = KIND
     title = "E2B Cloud"
+    help_url = howto.E2B_KEY
     capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=True)
     ingress_cleared = ()
     ports = frozenset({ENVD_PORT})
@@ -235,7 +237,7 @@ class Cloud(Compute):
         from ... import vault
         from ...connections.base import Check
         return [Check("E2B Cloud configured", bool(vault.runtime((API_KEY,)).get(API_KEY)), "an E2B Cloud API key",
-                      f"Add it: sbx-admin runtime add {KIND} (the key on stdin).")]
+                      f"Add it: sbx-admin runtime add {KIND} (the key on stdin).", help_url=self.help_url)]
 
     def status(self):
         from ...connections.base import Field
@@ -250,5 +252,6 @@ class Cloud(Compute):
             count = len(self.templates())
         except Exception as error:
             return [Check("E2B Cloud API", False, f"{type(error).__name__}: {error}",
-                          f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})")]
+                          f"check {API_KEY} in /etc/sbx/runtime.env (sbx-admin runtime add {KIND})",
+                          help_url=self.help_url)]
         return [Check("E2B Cloud API", True, f"answers; {count} template names")]

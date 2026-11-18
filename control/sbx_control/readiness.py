@@ -7,7 +7,7 @@ The repo page's checklist, the repo list's one-line state and the template
 badge all read the rules here; the web app only renders them."""
 from __future__ import annotations
 
-from . import auth, env, recipes, repos, runtime, runtimes, settings, template_builds, views
+from . import auth, env, howto, recipes, repos, runtime, runtimes, settings, template_builds, views
 from .catalog import attachments
 
 STEPS = ("served", "github", "configured", "services", "env", "template", "sandbox")
@@ -69,6 +69,7 @@ def steps(info: dict, atts: list, missing: list, build: dict, live: bool, admin:
     else:
         out.append(_step("github", "todo" if served else "blocked",
                          "Install the GitHub App on this repository so sandboxes can push (and clone it, if it is private)", "admin",
+                         help_url=howto.GITHUB_REPOS if info.get("github_app_install") else howto.GITHUB_APP,
                          **({"action": info["github_app_install"]} if info.get("github_app_install") else {})))
     out.append(_step("configured", "done", f"Previews: {', '.join(info['previews'])}" if info["previews"] else "Recipe found")
                if recipe else _step("configured", "todo" if served else "blocked",

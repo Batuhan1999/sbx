@@ -26,6 +26,7 @@ class Check:
     detail: str = ""
     fix: str = ""
     runtime: str | None = None        # the kind of the sandbox runtime it checks, if it checks one
+    help_url: str = ""                # the owner's how-to page for what it checks (howto), if there is one
 
 
 @dataclasses.dataclass(frozen=True)

@@ -870,7 +870,7 @@ or API answer holds its value, and the web app shows a set secret only as
 | `DELETE /api/runtimes/KIND` | Remove it: 409 while sandboxes run on it (named) or when it is the last one. |
 | `PUT /api/runtimes/default` | `{"kind": "KIND"}`: new sandboxes run on it unless the request or the repository names another. 200, done and `unchanged`, for the default already. |
 | `GET /api/runtimes/change` | The last change, as above. |
-| `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
+| `POST /api/runtimes/KIND/test` | An enabled runtime's checks: `{kind, ok, checks: [{name, ok, detail, fix, runtime, help_url}]}`: its own (the provider answers with the stored key), its limits, its base template (built, building, or failed with how to rebuild) and, once that is built and the rest pass, whether its sandboxes reach this server. 400 for a runtime not enabled. |
 
 All of them are for admins, and for the first-run setup link's token while
 the setup is open. `settings` also carry an int's `min`, `max`, `step` and
@@ -891,7 +891,7 @@ sbx runtimes set e2b-cloud --plan custom --set E2B_CLOUD_MAX_SANDBOXES=50
 sbx runtimes set e2b-cloud --secret E2B_CLOUD_API_KEY < new-key-file
 sbx runtimes default e2b-cloud
 sbx runtimes remove e2b-cloud
-sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail and fix; exit 1 when one fails
+sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail, fix and how-to page; exit 1 when one fails
 ```
 
 - `--plan` takes a plan's values from `sbx runtimes available` (`hobby`,
@@ -1004,6 +1004,13 @@ again on the other one.
 - `GET /api/setup/checks`, the first-run wizard's, names the runtime each
   check is about (`runtime`, `null` for the server's own). The wizard and
   `GET /api/runtimes` take the setup link's token.
+- A check about something the owner sets up outside sbx (DNS records, the
+  Cloudflare token, a provider's API key or plan, the GitHub App, the Amp
+  provider) carries `help_url`, the [how-to page](howto/) for it on GitHub
+  (`""` otherwise), wherever checks appear: `POST /api/connections/KIND/test`,
+  a refusal's `checks`, the runtime and setup checks, and the repository
+  checklist's `github` step. `sbx-admin doctor`, `sbx runtimes test` and the
+  CLI's refusals print it under a failed check, and the web app links it.
 - On the host, `sbx-admin runtime list` (`--json` as `GET /api/runtimes`
   answers) shows the enabled runtimes, and `sbx-admin runtime verify [KIND]`
   (the default when no kind is given) checks one end to end: it creates a

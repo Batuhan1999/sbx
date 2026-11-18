@@ -135,6 +135,8 @@ def do_doctor() -> int:
             continue  # an extension left off or never set up is a choice, not a fault
         for check in connections.get(status.kind).test():
             print(f"  {'ok ' if check.ok else 'NO '} {check.name}: {check.detail}" + (f" — {check.fix}" if not check.ok and check.fix else ""))
+            if not check.ok and check.help_url:
+                print(f"      how to: {check.help_url}")
             bad += not check.ok
     from . import endpoints
     found = endpoints.describe()
@@ -171,6 +173,8 @@ def _connected(connect) -> int:
         print(f"refused: {error}", file=sys.stderr)
         for check in error.checks:
             print(f"  {'ok ' if check.ok else 'NO '} {check.name}: {check.detail}", file=sys.stderr)
+            if not check.ok and check.help_url:
+                print(f"      how to: {check.help_url}", file=sys.stderr)
         return 1
     print(f"{status.title}: {status.state} · {status.summary}")
     return 0
