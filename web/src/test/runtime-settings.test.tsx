@@ -276,7 +276,7 @@ describe('first-run setup without a runtime', () => {
     await waitFor(() => expect(screen.getByRole('list', { name: 'Chosen' }).textContent).toContain('E2B Cloud · Hobby'), { timeout: 10000 })
     expect(screen.queryByLabelText('API key')).toBeNull()
     await user.click(screen.getByRole('button', { name: /Continue/ }))
-    expect(await screen.findByRole('heading', { name: 'Which coding agents does your team use?' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
     expect(post.body).toEqual({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)

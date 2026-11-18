@@ -7,7 +7,7 @@ import { api } from '@/api/endpoints'
 import { keys, useAvailableRuntimes, useConnections, useSetup } from '@/api/queries'
 import type { AvailableRuntime, Check as CheckT, SetupState } from '@/api/types'
 import { CopyCommand, useCopy } from '@/components/CopyCommand'
-import { AppForm, SECRET_KEPT, SubmitButton, useAppForm, useStore } from '@/components/form'
+import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { ErrorState, Loading } from '@/components/states'
 import { TemplateProgressLine } from '@/components/TemplateProgressLine'
 import { AnchorButton, Button } from '@/components/ui/button'
@@ -19,11 +19,12 @@ import { Checks } from '../extensions/ConnectionCard'
 import { ChangeStatus, useRuntimeChangeFlow, type ChangeFlow } from '../settings/RuntimeForms'
 import { blockedText, RuntimeChoices } from '../settings/Runtimes'
 
-/** The steps in the order the owner meets them. The account comes fourth and finishes the setup; GitHub follows
- * and can be skipped. */
-type Step = 'address' | 'runtime' | 'agents' | 'account' | 'github'
+/** The steps in the order the owner meets them. The account comes third and finishes the setup; GitHub follows
+ * and can be skipped. Coding agents are not a step: every template has their CLIs, and running an agent's cloud
+ * sessions here is set up later, under Extensions. */
+type Step = 'address' | 'runtime' | 'account' | 'github'
 const STEPS: { step: Step; label: string }[] = [
-  { step: 'address', label: 'Domain' }, { step: 'runtime', label: 'Sandboxes' }, { step: 'agents', label: 'Agents' },
+  { step: 'address', label: 'Domain' }, { step: 'runtime', label: 'Sandboxes' },
   { step: 'account', label: 'Account' }, { step: 'github', label: 'GitHub' },
 ]
 const isStep = (x: string | null): x is Step => STEPS.some(s => s.step === x)
@@ -54,12 +55,12 @@ export default function SetupPage() {
   const addressSaved = !!s?.access.domain || (s?.access.mode === 'ip' && stepDone('address'))
   const runtimeDone = stepDone('runtime')
   const done: Record<Step, boolean> = {
-    address: !!addressSaved, runtime: runtimeDone, agents: stepDone('agents'), account: !!s?.complete, github: false,
+    address: !!addressSaved, runtime: runtimeDone, account: !!s?.complete, github: false,
   }
   const reached: Record<Step, boolean> = {
-    address: true, runtime: done.address, agents: done.address && done.runtime, account: done.address && done.runtime && done.agents, github: false,
+    address: true, runtime: done.address, account: done.address && done.runtime, github: false,
   }
-  const first: Step = !done.address ? 'address' : !done.runtime ? 'runtime' : !done.agents ? 'agents' : 'account'
+  const first: Step = !done.address ? 'address' : !done.runtime ? 'runtime' : 'account'
   const current: Step = s?.complete ? 'github' : step && step !== 'github' && reached[step] ? step : first
   // The step shown stays until the owner leaves it: a check that passes shows its result, not the next step.
   useEffect(() => { if (s && !step) setStep(first) }, [s, step, first])
@@ -76,19 +77,18 @@ export default function SetupPage() {
       {setup.isPending ? <Loading label="Checking this installation…" />
         : setup.error || !s ? <NoToken error={setup.error} retry={() => setup.refetch()} />
         : <>
-          <Steps current={current} done={s.complete ? { address: true, runtime: true, agents: true, account: true, github: false } : done}
+          <Steps current={current} done={s.complete ? { address: true, runtime: true, account: true, github: false } : done}
             onGo={s.complete ? undefined : x => reached[x] ? () => go(x) : undefined} />
           {current === 'address' ? <AddressStep s={s} onNext={() => go('runtime')} />
-            : current === 'runtime' ? <RuntimeStep onBack={() => go('address')} onNext={() => go('agents')} />
-            : current === 'agents' ? <AgentsStep s={s} onBack={() => go('runtime')} onNext={() => go('account')} />
-            : current === 'account' ? <AccountStep s={s} onBack={() => go('agents')} />
+            : current === 'runtime' ? <RuntimeStep onBack={() => go('address')} onNext={() => go('account')} />
+            : current === 'account' ? <AccountStep s={s} onBack={() => go('runtime')} />
             : <GitHubStep />}
         </>}
     </main>
   </div>
 }
 
-/** Where the owner is, the same on every step: five numbered steps in a row; on a phone "Step 2 of 5" over a bar. */
+/** Where the owner is, the same on every step: the numbered steps in a row; on a phone "Step 2 of 4" over a bar. */
 function Steps({ current, done, onGo }: { current: Step; done: Record<Step, boolean>; onGo?: (step: Step) => (() => void) | undefined }) {
   const at = STEPS.findIndex(x => x.step === current)
   return <nav aria-label="Setup progress" className="mb-8">
@@ -314,60 +314,6 @@ function RuntimeKeyForm({ r, flow, onBack, onCancel }: { r: AvailableRuntime; fl
   </AppForm>
 }
 
-/** Which agents the team uses, each with its token now or later (Extensions). */
-function AgentsStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; onNext: () => void }) {
-  const qc = useQueryClient()
-  const connections = useConnections()
-  const [error, setError] = useState<unknown>(null)
-  const tokenField = (kind: string) => connections.data?.find(c => c.kind === kind)?.fields.find(f => f.secret && !f.hidden)
-  const form = useAppForm({
-    defaultValues: {
-      on: Object.fromEntries(s.agents.map(a => [a.kind, a.chosen])) as Record<string, boolean>,
-      token: Object.fromEntries(s.agents.map(a => [a.kind, ''])) as Record<string, string>,
-    },
-    onSubmit: async ({ value }) => {
-      setError(null)
-      const chosen = s.agents.filter(a => value.on[a.kind])
-      try {
-        for (const a of chosen) {
-          const field = tokenField(a.kind)
-          const token = value.token[a.kind]?.trim()
-          if (!field || !token) continue
-          try { await api.connections.save(a.kind, { [field.name]: token }) } catch (e) {
-            throw e instanceof ApiError ? new ApiError(e.status, `${a.title}: ${e.message}`) : e
-          }
-          form.setFieldValue(`token.${a.kind}`, '')
-        }
-        qc.setQueryData(keys.setup, await api.setup.agents(chosen.map(a => a.kind)))
-        void qc.invalidateQueries({ queryKey: keys.connections })
-        onNext()
-      } catch (e) { setError(e) }
-    },
-  })
-  const on = useStore(form.store, st => st.values.on)
-  const any = s.agents.some(a => on[a.kind])
-  return <AppForm form={form} className="space-y-6">
-    <Heading title="Which coding agents does your team use?" text="Optional. The ones you pick are installed in every sandbox. A token can also come later, under Extensions." />
-    {s.agents.length > 0 ? <ul aria-label="Coding agents" className="divide-y divide-line rounded-lg border border-line bg-panel">
-      {s.agents.map(a => {
-        const field = tokenField(a.kind)
-        return <li key={a.kind} className="px-4 py-3">
-          <form.AppField name={`on.${a.kind}`}>{f => <f.CheckboxField label={<span className="font-medium">{a.title}</span>} />}</form.AppField>
-          {on[a.kind] && field && <div className="mt-3 pl-[26px] sm:max-w-sm">
-            <form.AppField name={`token.${a.kind}`}>
-              {f => <f.TextField label={field.label} optional type="password" autoComplete="off" spellCheck={false}
-                placeholder={field.set ? SECRET_KEPT : undefined} help={field.help || undefined} />}
-            </form.AppField>
-          </div>}
-        </li>
-      })}
-    </ul> : <p className="text-[13px] text-muted">This server offers no coding agents. You can add them later, under Extensions.</p>}
-    <TemplateProgressLine />
-    <ErrorState error={error} />
-    <Nav onBack={onBack}><SubmitButton form={form}>{any ? 'Continue' : 'Skip'}<ArrowRight /></SubmitButton></Nav>
-  </AppForm>
-}
-
 /** The first admin's account, which also finishes the setup. On a private network nobody signs in: just finish. */
 function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   const qc = useQueryClient()
@@ -395,12 +341,24 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   })
   const finish = async () => { setBusy(true); setError(null); try { await complete() } catch (e) { setError(e) } finally { setBusy(false) } }
   const create = !signedIn && !existing
-  const waiting = s.access.mode === 'domain' && !!s.access.domain && !s.access.certificate_ready && !s.access.certificate_error
+  // The account is created at the server's own address, so the owner signs in where they stay: until the
+  // certificate is ready the form waits (nothing typed is lost when the page moves there).
+  const domain = s.access.mode === 'domain' ? s.access.domain : ''
+  const waiting = create && !!domain && !s.access.certificate_ready
+  const certificateError = waiting ? s.access.certificate_error : ''
+  const [retrying, setRetrying] = useState(false)
+  const retry = async () => {
+    setRetrying(true); setError(null)
+    try {
+      await api.connections.save('domain', { name: domain, address: s.host.address, acme: 'delegated' })
+      await qc.invalidateQueries({ queryKey: keys.setup })
+    } catch (e) { setError(e) } finally { setRetrying(false) }
+  }
   return <div className="space-y-6">
     <Heading title={create ? 'Create your account' : signedIn ? 'Finish the setup' : 'Sign in to finish'}
       text={s.signed_in ? `You’re signed in as ${s.email}.` : signedIn ? 'Nobody signs in on this private network.'
         : existing ? 'This server already has an admin.' : 'You’re the first admin. You can add people and single sign-on later, under Settings.'} />
-    {create && <AppForm form={form} id="setup-account" className="space-y-4">
+    {create && <AppForm form={form} id="setup-account"><fieldset disabled={waiting} className="min-w-0 space-y-4 disabled:opacity-60">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Email" type="email" autoComplete="username" />}</form.AppField>
       <div className="grid gap-4 sm:grid-cols-2 sm:gap-3">
         <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>{field => <field.TextField label="Password" type="password" autoComplete="new-password" help="At least 8 characters." />}</form.AppField>
@@ -408,12 +366,14 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
           {field => <field.TextField label="Repeat password" type="password" autoComplete="new-password" />}
         </form.AppField>
       </div>
-    </AppForm>}
-    {waiting && <Notice tone="busy">Still getting the certificate for {s.access.domain}. You can finish now and sign in at your domain once it’s ready.</Notice>}
+    </fieldset></AppForm>}
+    {certificateError && <ErrorState error={`Couldn’t get the certificate for ${domain}: ${certificateError}`} />}
     <TemplateProgressLine />
     <ErrorState error={error} />
     <Nav onBack={onBack}>
-      {create ? <SubmitButton form={form} formId="setup-account">Create account and finish<ArrowRight /></SubmitButton>
+      {certificateError ? <Button busy={retrying} onClick={retry}>Try again</Button>
+        : waiting ? <Spinner label={`Waiting for the certificate for ${domain}, usually under a minute`} />
+        : create ? <SubmitButton form={form} formId="setup-account">Create account and finish<ArrowRight /></SubmitButton>
         : signedIn ? <Button variant="primary" busy={busy} onClick={finish}>Finish setup<ArrowRight /></Button>
         : <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in<ArrowRight /></AnchorButton>}
     </Nav>

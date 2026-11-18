@@ -6,7 +6,7 @@ import type { SetupState } from '@/api/types'
 import { isMarkedReady, markReady } from '@/lib/ready'
 import ReposPage from '@/pages/repos/ReposPage'
 import SetupPage from '@/pages/setup/SetupPage'
-import { isChecked, ME, renderApp, stubApi } from './render'
+import { ME, renderApp, stubApi } from './render'
 
 type StepName = SetupState['steps'][number]['step']
 const state = (done: StepName[] = [], over: Partial<SetupState> = {}, access: Partial<SetupState['access']> = {}): SetupState => ({
@@ -19,6 +19,7 @@ const state = (done: StepName[] = [], over: Partial<SetupState> = {}, access: Pa
   link: '', admins: [], version: 'dev', ...over,
 })
 const SAVED = { mode: 'domain' as const, domain: 'sbx.example.com', url: 'https://app.sbx.example.com' }
+const READY = { ...SAVED, certificate_ready: true }
 
 const runtime = (kind: string, title: string, over: Record<string, unknown> = {}) => ({
   kind, title, host: false, enabled: false, default: false, can_run: true, why_not: '', managed_by: '', edit_blocker: null,
@@ -35,15 +36,15 @@ const check = (name: string, ok: boolean, detail: string, fix = '') => ({ name, 
 const steps = () => within(screen.getByRole('list', { name: 'Steps' })).getAllByRole('listitem').map(li => li.textContent)
 
 describe('server setup', () => {
-  it('walks Domain, Sandboxes, Agents, Account, GitHub in that order, the same row on every step', async () => {
+  it('walks Domain, Sandboxes, Account, GitHub in that order, the same row on every step', async () => {
     setSetupToken('one-time-token')
     stubApi({ 'GET /api/setup': state() })
     const first = renderApp(<SetupPage />)
     expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
     // The onboarding link's token stands in for an admin until the account exists.
     expect(((vi.mocked(fetch).mock.calls[0][1] as RequestInit).headers as Record<string, string>).authorization).toBe('Setup one-time-token')
-    expect(steps()).toEqual(['1Domain', '2Sandboxes', '3Agents', '4Account', '5GitHub'])
-    expect(screen.getByText(/Step 1 of 5/).textContent).toBe('Step 1 of 5 · Domain')
+    expect(steps()).toEqual(['1Domain', '2Sandboxes', '3Account', '4GitHub'])
+    expect(screen.getByText(/Step 1 of 4/).textContent).toBe('Step 1 of 4 · Domain')
     expect(screen.getByRole('button', { name: /Domain/ }).getAttribute('aria-current')).toBe('step')
     // A step not reached yet can't be jumped to.
     expect((screen.getByRole('button', { name: /Account/ }) as HTMLButtonElement).disabled).toBe(true)
@@ -52,8 +53,8 @@ describe('server setup', () => {
     stubApi({ 'GET /api/setup': state(['address', 'sign_in', 'runtime', 'agents'], { complete: true, signed_in: true }, SAVED), 'GET /api/connections': { connections: [] } })
     renderApp(<SetupPage />)
     expect(await screen.findByRole('heading', { name: 'Connect GitHub' })).toBeTruthy()
-    expect(steps().map(t => t?.replace(/^\d/, ''))).toEqual(['Domain', 'Sandboxes', 'Agents', 'Account', 'GitHub'])
-    expect(screen.getByText(/Step 5 of 5/).textContent).toBe('Step 5 of 5 · GitHub')
+    expect(steps().map(t => t?.replace(/^\d/, ''))).toEqual(['Domain', 'Sandboxes', 'Account', 'GitHub'])
+    expect(screen.getByText(/Step 4 of 4/).textContent).toBe('Step 4 of 4 · GitHub')
     expect(within(screen.getByRole('list', { name: 'Steps' })).getByRole('button', { name: /GitHub/ }).getAttribute('aria-current')).toBe('step')
   })
 
@@ -150,35 +151,9 @@ describe('server setup', () => {
     expect(document.body.textContent).not.toContain('test-only')
   })
 
-  it('saves the chosen agents, a typed token first', async () => {
-    const user = userEvent.setup()
-    const token = { name: 'provider_token', label: 'Amp token', secret: true, set: false, value: null, help: '' }
-    const calls = stubApi({
-      'GET /api/setup': state(['address', 'runtime'], {}, SAVED),
-      'GET /api/connections': { connections: [{ kind: 'amp', title: 'Amp', group: 'agent', state: 'not_connected', summary: '', display: [], facts: {}, actions: [], fields: [token] }] },
-      'GET /api/templates': { blocked: '', runtimes: {} },
-      'PUT /api/connections/amp': { state: 'connected' },
-      'PUT /api/setup/agents': state(['address', 'runtime', 'agents'], {}, SAVED),
-    })
-    renderApp(<SetupPage />)
-    const amp = await screen.findByRole('checkbox', { name: 'Amp' })
-    expect(screen.getByRole('button', { name: 'Skip' })).toBeTruthy()
-    expect(screen.queryByLabelText(/Amp token/)).toBeNull()
-    await user.click(amp)
-    expect(isChecked(amp)).toBe(true)
-    await user.type(await screen.findByLabelText(/Amp token/), 'test-only-token')
-    await user.click(screen.getByRole('button', { name: 'Continue' }))
-    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
-    const puts = calls.filter(c => c.method === 'PUT')
-    expect(puts.map(c => [c.url, c.body])).toEqual([
-      ['/api/connections/amp', { values: { provider_token: 'test-only-token' } }],
-      ['/api/setup/agents', { agents: ['amp'] }],
-    ])
-  })
-
   it('creates the account and finishes from the button under the form', async () => {
     const user = userEvent.setup()
-    const ready = state(['address', 'runtime', 'agents'], {}, SAVED)
+    const ready = state(['address', 'runtime'], {}, READY)   // no agents step: the account follows the sandboxes
     const calls = stubApi({
       'GET /api/setup': ready,
       'GET /api/templates': TEMPLATES,
@@ -209,6 +184,28 @@ describe('server setup', () => {
   })
 })
 
+describe('the account waits for the certificate', () => {
+  it('holds the form until the certificate is ready, and retries one that failed', async () => {
+    const user = userEvent.setup()
+    stubApi({ 'GET /api/setup': state(['address', 'runtime'], {}, SAVED), 'GET /api/templates': TEMPLATES })
+    const pending = renderApp(<SetupPage />)
+    expect(await screen.findByText('Waiting for the certificate for sbx.example.com, usually under a minute')).toBeTruthy()
+    expect((screen.getByLabelText('Email') as HTMLInputElement).matches(':disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Create account and finish' })).toBeNull()
+    pending.unmount()
+
+    const calls = stubApi({
+      'GET /api/setup': state(['address', 'runtime'], {}, { ...SAVED, certificate_error: 'the challenge was not answered' }),
+      'GET /api/templates': TEMPLATES, 'PUT /api/connections/domain': { state: 'connected' },
+    })
+    renderApp(<SetupPage />)
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn’t get the certificate for sbx.example.com: the challenge was not answered')
+    expect(screen.queryByRole('button', { name: 'Create account and finish' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(calls.find(c => c.method === 'PUT')?.body).toEqual({ values: { name: 'sbx.example.com', address: '203.0.113.7', acme: 'delegated' } }))
+  })
+})
+
 describe('the ready dialog', () => {
   const answers = {
     'GET /api/me': { ...ME, base_url: 'https://app.sbx.example.com', repos: [], agents: { amp: { title: 'Amp', command: 'amp' } } },
@@ -225,9 +222,13 @@ describe('the ready dialog', () => {
     const dialog = within(await screen.findByRole('dialog', { name: 'Your server is ready' }))
     expect(dialog.getByText('app.sbx.example.com')).toBeTruthy()
     expect(await dialog.findByText('E2B Embed')).toBeTruthy()
-    expect(dialog.getByText('Amp')).toBeTruthy()
     expect(await dialog.findByText(/Not connected/)).toBeTruthy()
     expect(await dialog.findByText(/Building templates: 1 of 2 ready/)).toBeTruthy()
+    // Agents are not chosen in the setup: running their cloud sessions here is an optional next step.
+    const sessions = within(dialog.getByRole('region', { name: 'Run agent sessions here' }))
+    expect(sessions.getAllByRole('link').map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Run Amp threads in sbx sandboxesSet up Amp', '/app/extensions'], ['Run Claude Code cloud sessions hereSet up Claude Code', '/app/extensions']])
+    expect(sessions.getByText('Codex is included: each developer uses their own login.')).toBeTruthy()
     expect(dialog.getByRole('button', { name: 'Look around' })).toBeTruthy()
     expect(dialog.getByRole('link', { name: /Connect a repository/ }).getAttribute('href')).toBe('/app/repos/new')
     first.unmount()

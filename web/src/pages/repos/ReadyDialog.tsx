@@ -1,12 +1,15 @@
 import { ArrowRight, Check } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { useAgents, useConnections, useMe, useRuntimes } from '@/api/queries'
+import { useConnections, useMe, useRuntimes } from '@/api/queries'
 import { TemplateProgressLine } from '@/components/TemplateProgressLine'
 import { Button, LinkButton } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/primitives'
 import { clearReady, isMarkedReady } from '@/lib/ready'
+
+/** The agents whose cloud sessions this server can run, once their connector is set up under Extensions. */
+const SESSIONS = [['Amp', 'Run Amp threads in sbx sandboxes'], ['Claude Code', 'Run Claude Code cloud sessions here']]
 
 /** Once, right after the setup: what was set up, and the next step. */
 export function ReadyDialog() {
@@ -15,7 +18,6 @@ export function ReadyDialog() {
   const me = useMe()
   const runtimes = useRuntimes()
   const connections = useConnections(open)
-  const agents = useAgents()
   if (!open) return null
   const close = () => setOpen(false)
   const github = connections.data?.find(c => c.kind === 'github')
@@ -35,12 +37,22 @@ export function ReadyDialog() {
         {([
         ['Address', <span className="break-all font-mono text-[12.5px]">{address}</span>],
         ['Sandboxes', runtimes.isPending ? loading : (runtimes.data?.runtimes ?? []).map(r => r.title).join(', ') || 'No runtime yet'],
-        ['Coding agents', me.isPending ? loading : agents.length ? agents.map(a => a.title).join(', ') : 'None yet'],
         ['GitHub', connections.isPending ? loading : github?.state === 'connected' ? github.summary || 'Connected'
           : <>Not connected · <Link to="/app/extensions" className="text-accent hover:underline">Connect</Link></>],
       ] as [string, ReactNode][]).map(([k, v]) => <div key={k} className="contents"><dt className="text-muted">{k}</dt><dd className="min-w-0 break-words">{v}</dd></div>)}
       </dl>
       <TemplateProgressLine />
+      <section aria-label="Run agent sessions here" className="text-[13px]">
+        <p className="font-medium">Run agent sessions here <span className="font-normal text-faint">optional</span></p>
+        <ul className="mt-1.5 divide-y divide-line rounded-lg border border-line">
+          {SESSIONS.map(([agent, text]) => <li key={agent}>
+            <Link to="/app/extensions" className="flex items-center gap-3 px-3.5 py-2 hover:bg-hover/60">
+              <span className="min-w-0 grow">{text}</span><span className="shrink-0 text-accent">Set up {agent}</span>
+            </Link>
+          </li>)}
+        </ul>
+        <p className="mt-1.5 text-[12.5px] text-muted">Codex is included: each developer uses their own login.</p>
+      </section>
     </div>
   </Dialog>
 }
