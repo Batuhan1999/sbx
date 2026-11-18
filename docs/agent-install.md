@@ -8,7 +8,7 @@ repository running in sandboxes. It ends with the
 message (step 2), for everything only they can give, and wait for the
 answers before you do anything that depends on them. After that, the owner
 gets two links from you: the setup link to create their account (step 4) and
-one key page for every key (step 5). Don't stop for approval between routine
+one key page for every key (step 6). Don't stop for approval between routine
 steps. Keep the current step visible and resolve a failed step before you
 call it done.
 
@@ -25,7 +25,7 @@ In step 8, `dev-pg`, `temporal`, `10.0.0.5:7233`, `10.0.0.0/24` and
 
 **Secrets.** API keys, tokens, passwords and the setup link never go into the
 chat, a command line, a recipe, a commit or a log. The owner types keys into
-sbx's own key page (step 5), which stores each one where it belongs. The
+sbx's own key page (step 6), which stores each one where it belongs. The
 setup link lives in a file under `~/.sbx-install` on your machine:
 
 ```sh
@@ -136,7 +136,7 @@ answers. Ask nothing that `--check` already answered.
      zone's DNS: [how-to](howto/cloudflare.md)), `route53` (the A records; the
      instance role on EC2) or `none` (self-signed, a quick test only: `D`
      = the IP with dashes plus `.sslip.io` needs no records; browsers warn and
-     the desktop CLI refuses it, so steps 7 to 10 go through the
+     the desktop CLI refuses it, so steps 5 to 10 go through the
      [HTTP API](reference.md#http-api) with `curl -k`).
 3. **The owner's email** for their admin account (`owner@example.com`).
 4. **Which coding agents the team uses**: none, [Amp](howto/amp.md),
@@ -168,7 +168,7 @@ The `grep` keeps the setup link out of your output.
 - **`0`**: done. `==> Done: finish the setup in your browser`; a provider host
   also says `No sandbox runtime yet` (the key page adds it). No template is
   built yet, on any host: templates build once the setup is finished, with the
-  coding agents chosen (step 6).
+  coding agents chosen (step 7).
 - **Another number**: read the `FAILED: ...` line and
   `ssh HOST 'sudo grep -v "#t=" /root/sbx-install.log | tail -n 40'`, fix the
   cause and start the same command again: every step is safe to repeat.
@@ -211,25 +211,52 @@ their own, or yours if they trust it there; never in a shared log), with:
 password of their own; that signs them in. `setup status` then shows `admin`
 as `done`.
 
-## 5. One key page for every key
+## 5. Sign in the CLI as the owner
 
-Once the owner is signed in, request every key they hold in **one** page: the
-runtime's API key, the DNS token, an agent's token, a repository's variables.
-`sbx secrets request` returns a URL on the web app (sign-in required) that
-writes each key into the right store, and with `--wait` returns when all are
-saved, non-zero when the page is abandoned or a key is refused:
+Right after the account exists, sign the desktop CLI in (macOS, with a trusted
+certificate; the installer and `sbx login` work while the setup is still
+open):
 
 ```sh
-python3 ~/.sbx-install/sbx.py secrets request --wait --link-file ~/.sbx-install/setup-link \
+curl -fsSL https://login.D/install | sh    # IP only: https://IP/install
+```
+
+It ends with `sbx login`, which opens the browser: the owner signs in there
+(if that was skipped, run `~/.local/bin/sbx login`). Below, `sbx` means
+`~/.local/bin/sbx`; it now acts as the admin, so you finish the setup yourself
+(step 7). **Without the desktop CLI** (Linux, or the quick test's
+certificate), use the [HTTP API](reference.md#http-api) with an admin token in
+a header file that holds nothing else:
+
+```sh
+(umask 077; ssh HOST sudo sbx-admin token create owner@example.com --label agent | sed 's/^/Authorization: Bearer /' > ~/.sbx-install/api-header)
+curl -fsS -H @$HOME/.sbx-install/api-header https://login.D/api/me    # -k for the quick test
+```
+
+`sbx-admin token ls` and `token revoke ID` end it.
+
+## 6. One key page for every key
+
+Request every key the owner holds in **one** page: the runtime's API key, the
+DNS token, an agent's token, a repository's variables. `sbx secrets request`
+returns a URL on the web app that writes each key into the right store; the
+owner, signed in, submits it there. With `--wait` it returns when all are
+saved, non-zero when a key is refused or the request is cancelled. During the
+setup it works with the setup link (`--link-file` or `SBX_SETUP_LINK`, for
+`request`, `status`, `ls` and `cancel`), or as the signed-in admin:
+
+```sh
+sbx secrets request --wait --link-file ~/.sbx-install/setup-link \
   runtime:e2b-cloud "E2B API key" \
   connector:amp "Amp orb provider token"
 ```
 
-Targets: `runtime:KIND` (`e2b-cloud`, `boat`), `dns:cloudflare`,
-`connector:KIND` (`amp`, `claude`), `repo:OWNER/NAME:VAR`
-(`sbx secrets request --help` lists them). Send the owner the URL it prints.
-Then `sbx setup status` shows the runtime `done`; choose the owner's plan with
-`sbx runtimes set KIND --plan PLAN` once the CLI is signed in (step 7).
+Targets: `runtime:KIND` (`e2b-cloud`, `boat`; one not enabled yet is enabled
+on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
+`repo:OWNER/NAME:VAR` (`sbx secrets request --help` lists them). Send the
+owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
+the owner's plan if it is not the first one: `sbx runtimes set KIND --plan
+PLAN`.
 
 **No web app reachable** (the server isn't reachable from the owner's
 browser): the owner writes the key into a file only they and you can read,
@@ -239,50 +266,32 @@ anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 `python3 ~/.sbx-install/sbx.py setup runtime add KIND --link-file ~/.sbx-install/setup-link --plan PLAN --secret E2B_CLOUD_API_KEY < ~/.sbx-install/e2b-key`
 (`BOAT_API_KEY` for Boat), and delete the file.
 
-## 6. Coding agents, then the first template build
+## 7. Coding agents, then finish: the first template build
 
 Record the owner's answer from step 2, then finish. Nothing has built yet:
 templates wait for this choice, so the first build already has every chosen
 agent's layer and nothing rebuilds when its key arrives:
 
 ```sh
-python3 ~/.sbx-install/sbx.py setup agents amp claude --link-file ~/.sbx-install/setup-link   # or: setup agents none
-python3 ~/.sbx-install/sbx.py setup status --link-file ~/.sbx-install/setup-link              # every step done
+sbx setup agents amp claude --link-file ~/.sbx-install/setup-link   # or: sbx setup agents none
+sbx setup status --link-file ~/.sbx-install/setup-link              # every step done
+sbx setup finish                                                    # as the signed-in admin: no password
 ```
 
-Finishing needs the owner's sign-in, which only their browser has: ask them
-to press **Finish setup** on the setup page (its last step shows the agents
-you chose and the server's checks; a failed check says what to fix). Then
-`setup status` prints `set up: https://login.D` and the templates build: the
-base and default ones take about 10 minutes the first time; `sbx templates`
-(step 7) shows them.
+Without the desktop CLI: `curl -fsS -X POST -H @$HOME/.sbx-install/api-header
+https://login.D/api/setup/complete`. The owner may press **Finish setup** on
+the setup page instead; both work. `finish` runs the server's checks
+(`The server needs attention` lists each failed one: fix it and run `finish`
+again), then prints `set up: https://login.D; ... the templates build now`.
+The base and default templates take about 10 minutes the first time:
+`sbx templates` shows them; wait until `sbx-base` and `default` are `current`
+on each runtime.
 
 **An agent chosen later** (`sbx extensions set amp --set enabled=true`, or the
 web app's Extensions page) changes every template: the answer says how many
 rebuild on each runtime; existing sandboxes keep their templates and new ones
 start from the old ones until the rebuilds finish. Add `--wait` to wait for
 them (non-zero when one fails).
-
-## 7. Sign in the desktop CLI
-
-On macOS with a trusted certificate:
-
-```sh
-curl -fsSL https://login.D/install | sh    # IP only: https://IP/install
-```
-
-It ends with `sbx login`, which opens the browser for the owner. Below, `sbx`
-means `~/.local/bin/sbx`. `sbx templates` shows the first builds; wait until
-`sbx-base` and `default` are `current` on each runtime. **Without the desktop
-CLI** (Linux, or the quick test), use the [HTTP API](reference.md#http-api)
-with a token in a header file that holds nothing else:
-
-```sh
-(umask 077; ssh HOST sudo sbx-admin token create owner@example.com --label agent | sed 's/^/Authorization: Bearer /' > ~/.sbx-install/api-header)
-curl -fsS -H @$HOME/.sbx-install/api-header https://login.D/api/me    # -k for the quick test
-```
-
-`sbx-admin token ls` and `token revoke ID` end it.
 
 ## 8. Optional: shared servers
 
@@ -327,7 +336,7 @@ starts.
    [recipe](reference.md#recipe), sizes from the
    [resource guide](../control/sbx_control/template_files/resource-guide.md)
    within the runtime's limits (`sbx runtimes`). A secret the recipe needs and
-   you can't generate goes on the key page (`repo:OWNER/NAME:VAR`, step 5).
+   you can't generate goes on the key page (`repo:OWNER/NAME:VAR`, step 6).
 3. **The recipe PR.** Once the recipe passes its first launch, the GitHub App
    opens the pull request that adds `.sbx/` to the repository. Report its link
    to the owner.

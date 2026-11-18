@@ -142,3 +142,34 @@ class TemplateGate(Server):
                          [(self.templates.BASE, "stale"), (self.templates.DEFAULT, "stale")])
         self.client.get("/auth/logout")
         self.assertEqual(self.client.get("/api/templates").status_code, 401)
+
+
+class FinishAsTheSignedInAdmin(Server):
+    """The agent signs in with `sbx login` once the owner's account exists, and finishes the setup itself:
+    an admin's API token, no password; the setup link with the password still works (test_runtime_settings)."""
+
+    def test_sbx_login_works_during_the_setup_and_its_token_finishes_it(self):
+        from fastapi.testclient import TestClient
+        from sbx_control import auth, users
+        self.choose_ip()
+        self.create_admin()
+        self.choose_agents("amp")
+        agent = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session, no setup link
+        self.addCleanup(agent.close)
+        login = agent.get("/cli/login", params={"port": 4000, "state": "s", "challenge": "c" * 43},
+                          follow_redirects=False)
+        self.assertEqual(login.status_code, 307, login.text)                # to the sign-in page, not "being set up"
+        self.assertIn("/auth/login", login.headers["location"])
+        self.assertEqual(agent.post("/cli/token", json={"code": "x", "verifier": "y"}).status_code, 400)
+        self.assertEqual(agent.get("/api/me").status_code, 401)
+        self.assertEqual(agent.get("/api/sandboxes").status_code, 503)     # the rest stays closed
+
+        users.set_password("dev@example.com", "test-only-password-456", by="test")   # a person, not an admin
+        person = {"Authorization": f"Bearer {auth.mint_token('dev@example.com', 'cli')}"}
+        self.assertEqual(agent.post("/api/setup/complete", headers=person).status_code, 403)
+        admin = {"Authorization": f"Bearer {auth.mint_token('operator@example.com', 'cli')}"}
+        self.assertFalse(agent.get("/api/me", headers=admin).json()["setup_complete"])
+        done = agent.post("/api/setup/complete", headers=admin)
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
+        self.kick.assert_called_once()

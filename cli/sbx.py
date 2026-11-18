@@ -850,13 +850,28 @@ def templates_cmd(args):
 # sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
 
 
+def _setup_link(args):
+    if args.link_file:
+        return pathlib.Path(args.link_file).expanduser().read_text().strip()
+    return os.environ.get("SBX_SETUP_LINK", "").strip()
+
+
+def signed_in_client(args):
+    """For sbx setup finish without --admin: the admin `sbx login` signed in (its API token), so neither a
+    password nor the setup link is needed; None when not signed in, or signed in to another server than
+    the link's."""
+    if args.admin or not CONTROL or not keychain_get(API_TOKEN_SERVICE):
+        return None
+    link = _setup_link(args)
+    if link and urllib.parse.urlsplit(link).netloc != urllib.parse.urlsplit(CONTROL).netloc:
+        return None
+    return Client(CONTROL)
+
+
 def setup_client(args):
     """sbx-control as the setup link names it, from SBX_SETUP_LINK or --link-file (never argv: it is a
     credential, and stdin is the secrets'), signed in with its token."""
-    if args.link_file:
-        link = pathlib.Path(args.link_file).expanduser().read_text().strip()
-    else:
-        link = os.environ.get("SBX_SETUP_LINK", "").strip()
+    link = _setup_link(args)
     if not link:
         sys.exit("the setup link install.sh printed (or sbx-admin setup-link): in SBX_SETUP_LINK, or a file named "
                  "by --link-file; never on the command line")
@@ -876,7 +891,7 @@ def setup_client(args):
 
 
 def setup_cmd(args):
-    client = setup_client(args)
+    client = (args.step == "finish" and signed_in_client(args)) or setup_client(args)
     {"status": setup_status, "address": setup_address, "runtime": setup_runtime, "admin": setup_admin,
      "agents": setup_agents, "finish": setup_finish}[args.step](args, client)
 
@@ -968,12 +983,13 @@ def setup_admin(args, client):
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
     client.api("POST", "/api/setup/admin", {"email": args.email, "password": password})
-    print(f"{args.email} has an account and is an admin; next: sbx setup runtime add | agents, then sbx setup "
-          f"finish --admin {args.email} (their password on stdin again)")
+    print(f"{args.email} has an account and is an admin; next: sbx login as them, sbx setup runtime add | agents, then sbx setup "
+          f"finish (or sbx setup finish --admin {args.email}, their password on stdin again)")
 
 
 def setup_finish(args, client):
-    """Finish the setup; with --admin, as that admin (their own password on stdin)."""
+    """Finish the setup: as the admin `sbx login` signed in (no password), or with the setup link and
+    --admin, as that admin (their own password on stdin)."""
     body = None
     if args.admin:
         password = _read_secret(f"password for {args.admin}")
@@ -985,7 +1001,7 @@ def setup_finish(args, client):
         print(json.dumps(state))
         return
     print(f"set up: {state['access']['url']}; the setup link no longer works, and the templates build now "
-          "(about 10 minutes the first time; sbx templates). Next: sbx login")
+          "(about 10 minutes the first time; sbx templates). Next, if not signed in yet: sbx login")
 
 
 def ls(args):
@@ -1612,7 +1628,8 @@ def parser():
                          "or none (no template builds before this); without one, what is offered")
     s.add_argument("kinds", nargs="*", metavar="KIND")
     s.add_argument("--json", action="store_true")
-    s = steps.add_parser("finish", parents=[link], help="finish; with --admin, as that admin (their own password on stdin)")
+    s = steps.add_parser("finish", parents=[link], help="finish: as the admin sbx login signed in, or with the "
+                         "setup link and --admin, as that admin (their own password on stdin)")
     s.add_argument("--admin", metavar="EMAIL")
     s.add_argument("--json", action="store_true")
     p = command("down", down, "delete the sandbox and what was provisioned for it")

@@ -940,7 +940,8 @@ sbx setup runtime available
 sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
 sbx setup agents                               # the coding agents offered
 sbx setup agents amp claude                    # or: sbx setup agents none
-sbx setup finish --admin ops@example.com < password-file
+sbx setup finish                               # as the admin sbx login signed in: no password
+sbx setup finish --admin ops@example.com < password-file   # or with the link and that admin's password
 ```
 
 Each uses `Authorization: Setup <token>`. `address --domain` takes the DNS
@@ -948,10 +949,13 @@ provider's credentials with `--secret` (`cloudflare_api_token`, ...) and waits
 until the certificate works; `runtime add` takes the flags of `sbx runtimes
 add` and waits through the restart; `admin` makes the first admin's own
 account (their email and password, as the wizard's admin step does; password
-sign-in), and `finish --admin` signs in with that account's password (`POST
-/api/setup/complete` with `{"email", "password"}`, for a client without a
-browser session). The link stops working once the
-setup is finished; then `sbx login`.
+sign-in). Once that account exists, the desktop CLI's installer
+(`/install`) and `sbx login` work while the setup is still open, and `finish`
+without `--admin` finishes as that signed-in admin (`POST /api/setup/complete`
+with its `Authorization: Bearer` token; another person's token is 403). `finish
+--admin` instead signs in with that account's password (`POST
+/api/setup/complete` with `{"email", "password"}`, for a client with only the
+setup link). The link stops working once the setup is finished.
 
 `agents` (`PUT /api/setup/agents` with `{"agents": ["amp", ...]}`; `[]` for
 none) records the coding agents every template is built with: the extensions

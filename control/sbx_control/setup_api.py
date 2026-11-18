@@ -17,10 +17,13 @@ _setup_lock = threading.Lock()
 # Until the first-run setup is complete (setup.py), this host serves the
 # setup and nothing else: there is no sign-in yet to protect the rest.
 SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/api/settings", "/api/catalog",
-              "/api/runtimes", "/connections/github", "/auth/")
+              "/api/runtimes", "/connections/github", "/auth/", "/cli/")
 # Open by exact path: the release string, which the setup's reachability
-# check fetches from inside a sandbox (reachability.PATH).
-SETUP_OPEN_EXACT = ("/dist/version",)
+# check fetches from inside a sandbox (reachability.PATH); the desktop CLI's
+# installer and `sbx login` (/cli/: a session or a one-time code), so an
+# agent signs in as the admin once the account exists and finishes the setup
+# itself; /api/me answers only a sign-in.
+SETUP_OPEN_EXACT = ("/dist/version", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me")
 
 
 async def setup_gate(request: Request, call_next):

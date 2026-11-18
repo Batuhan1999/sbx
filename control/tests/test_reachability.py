@@ -123,9 +123,25 @@ class SetupGateTests(Server):
         response = self.client.get(reachability.PATH)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.text, "dev")
-        for path in ("/dist/version/x", "/dist/versions", "/dist/sbx.tgz.sha256", "/install"):
+        for path in ("/dist/version/x", "/dist/versions", "/dist/sbx.tgz.sha256/x", "/install/x", "/api/sandboxes"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 503)
+
+    def test_the_cli_installer_and_sbx_login_answer_while_setup_is_incomplete(self):
+        """So an agent signs the CLI in as the admin once the account exists and finishes the setup itself."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from sbx_control import dist_api
+        dist = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (dist / "install.sh").write_text("echo @SBX_CONTROL@\n")
+        (dist / "sbx.tgz.sha256").write_text("0" * 64 + "  sbx.tgz\n")
+        with patch.object(dist_api, "DIST", dist):
+            self.assertEqual(self.client.get("/install").status_code, 200)
+            self.assertNotEqual(self.client.get("/dist/sbx.tgz.sha256").status_code, 503)
+        self.assertEqual(self.client.get("/cli/login", params={"port": 4000, "state": "s", "challenge": "c" * 43},
+                                         follow_redirects=False).status_code, 307)
+        self.assertEqual(self.client.get("/api/me").status_code, 401)
 
 
 if __name__ == "__main__":

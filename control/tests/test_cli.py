@@ -643,7 +643,7 @@ class SetupCliTests(CliTests):
         self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
         code, out, err = self.run_cli("setup", "finish", "--admin", "ada@example.com", stdin="test-only-password\n")
         self.assertEqual(code, 0, err)
-        self.assertIn("Next: sbx login", out)
+        self.assertIn("if not signed in yet: sbx login", out)
         sent = {(c[0], c[1]): c[3] for c in self.control.calls}
         self.assertEqual(sent[("POST", "/api/setup/admin")], {"email": "ada@example.com", "password": "test-only-password"})
         self.assertEqual(sent[("POST", "/api/setup/complete")], {"email": "ada@example.com", "password": "test-only-password"})
@@ -684,6 +684,20 @@ class SetupCliTests(CliTests):
             self.assertEqual("add --insecure" in said, hint)
         with patch.dict(os.environ, {"SBX_SETUP_LINK": f"https://127.0.0.1:{port}/setup#t=x"}):
             self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
+
+    def test_finish_as_the_admin_sbx_login_signed_in_needs_no_password(self):
+        self.routes[("POST", "/api/setup/complete")] = lambda q, body: {**self.state, "complete": True}
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": ""}):   # neither the link nor a password
+            code, out, err = self.run_cli("setup", "finish")
+        self.assertEqual(code, 0, err)
+        self.assertIn("set up: https://203.0.113.7", out)
+        self.assertEqual(self.control.calls[-1][1:5:2], ("/api/setup/complete", None))
+        self.assertEqual(self.control.calls[-1][4], "Bearer sbx_test")
+        code, out, err = self.run_cli("setup", "finish")       # the link names this server too: still signed in
+        self.assertEqual(self.control.calls[-1][4], "Bearer sbx_test")
+        with patch.object(self.cli, "keychain_get", return_value=None):   # not signed in: the setup link
+            self.run_cli("setup", "finish")
+        self.assertEqual(self.control.calls[-1][4], "Setup one-time-token")
 
     def test_the_coding_agents_are_chosen_before_finishing(self):
         self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
