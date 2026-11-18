@@ -30,6 +30,10 @@ class Keys(TwoRuntimes, Server):
         self.cloud_checks = [Check("E2B Cloud API", True, "answers")]
         self.enterContext(patch.object(Cloud, "test", side_effect=lambda: self.cloud_checks))
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: []))
+        from sbx_control.runtime.boat import Boat
+        self.boat_checks = [Check("Boat API", True, "answers")]
+        self.enterContext(patch.object(Boat, "test", side_effect=lambda: self.boat_checks))
+        self.enterContext(patch.object(Boat, "sandboxes", side_effect=lambda *_: []))
         self.enterContext(patch.object(template_scheduler, "start_detached", return_value=("unit", True)))
         self.store, made = {}, iter(range(1, 1000))
 
@@ -136,9 +140,12 @@ class Keys(TwoRuntimes, Server):
         # The runtime: added through the host's queue, its key only as a store reference.
         request = json.loads(self.request_file.read_text())
         self.assertNotIn(CLOUD_KEY, self.request_file.read_text())
-        self.assertEqual((request["operation"], request["kind"], request["by"]), ("add", "e2b-cloud", "operator@example.com"))
-        self.assertEqual(self.store[request["values"]["E2B_CLOUD_API_KEY"]], CLOUD_KEY)
-        self.assertEqual(request["values"]["E2B_CLOUD_MAX_TIMEOUT"], "3600")   # its first plan, as sbx runtimes add
+        self.assertEqual((request["operation"], request["by"]), ("batch", "operator@example.com"))
+        [change] = request["changes"]
+        self.assertEqual((change["operation"], change["kind"]), ("add", "e2b-cloud"))
+        self.assertEqual(self.store[change["values"]["E2B_CLOUD_API_KEY"]], CLOUD_KEY)
+        self.assertEqual(change["values"]["E2B_CLOUD_MAX_TIMEOUT"], "3600")   # its first plan, as sbx runtimes add
+        self.assertEqual(done["request"]["runtime_changes"]["state"], "queued")
         # The DNS token: checked by Cloudflare, then in the vault as the domain step keeps it.
         self.cloudflare.assert_called_once_with(DNS_TOKEN)
         from sbx_control import variables, vault
@@ -155,6 +162,76 @@ class Keys(TwoRuntimes, Server):
             rows = json.dumps(conn.execute("select * from secret_requests").fetchall())
         for value in (CLOUD_KEY, DNS_TOKEN, APP_VALUE):
             self.assertNotIn(value, rows)
+
+    def apply(self):
+        """The root side takes the queued change (sbx-apply runtime-change)."""
+        import io
+        from sbx_control import runtime_changes
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", out):
+            return runtime_changes.apply_pending(), out.getvalue()
+
+    def status(self, request_id):
+        return self.client.get(f"/api/secret-requests/{request_id}").json()
+
+    def test_several_runtime_keys_in_one_submit_are_one_change_the_host_applies(self):
+        found = self.ask(("runtime:e2b-cloud", "E2B key"), ("runtime:boat", "Boat key"),
+                         ("repo:owner/app:BOAT_API_KEY=from:runtime:boat", ""))
+        self.effects()   # only what the change asks for counts
+        done = self.submit(found["id"], {"runtime:e2b-cloud": CLOUD_KEY, "runtime:boat": APP_VALUE})
+        self.assertTrue(done["ok"], done)
+        self.assertEqual(done["request"]["state"], "completed")
+        request = json.loads(self.request_file.read_text())
+        self.assertEqual([(c["operation"], c["kind"]) for c in request["changes"]], [("add", "e2b-cloud"), ("add", "boat")])
+        progress = self.status(found["id"])
+        self.assertEqual(progress["runtime_changes"]["state"], "queued")
+        self.assertEqual(progress["items"][0]["applied"]["state"], "queued")
+        self.assertIsNone(progress["items"][2]["applied"])          # a repo value: stored already
+        code, said = self.apply()
+        self.assertEqual(code, 0, said)
+        self.assertNotIn(CLOUD_KEY, said)
+        self.assertEqual(self.runtime.enabled(), ["embed", "fake", "e2b-cloud", "boat"])
+        text = self.file.read_text()
+        self.assertNotIn(CLOUD_KEY, text)
+        self.assertNotIn(APP_VALUE, text)                           # both only as store references
+        self.assertEqual(self.effects(), ["control", "tls"])         # one regeneration, one restart
+        progress = self.status(found["id"])
+        self.assertEqual(progress["runtime_changes"]["state"], "restarting")   # this process is the old one
+        from sbx_control import runtime_changes
+        with patch.object(runtime_changes, "STARTED", runtime_changes.time.time() + 1):   # a restarted one answers
+            progress = self.status(found["id"])
+        self.assertEqual(progress["runtime_changes"], {"state": "done", "message": progress["runtime_changes"]["message"]})
+        self.assertIn("Boat (boat) is enabled", progress["items"][1]["applied"]["message"])
+
+    def test_a_runtime_change_the_host_refuses_is_reported_and_the_others_are_made(self):
+        found = self.ask(("runtime:e2b-cloud", ""), ("runtime:boat", ""))
+        self.effects()   # only what the change asks for counts
+        self.submit(found["id"], {"runtime:e2b-cloud": CLOUD_KEY, "runtime:boat": APP_VALUE})
+        from sbx_control.connections.base import Check
+        self.boat_checks[:] = [Check("Boat API", False, "401 key revoked")]   # between the page and the host
+        code, said = self.apply()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.runtime.enabled(), ["embed", "fake", "e2b-cloud"])
+        progress = self.status(found["id"])
+        self.assertEqual(progress["runtime_changes"]["state"], "failed")
+        self.assertIn("401 key revoked", progress["runtime_changes"]["message"])
+        cloud, boat = progress["items"]
+        self.assertEqual((cloud["applied"]["state"], boat["applied"]["state"]), ("restarting", "failed"))
+        self.assertEqual(sorted(self.store.values()), [CLOUD_KEY])   # the refused key's reference is discarded
+        self.assertEqual(self.effects(), ["control", "tls"])         # what was made is taken
+        # A later change does not lose this one's outcome.
+        self.assertEqual(self.client.put("/api/runtimes/default", json={"kind": "fake"}).status_code, 202)
+        self.assertEqual(self.apply()[0], 0)
+        self.assertEqual(self.status(found["id"])["items"][1]["applied"]["state"], "failed")
+
+    def test_runtime_keys_wait_while_another_runtime_change_is_applied(self):
+        self.assertEqual(self.client.put("/api/runtimes/default", json={"kind": "fake"}).status_code, 202)
+        found = self.ask(("runtime:e2b-cloud", ""), ("dns:cloudflare", ""))
+        done = self.submit(found["id"], {"runtime:e2b-cloud": CLOUD_KEY, "dns:cloudflare": DNS_TOKEN})
+        results = {r["target"]: r for r in done["results"]}
+        self.assertIn("another runtime change", results["runtime:e2b-cloud:E2B_CLOUD_API_KEY"]["error"])
+        self.assertTrue(results["dns:cloudflare"]["ok"])
+        self.assertNotIn(CLOUD_KEY, self.store.values())   # never sealed
 
     def test_a_refused_key_stays_pending_with_its_error_and_the_rest_are_kept(self):
         self.cloudflare.return_value = "Cloudflare refused the token: Invalid API Token"

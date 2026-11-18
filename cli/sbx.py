@@ -799,10 +799,10 @@ def secrets_cmd(args):
     path = f"/api/secret-requests/{urllib.parse.quote(args.args[0], safe='')}"
     if args.action == "status":
         found = client.api("GET", path)
-        if args.wait and found["state"] == "pending":
+        if args.wait:
             found = wait_secrets(client, path, found, args.timeout)
         print(json.dumps(found) if args.json else secrets_summary(found))
-        if found["state"] in ("expired", "cancelled"):
+        if found["state"] in ("expired", "cancelled") or _applying(found) == "failed":
             sys.exit(1)
         return
     if args.action == "cancel":
@@ -851,24 +851,48 @@ def secrets_summary(found):
     total = len(found["items"])
     lines = [f"{found['id']}: {found['state']}, {total - found['remaining']}/{total} keys in "
              f"(expires {found['expires_at']})"]
-    lines += [f"  {'in' if i['done'] else '..'}  {i['target']}: {i['label']}" for i in found["items"]]
+    for i in found["items"]:
+        applied = i.get("applied") or {}
+        on_server = f" (on the server: {applied['state']}{': ' + applied['message'] if applied.get('message') else ''})" \
+            if applied else ""
+        lines.append(f"  {'in' if i['done'] else '..'}  {i['target']}: {i['label']}{on_server}")
     return "\n".join(lines)
 
 
+# A key request's runtime keys, as the host applies them (runtime_changes on the server).
+APPLYING = {"queued": "queued for the server", "applying": "being applied on the server",
+            "restarting": "applied; sbx-control is restarting to take them"}
+
+
+def _applying(found):
+    """Where the server is with the request's runtime keys: none, queued, applying, restarting, done,
+    failed or unknown."""
+    return (found.get("runtime_changes") or {}).get("state") or "none"
+
+
 def wait_secrets(client, path, first, timeout):
-    """The request once every key is in; exits non-zero when it expires or is cancelled, or past timeout
-    (default: until it expires). A poll sbx-control's restart fails (a runtime key restarts it) is retried."""
+    """The request once every key is in and the server applied its runtime keys (one change for all of
+    them, which restarts sbx-control); exits non-zero when it expires or is cancelled, when the server did
+    not apply a runtime key, or past timeout (default: until it expires, and 10 minutes more for the
+    runtime keys). A poll sbx-control's restart fails is retried."""
     def verdict(found):
         state = found["state"]
         if state in ("expired", "cancelled"):
             return None, f"the key request {found['id']} is {state}; {found['remaining']} key(s) never came"
         total = len(found["items"])
-        return (None if state == "completed" else
-                f"waiting for the owner: {total - found['remaining']}/{total} keys in"), state == "completed"
+        if state != "completed":
+            return f"waiting for the owner: {total - found['remaining']}/{total} keys in", False
+        applying = _applying(found)
+        if applying == "failed":
+            return None, (f"every key is in, but the server did not apply the runtime keys: "
+                          f"{found['runtime_changes'].get('message') or 'see sbx runtimes'}")
+        if applying in APPLYING:
+            return f"every key is in; the runtime keys are {APPLYING[applying]}", False
+        return None, True
     if timeout is None:
         try:
             ends = calendar.timegm(time.strptime(first["expires_at"], "%Y-%m-%dT%H:%M:%SZ"))
-            timeout = max(0, ends - time.time()) + 30
+            timeout = max(0, ends - time.time()) + 600
         except (KeyError, ValueError):
             timeout = 86400
     return follow(lambda: client.request("GET", path, timeout=30), verdict, timeout, interval=3, first=first,

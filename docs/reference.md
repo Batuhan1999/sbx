@@ -175,7 +175,7 @@ sbx names it). Targets:
 
 | Target | Where the key goes | Checked with |
 | --- | --- | --- |
-| `runtime:KIND[:KEY]` | A runtime's secret setting (`KEY` defaults to its API key), as [from the web app](#from-the-web-app): the runtime is added on its first plan when it is not enabled yet (as `sbx runtimes add`), else its key is replaced. The host applies it and restarts sbx-control. | The provider, with the runtime's own checks. |
+| `runtime:KIND[:KEY]` | A runtime's secret setting (`KEY` defaults to its API key), as [from the web app](#from-the-web-app): the runtime is added on its first plan when it is not enabled yet (as `sbx runtimes add`), else its key is replaced. The runtime keys of one save are one change the host applies, then it restarts sbx-control (below). | The provider, with the runtime's own checks. |
 | `dns:cloudflare` | The Cloudflare API token the certificate's DNS-01 challenge uses (`sbx setup address --dns cloudflare` then needs no `--secret`). | Cloudflare's API (`/user/tokens/verify`, or listing the zones for an account token). |
 | `connector:KIND[:FIELD]` | An extension's secret field (`FIELD` defaults to its first secret one), through its own connect with its other settings unchanged. | The connector's connect. |
 | `repo:OWNER/NAME:VAR` | A trusted repository's value `VAR`, as `sbx env set` stores it (secret unless it was set plain), delivered to its sandboxes. | |
@@ -189,15 +189,31 @@ the built-in runtimes, Cloudflare and Amp; `--help-url TARGET=https://...`
 names another).
 
 `sbx secrets request` prints the page's URL (`https://LOGIN-HOST/keys/ID`) on
-stdout; give it to the owner. `--wait` (on `request` or `status`) follows the
-request until every key is in and exits non-zero when it expires or is
-cancelled, or after `--timeout` seconds (default: when it expires). With
-`--wait --json`, the URL goes to stderr and the final request to stdout. A
-request expires after `--expires` (30m to 7d; default 24h) and is done once
-every key is in; it never holds or returns a value, only which keys are in.
-The page saves the keys pasted so far: one that is refused (the provider says
-no, another runtime change is being applied) shows why under its field and
-stays to be pasted again; the rest are kept.
+stdout; give it to the owner. A request expires after `--expires` (30m to 7d;
+default 24h) and is done once every key is in; it never holds or returns a
+value, only which keys are in. The page saves the keys pasted so far: one
+that is refused (the provider says no) shows why under its field and stays to
+be pasted again; the rest are kept.
+
+The runtime keys of one save, for any number of runtimes, become one queued
+runtime change: each is checked by its provider first, then the host applies
+them in order (each on its own: one the host refuses leaves the others made),
+regenerates nginx and restarts sbx-control once. Such an item counts as in
+once it is queued; `runtime_changes` (and each runtime item's `applied`) says
+where the host is: `queued`, `applying`, `restarting` (made; sbx-control is
+restarting to use it), `done`, `failed` (with the host's message) or
+`unknown` (the host's record no longer has it), `none` without runtime keys.
+Only while another runtime change is being applied (from Settings, say) is a
+runtime key refused, to be saved again once that is done.
+
+`--wait` (on `request` or `status`) follows the request until every key is in
+and the host has applied its runtime keys and restarted, so the agent can use
+them at once. It exits non-zero when the request expires or is cancelled,
+when the host did not apply a runtime key (naming why), or after `--timeout`
+seconds (default: when it expires, plus 10 minutes for the runtime keys).
+`status` without `--wait` exits non-zero in those cases too. With
+`--wait --json`, the URL goes to stderr and the final request to stdout. The
+page follows the same progress after the last key is saved.
 
 During the first-run setup, an agent with the [setup link](#the-first-run-setup-without-a-browser)
 (`SBX_SETUP_LINK` or `--link-file`) may make, follow and cancel requests; the
@@ -1216,7 +1232,7 @@ building or has no room), with `Retry-After` when waiting helps.
 | `PUT /api/users/EMAIL`, `POST /api/users/EMAIL/link`, `DELETE /api/users/EMAIL` | admin | `{"admin": true}` makes them an admin (400 for the last admin); a new set-password link (the older one stops working); remove them, ending their sessions and API tokens (not yourself). |
 | `POST /api/me/password` | anyone signed in with a password | `{"current": "...", "password": "..."}` changes your password and signs you out everywhere else. |
 | `POST /api/secret-requests` | admin, and the first-run setup link | `sbx secrets request`: body `{"items": [{"target": "runtime:boat", "label": "Boat API key", "help_url": "https://..."}], "expires_in": 86400, "note": "..."}` (`expires_in` in seconds, 300 to 604800, default 86400; `label`, `help_url`, `note` optional); 201 with the request as `GET` answers it. 400 for a target the server can't take ([targets](#asking-the-owner-for-keys)). |
-| `GET /api/secret-requests`, `GET /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets ls \| status`: `{"requests": [...]}`, or one: `{"id", "url", "state": "pending" or "completed" or "cancelled" or "expired", "created_by", "created_at", "expires_at", "note", "finished_at", "finished_by", "remaining", "items": [{"target", "label", "help_url", "what", "hint", "reuse", "reuse_from", "done", "done_at", "done_by"}]}`; targets come back complete (`runtime:boat:BOAT_API_KEY`). Never a value. |
+| `GET /api/secret-requests`, `GET /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets ls \| status`: `{"requests": [...]}`, or one: `{"id", "url", "state": "pending" or "completed" or "cancelled" or "expired", "created_by", "created_at", "expires_at", "note", "finished_at", "finished_by", "remaining", "runtime_changes": {"state", "message"}, "items": [{"target", "label", "help_url", "what", "hint", "reuse", "reuse_from", "done", "done_at", "done_by", "applied": {"state", "message"} or null}]}` (`runtime_changes`: where the host is with the runtime keys, [above](#asking-the-owner-for-keys)); targets come back complete (`runtime:boat:BOAT_API_KEY`). Never a value. |
 | `DELETE /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets cancel`; 409 once it is not pending. |
 | `POST /api/secret-requests/ID/submit` | admin, signed in (a session or their token; not the setup link, and refused without sign-in) | The keys page and `sbx secrets submit`: body `{"values": {"TARGET": "VALUE"}}`; each pasted key, and each item that reuses a held key, is stored where it goes. `{"request", "ok", "results": [{"target", "ok", "error"}]}`; a refused item stays pending. 400 for nothing to save or a target the request does not ask for, 409 once it is not pending. `GET /keys/ID` redirects to the page. |
 | `GET /api/updates`, `POST /api/updates`, `POST /api/updates/check` | admin | The installed release, the newer ones with their notes, and the last upgrade with its steps and progress; `POST` with `{"tag": "v0.3.0"}`, the newest release, [installs it](#operating-the-host): 400 for any other tag, 409 while an upgrade runs. `check` asks GitHub now. |

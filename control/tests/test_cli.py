@@ -737,6 +737,21 @@ class SecretsCliTests(CliTests):
         self.assertIn("waiting for the owner: 0/3 keys in", err)
         self.assertIn("waiting for the owner: 1/3 keys in", err)
 
+    def test_wait_follows_the_runtime_keys_until_the_server_applied_them(self):
+        def applying(state, message=""):
+            return key_request("completed", done=(0, 1, 2), runtime_changes={"state": state, "message": message})
+        self.polls(applying("queued"), applying("applying"), (502, b"restarting"), applying("restarting"),
+                   applying("done", "Boat (boat) is enabled"))
+        code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the runtime keys are queued for the server", err)
+        self.assertIn("sbx-control is restarting", err)
+        self.polls(applying("applying"), applying("failed", "boat was not changed: Boat API: 401 key revoked"))
+        code, out, err = self.run_cli("secrets", "request", "--wait", "runtime:boat", "Boat API key")
+        self.assertIn("did not apply the runtime keys: boat was not changed: Boat API: 401 key revoked", str(code))
+        code, out, err = self.run_cli("secrets", "status", "req12345")   # no --wait: said, and non-zero
+        self.assertEqual(code, 1)
+
     def test_wait_exits_non_zero_when_the_request_expires_or_is_cancelled(self):
         for state in ("expired", "cancelled"):
             with self.subTest(state):

@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { useParams } from 'react-router'
 import { api } from '@/api/endpoints'
 import { keys } from '@/api/queries'
-import type { SecretRequest, SecretRequestItem } from '@/api/types'
+import type { RuntimeApply, SecretRequest, SecretRequestItem } from '@/api/types'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { ErrorState, Loading } from '@/components/states'
+import { Spinner } from '@/components/ui/primitives'
 import { ago } from '@/lib/format'
 import { AuthFrame } from './SignInPage'
 
@@ -17,9 +18,13 @@ const field = (n: number) => `k${n}`
  *  used. Signed-in admins only: a 401 sends the browser to the sign-in and back here (api/client). */
 export default function KeysPage() {
   const { id = '' } = useParams()
-  const request = useQuery({ queryKey: keys.secretRequest(id), queryFn: () => api.secretRequests.get(id), retry: false, refetchOnWindowFocus: false })
+  const request = useQuery({
+    queryKey: keys.secretRequest(id), queryFn: () => api.secretRequests.get(id), retry: false, refetchOnWindowFocus: false,
+    // Followed while the server applies runtime keys; a poll its restart fails keeps the last answer.
+    refetchInterval: q => (IN_PROGRESS.has(q.state.data?.runtime_changes?.state ?? '') ? 3000 : false),
+  })
   if (request.isPending) return <AuthFrame title={TITLE} wide><Loading /></AuthFrame>
-  if (request.error) return <AuthFrame title={TITLE} wide><ErrorState error={request.error} compact retry={() => request.refetch()} /></AuthFrame>
+  if (!request.data) return <AuthFrame title={TITLE} wide><ErrorState error={request.error} compact retry={() => request.refetch()} /></AuthFrame>
   const found = request.data
   if (found.state !== 'pending') return <AuthFrame title={TITLE} wide><Finished request={found} /></AuthFrame>
   return <AuthFrame title={TITLE} wide description={<>
@@ -31,10 +36,28 @@ export default function KeysPage() {
   </AuthFrame>
 }
 
+const IN_PROGRESS = new Set(['queued', 'applying', 'restarting'])
+const APPLYING: Record<string, string> = {
+  queued: 'waiting for the server', applying: 'being applied on the server', restarting: 'applied; the server is restarting to use them',
+}
+
+/** Where the server is with the runtime keys (one change for all of them), while it matters. */
+function RuntimeProgress({ apply }: { apply: RuntimeApply }) {
+  if (IN_PROGRESS.has(apply.state)) return <p className="flex items-center gap-2 text-[12.5px] text-muted">
+    <Spinner className="size-3.5" />The runtime keys are {APPLYING[apply.state]}.
+  </p>
+  if (apply.state === 'failed') return <ErrorState compact error={`The server could not apply a runtime key: ${apply.message || 'see Settings → Sandbox runtimes'}. Ask your agent for a new link to paste it again.`} />
+  return null
+}
+
 function Finished({ request }: { request: SecretRequest }) {
-  if (request.state === 'completed') return <div className="flex items-start gap-2.5 text-[13.5px]">
-    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" />
-    <p>All {request.items.length} keys are saved. You can close this page; your agent carries on.</p>
+  if (request.state === 'completed') return <div className="space-y-3">
+    {request.runtime_changes.state !== 'failed' && <div className="flex items-start gap-2.5 text-[13.5px]">
+      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" />
+      <p>All {request.items.length} keys are saved. {IN_PROGRESS.has(request.runtime_changes.state)
+        ? 'Your agent carries on once the server has applied them.' : 'You can close this page; your agent carries on.'}</p>
+    </div>}
+    <RuntimeProgress apply={request.runtime_changes} />
   </div>
   return <ErrorState compact error={request.state === 'expired'
     ? 'This page has expired. Ask your agent for a new link.'
@@ -84,6 +107,7 @@ function KeysForm({ request }: { request: SecretRequest }) {
       {!item.done && !item.reuse && item.help_url && <a href={item.help_url} target="_blank" rel="noreferrer"
         className="mt-1 inline-flex items-center gap-1 text-[12px] text-accent hover:underline">How do I get this?<ExternalLink className="size-3" /></a>}
     </div>)}
+    <RuntimeProgress apply={request.runtime_changes} />
     <SubmitButton form={form} className="w-full">Save keys</SubmitButton>
   </AppForm>
 }
@@ -92,7 +116,9 @@ function Saved({ item }: { item: SecretRequestItem }) {
   return <div className="flex items-center gap-2 text-[13px]">
     <CheckCircle2 className="size-4 shrink-0 text-ok" />
     <span className="font-medium">{item.label}</span>
-    <span className="text-muted">saved</span>
+    <span className={item.applied?.state === 'failed' ? 'text-bad' : 'text-muted'}>
+      {!item.applied || item.applied.state === 'done' || item.applied.state === 'unknown' ? 'saved' : item.applied.state === 'failed' ? 'not applied' : 'saved, applying'}
+    </span>
   </div>
 }
 

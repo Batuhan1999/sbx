@@ -310,6 +310,7 @@ def view(row: dict) -> dict:
     target, label, where it goes, how to get it and whether it is done;
     never a value."""
     items = []
+    _, progress = runtime_progress(row["items"])
     for item in row["items"]:
         try:
             target = parse(item["target"])
@@ -320,11 +321,12 @@ def view(row: dict) -> dict:
                       "what": words["what"], "hint": words.get("hint", ""),
                       "reuse": str(target.source) if target and target.source else None,
                       "reuse_from": _source_words(target.source) if target and target.source else None,
-                      "done": bool(item["done_at"]), "done_at": item["done_at"], "done_by": item["done_by"]})
+                      "done": bool(item["done_at"]), "done_at": item["done_at"], "done_by": item["done_by"],
+                      "applied": progress.get(item["target"])})
     return {"id": row["id"], "state": row["state"], "created_by": row["created_by"], "created_at": row["created_at"],
             "expires_at": row["expires_at"], "note": row["note"], "finished_at": row["finished_at"],
             "finished_by": row["finished_by"], "items": items,
-            "remaining": sum(1 for i in items if not i["done"])}
+            "remaining": sum(1 for i in items if not i["done"]), "runtime_changes": _overall(progress)}
 
 
 def get(request_id: str) -> dict | None:
@@ -356,9 +358,10 @@ def cancel(request_id: str, *, by: str) -> dict:
 
 
 def submit(request_id: str, values: dict, *, by: str) -> dict:
-    """The owner's values by target: each pending item given a value, and
-    each that reuses a key, put where it goes (apply), one by one; an item
-    that fails stays pending with its error. {request, ok, results:
+    """The owner's values by target, put where they go: the pasted ones
+    first (apply; the runtime keys of every runtime together, as one change
+    the host applies, _queue_runtimes), then each item that reuses a key.
+    An item that fails stays pending with its error. {request, ok, results:
     [{target, ok, error}]}; the request is completed once no item is left.
     KeyError for no such request, Gone when it is not pending."""
     given = {}
@@ -388,35 +391,46 @@ def submit(request_id: str, values: dict, *, by: str) -> dict:
         unknown = [t for t in given if t not in known]
         if unknown:
             raise Refused(f"this request does not ask for {', '.join(unknown)}")
-        results, pasted = [], {}
-        # Pasted values first, so an item reusing one of them takes it.
-        order = sorted(row["items"], key=lambda i: isinstance(targets[i["target"]], Target)
-                       and targets[i["target"]].source is not None)
-        for item in order:
-            if item["done_at"]:
-                continue
+        outcome, pasted, runtime_items = {}, {}, []
+
+        def done(item, value, change=""):
+            pasted[targets[item["target"]].own] = value
+            item["done_at"], item["done_by"] = _stamp(_now()), by
+            if change:
+                item["change"] = change
+            outcome[item["target"]] = ""
+
+        waiting = [i for i in row["items"] if not i["done_at"]]
+        for item in waiting:
             target = targets[item["target"]]
             if isinstance(target, Refused):
-                results.append({"target": item["target"], "ok": False, "error": str(target)})
+                outcome[item["target"]] = str(target)
+            elif not target.source and (value := given.get(target.own)) is not None:
+                if target.kind == "runtime":
+                    runtime_items.append((item, target, value))
+                elif error := apply(target, value, by=by):
+                    outcome[item["target"]] = error
+                else:
+                    done(item, value)
+        if runtime_items:
+            change, errors = _queue_runtimes([(t, v) for _, t, v in runtime_items], by=by)
+            for item, target, value in runtime_items:
+                if errors.get(target.own):
+                    outcome[item["target"]] = errors[target.own]
+                else:
+                    done(item, value, change)
+        for item in waiting:
+            target = targets[item["target"]]
+            if not isinstance(target, Target) or not target.source:
                 continue
-            if target.source:
-                value = pasted.get(str(target.source)) or held(target.source)
-                if not value:
-                    results.append({"target": item["target"], "ok": False,
-                                    "error": f"this uses {_source_words(target.source)}, which is not saved yet"})
-                    continue
+            value = pasted.get(str(target.source)) or held(target.source)
+            if not value:
+                outcome[item["target"]] = f"this uses {_source_words(target.source)}, which is not saved yet"
+            elif error := apply(target, value, by=by):
+                outcome[item["target"]] = error
             else:
-                value = given.get(target.own)
-                if value is None:
-                    continue
-            error = apply(target, value, by=by)
-            if error:
-                results.append({"target": item["target"], "ok": False, "error": error})
-                continue
-            pasted[target.own] = value
-            item["done_at"], item["done_by"] = _stamp(_now()), by
-            results.append({"target": item["target"], "ok": True, "error": ""})
-        if not results:
+                done(item, value)
+        if not outcome:
             raise Refused("paste at least one of the keys")
         complete = all(i["done_at"] for i in row["items"])
         with state.db() as conn:
@@ -424,11 +438,10 @@ def submit(request_id: str, values: dict, *, by: str) -> dict:
                          "where id = ?", (json.dumps(row["items"]), "completed" if complete else "pending",
                                           _stamp(_now()) if complete else None, by if complete else None,
                                           request_id))
-    done = [r["target"] for r in results if r["ok"]]
-    if done:
-        print(f"secret request {request_id}: {by} set {', '.join(done)}", flush=True)
-    order_of = {i["target"]: n for n, i in enumerate(row["items"])}
-    results.sort(key=lambda r: order_of.get(r["target"], 0))
+    results = [{"target": i["target"], "ok": not outcome[i["target"]], "error": outcome[i["target"]]}
+               for i in row["items"] if i["target"] in outcome]
+    if saved := [r["target"] for r in results if r["ok"]]:
+        print(f"secret request {request_id}: {by} set {', '.join(saved)}", flush=True)
     return {"request": get(request_id), "ok": all(r["ok"] for r in results), "results": results}
 
 
@@ -441,8 +454,7 @@ def apply(target: Target, value: str, *, by: str) -> str:
     if len(value) > MAX_VALUE or any(c in value for c in "\r\n\0"):
         return "paste the key alone, on one line"
     try:
-        return {"runtime": _apply_runtime, "dns": _apply_dns, "connector": _apply_connector,
-                "repo": _apply_repo}[target.kind](target, value, by)
+        return {"dns": _apply_dns, "connector": _apply_connector, "repo": _apply_repo}[target.kind](target, value, by)
     except Refused as error:
         return str(error)
     except Exception as error:   # a store or provider that failed: said, the item stays pending
@@ -454,24 +466,91 @@ def _scrub(text: str, value: str) -> str:
     return text.replace(value, "••••") if value else text
 
 
-def _apply_runtime(target: Target, value: str, by: str) -> str:
-    """As Settings → Sandbox runtimes does: checked by the provider, the
-    secret sealed, the change queued for the host (runtime_changes), which
-    applies it and restarts sbx-control. A runtime not enabled is added, on
-    its first plan as `sbx runtimes add` does."""
+def _queue_runtimes(found: list, *, by: str) -> tuple[str, dict]:
+    """Runtime keys ([(target, value)]) as Settings → Sandbox runtimes takes
+    them, one runtime at a time (runtime_settings.prepare: checked by the
+    provider, the secret sealed; a runtime not enabled is added on its first
+    plan, as `sbx runtimes add`), then every runtime that passed queued
+    together as one change (runtime_changes.request_batch), which the host
+    applies in order before restarting sbx-control once. (the change's id
+    to follow it by, or ""; {target.own: why it was refused}) ."""
     from . import runtime, runtime_changes, runtime_settings, runtimes
-    adding = target.name not in runtime.enabled()
-    backend = _backend(target.name)
-    plan = backend.presets[0].name if adding and backend.presets else None
+    errors, by_kind = {}, {}
+    for target, value in found:
+        if len(value) > MAX_VALUE or any(c in value for c in "\r\n\0"):
+            errors[target.own] = "paste the key alone, on one line"
+        else:
+            by_kind.setdefault(target.name, []).append((target, value))
+    if by_kind and runtime_changes.busy():
+        why = "another runtime change is being applied on the server; save this key again once it is done"
+        return "", {**errors, **{t.own: why for pairs in by_kind.values() for t, _ in pairs}}
+    changes = []
+    for kind, pairs in by_kind.items():
+        adding = kind not in runtime.enabled()
+        backend = _backend(kind)
+        plan = backend.presets[0].name if adding and backend.presets else None
+        try:
+            values = runtime_settings.prepare(kind, {t.key: v for t, v in pairs}, adding=adding, plan=plan)
+        except runtimes.Refused as error:
+            for target, value in pairs:
+                errors[target.own] = _scrub(str(error), value)
+            continue
+        except Exception as error:   # the provider or the store failed: said, the item stays pending
+            for target, value in pairs:
+                errors[target.own] = f"not saved: {type(error).__name__}: {_scrub(str(error), value)}"
+            continue
+        changes.append(({"operation": "add" if adding else "change", "kind": kind, "values": values}, pairs))
+    if not changes:
+        return "", errors
     try:
-        runtime_changes.checked("add" if adding else "change", target.name,
-                                lambda: runtime_settings.prepare(target.name, {target.key: value}, adding=adding,
-                                                                 plan=plan), by=by)
-    except runtime_changes.Busy:
-        return "another runtime change is being applied; save this key again in a minute"
-    except runtimes.Refused as error:
-        return _scrub(str(error), value)
-    return ""
+        queued = runtime_changes.request_batch([c for c, _ in changes], by=by)
+    except runtimes.Refused as error:   # Busy: another change was queued meanwhile
+        for change, pairs in changes:
+            runtime_changes.discard_references(change["values"])
+            errors.update({t.own: f"{error}; save this key again once it is done" for t, _ in pairs})
+        return "", errors
+    return queued["id"], errors
+
+
+def runtime_progress(items: list) -> tuple[dict, dict]:
+    """Where the host is with the runtime changes these stored items were
+    queued with ({change id: outcome}, and {target: {state, message}} per
+    runtime item): queued, applying, restarting (made; sbx-control restarts
+    to take it), done or failed, with the host's message; unknown when the
+    host's record no longer has it."""
+    from . import runtime_changes
+    found, per_item = {}, {}
+    for item in items:
+        change = item.get("change")
+        if not change:
+            continue
+        if change not in found:
+            found[change] = runtime_changes.outcome(change)
+        record = found[change]
+        if record is None:
+            per_item[item["target"]] = {"state": "unknown", "message": "the server no longer says how this went"}
+            continue
+        state, message = record.get("state"), record.get("message") or ""
+        kind = item["target"].split(":")[1]
+        mine = next((r for r in record.get("results") or [] if r.get("kind") == kind), None)
+        if state in ("done", "failed") and mine is not None:   # this runtime's own outcome in the batch
+            state, message = ("done" if mine.get("ok") else "failed"), mine.get("message") or ""
+        if state == "done" and record.get("restarting"):
+            state = "restarting"
+        per_item[item["target"]] = {"state": state, "message": message}
+    return found, per_item
+
+
+def _overall(per_item: dict) -> dict:
+    """One state for every runtime change of a request: failed if any did,
+    else the earliest still in progress, else done (none without any)."""
+    if not per_item:
+        return {"state": "none", "message": ""}
+    for name in ("failed", "queued", "applying", "restarting", "unknown", "done"):
+        found = [p for p in per_item.values() if p["state"] == name]
+        if found:
+            return {"state": name, "message": "; ".join(dict.fromkeys(p["message"] for p in found if p["message"]))}
+    return {"state": "done", "message": ""}
 
 
 def verify_cloudflare(token: str) -> str:

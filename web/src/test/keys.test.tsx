@@ -9,7 +9,7 @@ import { renderApp, stubApi } from './render'
 const item = (over: Partial<SecretRequestItem>): SecretRequestItem => ({
   target: 'dns:cloudflare', label: 'Cloudflare DNS token', help_url: 'https://github.com/o/sbx/blob/main/docs/howto/cloudflare.md',
   what: "the Cloudflare API token for this server's certificate", hint: '', reuse: null, reuse_from: null,
-  done: false, done_at: null, done_by: null, ...over,
+  done: false, done_at: null, done_by: null, applied: null, ...over,
 })
 const request = (over: Partial<SecretRequest> = {}): SecretRequest => ({
   id: 'req12345', url: 'https://login.sbx.example.com/keys/req12345', state: 'pending', created_by: 'ada@example.com',
@@ -20,7 +20,11 @@ const request = (over: Partial<SecretRequest> = {}): SecretRequest => ({
     item({ target: 'repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY', label: 'Boat key for the app', what: "BOAT_API_KEY for owner/app's sandboxes",
       reuse: 'runtime:boat:BOAT_API_KEY', reuse_from: "Boat's API key", help_url: '' }),
   ],
-  remaining: 3, ...over,
+  remaining: 3, runtime_changes: { state: 'none', message: '' }, ...over,
+})
+const allIn = (state: SecretRequest['runtime_changes']['state'], message = '') => request({
+  state: 'completed', remaining: 0, runtime_changes: { state, message },
+  items: request().items.map((i, n) => ({ ...i, done: true, applied: n === 0 ? { state, message } : null })),
 })
 const page = () => renderApp(<Routes><Route path="/app/keys/:id" element={<KeysPage />} /></Routes>, '/app/keys/req12345')
 
@@ -81,6 +85,29 @@ describe('KeysPage', () => {
     stubApi({ 'GET /api/secret-requests/req12345': request({ state: 'expired' }) })
     page()
     expect(await screen.findByText(/This page has expired/)).toBeTruthy()
+  })
+
+  it('follows the runtime keys until the server has applied them, through its restart', async () => {
+    const answers = [allIn('applying'), allIn('restarting'), allIn('done', 'Boat (boat) is enabled')]
+    let restarted = false
+    stubApi({
+      'GET /api/secret-requests/req12345': () => {
+        if (answers.length === 2 && !restarted) { restarted = true; return { status: 502, body: 'Bad Gateway' } }
+        return { status: 200, body: answers.length > 1 ? answers.shift() : answers[0] }
+      },
+    })
+    page()
+    expect(await screen.findByText(/The runtime keys are being applied on the server/)).toBeTruthy()
+    expect(screen.getByText(/once the server has applied them/)).toBeTruthy()
+    expect(await screen.findByText(/You can close this page/, undefined, { timeout: 12000 })).toBeTruthy()
+    expect(screen.queryByText(/The runtime keys are/)).toBeNull()
+  }, 15000)
+
+  it('says when the server could not apply a runtime key', async () => {
+    stubApi({ 'GET /api/secret-requests/req12345': allIn('failed', 'boat was not changed: Boat API: 401 key revoked') })
+    page()
+    expect(await screen.findByText(/could not apply a runtime key: boat was not changed: Boat API: 401 key revoked/)).toBeTruthy()
+    expect(screen.queryByText(/All 3 keys are saved/)).toBeNull()
   })
 
   it('sends the browser to the sign-in and back when nobody is signed in', async () => {
