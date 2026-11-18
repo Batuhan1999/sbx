@@ -540,10 +540,14 @@ class VerifyBeforeTheBaseIsBuilt(TwoRuntimes, Installation):
         self.assertTrue(said.endswith("not verified"))
 
     def test_a_base_never_built_or_failed_says_what_to_do(self):
+        import os
         from sbx_control import template_builds, templates
         self.assertIn("is not built on Fake runtime yet", self.verify())
         self.assertIn(f"sbx-admin jobs run template@fake:{templates.BASE}", self.verify())
-        template_builds._transition(templates.BASE, "building", "fake", pid=None, error="out of disk")   # cut off: failed
+        template_builds._transition(templates.BASE, "building", "fake", pid=None)   # cut off: built again on its own
+        self.assertIn("is not built on Fake runtime yet; it builds by itself shortly", self.verify())
+        template_builds._transition(templates.BASE, "building", "fake", pid=os.getppid())
+        template_builds._transition(templates.BASE, "failed", "fake", error="out of disk")
         self.assertIn("the base template's build failed on Fake runtime: out of disk", self.verify())
 
 

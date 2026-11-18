@@ -15,7 +15,9 @@ its fingerprint. A template is stale when the plan
 it would build now (templates.plan) has another fingerprint than the one
 built: a connector enabled, a version bumped, .sbx/ changed, the platform
 layer changed. The scheduler builds stale templates one at a time (a build
-that failed is tried again when its inputs change, or on request), and at
+that failed is tried again when its inputs change, or on request; one a
+restart of sbx-control cut off, when it can: the first round after a start
+comes RESUME_SECONDS in), and at
 night those whose repo's default branch moved since (template_moved): a
 build takes minutes and writes gigabytes, which stalls running sandboxes.
 
@@ -39,12 +41,16 @@ from .state import Schema, columns, db, tables
 
 NIGHTLY_REBUILD_HOUR = 2  # host time
 CHECK_SECONDS = 300
+RESUME_SECONDS = 30  # how soon after a start the scheduler looks for what a restart cut off
 
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
           "built_memory_mb")
 # The machine: a build starts from any settled state and settles as built or
-# failed. A build whose process is gone reads as failed (status()).
-TRANSITIONS = {None: {"building"}, "built": {"building"}, "failed": {"building"}, "building": {"built", "failed"}}
+# failed. A build whose process is gone (a restart of sbx-control cut it off)
+# reads as interrupted (status()), never stored: not a failure of its plan, so
+# it is stale and the scheduler builds it again on its own.
+TRANSITIONS = {None: {"building"}, "built": {"building"}, "failed": {"building"}, "interrupted": {"building"},
+               "building": {"built", "failed"}}
 
 _lock = threading.Lock()
 _running: set = set()  # (kind, key) this process is building
@@ -190,12 +196,13 @@ def _alive(pid) -> bool:
 
 
 def status(key: str, row: dict | None, kind: str | None = None) -> str | None:
-    """The build's status: building, built, failed, or None for no build. A
-    build that no process is running any more was cut off."""
+    """The build's status: building, built, failed, interrupted, or None for
+    no build. A build that no process is running any more was cut off
+    (interrupted)."""
     if row is None:
         return None
     if row["status"] == "building" and (_kind(kind), key) not in _running and not _alive(row["pid"]):
-        return "failed"
+        return "interrupted"
     return row["status"]
 
 
@@ -246,8 +253,9 @@ def state(key: str, kind: str | None = None) -> dict:
         return {}
     out = {f: row[f] for f in ("started_at", "finished_at", "error", "built_template")}
     out["status"] = status(key, row, kind)
-    if row["status"] == "building" and out["status"] == "failed":
-        out["error"] = "The control service restarted during this build. Build the template again."
+    if out["status"] == "interrupted":
+        out["error"] = ("The control service restarted during this build; the scheduler looks for such builds "
+                        "soon after a start and builds it again when it can.")
     out["template"] = row["built_template"]
     try:
         out["stale"] = bool(row["built_fingerprint"]) and plan(key).fingerprint != row["built_fingerprint"]
@@ -262,6 +270,40 @@ def builds(kind: str | None = None) -> dict:
     with db() as conn:
         keys_ = [row[0] for row in conn.execute("select repo from template_builds where runtime = ?", (_kind(kind),))]
     return {key: state(key, kind) for key in keys_}
+
+
+def interrupted() -> list:
+    """(kind, key) of every build on an enabled runtime whose process is
+    gone and that the scheduler builds there (keys): what a restart of
+    sbx-control cut off, for it to build again soon after a start
+    (template_scheduler.schedule). One of a template nothing starts from any
+    more is left to prune."""
+    found = []
+    for kind in runtime.enabled():
+        try:
+            with db() as conn:
+                rows = _rows(conn, kind)
+            served = set(keys(kind))
+        except Exception as error:   # one runtime's error must not hide the others' cut-off builds
+            print(f"template scheduler{_on(kind)}: {error!r}", flush=True)
+            continue
+        found += [(kind, key) for key, row in rows.items()
+                  if key in served and status(key, row, kind) == "interrupted"]
+    return found
+
+
+def first_wait() -> int:
+    """How long the scheduler waits for its first round: RESUME_SECONDS when
+    a restart cut builds off (interrupted), else CHECK_SECONDS."""
+    try:
+        found = interrupted()
+    except Exception as error:   # the scheduler starts all the same
+        print(f"template scheduler: {error!r}", flush=True)
+        return CHECK_SECONDS
+    for kind, key in found:
+        print(f"template build {key}{_on(kind)}: a restart cut it off; the scheduler looks again in "
+              f"{RESUME_SECONDS} s and builds it when it can", flush=True)
+    return RESUME_SECONDS if found else CHECK_SECONDS
 
 
 def build_keys() -> set:
@@ -341,6 +383,8 @@ def phase(key: str, row: dict | None, kind: str | None = None) -> str:
     "current" (built as planned now) or "stale" (to build)."""
     if (_kind(kind), key) in _running or (row and status(key, row, kind) == "building"):
         return "building"
+    if row and status(key, row, kind) == "interrupted":
+        return "stale"   # cut off, not failed: built again whatever it built before
     fingerprint = plan(key).fingerprint
     if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
         if key == templates.BASE:
