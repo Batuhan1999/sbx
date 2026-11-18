@@ -458,6 +458,7 @@ sudo() {
         self.assertEqual(response.status_code, 400)
         self.assertIn("bootstrap did not start", response.text)
         self.assertNotIn("amp-bootstrap.log", response.text)   # not a pointer into the sandbox it deleted
+        self.assertIn("the new sandbox was deleted", response.text)
         delete.assert_called_once_with(self.name, self.name)
         self.started.assert_not_called()
 
@@ -484,16 +485,27 @@ sudo() {
                 if state == "paused":
                     self.assertEqual(lifecycle.get(self.name)["operation"], "resume")
 
-    def test_amp_failed_spawn_leaves_a_registration_that_is_not_this_orb_s(self):
-        """create refused the name (someone else's registration, no VM): the
-        cleanup deletes nothing of it."""
+    def test_amp_spawn_refuses_a_registration_that_is_not_this_orb_s(self):
+        """A registration with no VM under the orb's name that is not this
+        orb's, whoever owns it, is refused before anything is created and
+        left exactly as it was."""
         self.amp_fixture()
-        from sbx_control import core, sandboxes
-        sandboxes.register(self.name, "someone-else@example.test", "trunk", self.name)
-        with patch.object(core, "delete") as delete:
-            self.assertEqual(self.amp_job(self.env).status_code, 503)
-        delete.assert_not_called()
-        self.assertEqual(sandboxes.registered_owner(self.name), "someone-else@example.test")
+        from sbx_control import core, sandboxes, settings
+        for owner, metadata in (("someone-else@example.test", None),
+                                (settings.current().access.admins[0], {"connector": "other"}),
+                                (settings.current().access.admins[0], {"connector": "amp", "orbId": "another-orb"})):
+            with self.subTest(owner=owner, metadata=metadata):
+                with self.state.db() as conn:
+                    conn.execute("delete from sandboxes where name=?", (self.name,))
+                sandboxes.register(self.name, owner, "trunk", self.name, metadata)
+                before = sandboxes.rows().get(self.name)
+                with patch.object(core, "delete") as delete:
+                    response = self.amp_job(self.env)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("bound to another workload", response.text)
+                delete.assert_not_called()
+                self.created.assert_not_called()
+                self.assertEqual(sandboxes.rows().get(self.name), before)
 
     def test_amp_failed_spawn_leaves_a_registration_with_this_orb_s_tags_it_did_not_make(self):
         """The registration carries this orb's tags but is another owner's and
@@ -520,6 +532,26 @@ sudo() {
         self.assertEqual(len(launched), 1)
         self.assertIn("ORB_OPERATION=delete", said.getvalue())
         self.assertNotIn(self.env["ORB_TOKEN"], said.getvalue())
+
+    def test_amp_bootstrap_failure_whose_cleanup_fails_does_not_claim_the_sandbox_was_deleted(self):
+        self.amp_fixture()
+        from sbx_control import core, runtime
+        from sbx_control.connectors.amp import orbs as amp_orbs
+
+        def run(command, **kwargs):
+            if " --started " in command:
+                raise runtime.CommandFailed(stderr="the Amp bootstrap did not start", command=command)
+            return Mock()
+        self.sdk.connect.return_value.commands.run.side_effect = run
+        with patch.object(core, "delete", side_effect=RuntimeError("runtime unreachable")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(amp_orbs.JobError) as raised:
+                amp_orbs.handle_job(self.env)
+        message = str(raised.exception)
+        self.assertIn("bootstrap did not start", message)
+        self.assertNotIn("was deleted", message)
+        self.assertIn("ORB_OPERATION=delete", message)
+        self.assertNotIn(self.env["ORB_TOKEN"], message)
 
     def test_amp_sdk_failure_does_not_leak_token_or_request(self):
         self.amp_fixture()

@@ -150,6 +150,10 @@ def handle_job(env: dict) -> dict:
             raise JobError("finish sbx administrator setup first")
         cache = snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo)
         before = sandboxes.rows().get(name)
+        if before and not this_orbs(before["metadata"], orb_id):
+            # A registration with no VM that another connector or orb made:
+            # never replaced, so a failed spawn cannot delete it either.
+            raise JobError("this sandbox name is already bound to another workload")
         try:
             # The app is prepared once the spawn has succeeded: a failed one is
             # never left busy with a preparation its cleanup would wait for.
@@ -165,9 +169,22 @@ def handle_job(env: dict) -> dict:
             result = start_orb(name, info, job, fresh=True)
             sandboxes.restart(name, info, prepare=True)
             return result
+        except BootstrapNotStarted as error:
+            deleted = discard(name, orb_id, before)
+            raise JobError(f"{error}; " + ("the new sandbox was deleted, spawn again" if deleted else
+                                           "its sandbox was not deleted: send ORB_OPERATION=delete for this orb, "
+                                           "then spawn again")) from None
         except Exception:
             discard(name, orb_id, before)
             raise
+
+
+class BootstrapNotStarted(JobError):
+    """Amp's bootstrap failed before it started Amp in the sandbox."""
+
+
+def this_orbs(metadata, orb_id: str) -> bool:
+    return (metadata or {}).get("connector") == KIND and metadata.get("orbId") == orb_id
 
 
 def discard(name: str, orb_id: str, before: dict | None = None):
@@ -176,20 +193,21 @@ def discard(name: str, orb_id: str, before: dict | None = None):
     running. Only a registration and VM tagged as this orb's are deleted;
     one under its name that something else made (create refused it) stays,
     as does a registration with no VM that this attempt did not make
-    (before: the row there when it began). A cleanup that fails is logged; the spawn's own error is what Amp sees."""
-    def this_orbs(metadata):
-        return (metadata or {}).get("connector") == KIND and metadata.get("orbId") == orb_id
+    (before: the row there when it began). A cleanup that fails is logged; the spawn's own error is what Amp sees.
+    True when nothing of this attempt's is left."""
     try:
         info, row = core.find(name), sandboxes.rows().get(name)
-        if (info and not this_orbs(info.metadata)) or (row and not this_orbs(row["metadata"])):
-            return
+        if (info and not this_orbs(info.metadata, orb_id)) or (row and not this_orbs(row["metadata"], orb_id)):
+            return False
         if info is None and row is not None and row == before:
-            return
+            return False
         if info or row:
             sandboxes.delete_locked(name)
+        return True
     except Exception as error:
         print(f"amp: {name} was not deleted after its spawn failed ({type(error).__name__}); "
               "ORB_OPERATION=delete removes it", file=sys.stderr, flush=True)
+        return False
 
 
 def start_orb(name: str, info, job: dict, retry_preparation: bool = False, fresh: bool = False) -> dict:
@@ -229,8 +247,8 @@ def start_orb(name: str, info, job: dict, retry_preparation: bool = False, fresh
         sandbox.sbx.commands.run(f"python3 {helper} --started {launch}", user="user", timeout=60)
     except runtime.CommandFailed:
         # The log may hold the token, so it stays in the sandbox; a fresh one is deleted with it.
-        where = "; the new sandbox was deleted, spawn again" if fresh else f" (see {platform.RUN}/amp-bootstrap.log there)"
-        raise JobError(f"Amp's bootstrap did not start in the sandbox{where}") from None
+        where = "" if fresh else f" (see {platform.RUN}/amp-bootstrap.log there)"
+        raise BootstrapNotStarted(f"Amp's bootstrap did not start in the sandbox{where}") from None
     return {"name": name, "sandbox_id": info.sandbox_id, "repo": recipe.repo,
             "urls": addressing.urls(name, recipe), "state": "running"}
 
