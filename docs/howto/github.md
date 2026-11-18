@@ -7,15 +7,16 @@ no key to copy. GitHub's pages may differ a little from the labels below.
 
 ## Create the App
 
-1. Sign in to the sbx web app as an admin and open **Extensions → GitHub**.
-2. Under **Create a GitHub App for this server**, enter the GitHub
-   organization that owns the repositories, or leave it empty for your own
-   account. Creating an App in an organization needs its owner's rights there.
+1. Sign in to the sbx web app as an admin, open **Extensions**, and click
+   **Add** on **GitHub** under **Add**.
+2. Enter the GitHub organization that owns the repositories, or leave it
+   empty for your own account. Creating an App in an organization needs its
+   owner's rights there.
 3. Click **Create on GitHub**. GitHub shows the App sbx asks for, with the
    permissions it needs (contents and pull requests: read and write; metadata:
    read) and the push and pull-request events. Confirm it.
 
-![The GitHub card on the Extensions page, with Create a GitHub App for this server](images/extensions-github.png)
+![The GitHub dialog on the Extensions page: the organization and Create on GitHub](images/extensions-github.png)
 
 GitHub then goes straight on to installing it.
 
@@ -29,14 +30,15 @@ On GitHub's install page for the new App:
 3. Install. GitHub sends you back to the web app.
 
 To add repositories later, open the App's installation settings on GitHub
-(the repository page's **Install the GitHub App** button in sbx, or the link
-in the failing check, opens it) and add them there. A repository the App is
+(**Manage on GitHub** in the GitHub row's menu, the repository page's
+**Install the GitHub App** button, or the link in the failing check opens it) and add them there. A repository the App is
 not installed on shows "Install the GitHub App on this repository" as its
 first step in sbx.
 
 ## Check it
 
-In **Extensions → GitHub**, click **Test**. Each check should pass:
+In **Extensions**, open the GitHub row's menu (**⋯**) and click **Test**. Each
+check should pass:
 
 - **App**: GitHub accepts the App's key.
 - **installations**: the accounts it is installed on.
@@ -45,3 +47,8 @@ In **Extensions → GitHub**, click **Test**. Each check should pass:
 - **access to `owner/repo`**: one line for each repository sbx serves.
 
 On the server, `sbx-admin doctor` runs the same checks.
+
+An operator can instead give an existing App's values or a deploy key
+through the API or CLI: `sbx extensions set github --set id=... --secret pem`
+(fields `id`, `slug`, `client_id`; secrets `pem`, `webhook_secret`,
+`client_secret`, `deploy_key`).

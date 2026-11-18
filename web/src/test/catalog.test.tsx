@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import type { Connection } from '@/api/types'
 import ExtensionsPage from '@/pages/extensions/ExtensionsPage'
 import { webAddresses } from '@/components/LinkedText'
 import { AttachForm } from '@/components/AttachForm'
-import { inputLabel, providers, sentence, sentences, summary, suggestKey } from '@/lib/packages'
+import { inputLabel, sentence, summary, suggestKey } from '@/lib/packages'
 import { choose, isChecked, ME, optionNames, renderApp, stubApi } from './render'
 
 const LOGO = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4='
@@ -12,110 +13,61 @@ const pkg = (name: string, title: string, kind: 'connection' | 'provision', logo
   name, title, kind, logo, description: `${title} for sandboxes`, source: 'shipped', inputs: {}, outputs: {}, env: {},
   requires: {}, runs: {}, checks: false, docs: '', used_by: [],
 })
-const SERVER = { ...pkg('postgres-server', 'Postgres server', 'connection', LOGO), inputs: { url: { required: true, secret: true, agent: true, help: 'an admin URL' } } }
+const SERVER = { ...pkg('postgres-server', 'Postgres server', 'connection', LOGO), inputs: { url: { required: true, secret: true, agent: true, help: 'an admin URL', label: 'URL' } } }
 const CATALOG = { packages: [SERVER, pkg('static', 'Static values', 'provision')], problems: [] }
-
-describe('package logos', () => {
-  it('shows each package its own logo, and the generic icon without one', async () => {
-    stubApi({ 'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] }, 'GET /api/catalog': CATALOG })
-    renderApp(<ExtensionsPage />)
-    const card = (await screen.findByText('Postgres server')).closest('button')!
-    expect(card.querySelector('img')?.getAttribute('src')).toBe(LOGO)
-    const plain = screen.getByText('Static values').closest('button')!
-    expect(plain.querySelector('img')).toBeNull()
-    expect(plain.querySelector('svg')).toBeTruthy()
-  })
-
-  it('picks a connection kind by its logo and title, and goes back to the list', async () => {
-    stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
-      'GET /api/catalog/postgres-server': { ...SERVER, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': CATALOG,
-    })
-    renderApp(<ExtensionsPage />)
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).queryByText('Static values')).toBeNull()
-    await user.click(within(dialog).getByRole('button', { name: /Postgres server/ }))
-    expect(await within(dialog).findByLabelText('Name')).toBeTruthy()
-    expect(dialog.querySelector('img')?.getAttribute('src')).toBe(LOGO)
-    await user.click(within(dialog).getByRole('button', { name: 'Back' }))
-    expect(await within(dialog).findByRole('button', { name: /Postgres server/ })).toBeTruthy()
-  })
-
-  it('keeps Back disabled while a connection is being saved', async () => {
-    stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
-      'GET /api/catalog/postgres-server': { ...SERVER, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': CATALOG,
-      'POST /api/catalog/connections': { key: 'postgres-server' },
-    })
-    const answer = globalThis.fetch
-    let release = () => {}
-    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => init.method === 'POST'
-      ? new Promise(resolve => { release = () => resolve(answer(url, init)) }) : answer(url, init))
-    renderApp(<ExtensionsPage />)
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
-    const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: /Postgres server/ }))
-    await user.type(await within(dialog).findByLabelText('URL'), 'postgresql://admin@fixture/db')
-    await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Back' })).toHaveProperty('disabled', true))
-    release()
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-  })
-})
 
 const ACCOUNT = {
   ...pkg('openrouter-account', 'OpenRouter account', 'connection', LOGO), description: 'An OpenRouter account. It stays here.', docs: 'https://example.com/keys',
   inputs: {
     management_key: { required: true, secret: true, agent: true, help: 'a management key' },
     region: { required: false, secret: false, agent: true, help: '', default: 'eu', label: 'Data region', choices: [{ value: 'eu', label: 'Europe' }, { value: 'us', label: 'United States' }] },
-    verify: { required: false, secret: false, agent: true, help: 'check the key first', default: 'true' },
+    verify: { required: false, secret: false, agent: true, help: 'check the key first', default: 'true', type: 'boolean' },
   },
 }
 const KEY = { ...pkg('openrouter-key', 'OpenRouter API key', 'provision'), description: 'An API key per sandbox. Deleted with it.', requires: { account: { kind: 'openrouter-account' } }, used_by: ['acme/app'] }
+const SAVED = { key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, inputs: {}, used_by: [], known: true, check_status: 'passed' }
+const base = (extra: Record<string, unknown> = {}) => ({
+  'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
+  'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] }, ...extra,
+})
+const group = async (name: string) => within((await screen.findByRole('heading', { name })).closest('section')!)
+const menu = async (user: ReturnType<typeof userEvent.setup>, label: string, item: string) => {
+  await user.click(await screen.findByRole('button', { name: label }))
+  await user.click(await screen.findByRole('menuitem', { name: item }))
+}
 
-describe('the catalog for people', () => {
-  it('shows one card per provider, with what each sandbox gets and whether it is connected', async () => {
-    stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] },
-      'GET /api/catalog/connections': { connections: [{ key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, inputs: {}, used_by: ['acme/app:openrouter'], known: true, check_status: 'passed' }] },
-      'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
-      'GET /api/repos': { repos: [{ repo: 'acme/app', trust: 'trusted' }, { repo: 'acme/api', trust: 'trusted' }, { repo: 'oss/lib', trust: 'public' }] },
-    })
+describe('the Add group', () => {
+  it('offers each connection package not connected yet as a tile with its logo, and no per-sandbox packages', async () => {
+    stubApi(base({ 'GET /api/catalog': CATALOG }))
     renderApp(<ExtensionsPage />)
-    const catalog = within((await screen.findByRole('heading', { name: 'Package catalog' })).closest('section')!)
-    const card = (await catalog.findByText('OpenRouter account')).closest('button')!
-    expect(within(card).getByText('An API key per sandbox.')).toBeTruthy()
-    expect(await within(card).findByText('Connected')).toBeTruthy()
-    expect(within(card).getByText('In 1 repository')).toBeTruthy()
-    expect(catalog.queryByRole('button', { name: /OpenRouter API key/ })).toBeNull()
-    await userEvent.click(card)
-    const panel = await screen.findByRole('dialog')
-    const step = (title: string) => within(panel).getByText(title).closest('li')!
-    expect(step('Connect OpenRouter account').getAttribute('aria-current')).toBeNull()
-    expect(within(step('Connect OpenRouter account')).getByText(/openrouter/)).toBeTruthy()
-    expect(step('Choose a repository').getAttribute('aria-current')).toBe('step')
-    const links = await within(panel).findAllByRole('link', { name: /acme\/app/ })
-    expect(new Set(links.map(a => a.getAttribute('href')))).toEqual(new Set(['/app/repos/acme/app/packages']))
-    expect(within(panel).queryByRole('radio', { name: /oss\/lib/ })).toBeNull()
-    expect(within(panel).queryByText(/has a check|shared connection|management_key/)).toBeNull()
+    const add = await group('Add')
+    const tile = (await add.findByText('Postgres server')).closest('li')!
+    expect(tile.querySelector('img')?.getAttribute('src')).toBe(LOGO)
+    expect(within(tile).getByText('Postgres server for sandboxes')).toBeTruthy()
+    expect(add.queryByText('Static values')).toBeNull()
+    expect(screen.queryByText(/Not connected/)).toBeNull()
   })
 
-  it('asks for inputs by label, offers choices as a list and yes or no as a switch', async () => {
-    const calls = stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
-      'GET /api/catalog/openrouter-account': { ...ACCOUNT, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
-      'POST /api/catalog/connections': { key: 'openrouter' },
-    })
+  it('connects a package from its dialog, which holds its description, and closes when saved', async () => {
+    const calls = stubApi(base({ 'GET /api/catalog': CATALOG, 'POST /api/catalog/connections': { key: 'postgres' } }))
     renderApp(<ExtensionsPage />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
+    await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
     const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: /OpenRouter account/ }))
+    expect(within(dialog).getByText('Postgres server for sandboxes')).toBeTruthy()
+    await user.type(await within(dialog).findByLabelText('URL'), 'postgresql://admin@fixture/db')
+    await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(calls.find(c => c.method === 'POST')?.body).toEqual({ package: 'postgres-server', key: 'postgres', inputs: { url: 'postgresql://admin@fixture/db' } })
+  })
+
+  it('asks for inputs by label, offers choices as a list and yes or no as a switch, the name under More options', async () => {
+    const calls = stubApi(base({ 'POST /api/catalog/connections': { key: 'openrouter' } }))
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add OpenRouter account' }))
+    const dialog = await screen.findByRole('dialog')
     await user.type(await within(dialog).findByLabelText('Management key'), 'fixture-key')
-    expect(calls.some(c => c.url.startsWith('/api/catalog/openrouter-account'))).toBe(false)
     expect(within(dialog).getByText('A management key.')).toBeTruthy()
     const region = within(dialog).getByLabelText('Data region')
     expect(await optionNames(user, region)).toEqual(['Europe', 'United States'])
@@ -123,55 +75,60 @@ describe('the catalog for people', () => {
     const verify = within(dialog).getByRole('switch', { name: /Verify/ })
     expect(isChecked(verify)).toBe(true)
     await user.click(verify)
+    expect(within(dialog).queryByLabelText('Name')).toBeNull()
+    await user.click(within(dialog).getByRole('button', { name: 'More options' }))
     expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('openrouter')
     await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toEqual({
       package: 'openrouter-account', key: 'openrouter', inputs: { management_key: 'fixture-key', region: 'us', verify: 'false' },
     }))
   })
-})
 
-describe('connecting from the catalog', () => {
-  it('asks for the account in the first step while nothing is connected, then for a repository', async () => {
-    const calls = stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
-      'GET /api/catalog/openrouter-account': { ...ACCOUNT, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
-      'POST /api/catalog/connections': { key: 'openrouter' },
-      'GET /api/repos': { repos: [{ repo: 'acme/app', trust: 'trusted' }, { repo: 'acme/api', trust: 'trusted' }, { repo: 'oss/lib', trust: 'public' }] },
-    })
+  it('checks a number input before sending it', async () => {
+    const calls = stubApi(base({ 'GET /api/catalog': { packages: [{ ...SERVER, inputs: { budget: { required: true, secret: false, agent: true, help: '', type: 'integer', min: 20, label: 'Budget' } } }], problems: [] } }))
     renderApp(<ExtensionsPage />)
     const user = userEvent.setup()
-    const catalog = within((await screen.findByRole('heading', { name: 'Package catalog' })).closest('section')!)
-    await user.click((await catalog.findByText('OpenRouter account')).closest('button')!)
-    const panel = await screen.findByRole('dialog')
-    expect(within(panel).getByText('Connect OpenRouter account').closest('li')!.getAttribute('aria-current')).toBe('step')
-    expect(within(panel).getByText('An OpenRouter account.')).toBeTruthy()
-    expect(within(panel).getByText('It stays here.').closest('li')).toBeTruthy()
-    await user.type(await within(panel).findByLabelText('Management key'), 'fixture-key')
-    expect(within(panel).queryByRole('button', { name: 'Back' })).toBeNull()
-    await user.click(within(panel).getByRole('button', { name: 'Connect' }))
-    await waitFor(() => expect(within(panel).getByText('Choose a repository').closest('li')!.getAttribute('aria-current')).toBe('step'))
-    await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ package: 'openrouter-account', key: 'openrouter' }))
+    await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
+    const dialog = await screen.findByRole('dialog')
+    const budget = await within(dialog).findByLabelText('Budget') as HTMLInputElement
+    expect(budget.type).toBe('number')
+    expect(budget.min).toBe('20')
+    await user.type(budget, '5')
+    await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
+    expect(await within(dialog).findByText('Enter at least 20.')).toBeTruthy()
+    expect(calls.some(c => c.method === 'POST')).toBe(false)
+  })
+
+  it('shows its address as a link in a field\'s help', async () => {
+    stubApi(base({ 'GET /api/catalog': { packages: [{ ...ACCOUNT, inputs: { management_key: { required: true, secret: true, agent: true, help: 'a key from openrouter.ai/settings/keys' } } }, KEY], problems: [] } }))
+    renderApp(<ExtensionsPage />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Add OpenRouter account' }))
+    const dialog = await screen.findByRole('dialog')
+    expect((await within(dialog).findByRole('link', { name: 'openrouter.ai/settings/keys' })).getAttribute('href')).toBe('https://openrouter.ai/settings/keys')
   })
 })
 
-describe('editing a connection', () => {
-  it('fills in the saved values, keeps a secret left empty, and keeps the name', async () => {
-    const saved = { key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, used_by: [], known: true, check_status: 'passed',
-      inputs: { management_key: '(set)', region: 'us', verify: 'false' } }
-    const calls = stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [saved] },
-      'GET /api/catalog/openrouter-account': { ...ACCOUNT, readme: '', connections: [], scripts: [] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] },
-      'POST /api/catalog/connections': saved,
-    })
+describe('the Connected group', () => {
+  it('lists a connected package there, not under Add, quiet while it works', async () => {
+    stubApi(base({ 'GET /api/catalog/connections': { connections: [{ ...SAVED, used_by: ['acme/app:openrouter'] }] } }))
+    renderApp(<ExtensionsPage />)
+    const connected = await group('Connected')
+    const row = (await connected.findByText('OpenRouter account')).closest('li')!
+    expect(within(row).getByRole('link', { name: 'acme/app' }).getAttribute('href')).toBe('/app/repos/acme/app/packages')
+    expect(within(row).queryByText('Connected')).toBeNull()
+    expect((await group('Add')).queryByText('OpenRouter account')).toBeNull()
+  })
+
+  it('edits a connection: the saved values filled in, a secret left empty kept, the name fixed', async () => {
+    const saved = { ...SAVED, inputs: { management_key: '(set)', region: 'us', verify: 'false' } }
+    const calls = stubApi(base({ 'GET /api/catalog/connections': { connections: [saved] }, 'POST /api/catalog/connections': saved }))
     renderApp(<ExtensionsPage />)
     const user = userEvent.setup()
-    const row = (await screen.findByText(/^Not used yet/)).closest('li')!
-    await user.click(within(row).getByRole('button', { name: 'Edit' }))
+    await menu(user, 'Actions for openrouter', 'Edit')
     const dialog = await screen.findByRole('dialog')
     const key = await within(dialog).findByLabelText('Management key') as HTMLInputElement
     expect(key.value).toBe('')
-    expect(key.placeholder).toBe('Saved; leave empty to keep it')
+    expect(key.placeholder).toBe('set · leave empty to keep')
     expect(within(dialog).getByLabelText('Data region').textContent).toBe('United States')
     expect(isChecked(within(dialog).getByRole('switch', { name: /Verify/ }))).toBe(false)
     expect(within(dialog).queryByLabelText('Name')).toBeNull()
@@ -181,59 +138,24 @@ describe('editing a connection', () => {
       package: 'openrouter-account', key: 'openrouter', inputs: { region: 'eu', verify: 'false' },
     }))
   })
-})
 
-describe('adding a package from the catalog', () => {
-  it('adds a provider\'s package to a repository that does not have it yet', async () => {
-    const calls = stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] },
-      'GET /api/catalog/connections': { connections: [{ key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, inputs: {}, used_by: [], known: true, check_status: 'passed' }] },
-      'GET /api/catalog': { packages: [ACCOUNT, { ...KEY, inputs: { limit: { required: true, secret: false, agent: true, help: '', label: 'Credit limit (USD)' } } }], problems: [] },
-      'GET /api/repos': { repos: [{ repo: 'acme/app', trust: 'trusted' }, { repo: 'acme/api', trust: 'trusted' }, { repo: 'oss/lib', trust: 'public' }] },
-      'POST /api/repos/acme/api/attachments': { attachment: {} },
-    })
+  it('says a connection cannot connect when its check failed', async () => {
+    stubApi(base({ 'GET /api/catalog/connections': { connections: [{ ...SAVED, check_status: 'failed' }] } }))
     renderApp(<ExtensionsPage />)
-    const user = userEvent.setup()
-    const catalog = within((await screen.findByRole('heading', { name: 'Package catalog' })).closest('section')!)
-    await user.click((await catalog.findByText('OpenRouter account')).closest('button')!)
-    const panel = await screen.findByRole('dialog')
-    expect((await within(panel).findAllByRole('link', { name: /acme\/app/ }))[0].getAttribute('href')).toBe('/app/repos/acme/app/packages')
-    expect(within(panel).queryByText('oss/lib')).toBeNull()
-    await user.click(within(panel).getByRole('radio', { name: /acme\/api/ }))
-    await user.click(within(panel).getByRole('button', { name: 'Continue' }))
-    await user.type(await within(panel).findByLabelText('Credit limit (USD)'), '5')
-    await user.click(within(panel).getByRole('button', { name: 'Add' }))
-    await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ package: 'openrouter-key', inputs: { limit: '5' } }))
-    expect(await within(panel).findByRole('status')).toHaveProperty('textContent', expect.stringContaining('Added to acme/api'))
-    expect(within(panel).getByRole('link', { name: 'Open acme/api' }).getAttribute('href')).toBe('/app/repos/acme/api/packages')
-  })
-})
-
-describe('when connections fail or cannot be loaded', () => {
-  const failed = { key: 'openrouter', package: 'openrouter-account', title: 'OpenRouter account', logo: LOGO, inputs: {}, used_by: [], known: true, check_status: 'failed' }
-
-  it('says a provider cannot connect when its only connection failed its check', async () => {
-    stubApi({ 'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [failed] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] } })
-    renderApp(<ExtensionsPage />)
-    const catalog = within((await screen.findByRole('heading', { name: 'Package catalog' })).closest('section')!)
-    const card = (await catalog.findByText('OpenRouter account')).closest('button')!
-    expect(await within(card).findByText('Can’t connect')).toBeTruthy()
-    expect(within(card).queryByText('Connected')).toBeNull()
+    const row = (await (await group('Connected')).findByText('OpenRouter account')).closest('li')!
+    expect(within(row).getByText('Can’t connect')).toBeTruthy()
   })
 
-  it('refuses a name another connection has', async () => {
-    const calls = stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [{ ...failed, check_status: 'passed' }] },
-      'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] }, 'POST /api/catalog/connections': {},
-    })
+  it('adds another connection of the same package, refusing a name that is taken', async () => {
+    const calls = stubApi(base({ 'GET /api/catalog/connections': { connections: [SAVED] }, 'POST /api/catalog/connections': {} }))
     renderApp(<ExtensionsPage />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
+    await menu(user, 'Actions for openrouter', 'Add another')
     const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: /OpenRouter account/ }))
-    const name = await within(dialog).findByLabelText('Name') as HTMLInputElement
+    await user.type(await within(dialog).findByLabelText('Management key'), 'fixture-key')
+    await user.click(within(dialog).getByRole('button', { name: 'More options' }))
+    const name = within(dialog).getByLabelText('Name') as HTMLInputElement
     expect(name.value).toBe('openrouter-2')
-    await user.type(within(dialog).getByLabelText('Management key'), 'fixture-key')
     await user.clear(name)
     await user.type(name, 'openrouter')
     await user.click(within(dialog).getByRole('button', { name: 'Connect' }))
@@ -241,6 +163,75 @@ describe('when connections fail or cannot be loaded', () => {
     expect(calls.some(c => c.method === 'POST')).toBe(false)
   })
 
+  it('adds a package that runs on the connection to a repository that does not have it yet', async () => {
+    const calls = stubApi(base({
+      'GET /api/catalog/connections': { connections: [SAVED] },
+      'GET /api/catalog': { packages: [ACCOUNT, { ...KEY, inputs: { limit: { required: true, secret: false, agent: true, help: '', label: 'Credit limit (USD)', type: 'number', min: 0 } } }], problems: [] },
+      'GET /api/repos': { repos: [{ repo: 'acme/app', trust: 'trusted' }, { repo: 'acme/api', trust: 'trusted' }, { repo: 'oss/lib', trust: 'public' }] },
+      'POST /api/repos/acme/api/attachments': { attachment: {} },
+    }))
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await menu(user, 'Actions for openrouter', 'Use in a repository')
+    const dialog = await screen.findByRole('dialog')
+    const repo = await within(dialog).findByLabelText('Repository')
+    expect(await optionNames(user, repo)).toEqual(['Choose…', 'acme/app (has it)', 'acme/api'])
+    await choose(user, repo, 'acme/api')
+    await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+    await user.type(await within(dialog).findByLabelText('Credit limit (USD)'), '5')
+    await user.click(within(dialog).getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ package: 'openrouter-key', inputs: { limit: '5' } }))
+  })
+})
+
+const agent = (kind: string, title: string, state: Connection['state'], extra: Partial<Connection> = {}): Connection => ({
+  kind, title, group: 'agent', state, summary: '', display: [], facts: {}, actions: ['connect', 'test', 'disconnect'],
+  fields: [{ name: 'token', label: 'Token', secret: true, set: state !== 'not_connected', value: null, help: '' }], ...extra,
+})
+
+describe('agents and GitHub', () => {
+  it('lists a chosen agent without its key as connected, asking for the key; one not chosen under Add', async () => {
+    stubApi(base({ 'GET /api/connections': { connections: [
+      agent('amp', 'Amp', 'not_connected', { facts: { chosen: true }, summary: 'In every template; needs its provider token' }),
+      agent('claude-code', 'Claude Code', 'not_connected'),
+    ] } }))
+    renderApp(<ExtensionsPage />)
+    const connected = await group('Connected')
+    const amp = (await connected.findByText('Amp')).closest('li')!
+    expect(within(amp).getByText('Needs its key')).toBeTruthy()
+    expect(within(amp).getByRole('button', { name: 'Add key' })).toBeTruthy()
+    expect((await group('Add')).getByRole('button', { name: 'Add Claude Code' })).toBeTruthy()
+  })
+
+  it('offers no Edit for a connector with nothing a person changes', async () => {
+    stubApi(base({ 'GET /api/connections': { connections: [
+      agent('codex', 'Codex', 'connected', { actions: ['connect', 'test'], fields: [{ name: 'version', label: 'Codex version', secret: false, set: false, value: '1.0', help: '', hidden: true }] }),
+    ] } }))
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Actions for Codex' }))
+    expect(await screen.findByRole('menuitem', { name: 'Test' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull()
+  })
+
+  it('creates the GitHub App from its Add dialog, the organization optional', async () => {
+    const github: Connection = { kind: 'github', title: 'GitHub', group: 'platform', state: 'not_connected', summary: 'No App yet', display: [], facts: {},
+      actions: ['connect', 'test', 'disconnect'], fields: [{ name: 'id', label: 'App ID', secret: false, set: false, value: '', help: '', kind: 'int' }] }
+    const calls = stubApi(base({ 'GET /api/connections': { connections: [github] }, 'POST /api/connections/github/manifest': { action_url: 'https://github.com/settings/apps/new', manifest: '{}' } }))
+    const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
+    renderApp(<ExtensionsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add GitHub' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).queryByLabelText('App ID')).toBeNull()
+    await user.click(within(dialog).getByRole('button', { name: /Create on GitHub/ }))
+    await waitFor(() => expect(submit).toHaveBeenCalled())
+    expect(calls.find(c => c.method === 'POST')?.url).toBe('/api/connections/github/manifest')
+    submit.mockRestore()
+  })
+})
+
+describe('a package\'s settings for a repository', () => {
   it('shows the error with a retry instead of a form while connections cannot be loaded', async () => {
     stubApi({
       'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': () => ({ status: 500, body: { detail: 'the store is down' } }),
@@ -250,9 +241,14 @@ describe('when connections fail or cannot be loaded', () => {
     expect(await screen.findByRole('button', { name: /Retry/ })).toBeTruthy()
     expect(screen.queryByRole('combobox')).toBeNull()
   })
-})
 
-describe('editing a package\'s settings', () => {
+  it('asks for no connection when there is only one to use', async () => {
+    stubApi({ 'GET /api/catalog/connections': { connections: [SAVED] }, 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] } })
+    renderApp(<AttachForm repo="acme/api" entry={KEY as never} onDone={() => {}} />)
+    expect(await screen.findByRole('button', { name: 'Add' })).toBeTruthy()
+    await waitFor(() => expect(screen.queryByLabelText('OpenRouter account')).toBeNull())
+  })
+
   it('sends a choice set back to blank and leaves a saved secret out', async () => {
     const calls = stubApi({ 'GET /api/catalog': { packages: [ACCOUNT, KEY], problems: [] }, 'POST /api/repos/acme/app/attachments': { attachment: {} } })
     const entry = { ...KEY, requires: {}, inputs: {
@@ -263,10 +259,20 @@ describe('editing a package\'s settings', () => {
       secret_inputs: { token: true }, connections: {}, exports: [], disabled: false, state: 'ready', problem: null, project: false }
     renderApp(<AttachForm repo="acme/app" entry={entry as never} attachment={attachment as never} onDone={() => {}} />)
     const user = userEvent.setup()
+    expect((await screen.findByLabelText(/^Token/) as HTMLInputElement).placeholder).toBe('set · leave empty to keep')
     await choose(user, await screen.findByLabelText('Limit resets'), 'Never')
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toMatchObject({ inputs: { limit_reset: '' } }))
     expect((calls.find(c => c.method === 'POST')!.body as { inputs: Record<string, string> }).inputs).not.toHaveProperty('token')
+  })
+
+  it('folds an advanced input under More options', async () => {
+    stubApi({ 'GET /api/catalog': { packages: [], problems: [] } })
+    const entry = { ...KEY, requires: {}, inputs: { pool: { required: false, secret: false, agent: true, help: '', default: '20', type: 'integer', min: 1, advanced: true, label: 'Pool' } } }
+    renderApp(<AttachForm repo="acme/app" entry={entry as never} onDone={() => {}} />)
+    expect(screen.queryByLabelText(/^Pool/)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'More options' }))
+    expect((screen.getByLabelText(/^Pool/) as HTMLInputElement).type).toBe('number')
   })
 })
 
@@ -281,19 +287,6 @@ describe('web addresses in text', () => {
     expect(links('the address http://10.10.0.20:3010')).toEqual([])
     expect(links('mail ops@example.com/x')).toEqual([])
   })
-
-  it('shows them as links in a field\'s help', async () => {
-    stubApi({
-      'GET /api/me': ME, 'GET /api/connections': { connections: [] }, 'GET /api/catalog/connections': { connections: [] },
-      'GET /api/catalog': { packages: [{ ...ACCOUNT, inputs: { management_key: { required: true, secret: true, agent: true, help: 'a key from openrouter.ai/settings/keys' } } }, KEY], problems: [] },
-    })
-    renderApp(<ExtensionsPage />)
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Add connection' }))
-    const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: /OpenRouter account/ }))
-    expect((await within(dialog).findByRole('link', { name: 'openrouter.ai/settings/keys' })).getAttribute('href')).toBe('https://openrouter.ai/settings/keys')
-  })
 })
 
 describe('package words', () => {
@@ -305,16 +298,6 @@ describe('package words', () => {
     expect(sentence('the frontend, host:7233')).toBe('The frontend, host:7233.')
     expect(sentence('postgresql://role@host/db, a role')).toBe('postgresql://role@host/db, a role.')
     expect(summary('A key per sandbox. Deleted with it.')).toBe('A key per sandbox.')
-    expect(sentences('A key per sandbox. The limit caps it; balance pays. Uses ${services.api.base_url}.')).toEqual(['A key per sandbox.', 'The limit caps it; balance pays.', 'Uses ${services.api.base_url}.'])
     expect(suggestKey('openrouter-account', ['openrouter'])).toBe('openrouter-2')
-  })
-
-  it('groups packages under the connection they need; others stand alone', () => {
-    const lone = pkg('static', 'Static values', 'connection')
-    const orphan = { ...pkg('thing', 'Thing', 'provision'), requires: { x: { kind: 'missing' } } }
-    const found = providers([ACCOUNT, KEY, lone, orphan] as never)
-    expect(found.map(p => [p.title, p.resources.map(r => r.name)])).toEqual([
-      ['OpenRouter account', ['openrouter-key']], ['Thing', ['thing']], ['Static values', []],
-    ])
   })
 })

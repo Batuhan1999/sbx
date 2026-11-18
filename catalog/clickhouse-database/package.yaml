@@ -12,14 +12,12 @@ requires:
 inputs:
   template:
     label: Development database
-    help: The database to take empty tables or MergeTree data from.
     default: ''
   mode:
     label: Start with
     choices:
       schema: Empty tables
       clone: Clones of its local MergeTree tables
-    help: Clones share data with the development database instead of copying it.
     default: schema
 outputs:
   url: { sensitive: true }

@@ -181,7 +181,7 @@ export function MissingValues({ repo, names, admin, bare }: { repo: string; name
     </form.AppField>)}
     <form.Subscribe selector={s => s.errorMap.onSubmit}>{error => error ? <p role="alert" className="text-[12px] text-bad">{String(error)}</p> : null}</form.Subscribe>
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="text-[12px] text-muted">Stored as secrets; running sandboxes get them within seconds. Hidden from the coding agent.</span>
+      <span />
       <SubmitButton form={form} size="sm">Save values</SubmitButton>
     </div>
   </AppForm>

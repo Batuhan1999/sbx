@@ -148,7 +148,7 @@ describe('Settings → Sandbox runtimes', () => {
     expect(row.textContent).toContain('Hobby · up to 10 at once')
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
-    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('Saved · type to replace')
+    expect((within(form).getByLabelText('API key') as HTMLInputElement).placeholder).toBe('set · leave empty to keep')
     expect(within(form).getByRole('radio', { name: /Hobby/ })).toHaveProperty('checked', true)
     expect(within(form).queryByRole('slider')).toBeNull()                 // Hobby fixes every limit
     await user.click(within(form).getByRole('radio', { name: /Pro/ }))
@@ -178,10 +178,11 @@ describe('Settings → Sandbox runtimes', () => {
     const form = screen.getByRole('form', { name: 'E2B Cloud settings' })
     expect(within(form).getByRole('radio', { name: /Custom/ })).toHaveProperty('checked', true)
     expect(within(form).getByRole('slider', { name: 'Sandboxes at once' }).getAttribute('aria-valuetext')).toBe('100')   // 200 by hand in runtime.env: the slider's top
-    const advanced = within(form).getByText('Advanced').closest('details')!
-    expect(advanced.open).toBe(false)                                   // the domain is out of the way
-    await user.click(within(form).getByText('Advanced'))
-    expect(within(advanced).getByText(/Changing it needs the API key again./)).toBeTruthy()
+    const more = within(form).getByRole('button', { name: 'More options' })
+    expect(more.getAttribute('aria-expanded')).toBe('false')            // the domain is out of the way
+    expect(within(form).queryByLabelText(/Domain/)).toBeNull()
+    await user.click(more)
+    expect(within(form).getByText(/Changing it needs the API key again./)).toBeTruthy()
     await user.type(within(form).getByLabelText(/Domain/), 'e2b.example.com')
     await user.click(within(form).getByRole('button', { name: 'Save' }))
     expect(await within(form).findByText('Enter the API key again to change the domain.')).toBeTruthy()

@@ -9,7 +9,7 @@ docs: https://www.postgresql.org/docs/current/sql-createrole.html
 inputs:
   url:
     label: Admin URL
-    help: "postgresql://role:password@host:5432/postgres, a role that may create roles and databases"
+    help: "postgresql://role:password@host:5432/postgres, a role that may create roles and databases."
     required: true
     secret: true
 check: |

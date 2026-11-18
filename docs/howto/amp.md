@@ -45,11 +45,12 @@ Then paste the token in one of these places:
 
 - **The keys page** your agent sends you (`https://login.<domain>/keys/…`),
   next to any other keys it needs. Amp stays on and its provider starts.
-- **Extensions → Coding agents → Amp** in the web app: paste the provider
-  token and choose **Test and save**. Saving turns Amp on; **Disconnect**
+- **Extensions** in the web app: **Add key** on Amp's row (or **Add** on its
+  tile when the setup did not choose Amp), paste the provider token and choose
+  **Test and save**. Saving turns Amp on; **Disconnect** in its row's menu
   turns it off.
 
-  ![The Amp form on the Extensions page with the orb provider token field](images/extensions-amp.png)
+  ![The Amp dialog on the Extensions page with the orb provider token field](images/extensions-amp.png)
 
 - On the server, with the token on stdin:
 
@@ -78,7 +79,7 @@ sides:
 
 Orb sandboxes belong to the installation's first admin, so run `sbx ls`
 signed in as them. If no sandbox appears, `journalctl -u sbx-amp -n 50` on
-the server shows why, and the Test button in **Extensions → Coding agents →
-Amp** runs sbx's checks.
+the server shows why, and **Test** in Amp's row menu under **Extensions** runs
+sbx's checks.
 Delete test threads in Amp while the provider is connected; archiving a
 thread only pauses its sandbox.

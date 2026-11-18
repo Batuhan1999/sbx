@@ -87,7 +87,7 @@ function StepPill({ n, label, active, done, onClick }: { n: number; label: strin
 function NoToken({ error, retry }: { error: unknown; retry: () => void }) {
   return <div className="space-y-5">
     <h1 className="text-[22px] font-semibold tracking-tight">Open your setup link</h1>
-    <p className="text-muted">The installer printed a one-time link. To get a new one, run this on the server:</p>
+    <p className="text-muted">Get a new one on the server:</p>
     <CopyCommand command="sudo sbx-admin setup-link" />
     <ErrorState error={error} compact />
     <div className="flex flex-wrap gap-2"><Button onClick={retry}>Try again</Button><AnchorButton variant="ghost" href="/login?next=%2Fapp%2Fsetup">Sign in as an admin</AnchorButton></div>
@@ -133,22 +133,23 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
   return <AppForm form={form} className="space-y-6">
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Where will this server answer?</h1>
-      <p className="mt-1.5 text-muted">Sandboxes get preview URLs under this address, with a trusted HTTPS certificate that renews itself.</p>
     </div>
     <HostFacts s={s} />
     <RadioGroup aria-label="Address" value={mode} onValueChange={v => { form.setFieldValue('mode', v as typeof mode); setWaiting(false) }} className="sm:grid-cols-2">
-      {([['ip', 'This server’s IP', 'No domain needed. Previews get a port each.', Server], ['domain', 'A domain', 'Named preview URLs under your own domain.', Globe]] as const).map(([id, title, text, Icon]) =>
+      {([['ip', 'This server’s IP', 'Previews get a port each.', Server], ['domain', 'A domain', 'Previews get names under it.', Globe]] as const).map(([id, title, text, Icon]) =>
         <RadioCard key={id} value={id} disabled={!!s.access.domain && id === 'ip'} description={text}
           title={<span className="flex items-center gap-1.5"><Icon className="size-3.5 text-muted" />{title}</span>} />)}
     </RadioGroup>
     {mode === 'domain' && <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <form.AppField name="domain" validators={{ onChange: ({ value }) => domainError(value) }}>{field => <field.TextField label="Domain" placeholder="sbx.example.com" autoComplete="off" spellCheck={false} />}</form.AppField>
-        <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Certificate email" type="email" autoComplete="email" help="For certificate expiry notices." />}</form.AppField>
+        <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Certificate email" type="email" autoComplete="email" />}</form.AppField>
       </div>
-      <form.AppField name="acme">{field => <field.SelectField label="Certificate verification">
-        <option value="delegated">DNS delegation (no API credentials)</option><option value="cloudflare">Cloudflare API</option><option value="route53">Amazon Route 53</option>
-      </field.SelectField>}</form.AppField>
+      <form.AppField name="acme">{field => <field.RadioField label="Certificate verification" columns={3} options={[
+        { value: 'delegated', label: 'DNS delegation', description: 'One NS record, no API key' },
+        { value: 'cloudflare', label: 'Cloudflare', description: 'An API token' },
+        { value: 'route53', label: 'Route 53', description: 'AWS keys or instance role' },
+      ]} />}</form.AppField>
       {acme === 'cloudflare' && <form.AppField name="cloudflare_api_token" validators={{ onChange: ({ value }) => required(value) }}>{field => <field.TextField label="Cloudflare API token" type="password" autoComplete="off" />}</form.AppField>}
       {acme === 'route53' && <div className="grid gap-3 sm:grid-cols-2">
         <form.AppField name="aws_access_key_id">{field => <field.TextField label="AWS access key ID" optional autoComplete="off" help="Empty uses the server's instance role." />}</form.AppField>
@@ -162,7 +163,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
         </Table>
       </div>
     </div>}
-    {waiting && !s.access.certificate_error && <div role="status" className="rounded-lg border border-line bg-panel px-4 py-3 text-[13px]"><Spinner label="Getting the certificate…" /><p className="mt-1 text-muted">This page continues on its own when HTTPS works{mode === 'domain' ? ', on the new address' : ''}.{portsHint(s.access.needs_ports) && ` It needs ${portsHint(s.access.needs_ports)} open.`}</p></div>}
+    {waiting && !s.access.certificate_error && <div role="status" className="rounded-lg border border-line bg-panel px-4 py-3 text-[13px]"><Spinner label="Getting the certificate…" />{portsHint(s.access.needs_ports) && <p className="mt-1 text-muted">Needs {portsHint(s.access.needs_ports)} open.</p>}</div>}
     {s.access.certificate_error && <ErrorState error={`HTTPS is not ready: ${s.access.certificate_error}.${portsHint(s.access.needs_ports) ? ` Make sure this server accepts ${portsHint(s.access.needs_ports)}, in any cloud firewall too, then retry.` : ' Retry once it is fixed.'}`} />}
     <div className="flex justify-end border-t border-line pt-5">
       <SubmitButton form={form} disabled={mode === 'ip' && !s.host.address}>{waiting || s.access.certificate_error ? 'Retry' : 'Continue'}<ArrowRight /></SubmitButton>
@@ -183,7 +184,6 @@ function RuntimeStep({ done, onBack, onAddress, onNext }: { done: boolean; onBac
   return <div className="space-y-6">
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Where will sandboxes run?</h1>
-      <p className="mt-1.5 text-muted">{done ? 'You can change this later in Settings.' : 'Choose a runtime for your sandboxes.'}</p>
     </div>
     {done ? <RuntimeList runtimes={runtimes.data?.runtimes ?? []} className="rounded-lg border border-line bg-panel" />
       : available.isPending ? <Spinner label="Loading…" />
@@ -223,14 +223,14 @@ function AdminStep({ s, onBack, onNext }: { s: SetupState; onBack: () => void; o
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Create your account</h1>
       <p className="mt-1.5 text-muted">{s.signed_in ? `Signed in as ${s.email}.`
-        : ready ? 'Access is already configured for this private network.'
-        : existing ? 'Admin access is configured. Sign in to continue.'
-        : 'You are the first admin. You sign in with this email and password; you can switch to single sign-on later in Settings.'}</p>
+        : ready ? 'Open access on this private network.'
+        : existing ? 'An admin exists. Sign in to continue.'
+        : 'The first admin.'}</p>
     </div>
     {!ready && !existing && <AppForm form={form} id="setup-admin" className="space-y-4">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Admin email" type="email" autoComplete="username" />}</form.AppField>
       <div className="grid gap-3 sm:grid-cols-2">
-        <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>{field => <field.TextField label="Password" type="password" autoComplete="new-password" help="At least 8 characters." />}</form.AppField>
+        <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>{field => <field.TextField label="Password" type="password" autoComplete="new-password" placeholder="8+ characters" />}</form.AppField>
         <form.AppField name="confirm" validators={{ onChangeListenTo: ['password'], onChange: ({ value, fieldApi }) => !value ? 'Repeat the password.' : value !== fieldApi.form.getFieldValue('password') ? 'The passwords differ.' : undefined }}>
           {field => <field.TextField label="Repeat password" type="password" autoComplete="new-password" />}
         </form.AppField>
@@ -271,7 +271,7 @@ function AgentsStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: bo
   return <div className="space-y-6">
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">Which coding agents does your team use?</h1>
-      <p className="mt-1.5 text-muted">Each one you choose goes into every sandbox template, which builds when you finish (about 10 minutes). Its own key can come later, under Extensions. Choosing none is fine.</p>
+      <p className="mt-1.5 text-muted">In every sandbox from the first build. Optional.</p>
     </div>
     <ul aria-label="Coding agents" className="divide-y divide-line rounded-lg border border-line bg-panel">
       {s.agents.map(a => <li key={a.kind}>
@@ -288,7 +288,6 @@ function AgentsStep({ s, runtimeDone, onBack }: { s: SetupState; runtimeDone: bo
       <Button variant="ghost" onClick={onBack}><ArrowLeft />Back</Button>
       <Button variant="primary" busy={busy} disabled={blocked} onClick={finish}>Finish setup<ArrowRight /></Button>
     </div>
-    <p className="text-[12px] text-muted">Finishing disables the one-time setup link and starts the template builds.</p>
   </div>
 }
 
@@ -300,13 +299,13 @@ function ServerChecks({ checks, runtimes }: { checks: ReturnType<typeof useSetup
   return <>
     {(!checks.data || own.length > 0) && <div className="space-y-2">
       <p className="text-[12.5px] font-medium">Server checks</p>
-      {checks.isPending ? <Spinner label="Checking…" /> : checks.error ? <ErrorState error={checks.error} compact retry={() => checks.refetch()} /> : <Checks checks={own} />}
+      {checks.isPending ? <Spinner label="Checking…" /> : checks.error ? <ErrorState error={checks.error} compact retry={() => checks.refetch()} /> : <Checks checks={own} failedFirst />}
     </div>}
     {runtimes.length > 0 && <div className="space-y-2">
       <p className="text-[12.5px] font-medium">Sandbox runtimes</p>
       <RuntimeList runtimes={runtimes} className="rounded-lg border border-line bg-panel">{r => {
         const mine = all.filter(c => c.runtime === r.kind)
-        return mine.length > 0 && <div className="mt-2"><Checks checks={mine} /></div>
+        return mine.length > 0 && <div className="mt-2"><Checks checks={mine} failedFirst /></div>
       }}</RuntimeList>
     </div>}
     {checks.data && !checks.data.ok && <Button size="sm" busy={checks.isFetching} onClick={() => checks.refetch()}>Check again</Button>}
@@ -318,7 +317,7 @@ function Done({ s }: { s: SetupState }) {
     <span className="grid size-10 place-items-center rounded-full bg-ok-soft text-ok"><Check className="size-5" /></span>
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">The server is ready</h1>
-      <p className="mt-1.5 text-muted">The sandbox templates are building now (about 10 minutes the first time). Next: connect GitHub and a repository, then hand its setup to your coding agent.</p>
+      <p className="mt-1.5 text-muted">Templates are building (about 10 minutes). Next, connect a repository.</p>
     </div>
     <Facts className="rounded-lg border border-line bg-panel p-4" items={[['Address', <span className="break-all font-mono text-[12.5px]">{s.access.url}</span>], ['Admin', s.email ?? s.admins.join(', ')], ['Setup link', 'Disabled']]} />
     <LinkButton variant="primary" to="/app/repos/new">Connect a repository<ArrowRight /></LinkButton>

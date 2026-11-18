@@ -92,24 +92,26 @@ class GitHub(extensions.Connector):
             if found is not None:
                 summary += f" · installed on {', '.join(found) or 'nobody'}"
         elif key.set:
-            state_, summary = "connected", "deploy key over SSH (no App: no PR previews by label, no push rebuilds)"
+            state_, summary = "connected", "Deploy key · no PR previews"
         else:
             state_, summary = "not_connected", "No App yet"
-        fields = (Field("owner", "Organization", value="", help="empty: your own account (for creating the App)"),
-                  Field("id", "App id", value=s.get("id", "") if s else ""),
-                  Field("slug", "App slug", value=s.get("slug", "") if s else ""),
-                  Field("pem", "App private key", secret=True, set=bool(s)),
-                  Field("webhook_secret", "Webhook secret", secret=True, set=bool(s and s.get("webhook_secret"))),
-                  Field("client_id", "OAuth client id", value=s.get("client_id", "") if s else ""),
-                  Field("client_secret", "OAuth client secret", secret=True, set=bool(s and s.get("client_secret"))),
-                  Field("deploy_key", "Deploy key (SSH)", secret=True, set=key.set))
+        # The App manifest (Create on GitHub) fills all of these; pasting an existing App's values or a
+        # deploy key is an operator's path: the API and CLI only (sbx extensions set github), no form field.
+        fields = (Field("id", "App ID", value=s.get("id", "") if s else "", kind="int", min=1, hidden=True),
+                  Field("pem", "Private key", secret=True, set=bool(s), kind="multiline", hidden=True),
+                  Field("slug", "App slug", value=s.get("slug", "") if s else "", hidden=True),
+                  Field("webhook_secret", "Webhook secret", secret=True, set=bool(s and s.get("webhook_secret")), hidden=True),
+                  Field("client_id", "OAuth client ID", value=s.get("client_id", "") if s else "", hidden=True),
+                  Field("client_secret", "OAuth client secret", secret=True, set=bool(s and s.get("client_secret")),
+                        hidden=True),
+                  Field("deploy_key", "Deploy key (SSH)", secret=True, set=key.set, kind="multiline", hidden=True))
         return Status(self.kind, self.title, state_, summary, facts, fields, ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:
         s = github_app.settings()
         if not s:
             key = vault.facts(vault.GITHUB_DEPLOY_KEY)
-            return [Check("GitHub App", False, "not set up", "create it in Extensions → GitHub", help_url=howto.GITHUB_APP),
+            return [Check("GitHub App", False, "not set up", "Extensions → Add GitHub", help_url=howto.GITHUB_APP),
                     Check("deploy key", key.set, "set" if key.set else "not set", "")]
         checks = []
         try:

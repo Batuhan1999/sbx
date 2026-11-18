@@ -32,19 +32,18 @@ export default function RepoPackages() {
   const catalog = useCatalog()
   const shared = useSharedConnections(admin && trusted)
   const [adding, setAdding] = useState(false)
-  if (!trusted) return <EmptyState icon={Lock} title="No packages for public repositories">Packages give sandboxes databases and API keys; public repositories get none.</EmptyState>
+  if (!trusted) return <EmptyState icon={Lock} title="No packages for public repositories" />
   if (envError) return <ErrorState error={envError} />
   if (!env) return <Loading />
   return <div className="space-y-4">
     <Panel title="Packages" bodyClassName="p-0"
-      description={`What each sandbox of this repository gets. Your agent adds packages to the recipe; ${admin ? 'you pick' : 'an admin picks'} their connection and settings here.`}
       actions={admin && <Button size="sm" variant="primary" onClick={() => setAdding(true)}><Plus />Add package</Button>}>
       {env.attachments.length === 0
-        ? <EmptyState icon={Package} title="No packages" className="py-10">This repository’s sandboxes get no databases or API keys, or the recipe doesn’t name them yet.</EmptyState>
+        ? <EmptyState icon={Package} title="No packages" className="py-10" />
         : <ul className="divide-y divide-line">{env.attachments.map(a => <AttachmentRow key={a.key} a={a} repo={repo} admin={admin}
           catalog={catalog.data ?? []} shared={shared.data} />)}</ul>}
     </Panel>
-    {admin && <Dialog open={adding} onOpenChange={setAdding} title="Add a package" description={`Each sandbox of ${repo} gets its own.`} wide>
+    {admin && <Dialog open={adding} onOpenChange={setAdding} title="Add a package" wide>
       <AttachPicker repo={repo} onDone={() => setAdding(false)} />
     </Dialog>}
   </div>
@@ -82,7 +81,9 @@ function AttachmentRow({ a, repo, admin, catalog, shared }: {
   const state = ATTACHMENT_STATE[a.state] ?? { label: a.state, tone: 'idle' as Tone }
   const note = rowNote(a, catalog, shared, admin)
   const pkg = catalog.find(p => p.name === a.package)
-  const configurable = !!pkg && (Object.keys(pkg.inputs).length > 0 || Object.keys(pkg.requires).length > 0)
+  // Something to change: an input, or a connection to choose among several (one alone is taken without asking).
+  const configurable = !!pkg && (Object.keys(pkg.inputs).length > 0
+    || Object.values(pkg.requires).some(r => (shared ?? []).filter(s => s.package === r.kind).length !== 1))
   const fix = admin && (a.state === 'needs_values' || a.state === 'needs_connection' || a.state === 'check_failed')
   return <li className="px-4 py-3">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -97,20 +98,19 @@ function AttachmentRow({ a, repo, admin, catalog, shared }: {
       </div>
       <StateBadge tone={state.tone} label={state.label} />
       <div className="flex items-center gap-1.5">
-        {fix && note.connect ? <LinkButton size="sm" variant="primary" to="/app/extensions#connections" state={{ connect: note.connect }}>Connect</LinkButton>
+        {fix && note.connect ? <LinkButton size="sm" variant="primary" to="/app/extensions" state={{ connect: note.connect }}>Connect</LinkButton>
           : fix ? <Button size="sm" variant="primary" onClick={() => setEditing(true)}>{a.state === 'needs_connection' ? 'Choose' : 'Set up'}</Button>
           : admin && configurable && a.state !== 'disabled' ? <Button size="sm" onClick={() => setEditing(true)}><Settings2 />Edit</Button> : null}
         {!a.project && (a.state === 'ready' || a.state === 'check_failed') && <Button size="sm" busy={check.isPending} onClick={() => check.mutate()}><ShieldCheck />Test</Button>}
         {admin && a.origin !== 'sbx.yaml' && <ConfirmDialog trigger={<Button size="icon-sm" variant="ghost" aria-label={`Remove ${a.key}`}><Trash2 /></Button>}
           title={a.origin === 'both' ? `Turn off ${a.title}?` : `Remove ${a.title}?`}
-          description={a.origin === 'both' ? 'The recipe still names it, so it stays here, turned off: new sandboxes stop getting it, and its settings are kept.' : 'New sandboxes stop getting it. Existing sandboxes keep theirs until they are deleted.'}
+          description={a.origin === 'both' ? 'The recipe still names it, so it stays, turned off.' : 'New sandboxes stop getting it.'}
           confirm={a.origin === 'both' ? 'Turn off' : 'Remove'} onConfirm={async () => { await api.attachments.detach(repo, a.key); await qc.invalidateQueries({ queryKey: keys.env(repo) }) }} />}
       </div>
     </div>
     {check.data && <p role="status" className={check.data.ok ? 'mt-2 text-[12.5px] text-ok' : 'mt-2 text-[12.5px] text-bad'}>{check.data.ok ? 'Test passed.' : <LinkedText text={check.data.detail || 'Test failed.'} />}</p>}
     <ErrorState error={check.error} compact className="mt-2" />
-    {admin && <Dialog open={editing} onOpenChange={setEditing} title={<span className="flex items-center gap-3"><PackageLogo logo={a.logo} large />{a.title}</span>}
-      description={`Settings for ${repo}’s sandboxes.`} wide>
+    {admin && <Dialog open={editing} onOpenChange={setEditing} title={<span className="flex items-center gap-3"><PackageLogo logo={a.logo} large />{a.title}</span>} wide>
       <EntryForm repo={repo} name={a.package} attachment={a} onDone={() => setEditing(false)} />
     </Dialog>}
   </li>

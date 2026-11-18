@@ -134,13 +134,15 @@ class ClaudeCode(extensions.Connector):
             state_, summary = "off", ""
         elif not secret.set:
             state_, summary = "not_connected", "Needs its environment secret"
+            facts["chosen"] = True   # in every template already: listed as added, waiting on its secret
         else:
-            state_, summary = "connected", f"Version {s.version}"
+            state_, summary = "connected", ""
             facts["sessions_running"] = _sessions_running()
         # Saving the secret turns it on and Disconnect turns it off; the version is
         # pinned by sbx and set from the CLI (sbx extensions set claude --set version=...).
         fields = (Field("environment_secret", "Environment secret", secret=True, set=secret.set,
-                        help="From claude.ai: Settings → Self-hosted environments"),)
+                        help="From claude.ai: Settings → Self-hosted environments"),
+                  Field("version", "Version", value=s.version, hidden=True))
         return Status(self.kind, self.title, state_, summary, facts, fields, ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:

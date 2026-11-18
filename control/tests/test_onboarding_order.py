@@ -79,7 +79,7 @@ class TemplateGate(Server):
         self.assertIn("amp", [c.name for c in chosen.contributions])
         self.assertNotEqual(chosen.fingerprint, default.fingerprint)
         self.assertFalse(self.amp().settings().enabled)        # the provider waits for its token
-        self.assertIn("In every template", self.amp().status().summary)
+        self.assertTrue(self.amp().status().facts["chosen"])   # listed as added, waiting on its token
         self.choose_agents()                                    # changed before finishing: out again
         self.assertEqual(self.builds.plan(self.templates.DEFAULT).fingerprint, default.fingerprint)
 

@@ -39,7 +39,7 @@ plug in is described in [extensions](extensions.md#agent-connectors).
    from the Amp CLI: [how-to](howto/amp.md)) and turn **Repository
    Setup** off: sbx puts the checkout at `/home/user/workspace/repo`, linked to
    the recipe's workdir, with renewable git credentials.
-3. In sbx **Extensions → Coding agents → Amp**, paste the provider token and
+3. In sbx **Extensions**, on **Amp**, paste the provider token and
    save; saving turns Amp on and **Disconnect** turns it off. The token goes into
    the secret store; saving installs the host CLI if missing and starts `sbx-amp`. On the
    host you can do the same without putting the token in a command line:

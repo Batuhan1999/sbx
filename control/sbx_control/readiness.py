@@ -59,31 +59,30 @@ def steps(info: dict, atts: list, missing: list, build: dict, live: bool, admin:
     whether one of its sandboxes is up; for an admin or not (the repo's
     values are its admins' to set)."""
     served, recipe, public = bool(info["trust"]), info["configured"], info["trust"] == "public"
-    out = [_step("served", "done", "Trusted: sandboxes get its secrets and services" if info["trust"] == "trusted"
-                 else "Public: cloned anonymously, no secrets or services") if served
-           else _step("served", "todo", "This server does not serve the repository yet", "admin")]
+    out = [_step("served", "done", "Trusted" if info["trust"] == "trusted"
+                 else "Public: no secrets or services") if served
+           else _step("served", "todo", "Not served yet", "admin")]
     if public:
         out.append(_step("github", "done", "Cloned anonymously"))
     elif info["github"] in ("app", "key"):
         out.append(_step("github", "done", "GitHub App installed" if info["github"] == "app"
-                         else "Deploy key (the GitHub App is recommended)"))
+                         else "Deploy key"))
     elif info.get("github_anonymous"):
-        out.append(_step("github", "done", "Cloned anonymously; install the GitHub App to push or for private repos"))
+        out.append(_step("github", "done", "Cloned anonymously; install the GitHub App to push"))
     else:
         out.append(_step("github", "todo" if served else "blocked",
-                         "Install the GitHub App on this repository so sandboxes can push (and clone it, if it is private)", "admin",
+                         "Install the GitHub App on this repository", "admin",
                          help_url=howto.GITHUB_REPOS if info.get("github_app_install") else howto.GITHUB_APP,
                          **({"action": info["github_app_install"]} if info.get("github_app_install") else {})))
     out.append(_step("configured", "done", f"Previews: {', '.join(info['previews'])}" if info["previews"] else "Recipe found")
                if recipe else _step("configured", "todo" if served else "blocked",
-                                    "Your coding agent writes .sbx/ and verifies it in a sandbox", "agent"))
+                                    "Your coding agent writes .sbx/", "agent"))
     if not recipe:
-        out += [_step(step, "blocked", "Available once the recipe exists") for step in ("services", "env", "template")]
+        out += [_step(step, "blocked", "After the recipe") for step in ("services", "env", "template")]
     else:
         found = problems(atts)
         if public and info.get("services"):  # create refuses them (core._create_reserved)
-            out.append(_step("services", "todo", "Public repos get no services: remove services: from .sbx/sbx.yaml, "
-                             "or have an admin trust the repo", "agent", info["services"]))
+            out.append(_step("services", "todo", "Public repositories get no services: remove them from .sbx/sbx.yaml", "agent", info["services"]))
         elif found:
             actors = {PROBLEM_ACTOR.get(a["state"], "person") for a in found}
             who = next(a for a in ("agent", "admin", "person") if a in actors)
@@ -94,16 +93,16 @@ def steps(info: dict, atts: list, missing: list, build: dict, live: bool, admin:
         if public:
             out.append(_step("env", "done", "Public: its sandboxes get no secrets"))
         elif missing:
-            out.append(_step("env", "todo", "A value the recipe asks for is not set" if len(missing) == 1
-                             else f"{len(missing)} values the recipe asks for are not set",
+            out.append(_step("env", "todo", "1 value missing" if len(missing) == 1
+                             else f"{len(missing)} values missing",
                              "person" if admin else "admin", missing))
         else:
-            out.append(_step("env", "done", "Every value the recipe asks for is set"))
+            out.append(_step("env", "done", "All set"))
         key = template_key(info["prebuilt"], build)
         status, who, _, _, detail = TEMPLATE[key]
         out.append(_step("template", status, (key == "failed" and build.get("error")) or detail, who))
     out.append(_step("sandbox", "done", "A sandbox is up") if live
-               else _step("sandbox", "todo" if recipe else "blocked", "Start a sandbox and open its preview", "person"))
+               else _step("sandbox", "todo" if recipe else "blocked", "Start one", "person"))
     out.append(published(info))
     before = [s for s in out if s["step"] not in ("sandbox", "recipe_pr")]   # what sandboxes need
     todo = [s for s in before if s["status"] == "todo"]
@@ -121,27 +120,25 @@ def published(info: dict) -> dict:
     if not info["configured"]:
         return _step("recipe_pr", "blocked", "Available once the recipe exists")
     if info.get("recipe_source") != "server":
-        return _step("recipe_pr", "done", "The recipe is the repository's .sbx/")
+        return _step("recipe_pr", "done", "In the repository")
     pr = info.get("recipe_pr")
     if not pr:
-        return _step("recipe_pr", "blocked", "sbx opens a pull request with the recipe once a sandbox comes up "
-                                             "healthy from it")
+        return _step("recipe_pr", "blocked", "Opened once a sandbox comes up healthy")
     link = {"url": pr["url"]} if pr["url"] else {}
     named = f"PR #{pr['number']}" if pr["number"] else "the pull request"
     if pr["problem"]:
         action = {"action": info["github_app_install"]} if info.get("github_app_install") else {}
         return _step("recipe_pr", "todo", pr["problem"], "admin", **link, **action)
     if not pr["current"]:
-        return _step("recipe_pr", "todo", f"The recipe changed since {named}; it is updated once a sandbox comes "
-                                          "up healthy from the new one", "agent", **link)
+        return _step("recipe_pr", "todo", f"The recipe changed since {named}", "agent", **link)
     if pr["state"] == "in_repository":
-        return _step("recipe_pr", "done", "The default branch has this recipe already")
+        return _step("recipe_pr", "done", "Already on the default branch")
     if pr["state"] == "merged":
         return _step("recipe_pr", "done", f"Merged in {named}", **link)
     if pr["state"] == "closed":
-        return _step("recipe_pr", "todo", f"{named} was closed without merging: reopen it, or run sbx recipe pr",
+        return _step("recipe_pr", "todo", f"{named} was closed: reopen it",
                      "person", **link)
-    return _step("recipe_pr", "todo", f"Review and merge {named}: it commits .sbx/ to the repository", "person", **link)
+    return _step("recipe_pr", "todo", f"Review and merge {named}", "person", **link)
 
 
 def of(repo: str, email: str) -> dict:

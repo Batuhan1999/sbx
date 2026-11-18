@@ -61,7 +61,7 @@ class Account:
     def status(self):
         from ...connections.base import Field
         return hosted_status(self, configured=bool(self._key), account=self._account, notes=self._notes,
-                             fields=(Field("api_url", "API URL", value=self._url),))
+                             fields=(Field("api_url", "API URL", value=self._url, kind="url"),))
 
     def test(self):
         from ...connections.base import Check

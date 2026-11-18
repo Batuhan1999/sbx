@@ -1,6 +1,6 @@
 import { flexRender, getCoreRowModel, getFilteredRowModel, getSortedRowModel, useReactTable, type ColumnDef, type SortingState } from '@tanstack/react-table'
 import { KeyRound, MoreHorizontal, Search, Trash2, UserPlus } from 'lucide-react'
-import { useId, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { keys, useAction, useMe, useUsers } from '@/api/queries'
 import type { PasswordLink, User, Users } from '@/api/types'
@@ -166,10 +166,9 @@ function RowMenu({ user, self, passwords, actions }: { user: User; self: boolean
 
 function InviteDialog({ onLink, passwords }: { onLink: (l: PasswordLink) => void; passwords: boolean }) {
   const [open, setOpen] = useState(false)
-  const roleId = useId()
-  const add = useAction((v: { email: string; role: Role }) => api.users.add(v.email.trim().toLowerCase(), v.role === 'admin'), keys.users, keys.settings)
+  const add = useAction((v: { email: string; role: string }) => api.users.add(v.email.trim().toLowerCase(), v.role === 'admin'), keys.users, keys.settings)
   const form = useAppForm({
-    defaultValues: { email: '', role: 'member' as Role },
+    defaultValues: { email: '', role: 'member' as string },
     onSubmit: async ({ value }) => {
       const result = await add.mutateAsync(value)
       form.reset(); setOpen(false)
@@ -177,19 +176,13 @@ function InviteDialog({ onLink, passwords }: { onLink: (l: PasswordLink) => void
     },
   })
   return <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) form.reset() }} title="Invite member"
-    description={passwords ? 'You get a link to share. They set their own password with it.' : 'They can sign in with your identity provider right away.'}
+    description={passwords ? 'You get a link they set their password with.' : undefined}
     trigger={<Button variant="primary"><UserPlus />Invite member</Button>}>
     <AppForm form={form} className="space-y-4">
       <form.AppField name="email" validators={{ onSubmit: ({ value }) => emailError(value) }}>
         {field => <field.TextField label="Email" type="email" placeholder="name@example.com" autoComplete="off" autoFocus className="h-9" />}
       </form.AppField>
-      <form.Field name="role">{field => <div>
-        <label htmlFor={roleId} className="mb-1 block text-[12.5px] font-medium">Role</label>
-        <Select value={field.state.value} onValueChange={v => field.handleChange(v as Role)}>
-          <SelectTrigger id={roleId}><SelectValue /></SelectTrigger>
-          <SelectContent>{ROLES.map(r => <SelectItem key={r.value} value={r.value} description={r.description}>{r.title}</SelectItem>)}</SelectContent>
-        </Select>
-      </div>}</form.Field>
+      <form.AppField name="role">{field => <field.RadioField label="Role" options={ROLES.map(r => ({ value: r.value, label: r.title, description: r.description }))} />}</form.AppField>
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
         <SubmitButton form={form}>{passwords ? 'Create invite link' : 'Add member'}</SubmitButton>

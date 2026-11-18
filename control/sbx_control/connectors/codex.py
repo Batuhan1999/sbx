@@ -60,8 +60,8 @@ class Codex(extensions.Connector):
     def status(self) -> Status:
         version = self.settings().version
         return Status(self.kind, self.title, "connected",
-                      "In every sandbox; each developer runs sbx login codex",
-                      {}, (Field("version", "Codex version", value=version),), ("connect",))
+                      "In every sandbox",
+                      {}, (Field("version", "Codex version", value=version, hidden=True),), ("connect",))
 
     def test(self, values: dict | None = None) -> list[Check]:
         return [Check("codex CLI", True, f"version {self.settings().version}, built into every template")]

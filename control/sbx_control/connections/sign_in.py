@@ -12,6 +12,9 @@ from .base import Check, Connection, Field, Refused, Status
 
 
 
+METHODS = (("password", "Passwords"), ("oidc", "Single sign-on (OIDC)"), ("none", "None (private network only)"))
+
+
 def ready() -> bool:
     """Whether people can sign in as the settings say: the OIDC provider's
     values or the password are there, or no sign-in is wanted."""
@@ -46,14 +49,18 @@ class SignIn(Connection):
                        if people else "passwords · nobody has one yet")
         else:
             state, summary = "attention", "none · everyone who reaches this host is an admin"
-        fields = (Field("method", "Method", value=s.method, help="oidc, password or none"),
-                  Field("oidc_issuer", "OIDC issuer", value=s.oidc_issuer),
-                  Field("oidc_client_id", "OIDC client id", value=s.oidc_client_id),
-                  Field("oidc_client_secret", "OIDC client secret", secret=True, set=oidc_secret.set),
-                  Field("allowed_emails", "Who may sign in", value=", ".join(s.allowed_emails),
-                        help="OIDC: patterns such as *@example.com, comma separated; * for anyone the provider "
-                             "admits. The people added under Settings → People may sign in too"))
-        facts = {"method": s.method, "redirect_uri": f"{settings.current().base_url}/auth/callback"}
+        oidc = (("method", ("oidc",)),)
+        fields = (Field("method", "Method", value=s.method, kind="choice", options=METHODS),
+                  Field("oidc_issuer", "Issuer URL", value=s.oidc_issuer, kind="url",
+                        placeholder="https://accounts.google.com", when=oidc),
+                  Field("oidc_client_id", "Client ID", value=s.oidc_client_id, when=oidc),
+                  Field("oidc_client_secret", "Client secret", secret=True, set=oidc_secret.set, when=oidc),
+                  Field("allowed_emails", "Allowed emails", value=", ".join(s.allowed_emails), optional=True,
+                        placeholder="*@example.com", when=oidc,
+                        help="Comma separated; * admits anyone. People under Settings → People always may."))
+        # The redirect URI is what an OIDC provider needs registered: shown only for OIDC.
+        facts = {"method": s.method, **({"redirect_uri": f"{settings.current().base_url}/auth/callback"}
+                                        if s.method == "oidc" else {})}
         return Status(self.kind, self.title, state, summary, facts, fields, ("connect", "test"))
 
     def test(self, values: dict | None = None) -> list[Check]:

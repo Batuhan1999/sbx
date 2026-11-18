@@ -78,6 +78,7 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'More options' }))   // the runtime is rarely changed
     const select = await screen.findByLabelText('Runtime')
     await waitFor(() => expect(select.textContent).toBe('Repository’s choice (Hosted runtime)'))
     await user.type(screen.getByLabelText(/Branch/), 'login')
@@ -93,6 +94,7 @@ describe('with several runtimes', () => {
     })
     renderApp(<NewSandboxForm repo="usememos/memos" />)
     const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'More options' }))
     await waitFor(() => expect(screen.getByLabelText('Runtime').textContent).toBe('Installation default (E2B Embed)'))
     await choose(user, screen.getByLabelText('Runtime'), /^Hosted runtime/)
     await user.type(screen.getByLabelText(/Branch/), 'login')
@@ -136,10 +138,13 @@ describe('first-run setup', () => {
     const list = await screen.findByRole('list', { name: 'Sandbox runtimes' })
     const embed = within(list).getByText('E2B Embed').closest('li')!
     expect(embed.textContent).toContain('On this server')
-    expect(await within(embed).findByText('KVM is available')).toBeTruthy()
+    // Passed checks fold under a count; only a failed one shows with its fix.
+    expect(await within(embed).findByRole('button', { name: 'All 1 passed' })).toBeTruthy()
+    expect(within(embed).queryByText('KVM is available')).toBeNull()
     expect(within(list).getByText('Hosted runtime').closest('li')!.textContent).toContain('The API key was refused')
     expect(within(list).queryByText('Infisical answers')).toBeNull()
-    expect(screen.getByText('Infisical answers')).toBeTruthy()
+    await userEvent.click(within(embed).getByRole('button', { name: 'All 1 passed' }))
+    expect(within(embed).getByText('KVM is available')).toBeTruthy()
     const fetchInit = (vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/runtimes')![1] ?? {}) as RequestInit
     expect((fetchInit.headers as Record<string, string>).authorization).toBe('Setup one-time-token')
     expect(calls.some(c => c.url === '/api/runtimes')).toBe(true)
@@ -149,7 +154,8 @@ describe('first-run setup', () => {
     setSetupToken('one-time-token')  // the setup link's token: GET /api/runtimes takes a sign-in, so it answers 401
     const calls = stubApi({ 'GET /api/setup/checks': CHECKS, 'GET /api/setup': SETUP, 'GET /api/runtimes': () => ({ status: 401, body: { detail: 'sign in' } }) })
     renderApp(<SetupPage />, '/app/setup')
-    expect(await screen.findByText('KVM is available')).toBeTruthy()
+    await userEvent.click(await screen.findByRole('button', { name: 'All 2 passed' }))
+    expect(screen.getByText('KVM is available')).toBeTruthy()
     await waitFor(() => expect(calls.some(c => c.url === '/api/runtimes')).toBe(true))
     expect(screen.queryByText('Sandbox runtimes')).toBeNull()
     expect(screen.getByText('Infisical answers')).toBeTruthy()

@@ -15,6 +15,10 @@ from .base import Check, Connection, Field, Refused, Status
 
 
 
+ACME_OPTIONS = (("delegated", "DNS delegation (no API credentials)"), ("cloudflare", "Cloudflare API"),
+                ("route53", "Amazon Route 53"), ("none", "None (self-signed)"))
+
+
 def live() -> pathlib.Path:
     """Where certbot keeps the certificates tls.sh serves."""
     return paths.tls() / "letsencrypt" / "live"
@@ -31,11 +35,11 @@ class Domain(Connection):
         if not s.name:
             ip_expiry = _ip_expiry(s.address)
             if not s.address:
-                state, summary = "not_connected", "choose this server's IP or connect a domain"
+                state, summary = "not_connected", "No address yet"
             elif ip_expiry and ip_expiry > datetime.datetime.now(datetime.timezone.utc):
                 error = ip_certificate_error()
                 state = "connected" if not error and (ip_expiry - datetime.datetime.now(datetime.timezone.utc)).total_seconds() > 86400 else "attention"
-                summary = f"{s.address} · trusted HTTPS · certificate valid until {ip_expiry:%Y-%m-%d}"
+                summary = f"{s.address} · certificate valid until {ip_expiry:%Y-%m-%d}"
                 if error:
                     summary += " · renewal needs attention"
                     facts["certificate_error"] = error
@@ -49,17 +53,19 @@ class Domain(Connection):
             days = (expiry - datetime.datetime.now(datetime.timezone.utc)).days
             facts["certificate_expires"] = expiry.strftime("%Y-%m-%d")
             state = "connected" if days > 14 else "attention"
-            summary = f"{s.name} · certificate valid until {expiry:%Y-%m-%d} · {s.acme}"
+            summary = f"{s.name} · certificate valid until {expiry:%Y-%m-%d}"
         aws = vault.facts(vault.AWS_ACCESS_KEY_ID)
         cf = vault.facts(vault.CLOUDFLARE_API_TOKEN)
-        fields = (Field("name", "Domain", value=s.name),
-                  Field("acme_email", "Certificate email", value=s.acme_email),
-                  Field("acme", "How the certificate is issued", value=s.acme,
-                        help="delegated (one NS record, no credential), route53, cloudflare, or none (self-signed)"),
-                  Field("aws_access_key_id", "AWS access key id", value="" if not aws.set else "(set)",
-                        help="route53 off EC2; on EC2 the instance role is used"),
-                  Field("aws_secret_access_key", "AWS secret access key", secret=True, set=vault.facts(vault.AWS_SECRET_ACCESS_KEY).set),
-                  Field("cloudflare_api_token", "Cloudflare API token", secret=True, set=cf.set))
+        route53 = (("acme", ("route53",)),)
+        fields = (Field("name", "Domain", value=s.name, kind="hostname", placeholder="sbx.example.com"),
+                  Field("acme_email", "Certificate email", value=s.acme_email, kind="email"),
+                  Field("acme", "Certificate verification", value=s.acme, kind="choice", options=ACME_OPTIONS),
+                  Field("cloudflare_api_token", "Cloudflare API token", secret=True, set=cf.set,
+                        when=(("acme", ("cloudflare",)),)),
+                  Field("aws_access_key_id", "AWS access key ID", value="" if not aws.set else "(set)", optional=True,
+                        help="Empty uses the server's instance role.", when=route53),
+                  Field("aws_secret_access_key", "AWS secret access key", secret=True, optional=True,
+                        set=vault.facts(vault.AWS_SECRET_ACCESS_KEY).set, when=route53))
         return Status(self.kind, self.title, state, summary, facts, fields, ("connect", "test"))
 
     def test(self, values: dict | None = None) -> list[Check]:

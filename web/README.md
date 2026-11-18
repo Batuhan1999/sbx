@@ -16,8 +16,17 @@ Every form that takes user input uses TanStack Form through
 
 - Create the form with `useAppForm({ defaultValues, onSubmit })` and render it
   in `AppForm`.
-- Add inputs with `form.AppField` and its `TextField`, `TextareaField`,
-  `SelectField` or `CheckboxField`. Validation, required fields included, lives
+- Add inputs with `form.AppField` and the control that fits the value:
+  `TextField` (with `type` email, url or password), `TextareaField` for
+  several lines, `NumberField` (min, max, step, unit), `SelectField` or
+  `RadioField` for a known set, `SwitchField` or `CheckboxField` for a boolean,
+  `ToggleField` for a "true"/"false" text. A field the server describes
+  (connection fields, package inputs, runtime settings) takes its control from
+  the server's metadata (`kind`/`type`, `options`, `min`/`max`), not a guess.
+- Show only what a person sets. Rarely changed fields go under `MoreOptions`;
+  pinned, internal or operator-only ones stay out of the form (the server
+  marks them `hidden`) and are set through the API and CLI. A saved secret's
+  empty field says `SECRET_KEPT`. Validation, required fields included, lives
   in the field's validators; use `onChangeListenTo` when one field's validity
   depends on another.
 - Errors show after blur or a submit attempt and clear while the value is being

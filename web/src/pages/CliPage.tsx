@@ -2,7 +2,7 @@ import { api } from '@/api/endpoints'
 import { useAgents, useMe } from '@/api/queries'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { passwordError } from '@/lib/validation'
-import { AgentSetupCommands, agentWords } from '@/components/AgentSetup'
+import { AgentSetupCommands } from '@/components/AgentSetup'
 import { CopyCommand } from '@/components/CopyCommand'
 import { PageHeader } from '@/components/PageHeader'
 import { Panel } from '@/components/ui/primitives'
@@ -22,15 +22,15 @@ export default function CliPage() {
   const agents = useAgents()
   const base = me.data?.base_url || location.origin
   return <div className="max-w-3xl">
-    <PageHeader title="CLI & access" description="The sbx CLI is how you and your coding agent work with this server from a repository checkout." />
+    <PageHeader title="CLI & access" />
     <div className="space-y-4">
-      <Panel title="1. Install and sign in" description="On macOS. Needs websocat for SSH; sbx doctor checks.">
+      <Panel title="1. Install and sign in" description="macOS only.">
         <div className="space-y-2">
           <CopyCommand command={`curl -fsSL ${base}/install | sh`} label="install command" />
           <CopyCommand command="sbx login" label="sign in command" />
         </div>
       </Panel>
-      <Panel title="2. Set a repository up with your agent" description={`In a checkout: starts ${agentWords(agents)} with this server's setup brief. It writes .sbx/, tries it in a sandbox and opens a pull request.`}>
+      <Panel title="2. Set a repository up with your agent" description="In a checkout.">
         <AgentSetupCommands agents={agents} />
       </Panel>
       <Panel title="3. Every day" bodyClassName="p-0">
@@ -56,7 +56,7 @@ function ChangePassword() {
       </form.AppField>
       <div className="grid gap-3 sm:grid-cols-2">
         <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>
-          {field => <field.TextField label="New password" type="password" autoComplete="new-password" help="At least 8 characters." />}
+          {field => <field.TextField label="New password" type="password" autoComplete="new-password" placeholder="8+ characters" />}
         </form.AppField>
         <form.AppField name="confirm" validators={{ onChangeListenTo: ['password'], onChange: ({ value, fieldApi }) => !value ? 'Repeat the password.' : value !== fieldApi.form.getFieldValue('password') ? 'The passwords differ.' : undefined }}>
           {field => <field.TextField label="Repeat new password" type="password" autoComplete="new-password" />}

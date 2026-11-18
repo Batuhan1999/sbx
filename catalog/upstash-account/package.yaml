@@ -7,12 +7,12 @@ description: >
 docs: https://upstash.com/docs/devops/developer-api/authentication
 inputs:
   email:
+    type: email
     required: true
-    help: The email used for Upstash Developer API authentication.
   api_key:
     required: true
     secret: true
-    help: Developer API key with database create, read credentials, and delete access.
+    help: "A Developer API key that can create and delete databases."
 check: |
   python3 - <<'CHECK'
   import base64, json, os, sys

@@ -42,7 +42,7 @@ function Version({ data }: { data: UpdatesView }) {
     : !data.check ? <Badge>Not checked</Badge>
     : data.check_error ? <Badge tone="warn">Check failed</Badge>
     : data.checked_at ? <Badge tone="ok">Up to date</Badge> : <Badge>Not checked yet</Badge>
-  return <Panel title="Version" description="sbx installs a newer release with its own install.sh: settings are kept, the state is backed up first and running sandboxes keep running."
+  return <Panel title="Version"
     actions={data.check && <Button size="sm" busy={busy} onClick={async () => {
       setBusy(true); setError(null)
       try { qc.setQueryData(keys.updates, await api.updates.check()) } catch (e) { setError(e) } finally { setBusy(false) }
@@ -225,7 +225,7 @@ function Install({ latest, disabled }: { latest: string; disabled: boolean }) {
   return <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) setError(null) }}
     trigger={<Button size="sm" variant="primary" disabled={disabled}>Update to {latest}</Button>}
     title={`Update to ${latest}?`}
-    description="sbx-control stops, backs up its state and restarts on the new release, which takes a few minutes; this page follows it. Settings are kept and running sandboxes keep running."
+    description="Takes a few minutes. Settings and running sandboxes are kept."
     footer={<>
       <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
       <Button variant="primary" busy={busy} disabled={disabled} onClick={async () => {
@@ -233,6 +233,6 @@ function Install({ latest, disabled }: { latest: string; disabled: boolean }) {
         try { qc.setQueryData(keys.updates, await api.updates.install(latest)); setOpen(false) } catch (e) { setError(e) } finally { setBusy(false) }
       }}>Update now</Button>
     </>}>
-    {error ? <ErrorState error={error} compact /> : <p className="text-[13px] text-muted">The host refuses before changing anything when the release would recreate the sandbox runtime under existing sandboxes.</p>}
+    {error ? <ErrorState error={error} compact /> : null}
   </Dialog>
 }

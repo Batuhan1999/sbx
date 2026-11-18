@@ -210,7 +210,7 @@ class RecipePrTests(Server):
         self.launched()
         self.assertEqual(self.github.pulls, [])
         self.assertEqual(self.step()["status"], "done")
-        self.assertEqual(self.step()["detail"], "The default branch has this recipe already")
+        self.assertEqual(self.step()["detail"], "Already on the default branch")
 
     def test_an_imported_recipe_is_the_repositorys_and_gets_no_pr(self):
         from sbx_control import recipes, settings

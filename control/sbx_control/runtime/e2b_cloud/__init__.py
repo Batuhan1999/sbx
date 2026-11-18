@@ -44,7 +44,7 @@ LIMITS = (
 )
 SETTINGS = (
     SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
-    SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True,
+    SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True, hidden=True,
                  help="Only for a self-hosted E2B."),
     *limit_settings(LIMITS),
 )
@@ -243,7 +243,7 @@ class Cloud(Compute):
         from ...connections.base import Field
         # The plan's limit is the E2B team's, which other installations on the same key share.
         return hosted_status(self, configured=bool(self._connection.get("api_key")), facts={"domain": self.domain},
-                             fields=(Field("domain", "Domain", value=self.domain),),
+                             fields=(Field("domain", "Domain", value=self.domain, kind="hostname"),),
                              limit_note=" (the plan runs {most} at once per E2B team)")
 
     def test(self):

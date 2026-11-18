@@ -323,6 +323,44 @@ class CatalogTests(Server):
             with self.subTest(why), self.assertRaisesRegex(self.catalog.PackageError, "input a"):
                 self.catalog.parse("budget", {"package.yaml": "kind: connection\ninputs:\n" + line}, "repo")
 
+    def test_an_input_says_what_it_holds_and_values_are_checked_against_it(self):
+        spec = ("kind: connection\ninputs:\n"
+                "  budget: {type: integer, min: 20, default: '20'}\n"
+                "  limit: {type: number, min: 0}\n"
+                "  data: {default: 'false'}\n"
+                "  email: {type: email}\n"
+                "  url: {type: url, advanced: true}\n"
+                "  name: {}\n")
+        package = self.catalog.parse("typed", {"package.yaml": spec}, "repo")
+        inputs = package.as_dict()["inputs"]
+        self.assertEqual({k: v["type"] for k, v in inputs.items()},
+                         {"budget": "integer", "limit": "number", "data": "boolean", "email": "email", "url": "url", "name": "text"})
+        self.assertEqual((inputs["budget"]["min"], inputs["url"]["advanced"]), (20, True))
+        self.assertNotIn("advanced", inputs["name"])
+        self.assertEqual(package.with_defaults({"limit": "2.5", "email": "ops@example.com", "url": "https://x.example"}, "x")["budget"], "20")
+        refused = {"budget": "19", "limit": "lots", "data": "yes", "email": "ops", "url": "x.example"}
+        for name, value in refused.items():
+            with self.subTest(name), self.assertRaisesRegex(self.catalog.PackageError, f"x: {name} is"):
+                package.with_defaults({name: value}, "x")
+        bad = {
+            "an unknown type": "  a: {type: color}\n",
+            "a type with choices": "  a: {type: integer, choices: ['1', '2']}\n",
+            "a bound on text": "  a: {min: 1}\n",
+            "a default outside the bounds": "  a: {type: integer, min: 5, default: '1'}\n",
+        }
+        for why, line in bad.items():
+            with self.subTest(why), self.assertRaisesRegex(self.catalog.PackageError, "input a"):
+                self.catalog.parse("typed", {"package.yaml": "kind: connection\ninputs:\n" + line}, "repo")
+
+    def test_the_shipped_packages_parse_with_their_input_types(self):
+        root = Path(__file__).resolve().parents[2] / "catalog"
+        for folder in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")):
+            files = {str(f.relative_to(folder)): f.read_text() for f in folder.rglob("*") if f.is_file()}
+            with self.subTest(folder.name):
+                package = self.catalog.parse(folder.name, files, "shipped")
+                for spec in package.inputs.values():
+                    self.assertIn(spec["type"], self.catalog.INPUT_TYPES)
+
     def recipe(self, repo, text):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (directory / repo / ".sbx").mkdir(parents=True)

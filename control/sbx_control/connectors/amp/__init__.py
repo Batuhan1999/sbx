@@ -268,12 +268,13 @@ class Amp(extensions.Connector):
         state = "not_connected" if not token.set else "off" if not amp.enabled else "attention"
         if token.set and amp.enabled and active():
             state = "connected"
-        summary = {"not_connected": "In every template; needs its provider token"
+        summary = {"not_connected": "Needs its provider token"
                    if amp.chosen else "Needs a provider token",
-                   "off": "Provider stopped; existing orb disks are retained",
-                   "attention": "Provider configured; check its service and Amp connection",
-                   "connected": "Provider running · verify its connection in Amp Settings → Orbs"}[state]
-        return Status(self.kind, self.title, state, summary, {}, (
+                   "off": "Off",
+                   "attention": "Provider not running",
+                   "connected": "Provider running"}[state]
+        # chosen: in every template already (the setup chose it), so it is listed as added, waiting on its token.
+        return Status(self.kind, self.title, state, summary, {"chosen": True} if amp.chosen else {}, (
             Field("provider_token", "Orb provider token", secret=True, set=token.set,
                   help="From Amp Settings → Orbs → Add Provider"),
         ), ("connect", "test", "disconnect"))

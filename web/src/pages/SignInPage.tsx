@@ -26,7 +26,7 @@ export default function SignInPage() {
       await new Promise(() => {}) // stay busy while the browser navigates
     },
   })
-  return <AuthFrame title="Sign in" description="With the email and password for this server.">
+  return <AuthFrame title="Sign in">
     <AppForm form={form} className="space-y-4">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>
         {field => <field.TextField label="Email" type="email" autoComplete="username" autoFocus />}

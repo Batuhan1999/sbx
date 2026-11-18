@@ -45,7 +45,7 @@ describe('Settings → Shared servers', () => {
     })
     renderApp(<Endpoints />)
     const s = await section()
-    expect(await within(s).findByText('Let sandboxes at E2B Cloud reach your servers.')).toBeTruthy()
+    expect(await within(s).findByText('For sandboxes at E2B Cloud.')).toBeTruthy()
     const list = within(s).getByRole('list')
     const pg = within(list).getByText('dev-pg.example.com').closest('li')!
     expect(within(pg).getByText('Shared')).toBeTruthy()
@@ -88,7 +88,6 @@ describe('Settings → Shared servers', () => {
     const confirm = screen.getByRole('region', { name: 'Share dev-pg?' })
     expect(within(confirm).getByTestId('endpoint-address').textContent).toBe('dev-pg.db.example.com')
     expect(confirm.textContent).toContain('Reachable over the internet, only by sandboxes of repositories dev-pg is attached to.')
-    expect(confirm.textContent).toContain("Each sandbox has its own certificate, and the service's login still applies.")
     noPort()
     await user.click(within(confirm).getByRole('button', { name: 'Share' }))
     expect(calls.find(c => c.method === 'POST')).toMatchObject({ url: '/api/endpoints', body: { server: 'dev-pg' } })

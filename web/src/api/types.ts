@@ -180,11 +180,13 @@ export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
-export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname'; optional: boolean; limit: string; rekey?: boolean
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname' | 'url'; optional: boolean; limit: string; rekey?: boolean
   /** A hostname's pattern, the server's own (runtime.base.HOSTNAME). */
   pattern?: string
   /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
-  min?: number | null; max?: number | null; step?: number | null; unit?: string }
+  min?: number | null; max?: number | null; step?: number | null; unit?: string
+  /** An operator's rare setting: set through the API and CLI (sbx runtimes set), no form field. */
+  hidden?: boolean }
 /** adjustable: keys the plan does not fix (no published number), set from values; note says why. */
 export type RuntimePreset = { name: string; title: string; values: Record<string, string>; source: string; adjustable?: string[]; note?: string }
 /** A runtime an installed package provides, enabled or not (GET /api/runtimes/available, admins). */
@@ -389,10 +391,14 @@ export type EnvView = {
 export type EnvChange = { running: number; paused: number; pending?: boolean; detail?: string }
 export type SetVariable = { value: string | null; secret?: boolean | null; audience?: Audience; agent?: boolean; mine?: boolean; restart?: boolean }
 
-/** label: the field's name for people; choices: the only values allowed, in order, each with its label. */
+/** label: the field's name for people; choices: the only values allowed, in order, each with its label; type: what
+ * it holds (min/max for numbers); advanced: folded under More options. */
 export type PackageInput = {
   required: boolean; secret: boolean; agent: boolean; help: string; default?: string
   label?: string; choices?: { value: string; label: string }[]
+  type?: 'text' | 'number' | 'integer' | 'boolean' | 'email' | 'url'; min?: number; max?: number; advanced?: boolean
+  /** An operator's input: set through the API and CLI, no form field. */
+  hidden?: boolean
 }
 export type CatalogPackage = {
   name: string
@@ -437,7 +443,16 @@ export type AttachBody = { package: string; key?: string; inputs: Record<string,
 
 // Connections: platform connections and agent connectors share one shape.
 export type ConnectionState = 'connected' | 'attention' | 'not_connected' | 'off'
-export type ConnectionField = { name: string; label: string; secret: boolean; set: boolean; value: string | null; help: string }
+/** What a connection field holds, so the form draws the right control (connections/base.py FieldKind). */
+export type ConnectionFieldKind = 'text' | 'multiline' | 'int' | 'email' | 'url' | 'hostname' | 'choice' | 'bool'
+/** advanced: folded under More options; hidden: API and CLI only, no form field; when: shown only while each named
+ * field has one of the values. */
+export type ConnectionField = {
+  name: string; label: string; secret: boolean; set: boolean; value: string | null; help: string
+  kind?: ConnectionFieldKind; options?: { value: string; label: string }[]
+  min?: number | null; max?: number | null; step?: number | null; unit?: string; placeholder?: string
+  optional?: boolean; advanced?: boolean; hidden?: boolean; when?: Record<string, string[]>
+}
 export type Connection = {
   kind: string
   title: string

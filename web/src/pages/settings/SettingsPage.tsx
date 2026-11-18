@@ -17,16 +17,17 @@ import { People } from './People'
 import { Runtimes } from './Runtimes'
 import { Updates } from './Updates'
 import { toast } from 'sonner'
+import { numberError } from '@/lib/validation'
 
 const SECTIONS = { general: 'General', people: 'People', updates: 'Updates' } as const
 
 export default function SettingsPage() {
   const { section = 'general' } = useParams()
   const me = useMe()
-  if (me.data && !me.data.admin) return <><PageHeader title="Settings" /><EmptyState title="Admins only">Ask an admin of this server to change its settings.</EmptyState></>
+  if (me.data && !me.data.admin) return <><PageHeader title="Settings" /><EmptyState title="Admins only" /></>
   if (!(section in SECTIONS)) return <Navigate to="/app/settings/general" replace />
   return <>
-    <PageHeader title="Settings" description="This server: its address, sign-in, sandbox defaults, who has access and its release." />
+    <PageHeader title="Settings" />
     <NavTabs label="Settings sections" tabs={Object.entries(SECTIONS).map(([id, label]) => ({ to: `/app/settings/${id}`, label }))} />
     {section === 'general' && <General />}
     {section === 'people' && <PeopleSection />}
@@ -62,13 +63,13 @@ function SandboxDefaults({ settings }: { settings: Settings }) {
     defaultValues: { days: String(current.paused_days ?? 3), detected: current.detected_previews ?? 'owner' },
     onSubmit: async ({ value }) => { await save.mutateAsync({ paused_days: Number(value.days), detected_previews: value.detected }); toast.success('Sandbox defaults saved') },
   })
-  return <Panel title="Sandboxes" description="Defaults for every repository.">
+  return <Panel title="Sandboxes">
     <AppForm form={form} className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <form.AppField name="days" validators={{ onChange: ({ value }) => /^\d+(\.\d+)?$/.test(value) ? undefined : 'Enter a number of days; 0 keeps paused sandboxes.' }}>
-          {field => <field.TextField label="Delete after paused (days)" inputMode="decimal" help="With their service resources. 0 keeps them." />}
+        <form.AppField name="days" validators={{ onChange: ({ value }) => numberError(value, { min: 0 }) }}>
+          {field => <field.NumberField label="Delete paused sandboxes after" min={0} step={0.5} unit="days" help="0 keeps them." />}
         </form.AppField>
-        <form.AppField name="detected">{field => <field.SelectField label="Detected previews" help="Links for servers the recipe does not declare.">
+        <form.AppField name="detected">{field => <field.SelectField label="Undeclared previews" help="Links for servers the recipe doesn’t name.">
           <option value="owner">Owner only</option><option value="team">Everyone signed in</option><option value="off">Off</option>
         </field.SelectField>}</form.AppField>
       </div>
@@ -95,7 +96,7 @@ function PublicRepos({ settings }: { settings: Settings }) {
       <div className="flex items-center justify-between gap-6 p-4">
       <label htmlFor={id} className="min-w-0 cursor-pointer space-y-0.5">
         <span className="block text-[13.5px] font-medium">Serve any public repository</span>
-        <span id={`${id}-hint`} className="block text-[12.5px] text-muted">Anyone signed in can start a sandbox from a public repository. It runs untrusted: cloned anonymously, with no secrets or services.</span>
+        <span id={`${id}-hint`} className="block text-[12.5px] text-muted">Untrusted: no secrets or services.</span>
       </label>
       <Switch id={id} checked={checked} disabled={save.isPending} aria-describedby={`${id}-hint`} onCheckedChange={v => save.mutate(v, { onSuccess: () => toast.success(v ? 'Public repositories are served' : 'Public repositories are no longer served') })} />
     </div>

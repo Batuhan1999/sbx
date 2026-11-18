@@ -159,5 +159,20 @@ class WebApiTests(Server):
         self.assertEqual({listed[k]["group"] for k in ("domain", "sign_in", "github")}, {"platform"})
         self.assertEqual(listed["claude"]["group"], "agent")
         shown = {d["label"]: d["value"] for d in listed["sign_in"]["display"]}
-        self.assertTrue(shown["Redirect uri"].endswith("/auth/callback"))
+        self.assertNotIn("Redirect uri", shown)   # only OIDC needs it registered
         self.assertNotIn("Method", shown)  # the summary already says it: one shared password
+
+    def test_connection_fields_say_what_control_they_need(self):
+        listed = {c["kind"]: c for c in self.client.get("/api/connections").json()["connections"]}
+        fields = lambda kind: {f["name"]: f for f in listed[kind]["fields"]}
+        sign_in, domain, github = fields("sign_in"), fields("domain"), fields("github")
+        self.assertEqual(sign_in["method"]["kind"], "choice")
+        self.assertEqual([o["value"] for o in sign_in["method"]["options"]], ["password", "oidc", "none"])
+        self.assertEqual((sign_in["oidc_issuer"]["kind"], sign_in["oidc_issuer"]["when"]), ("url", {"method": ["oidc"]}))
+        self.assertEqual((domain["name"]["kind"], domain["acme_email"]["kind"], domain["acme"]["kind"]), ("hostname", "email", "choice"))
+        self.assertEqual(domain["cloudflare_api_token"]["when"], {"acme": ["cloudflare"]})
+        self.assertTrue(domain["login_host"]["hidden"])
+        self.assertTrue(all(f["hidden"] for f in github.values()))   # the App manifest fills them: API and CLI only
+        self.assertNotIn("owner", github)   # the App manifest's organization is its own form, not a value saved here
+        self.assertTrue(fields("codex")["version"]["hidden"])   # pinned by sbx: settable with the CLI, no form field
+        self.assertTrue(fields("claude")["version"]["hidden"])
