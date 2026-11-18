@@ -80,7 +80,11 @@ export default function SetupPage() {
   useEffect(() => { if (s && !step) setStep(first) }, [s, step, first])
   // The move waits while something is typed; it happens at the next step, or the next poll with nothing typed.
   useEffect(() => { if (s && (current === 'address' || !typing())) moveToOwnAddress(s, current) }, [s, current])
-  useEffect(() => { if (runtimeDone) void qc.invalidateQueries({ queryKey: keys.templates }) }, [runtimeDone, qc])
+  // A runtime added anywhere (this page, the CLI, an agent): the lists and the builds follow.
+  useEffect(() => {
+    if (!runtimeDone) return
+    for (const key of [keys.templates, keys.runtimesAvailable, keys.runtimes]) void qc.invalidateQueries({ queryKey: key })
+  }, [runtimeDone, qc])
   const go = (to: Step) => { if (!s || !moveToOwnAddress(s, to)) setStep(to) }
   return <div className="flex min-h-dvh flex-col">
     <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-panel px-4 sm:px-8">
