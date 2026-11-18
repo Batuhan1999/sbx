@@ -266,7 +266,7 @@ class Settings(BaseModel):
     @property
     def reserved_names(self) -> set:
         """Sandbox names a host of the installation's own would collide with."""
-        return {self.domain.login_host, "sandbox", *self.proxied.services}
+        return {self.domain.login_host, "login", "sandbox", *self.proxied.services}   # login: tls.sh's fallback
 
     def serves(self, repo: str) -> bool:
         return any(fnmatch.fnmatchcase(repo, pattern.lower()) for pattern in self.repos)

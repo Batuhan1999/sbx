@@ -276,6 +276,20 @@ server {
   include /etc/nginx/conf.d/control.inc;
 }
 
+# Where sbx-control was before app.<domain>: a browser goes on to it; a CLI
+# installed from here, which follows a redirect only for a GET, gets why its
+# call failed and the fix, as the error it prints. Remove after a few releases.
+server {
+  listen $https_listen;
+  http2 on;
+  server_name login.$domain;
+  location ~ ^/(api|cli)/ {
+    default_type application/json;
+    return 410 '{"detail": "sbx-control moved to https://$login. Reinstall sbx from there: curl -fsSL https://$login/install | sh"}';
+  }
+  location / { return 308 https://$login\$request_uri; }
+}
+
 # Sandboxes: every other name under the domain.
 server {
   listen $https_listen $preview_default;
