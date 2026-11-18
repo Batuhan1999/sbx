@@ -333,13 +333,13 @@ def key_permissions(directory):
         (directory / f"ssh_host_{kind}_key.pub").chmod(0o644)
 
 
-def listener_pid():
+def listener_pid(timeout=10):
     """sshd's pid: systemd's ssh.service, or the standalone sshd START runs
     where there is no systemd."""
     pid = 0
     if Path("/proc/1/comm").read_text().strip() == "systemd":
         service = subprocess.run(["systemctl", "show", "ssh.service", "--property=MainPID", "--value"],
-                                 capture_output=True, text=True, check=True, timeout=10)
+                                 capture_output=True, text=True, check=True, timeout=timeout)
         pid = int(service.stdout.strip())
     if pid <= 1:
         pid = int(Path("/run/sshd.pid").read_text().strip())
@@ -348,10 +348,15 @@ def listener_pid():
     return pid
 
 
-def restart_listener():
-    """Start sshd again: systemd's ssh.service, or the standalone one."""
+def restart_listener(timeout=60):
+    """Start sshd again: systemd's ssh.service, or the standalone one, within
+    about timeout seconds."""
+    end = time.monotonic() + timeout
+
+    def left(most):
+        return max(0.1, min(most, end - time.monotonic()))
     if Path("/proc/1/comm").read_text().strip() == "systemd":
-        subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=30,
+        subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=left(30),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         try:
@@ -373,10 +378,11 @@ def restart_listener():
                 pass
             finally:
                 os.close(handle)
-            if not wait_until(lambda: exited(old), 15):   # it holds the port until it exits
+            if not wait_until(lambda: exited(old), left(15)):   # it holds the port until it exits
                 raise GuestError("workspace SSH listener did not stop")
-        subprocess.run(["/usr/sbin/sshd"], check=True, timeout=30)
-    if not wait_until(lambda: listener_alive(), 15):
+        subprocess.run(["/usr/sbin/sshd"], check=True, timeout=left(30))
+    # Each look is bounded by what is left, so the last one does not overrun it.
+    if not wait_until(lambda: listener_alive(timeout=left(10)), left(15)):
         raise GuestError("workspace SSH listener did not start again")
 
 
@@ -389,10 +395,76 @@ def exited(pid):
     return False
 
 
-def listener_alive():
+def listener_alive(timeout=10):
     try:
-        return str((PROC / str(listener_pid()) / "exe").resolve()) == "/usr/sbin/sshd"
+        return str((PROC / str(listener_pid(timeout=timeout)) / "exe").resolve()) == "/usr/sbin/sshd"
     except (OSError, ValueError, subprocess.SubprocessError, GuestError):
+        return False
+
+
+class SessionOpen(GuestError):
+    """Someone has an SSH session: a fresh identity is refused, not waited for."""
+
+
+IDENTITY_SECONDS = 100   # within initialize_ssh_identity's 120 s command, with room to start and persist
+SETTLE_SECONDS = 60      # for sshd to come back before the keys are replaced
+KEYS_SECONDS = 15        # kept back for sshd to show its fresh key
+
+
+def settled_listener(deadline, unwatched):
+    """(pid, pidfd) of the workspace's sshd. A runtime's own agent may be
+    restarting services, sshd among them, while a VM resumes from a snapshot
+    (slower the more start at once): a listener that is briefly gone or not
+    sshd is looked at again, with a growing pause and one last look at the
+    deadline (time.monotonic()). One that is still not sshd then is refused,
+    so only sshd ever gets the workspace's keys or its signal; the pidfd
+    keeps a pid that is reused after this check from getting it either.
+    unwatched() raises while anyone has an SSH session, before sshd is
+    restarted; past the deadline it is only looked at, never restarted."""
+    pause, restarted = 0.2, False
+    while True:
+        handle = None
+        try:
+            pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+            if (not restarted and deadline > time.monotonic()
+                    and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
+                # sshd started before its binary was replaced (an upgrade, a disk
+                # restored under a running VM): no session yet, so start it again
+                # from the binary there now.
+                unwatched()
+                # Looked at again: the runtime may have put a healthy sshd
+                # there meanwhile, which is left running.
+                pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+                if (deadline > time.monotonic()
+                        and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
+                    restarted = True   # one attempt, counted once it begins
+                    restart_listener(timeout=deadline - time.monotonic())
+                    pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+            handle = os.pidfd_open(pid)
+            if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd":
+                return pid, handle
+            refusal = GuestError("workspace SSH listener identity changed")
+        except SessionOpen:
+            raise
+        except GuestError as error:
+            refusal = error
+        except (OSError, ValueError, subprocess.SubprocessError):   # between two sshds: no pid, or one gone already
+            refusal = GuestError("workspace SSH listener is not running")
+        if handle is not None:
+            os.close(handle)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise refusal
+        time.sleep(min(pause, left))
+        pause = min(pause * 2, 5)
+
+
+def reload_keys(handle):
+    """SIGHUP: sshd reads its host keys again. False when it is gone."""
+    try:
+        signal.pidfd_send_signal(handle, signal.SIGHUP)
+        return True
+    except ProcessLookupError:
         return False
 
 
@@ -416,49 +488,83 @@ def identity(workspace, ssh_port):
                 if not wait_until(lambda: serves(recorded), 15):
                     raise GuestError("workspace SSH listener does not serve its identity")
             return
-        sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
-                                  capture_output=True, text=True, check=True, timeout=10)
-        if sessions.stdout.strip():
-            raise GuestError("fresh workspace has an unexpected SSH session")
-        pid = listener_pid()
-        if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)":
-            # sshd started before its binary was replaced (an upgrade, a disk
-            # restored under a running VM): no session yet, so start it again
-            # from the binary there now.
-            restart_listener()
-            pid = listener_pid()
-        handle = os.pidfd_open(pid)
+        # One budget for every wait below, so the identity is ready (or
+        # refused) before the command that runs this gives up on it.
+        deadline = time.monotonic() + IDENTITY_SECONDS
+
+        def unwatched():
+            # Always ahead of a step that needs KEYS_SECONDS after it: never eats into them.
+            sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
+                                      capture_output=True, text=True, check=True,
+                                      timeout=max(0.1, min(10, deadline - KEYS_SECONDS - time.monotonic())))
+            if sessions.stdout.strip():
+                raise SessionOpen("fresh workspace has an unexpected SSH session")
+        unwatched()
+        pid, handle = settled_listener(min(time.monotonic() + SETTLE_SECONDS, deadline - KEYS_SECONDS), unwatched)
         try:
-            if str((PROC / str(pid) / "exe").resolve()) != "/usr/sbin/sshd":
-                raise GuestError("workspace SSH listener identity changed")
             ticks = start_ticks(pid)
-            write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
             with tempfile.TemporaryDirectory(prefix=".sbx-hostkeys-", dir=SSH) as temporary:
                 temporary = Path(temporary)
                 for kind in HOST_KEYS:
                     subprocess.run(["ssh-keygen", "-q", "-t", kind, "-N", "", "-f", str(temporary / f"ssh_host_{kind}_key")],
-                                   check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=30)
+                                   check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=max(1, min(30, deadline - KEYS_SECONDS - time.monotonic())))
                 key_permissions(temporary)
+                # sshd may have taken a session while it was waited for or the
+                # keys were made: looked at last, just before they replace its own.
+                unwatched()
+                if time.monotonic() >= deadline - KEYS_SECONDS:   # live keys left alone
+                    raise GuestError("no time left for the workspace SSH listener to take its fresh identity")
+                write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
                 for path in temporary.iterdir():
                     os.replace(path, SSH / path.name)
-            if start_ticks(pid) != ticks:
-                raise GuestError("workspace SSH listener changed during initialization")
-            signal.pidfd_send_signal(handle, signal.SIGHUP)
+            reloaded = start_ticks(pid) == ticks and reload_keys(handle)
         finally:
             os.close(handle)
         expected = public.read_text().split()[:2]
-        if not wait_until(lambda: serves(expected), 15):
+        fresh = [(SSH / f"ssh_host_{kind}_key.pub").read_text().split()[:2] for kind in HOST_KEYS]
+        while not reloaded:
+            # sshd started again while its keys were replaced (a runtime's
+            # agent restarting services): the one there now, checked the same
+            # way, reads them, unless it started with them already. One that
+            # is gone again before its signal is looked for again. Every key
+            # type is checked: one that started between two replacements
+            # serves a fresh ed25519 key and an old one of another type.
+            pid, handle = settled_listener(deadline - KEYS_SECONDS, unwatched)
+            try:
+                try:
+                    served = serves_all(fresh)
+                except subprocess.TimeoutExpired:   # inconclusive: signal it and look again below
+                    served = False
+                reloaded = served or reload_keys(handle)
+            finally:
+                os.close(handle)
+            if not reloaded and time.monotonic() >= deadline - KEYS_SECONDS:
+                raise GuestError("workspace SSH listener kept restarting while it took its fresh identity")
+        def adopted():
+            try:   # each scan bounded by what is left; one that times out is looked at again
+                return serves(expected, timeout=max(0.1, min(3, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                return False
+        if not wait_until(adopted, max(1, deadline - time.monotonic())):
             raise GuestError("workspace SSH listener did not adopt its fresh identity")
         keep_host_keys()
         write_json(IDENTITY, {"workspace_id": workspace, "phase": "ready", "ed25519_public": expected})
 
 
-def serves(expected):
+def serves(expected, timeout=3):
     """Whether sshd on this machine answers with the ed25519 key expected."""
     scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", "ed25519", "127.0.0.1"],
-                             capture_output=True, text=True, timeout=3)
+                             capture_output=True, text=True, timeout=timeout)
     return any(line.split()[1:3] == expected for line in scanned.stdout.splitlines() if not line.startswith("#"))
+
+
+def serves_all(expected, timeout=3):
+    """Whether sshd on this machine answers with every [type, key] expected."""
+    scanned = subprocess.run(["ssh-keyscan", "-T", "1", "-t", ",".join(HOST_KEYS), "127.0.0.1"],
+                             capture_output=True, text=True, timeout=timeout)
+    found = [line.split()[1:3] for line in scanned.stdout.splitlines() if not line.startswith("#")]
+    return all(key in found for key in expected)
 
 
 def keep_host_keys():

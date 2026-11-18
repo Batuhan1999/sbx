@@ -29,4 +29,9 @@ def amp_job(body: dict, request: Request):
                 f"{pathlib.Path(frame.filename).name}:{frame.lineno}:{frame.name}" for frame in frames]})
             cause = cause.__cause__ or cause.__context__
         state.event(orbs.sandbox_name(str(body.get("ORB_ID", "unknown"))), "Amp job failed", json.dumps(causes))
-        raise HTTPException(503, "Amp job failed; inspect the sandbox lifecycle and app logs in sbx") from None
+        detail = "Amp job failed; inspect the sandbox lifecycle and app logs in sbx"
+        headers = None
+        if isinstance(error, orbs.SpawnNotCleanedUp):
+            detail += "; " + str(error)
+            headers = {orbs.ERROR_CODE: orbs.SpawnNotCleanedUp.code}
+        raise HTTPException(503, detail, headers=headers) from None
