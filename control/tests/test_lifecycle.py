@@ -682,10 +682,10 @@ class LifecycleTests(Installation):
     class CleanupVM(FakeVM):
         """A VM whose .sbx/cleanup prints or fails as told; it records the commands that ran it."""
 
-        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env="", env=""):
+        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env="", env="", readable=""):
             super().__init__()
             self.exit_code, self.output, self.ran = exit_code, output, []
-            self.has_hook, self.app_env, self.env = has_hook, app_env, env
+            self.has_hook, self.app_env, self.env, self.readable = has_hook, app_env, env, readable
 
         def run(self, command, **kwargs):
             from sbx_control import runtime
@@ -697,6 +697,8 @@ class LifecycleTests(Installation):
                 if self.app_env is None:
                     raise runtime.CommandFailed(stdout="", stderr="unreadable", exit_code=1)
                 return done(self.env + "\n" + self.app_env)
+            if command.startswith("test -r /run/sbx/"):
+                return done(self.readable)
             if '"$d/cleanup"' in command:
                 self.ran.append(("cleanup", command, kwargs.get("timeout")))
                 if self.exit_code:
@@ -844,16 +846,42 @@ class LifecycleTests(Installation):
         response, *_ = self.deleting(self.info, vm)
         self.assertNotIn("rotated-away-1", response.text)
         self.assertNotIn("rotated-away-1", str(self.state.events("fixture")))
-        # A short one rotated since: withheld, not shown.
-        with patch.object(self.core.variables, "secret_values", return_value={"PIN": "n3w9"}):
+
+    def test_cleanup_output_is_withheld_when_the_env_sources_a_login_sbx_does_not_hold(self):
+        self.healthy()
+        self.cleanup_recipe()
+        sources = "if [ -r /run/sbx/claude-env ]; then . /run/sbx/claude-env; fi\n"
+        vm = self.CleanupVM(output="token agent-login-token-1\n", env=sources, readable="claude-env\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["exit_code"], 0)
+        self.assertIn("cannot mask", response.json()["cleanup"]["output"])
+        self.assertNotIn("agent-login-token-1", response.text)
+        self.assertNotIn("agent-login-token-1", str(self.state.events("fixture")))
+
+    def test_cleanup_output_is_shown_when_a_sourced_login_is_not_there(self):
+        self.healthy()
+        self.cleanup_recipe()
+        sources = "if [ -r /run/sbx/claude-env ]; then . /run/sbx/claude-env; fi\n"
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="released\n", env=sources))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["output"], "released\n")
+
+    def test_a_short_secret_rotated_since_is_withheld_from_cleanup_output(self):
+        self.healthy()
+        self.cleanup_recipe()
+        with patch.object(self.core.variables, "secret_pairs", return_value=[("PIN", "n3w9")]):
             response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n", env="export PIN=0ld7\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
         self.assertNotIn("0ld7", response.text)
 
     def test_cleanup_output_holding_a_short_secret_is_withheld(self):
         self.healthy()
         self.cleanup_recipe()
-        with patch.object(self.core.variables, "secret_values", return_value={"PIN": "k3y9"}):
+        with patch.object(self.core.variables, "secret_pairs", return_value=[("PIN", "k3y9")]):
             response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn("k3y9", response.text)
         self.assertIn("too short to mask", response.json()["cleanup"]["output"])
 
@@ -920,12 +948,24 @@ class LifecycleTests(Installation):
     def test_a_shadowed_short_installation_secret_is_still_withheld(self):
         self.healthy()
         self.cleanup_recipe()
-        scoped = {None: {"PIN": "k3y9"}}
-        with patch.object(self.core.variables, "secret_values",
-                          side_effect=lambda repo, owner="": scoped.get(repo, {"PIN": "a-longer-personal-pin"})):
-            response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n",
-                                                                  app_env="export SERVICE_PIN=k3y9\n"))
+        self.core.variables.put(None, "PIN", "k3y9", "test")
+        self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n",
+                                                              app_env="export SERVICE_PIN=k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn("k3y9", response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_a_short_repo_secret_under_an_alias_shadowed_by_a_personal_one_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.core.variables.put("owner/repo", "PIN", "r3p9", "test")
+        self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with r3p9\n",
+                                                              app_env="export SERVICE_PIN=r3p9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("r3p9", response.text)
+        self.assertNotIn("r3p9", str(self.state.events("fixture")))
         self.assertIn("too short to mask", response.json()["cleanup"]["output"])
 
     def test_a_restore_for_cleanup_writes_queued_env_without_restarting_and_keeps_it_queued(self):

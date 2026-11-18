@@ -215,10 +215,16 @@ def written_env(sbx) -> dict:
 
 
 def app_env_values(sbx) -> dict | None:
-    """The values the app gets (app-env sources env), as the sandbox holds them now; None when they can't be read."""
+    """The values the app gets (app-env sources env), as the sandbox holds them now; None when they can't be
+    read, or when env sources a file that is there (an agent's login): sbx does not hold its values to mask."""
     try:
-        return _exports(sbx.commands.run(f"cat {RUN}/env && echo && {{ test ! -e {RUN}/app-env || cat {RUN}/app-env; }}",
-                                         timeout=30).stdout)
+        text = sbx.commands.run(f"cat {RUN}/env && echo && {{ test ! -e {RUN}/app-env || cat {RUN}/app-env; }}",
+                                timeout=30).stdout
+        sourced = sorted(set(re.findall(rf"\. {re.escape(RUN)}/([\w.-]+)", text)) - {"env", "app-env"})
+        if sourced and sbx.commands.run("; ".join(f"test -r {RUN}/{f} && echo {f}" for f in sourced) + "; true",
+                                        timeout=30).stdout.split():
+            return None
+        return _exports(text)
     except Exception:
         return None
 

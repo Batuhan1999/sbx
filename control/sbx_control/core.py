@@ -1039,19 +1039,18 @@ def run_cleanup(name: str, info, operation=None) -> dict | None:
 
 def _cleanup_output(output: str, info, used: dict | None) -> str:
     """The hook's output masked with the values it ran with as well; none of
-    it when those can't be read, or when it holds a secret too short for
-    mask() to hide."""
+    it when those can't be read (or sit in a sourced login sbx does not
+    hold), or when it holds a secret too short for mask() to hide."""
     if used is None:
-        return "(hidden: the env it ran with could not be read to mask its output)"
+        return "(hidden: the env it ran with could not be read, or sources a login sbx cannot mask)"
     masked = mask(output, info, used)
     meta = info.metadata or {}
     try:
-        # The installation's too: a repo's or owner's secret of the same name shadows it here, not in the env.
-        scopes = (variables.secret_values(None), variables.secret_values(app_of(info).repo, meta.get("owner", "")))
+        # Every scope's, unmerged: a shadowed value can still reach the env, under its own name or another.
+        pairs = variables.secret_pairs(app_of(info).repo, meta.get("owner", ""))
     except Exception:
         return "(hidden: the values to mask in it could not be read)"
-    short = {v for secret in scopes for v in (*secret.values(), *(used[k] for k in secret if k in used))
-             if 0 < len(v) < 6}
+    short = {v for name, value in pairs for v in (value, used.get(name, "")) if 0 < len(v) < 6}
     if any(v in masked for v in short):
         return "(hidden: it may hold a secret too short to mask)"
     return masked

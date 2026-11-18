@@ -135,11 +135,11 @@ def values(repo: str | None) -> dict:
     return {name: value for scope, name, value, *_ in _rows(repo, None)}
 
 
-def secret_values(repo: str | None, owner: str = "") -> dict:
-    """The values marked secret, by name: the installation's, then the repo's
-    and its owner's own over them."""
-    rows = _rows(None, None) + (sorted(_rows(repo, owner or None), key=lambda r: _personal(r[0])) if repo else [])
-    return {name: value for _scope, name, value, secret, *_ in rows if secret and isinstance(value, str)}
+def secret_pairs(repo: str | None, owner: str = "") -> list:
+    """(name, value) of every value marked secret: the installation's, the
+    repo's and its owner's own, each kept, where one name shadows another."""
+    rows = _rows(None, None) + (_rows(repo, owner or None) if repo else [])
+    return [(name, value) for _scope, name, value, secret, *_ in rows if secret and isinstance(value, str)]
 
 
 def mask(text: str, repo: str | None, known: dict | None = None) -> str:
