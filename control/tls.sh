@@ -287,6 +287,7 @@ server {
     default_type application/json;
     return 410 '{"detail": "sbx-control moved to https://$login. Reinstall sbx from there: curl -fsSL https://$login/install | sh"}';
   }
+  location = /auth/login { return 308 https://$login/login\$is_args\$args; }
   location / { return 308 https://$login\$request_uri; }
 }
 

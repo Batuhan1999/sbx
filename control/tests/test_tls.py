@@ -195,6 +195,7 @@ path.write_text(path.read_text().replace(before, after))
         # Where sbx-control was before: browsers go on, a CLI is told the fix as its error.
         self.assertIn("server_name login.sbx.example.com;", config)
         self.assertIn("location / { return 308 https://app.sbx.example.com$request_uri; }", config)
+        self.assertIn("location = /auth/login { return 308 https://app.sbx.example.com/login$is_args$args; }", config)
         self.assertIn("curl -fsSL https://app.sbx.example.com/install | sh", config)
         front = (self.root / "tls/nginx/endpoints.stream").read_text()
         self.assertIn("listen 443;\n  ssl_preread on;", front)
