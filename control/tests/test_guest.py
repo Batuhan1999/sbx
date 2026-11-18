@@ -276,19 +276,27 @@ class IdentityTests(unittest.TestCase):
         self.assertAlmostEqual(self.clock[0], 60)
         self.assertLess(self.slept[-1], 5)
 
-    def fresh_identity(self, root, ticks, listeners, fresh_on=(), gone=(), sessions=("",)):
+    def fresh_identity(self, root, ticks, listeners, fresh_on=(), gone=(), sessions=("",), keygen_session=False,
+                       keyscan_hangs=0):
         """identity() for a fresh workspace, with fake ssh-keygen, ss and keyscan.
         Each sshd serves the key it last read: the template's, the fresh one
         once it is sent SIGHUP, or the fresh one from the start for a pid in
         fresh_on (started after the keys were replaced). A pidfd in gone has
-        exited before its signal. Returns the (pidfd, signal) pairs sent."""
+        exited before its signal. With keygen_session, a session opens while
+        the keys are made; the first keyscan_hangs scans time out. Returns
+        the (pidfd, signal) pairs sent."""
         ssh = root / "ssh"
         self.host_keys(ssh, "template")
         on_disk = lambda: (ssh / "ssh_host_ed25519_key.pub").read_text().split()[:2]
         sessions = list(sessions)
 
+        keygen = []
+
         def run(command, **kwargs):
+            if command[0] == "ss" and keygen_session and keygen:
+                return SimpleNamespace(stdout="ESTAB 0 0 127.0.0.1:22")
             if command[0] == "ssh-keygen":
+                keygen.append(True)
                 path = Path(command[command.index("-f") + 1])
                 path.write_text("private fresh\n")
                 path.with_name(path.name + ".pub").write_text(f"ssh-{command[3]} fresh-{command[3]} root@box\n")
@@ -296,8 +304,12 @@ class IdentityTests(unittest.TestCase):
                 return SimpleNamespace(stdout=sessions.pop(0) if len(sessions) > 1 else sessions[0])
             return SimpleNamespace(stdout="")
         served = {}
+        hangs = [keyscan_hangs]
 
         def serves(expected):
+            if hangs[0]:
+                hangs[0] -= 1
+                raise subprocess.TimeoutExpired("ssh-keyscan", 3)
             pid = self.listening[0]
             if pid not in served:
                 served[pid] = on_disk() if pid in fresh_on else ["ssh-ed25519", "template-ed25519"]
@@ -350,6 +362,54 @@ class IdentityTests(unittest.TestCase):
             self.fresh_identity(root, ["1", "1"], [457, 456], sessions=("", "ESTAB 0 0 127.0.0.1:22"))
         self.assertEqual((root / "ssh" / "ssh_host_ed25519_key.pub").read_text().split()[1], "template-ed25519")
         self.assertFalse((root / "identity.json").exists())
+
+    def test_a_session_opened_while_the_keys_are_made_refuses_the_rotation(self):
+        root = self.listener_root()
+        with self.assertRaisesRegex(sbx_guest.GuestError, "unexpected SSH session"):
+            self.fresh_identity(root, ["1", "1"], [456], keygen_session=True)
+        self.assertEqual((root / "ssh" / "ssh_host_ed25519_key.pub").read_text().split()[1], "template-ed25519")
+        self.assertFalse((root / "identity.json").exists())
+
+    def test_a_replacement_sshd_whose_key_scan_times_out_is_signalled(self):
+        root = self.listener_root()
+        self.assertEqual(self.fresh_identity(root, ["1", None], [456, 458], keyscan_hangs=1),
+                         [(1458, signal.SIGHUP)])
+
+    def test_replacements_that_keep_exiting_stop_at_the_deadline(self):
+        """Every replacement sshd is gone before its signal: recovery gives up
+        at the shared deadline instead of retrying until the command times out."""
+        root = self.listener_root()
+
+        def a_while_later(now):
+            self.clock[0] = now + 30
+            return 458
+        with self.assertRaisesRegex(sbx_guest.GuestError, "kept restarting"):
+            self.fresh_identity(root, ["1", None], [456, a_while_later], gone={1458})
+        self.assertLess(self.clock[0], sbx_guest.IDENTITY_SECONDS)
+
+    def test_a_listener_from_a_replaced_binary_is_not_restarted_past_the_deadline(self):
+        root = self.listener_root()
+        (root / "460").mkdir()
+        (root / "460" / "exe").symlink_to("/usr/sbin/sshd (deleted)")
+        restarted = []
+        self.clock[0] = 61
+        with self.listeners(460), patch.object(sbx_guest, "restart_listener", lambda **kw: restarted.append(kw)), \
+                self.assertRaisesRegex(sbx_guest.GuestError, "listener identity changed"):
+            sbx_guest.settled_listener(60, lambda: None)
+        self.assertEqual(restarted, [])
+
+    def test_each_look_for_the_restarted_listener_gets_only_the_time_left(self):
+        with tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
+            root = Path(directory)
+            (root / "proc/1").mkdir(parents=True)
+            (root / "proc/1/comm").write_text("systemd\n")
+            asked = []
+            with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
+                    patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: None), \
+                    patch.object(sbx_guest, "listener_alive", lambda timeout: asked.append(timeout) or True):
+                sbx_guest.restart_listener(timeout=2)
+            self.assertEqual(len(asked), 1)   # at once
+            self.assertLessEqual(asked[0], 2)
 
     def test_ssh_listener_is_systemd_s_or_the_standalone_sshd(self):
         """A fake / (its /proc/1/comm and /run/sshd.pid) and a fake systemctl."""

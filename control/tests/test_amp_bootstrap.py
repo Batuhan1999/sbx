@@ -125,6 +125,21 @@ exec "$0" "$@"
         self.assertFalse(function(process, (seed.resolve(),)))
         self.assertFalse(function(root / 'proc/gone', (seed.resolve(),)))
 
+    def test_started_is_only_this_launch_s_bootstrap_not_an_earlier_one_still_running(self):
+        """A running orb keeps an earlier spawn's bootstrap; a new launch whose
+        helper failed before execve must not be taken for started because of it."""
+        function = runpy.run_path(str(HELPER))['bootstrap_process']
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        seed = root / 'opt/amp'
+        process = root / 'proc/4242'
+        process.mkdir(parents=True)
+        (process / 'exe').symlink_to(f'{seed} (deleted)')   # and since updated itself
+        (process / 'cmdline').write_bytes(b'\0'.join([str(seed).encode(), b'orb', b'bootstrap']) + b'\0')
+        (process / 'environ').write_bytes(b'PATH=/bin\0SBX_AMP_LAUNCH=' + b'1' * 16 + b'\0')
+        self.assertTrue(function(process, (seed,), '1' * 16))
+        self.assertFalse(function(process, (seed,), '2' * 16))
+        self.assertTrue(function(process, (seed,)))   # --stop still stops every one
+
     def test_started_sees_a_running_bootstrap_and_gives_up_on_a_launch_that_never_ran_one(self):
         functions = runpy.run_path(str(HELPER))
         guest = functions['sbx_guest']
@@ -135,10 +150,10 @@ exec "$0" "$@"
         fake_time = type('T', (), {'monotonic': staticmethod(lambda: clock[0]),
                                    'sleep': staticmethod(lambda s: clock.__setitem__(0, clock[0] + s))})
         with patch.object(guest, 'PROC', root), patch.dict(functions['started'].__globals__, time=fake_time):
-            with patch.dict(functions['started'].__globals__, bootstrap_process=lambda p, _: p.name == '4242'):
-                self.assertTrue(functions['started']((root / 'amp',)))
+            with patch.dict(functions['started'].__globals__, bootstrap_process=lambda p, *_: p.name == '4242'):
+                self.assertTrue(functions['started']((root / 'amp',), 'a' * 16))
             self.assertEqual(clock[0], 0)   # at once
             with patch.dict(functions['started'].__globals__, bootstrap_process=lambda *_: False):
-                self.assertFalse(functions['started']((root / 'amp',), seconds=5))
+                self.assertFalse(functions['started']((root / 'amp',), 'a' * 16, seconds=5))
             self.assertGreaterEqual(clock[0], 5)
             self.assertLess(clock[0], 6)   # bounded

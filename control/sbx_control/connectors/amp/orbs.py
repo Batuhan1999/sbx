@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import shlex
 import sys
 import time
@@ -148,6 +149,7 @@ def handle_job(env: dict) -> dict:
         if not owners:
             raise JobError("finish sbx administrator setup first")
         cache = snapshots.cached(job.get("ORB_SNAPSHOT_ID", ""), repo)
+        before = sandboxes.rows().get(name)
         try:
             # The app is prepared once the spawn has succeeded: a failed one is
             # never left busy with a preparation its cleanup would wait for.
@@ -160,25 +162,28 @@ def handle_job(env: dict) -> dict:
             info = core.find(name)
             if info is None:
                 raise RuntimeError("the core lifecycle did not produce a sandbox")
-            result = start_orb(name, info, job)
+            result = start_orb(name, info, job, fresh=True)
             sandboxes.restart(name, info, prepare=True)
             return result
         except Exception:
-            discard(name, orb_id)
+            discard(name, orb_id, before)
             raise
 
 
-def discard(name: str, orb_id: str):
+def discard(name: str, orb_id: str, before: dict | None = None):
     """A spawn that failed after it began creating the orb's sandbox deletes
     it again, as Amp's delete does: a VM no thread will use must not keep
     running. Only a registration and VM tagged as this orb's are deleted;
-    one under its name that something else made (create refused it) stays.
-    A cleanup that fails is logged; the spawn's own error is what Amp sees."""
+    one under its name that something else made (create refused it) stays,
+    as does a registration with no VM that this attempt did not make
+    (before: the row there when it began). A cleanup that fails is logged; the spawn's own error is what Amp sees."""
     def this_orbs(metadata):
         return (metadata or {}).get("connector") == KIND and metadata.get("orbId") == orb_id
     try:
         info, row = core.find(name), sandboxes.rows().get(name)
         if (info and not this_orbs(info.metadata)) or (row and not this_orbs(row["metadata"])):
+            return
+        if info is None and row is not None and row == before:
             return
         if info or row:
             sandboxes.delete_locked(name)
@@ -187,8 +192,9 @@ def discard(name: str, orb_id: str):
               "ORB_OPERATION=delete removes it", file=sys.stderr, flush=True)
 
 
-def start_orb(name: str, info, job: dict, retry_preparation: bool = False) -> dict:
-    """The orb's sandbox running, with Amp's bootstrap started in it."""
+def start_orb(name: str, info, job: dict, retry_preparation: bool = False, fresh: bool = False) -> dict:
+    """The orb's sandbox running, with Amp's bootstrap started in it. A fresh
+    one is deleted again when this fails (handle_job)."""
     try:
         sandbox = core.attach(name, "for its Amp thread", info=info, run_app=not retry_preparation, ready=True)
     except core.NotReady as error:
@@ -210,8 +216,9 @@ def start_orb(name: str, info, job: dict, retry_preparation: bool = False) -> di
         {"label": label, "url": url} for label, url in addressing.urls(name, recipe).items()
         if label != "desktop"
     ]}))
+    launch = secrets.token_hex(8)   # not secret: tells this launch's bootstrap from an earlier one's
     envs = {"ORB_TOKEN": job["ORB_TOKEN"], "AMP_URL": job.get("AMP_URL") or "https://ampcode.com",
-            "BASH_ENV": f"{platform.RUN}/env"}
+            "BASH_ENV": f"{platform.RUN}/env", "SBX_AMP_LAUNCH": launch}
     helper = f"{platform.RUN}/amp-bootstrap.py"
     sandbox.ship_guest()   # the bootstrap imports it
     sandbox.write(helper, BOOTSTRAP.read_text(), user="user")
@@ -219,9 +226,11 @@ def start_orb(name: str, info, job: dict, retry_preparation: bool = False) -> di
     # A runtime may return from spawn before the command has run: a helper
     # that fails before it starts Amp shows here, within seconds.
     try:
-        sandbox.sbx.commands.run(f"python3 {helper} --started", user="user", timeout=60)
+        sandbox.sbx.commands.run(f"python3 {helper} --started {launch}", user="user", timeout=60)
     except runtime.CommandFailed:
-        raise JobError(f"Amp's bootstrap did not start in the sandbox (see {platform.RUN}/amp-bootstrap.log there)") from None
+        # The log may hold the token, so it stays in the sandbox; a fresh one is deleted with it.
+        where = "; the new sandbox was deleted, spawn again" if fresh else f" (see {platform.RUN}/amp-bootstrap.log there)"
+        raise JobError(f"Amp's bootstrap did not start in the sandbox{where}") from None
     return {"name": name, "sandbox_id": info.sandbox_id, "repo": recipe.repo,
             "urls": addressing.urls(name, recipe), "state": "running"}
 

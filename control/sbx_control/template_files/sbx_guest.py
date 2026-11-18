@@ -381,7 +381,8 @@ def restart_listener(timeout=60):
             if not wait_until(lambda: exited(old), left(15)):   # it holds the port until it exits
                 raise GuestError("workspace SSH listener did not stop")
         subprocess.run(["/usr/sbin/sshd"], check=True, timeout=left(30))
-    if not wait_until(lambda: listener_alive(), left(15)):
+    # Each look is bounded by what is left, so the last one does not overrun it.
+    if not wait_until(lambda: listener_alive(timeout=left(10)), left(15)):
         raise GuestError("workspace SSH listener did not start again")
 
 
@@ -394,9 +395,9 @@ def exited(pid):
     return False
 
 
-def listener_alive():
+def listener_alive(timeout=10):
     try:
-        return str((PROC / str(listener_pid()) / "exe").resolve()) == "/usr/sbin/sshd"
+        return str((PROC / str(listener_pid(timeout=timeout)) / "exe").resolve()) == "/usr/sbin/sshd"
     except (OSError, ValueError, subprocess.SubprocessError, GuestError):
         return False
 
@@ -419,20 +420,22 @@ def settled_listener(deadline, unwatched):
     so only sshd ever gets the workspace's keys or its signal; the pidfd
     keeps a pid that is reused after this check from getting it either.
     unwatched() raises while anyone has an SSH session, before sshd is
-    restarted."""
+    restarted; past the deadline it is only looked at, never restarted."""
     pause, restarted = 0.2, False
     while True:
         handle = None
         try:
             pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
-            if not restarted and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)":
+            if (not restarted and deadline > time.monotonic()
+                    and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
                 # sshd started before its binary was replaced (an upgrade, a disk
                 # restored under a running VM): no session yet, so start it again
                 # from the binary there now.
                 restarted = True
                 unwatched()
-                restart_listener(timeout=max(0.1, deadline - time.monotonic()))
-                pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+                if deadline > time.monotonic():
+                    restart_listener(timeout=deadline - time.monotonic())
+                    pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
             handle = os.pidfd_open(pid)
             if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd":
                 return pid, handle
@@ -487,15 +490,14 @@ def identity(workspace, ssh_port):
 
         def unwatched():
             sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
-                                      capture_output=True, text=True, check=True, timeout=10)
+                                      capture_output=True, text=True, check=True,
+                                      timeout=max(0.1, min(10, deadline - time.monotonic())))
             if sessions.stdout.strip():
                 raise SessionOpen("fresh workspace has an unexpected SSH session")
         unwatched()
         pid, handle = settled_listener(min(time.monotonic() + SETTLE_SECONDS, deadline - KEYS_SECONDS), unwatched)
         try:
-            unwatched()   # sshd may have taken a session while it was waited for
             ticks = start_ticks(pid)
-            write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
             with tempfile.TemporaryDirectory(prefix=".sbx-hostkeys-", dir=SSH) as temporary:
                 temporary = Path(temporary)
                 for kind in HOST_KEYS:
@@ -503,6 +505,10 @@ def identity(workspace, ssh_port):
                                    check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    timeout=max(1, min(30, deadline - KEYS_SECONDS - time.monotonic())))
                 key_permissions(temporary)
+                # sshd may have taken a session while it was waited for or the
+                # keys were made: looked at last, just before they replace its own.
+                unwatched()
+                write_json(IDENTITY, {"workspace_id": workspace, "phase": "rotating"})
                 for path in temporary.iterdir():
                     os.replace(path, SSH / path.name)
             reloaded = start_ticks(pid) == ticks and reload_keys(handle)
@@ -516,9 +522,15 @@ def identity(workspace, ssh_port):
             # is gone again before its signal is looked for again.
             pid, handle = settled_listener(deadline - KEYS_SECONDS, unwatched)
             try:
-                reloaded = serves(expected) or reload_keys(handle)
+                try:
+                    served = serves(expected)
+                except subprocess.TimeoutExpired:   # inconclusive: signal it and look again below
+                    served = False
+                reloaded = served or reload_keys(handle)
             finally:
                 os.close(handle)
+            if not reloaded and time.monotonic() >= deadline - KEYS_SECONDS:
+                raise GuestError("workspace SSH listener kept restarting while it took its fresh identity")
         if not wait_until(lambda: serves(expected), max(1, deadline - time.monotonic())):
             raise GuestError("workspace SSH listener did not adopt its fresh identity")
         keep_host_keys()

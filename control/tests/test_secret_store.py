@@ -550,15 +550,25 @@ class DeliveryTests(Server):
         starting its app) is not interrupted by an env_update."""
         import threading
         from sbx_control import core
-        delivered = threading.Event()
+        delivered, contending = threading.Event(), threading.Event()
+        flock = core.fcntl.flock
+        worker = None
+
+        def observed(fd, operation):   # the worker reaching the real lock, before it blocks on it
+            if threading.current_thread() is worker:
+                contending.set()
+            return flock(fd, operation)
         with patch.object(core, "refresh_env", side_effect=lambda name, restart: (
-                delivered.set(), {"changed": [], "restarted": False})[1]):
+                delivered.set(), {"changed": [], "restarted": False})[1]), \
+                patch.object(core.fcntl, "flock", observed):
             with core.sandbox_operation("delivery-test"):
                 self.delivery.queue("delivery-test", ["FIRST"], True)
-                worker = threading.Thread(target=self.sandboxes.deliver_pending, args=("delivery-test",))
+                worker = threading.Thread(target=self.sandboxes.deliver_pending, args=("delivery-test",), daemon=True)
                 worker.start()
+                self.assertTrue(contending.wait(5))
                 self.assertFalse(delivered.wait(0.3))
             worker.join(5)
+        self.assertFalse(worker.is_alive())
         self.assertTrue(delivered.is_set())
         self.assertIsNone(self.delivery.pending("delivery-test"))
 

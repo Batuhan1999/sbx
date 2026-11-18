@@ -290,7 +290,9 @@ sudo() {
         self.assertEqual(self.spawned().kwargs["envs"]["ORB_TOKEN"], self.env["ORB_TOKEN"])
         # Then it is seen to have started, without the token.
         started = guest.commands.run.call_args
-        self.assertEqual(started.args[0], f"python3 {shipped} --started")
+        launch = self.spawned().kwargs["envs"]["SBX_AMP_LAUNCH"]   # this launch's bootstrap, not an earlier one's
+        self.assertRegex(launch, r"^[0-9a-f]{16}$")
+        self.assertEqual(started.args[0], f"python3 {shipped} --started {launch}")
         self.assertNotIn("envs", started.kwargs)
 
     def test_amp_repeated_spawn_and_pause_reuse_core_lifecycle(self):
@@ -447,7 +449,7 @@ sudo() {
         from sbx_control import core, runtime
 
         def run(command, **kwargs):
-            if command.endswith("--started"):
+            if " --started " in command:
                 raise runtime.CommandFailed(stderr="the Amp bootstrap did not start", command=command)
             return Mock()
         self.sdk.connect.return_value.commands.run.side_effect = run
@@ -455,6 +457,7 @@ sudo() {
             response = self.amp_job(self.env)
         self.assertEqual(response.status_code, 400)
         self.assertIn("bootstrap did not start", response.text)
+        self.assertNotIn("amp-bootstrap.log", response.text)   # not a pointer into the sandbox it deleted
         delete.assert_called_once_with(self.name, self.name)
         self.started.assert_not_called()
 
@@ -487,6 +490,18 @@ sudo() {
         self.amp_fixture()
         from sbx_control import core, sandboxes
         sandboxes.register(self.name, "someone-else@example.test", "trunk", self.name)
+        with patch.object(core, "delete") as delete:
+            self.assertEqual(self.amp_job(self.env).status_code, 503)
+        delete.assert_not_called()
+        self.assertEqual(sandboxes.registered_owner(self.name), "someone-else@example.test")
+
+    def test_amp_failed_spawn_leaves_a_registration_with_this_orb_s_tags_it_did_not_make(self):
+        """The registration carries this orb's tags but is another owner's and
+        has no VM: create refused it, so it is not this attempt's to delete."""
+        self.amp_fixture()
+        from sbx_control import core, sandboxes
+        sandboxes.register(self.name, "someone-else@example.test", "trunk", self.name,
+                           {"connector": "amp", "orbId": self.env["ORB_ID"], "personal": "off"})
         with patch.object(core, "delete") as delete:
             self.assertEqual(self.amp_job(self.env).status_code, 503)
         delete.assert_not_called()
