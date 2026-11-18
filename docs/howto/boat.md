@@ -3,7 +3,7 @@
 For an owner whose sandboxes run at [Boat](https://docs.boat.dev) (the `boat`
 runtime) instead of on the server itself. sbx needs a Boat API key and a
 domain (see [Cloudflare DNS](cloudflare.md)): Boat's sandboxes call the
-server back at `login.D`. Boat's dashboard may differ a little from the
+server back at `app.D`. Boat's dashboard may differ a little from the
 labels below.
 
 ## API key
@@ -39,7 +39,7 @@ templates build only after the first payment: pay in Boat's dashboard
 ## Add it to sbx
 
 Your agent usually asks for the key on a **keys page**: it sends you a link
-to your server (`https://login.<domain>/keys/…`). Sign in, paste the key into
+to your server (`https://app.<domain>/keys/…`). Sign in, paste the key into
 its field and choose **Save keys**. sbx checks the key with Boat, stores it and
 adds Boat; the page shows when the server has applied it. Each **How do
 I get this?** link leads back here.

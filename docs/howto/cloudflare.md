@@ -1,6 +1,6 @@
 # Cloudflare DNS for sbx
 
-For an owner whose domain's DNS is at Cloudflare. sbx runs at `login.D` and
+For an owner whose domain's DNS is at Cloudflare. sbx runs at `app.D` and
 serves previews at `<name>.D`, where `D` is a name you choose, usually a
 subdomain such as `sbx.example.com`. Your coding agent tells you `D` and the
 server's public IP. Cloudflare's dashboard changes from time to time, so the
@@ -83,7 +83,7 @@ so a firewall change later breaks renewals.
 Once the records are in, your agent checks them from outside:
 
 ```sh
-dig +short login.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP
+dig +short app.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP
 dig +short NS _acme-challenge.D @1.1.1.1                      # delegated only: D.
 ```
 

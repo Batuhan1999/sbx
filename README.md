@@ -122,7 +122,7 @@ Running them at E2B Cloud or Boat (any small VPS, no KVM):
   plan's limits (E2B Hobby: one hour before a sandbox pauses, renewed while
   it is used; 8 vCPUs, 8 GiB, 10 GiB disk each; 10 at once). Boat's trial
   saves no snapshots, and sbx's templates are snapshots: use a paid plan.
-- A domain: the provider's sandboxes call the server back at `login.D` on 443
+- A domain: the provider's sandboxes call the server back at `app.D` on 443
   (repository bundles, git credentials). They reach managed servers and
   private hosts only through [endpoints](docs/reference.md#endpoints).
 

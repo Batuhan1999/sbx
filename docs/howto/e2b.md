@@ -4,7 +4,7 @@ For an owner whose sandboxes run at [E2B](https://e2b.dev) (the `e2b-cloud`
 runtime) instead of on the server itself. sbx needs an API key of the E2B team
 whose plan pays for the sandboxes, and a domain (see
 [Cloudflare DNS](cloudflare.md)): E2B's sandboxes call the server back at
-`login.D`. E2B's dashboard may differ a little from the labels below.
+`app.D`. E2B's dashboard may differ a little from the labels below.
 
 ## API key
 
@@ -36,7 +36,7 @@ every setting.
 ## Add it to sbx
 
 Your agent usually asks for the key on a **keys page**: it sends you a link
-to your server (`https://login.<domain>/keys/…`). Sign in, paste the key into
+to your server (`https://app.<domain>/keys/…`). Sign in, paste the key into
 its field and choose **Save keys**. sbx checks the key with E2B, stores it and
 adds E2B Cloud; the page shows when the server has applied it. Each **How do
 I get this?** link leads back here.

@@ -43,7 +43,7 @@ nothing:
 
 Then paste the token in one of these places:
 
-- **The keys page** your agent sends you (`https://login.<domain>/keys/…`),
+- **The keys page** your agent sends you (`https://app.<domain>/keys/…`),
   next to any other keys it needs. Amp stays on and its provider starts.
 - **Extensions** in the web app: **Add key** on Amp's row (**Set up** when
   the setup did not choose Amp), paste the provider token and choose

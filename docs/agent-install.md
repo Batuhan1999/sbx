@@ -128,7 +128,7 @@ answers. Ask nothing that `--check` already answered.
    need a domain; Embed alone also works on the IP (a trusted IP certificate
    on port 80, previews on ports 21000–21255). For a domain ask for:
    - the domain `D` (usually a subdomain, `sbx.example.com`): the server
-     answers at `login.D`, previews at `<name>.D`;
+     answers at `app.D`, previews at `<name>.D`;
    - an email `E` for Let's Encrypt's expiry notices;
    - how the wildcard certificate is issued: `delegated` (no credential:
      records `D A IP`, `*.D A IP`, `_acme-challenge.D NS D.`, and port 53
@@ -148,7 +148,7 @@ answers. Ask nothing that `--check` already answered.
 Once the owner says DNS records are in, check them before you go on:
 
 ```sh
-dig +short login.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP
+dig +short app.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP
 dig +short NS _acme-challenge.D @1.1.1.1                      # delegated: D.
 ```
 
@@ -196,7 +196,7 @@ minutes):
 | quick test | the same as `delegated` with `--dns none` (keep `--insecure` on every command after it) |
 | domain, `cloudflare` | none: the setup page's first screen asks for the domain and the token, and the owner pastes it there |
 
-`address ready: https://login.D` means done; `Check the DNS records ...` names
+`address ready: https://app.D` means done; `Check the DNS records ...` names
 the record to fix; a `waiting for the certificate` that runs out is usually a
 closed port (53 for `delegated`, 80 for IP). Then fetch the link again, which
 now names the trusted address:
@@ -220,7 +220,7 @@ certificate; the installer and `sbx login` work while the setup is still
 open):
 
 ```sh
-curl -fsSL https://login.D/install | sh    # IP only: https://IP/install
+curl -fsSL https://app.D/install | sh    # IP only: https://IP/install
 ```
 
 It ends with `sbx login`, which opens the browser: the owner signs in there
@@ -232,7 +232,7 @@ a header file that holds nothing else:
 
 ```sh
 (umask 077; ssh HOST sudo sbx-admin token create owner@example.com --label agent | sed 's/^/Authorization: Bearer /' > ~/.sbx-install/api-header)
-curl -fsS -H @$HOME/.sbx-install/api-header https://login.D/api/me    # -k for the quick test
+curl -fsS -H @$HOME/.sbx-install/api-header https://app.D/api/me    # -k for the quick test
 ```
 
 `sbx-admin token ls` and `token revoke ID` end it.
@@ -283,10 +283,10 @@ sbx setup finish                                                    # as the sig
 ```
 
 Without the desktop CLI: `curl -fsS -X POST -H @$HOME/.sbx-install/api-header
-https://login.D/api/setup/complete`. The owner may press **Finish setup** on
+https://app.D/api/setup/complete`. The owner may press **Finish setup** on
 the setup page instead; both work. `finish` runs the server's checks
 (`The server needs attention` lists each failed one: fix it and run `finish`
-again), then prints `set up: https://login.D; ... the templates build now`.
+again), then prints `set up: https://app.D; ... the templates build now`.
 The base and default templates take about 10 minutes the first time:
 `sbx templates` shows them; wait until `sbx-base` and `default` are `current`
 on each runtime.
@@ -355,7 +355,7 @@ starts.
 ssh HOST sudo sbx-admin doctor                 # each part: ok / NO with the fix; exit 1 when one is NO
 sbx runtimes test KIND                         # per enabled runtime; exit 1 on a NO
 ssh HOST sudo sbx-admin runtime verify KIND    # create, command, file, pause/resume, preview, delete
-curl -sS -o /dev/null -w '%{http_code}\n' https://login.D/   # a 200 or 30x, no TLS error
+curl -sS -o /dev/null -w '%{http_code}\n' https://app.D/   # a 200 or 30x, no TLS error
 ```
 
 Fix every `NO` you can; one that needs the owner goes into the report as

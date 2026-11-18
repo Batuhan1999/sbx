@@ -2011,7 +2011,7 @@ def parser():
     s = steps.add_parser("address", parents=[link], help="IP access, or a domain whose certificate follows; waits "
                          "until HTTPS works")
     s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
-    s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at login.D")
+    s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at app.D")
     s.add_argument("--email", help="for the certificate's expiry notices (with --domain)")
     s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53", "none"],
                    help="how the wildcard certificate is issued (default delegated); none: self-signed, for a first "
