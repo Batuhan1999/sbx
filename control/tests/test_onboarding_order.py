@@ -140,7 +140,7 @@ class TemplateGate(Server):
         self.assertEqual(found["blocked"], "")
         self.assertEqual([(t["key"], t["phase"]) for t in found["runtimes"]["embed"]],
                          [(self.templates.BASE, "stale"), (self.templates.DEFAULT, "stale")])
-        self.client.get("/auth/logout")
+        self.client.get("/logout")
         self.assertEqual(self.client.get("/api/templates").status_code, 401)
 
 
