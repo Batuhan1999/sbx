@@ -6,7 +6,7 @@ backend); a stand-in runtime with a token header plays a provider here."""
 import io
 from unittest.mock import patch
 
-from support import RUNTIME, Installation, Server
+from support import RUNTIME, Installation, Server, live_pid
 from test_runtimes import TwoRuntimes
 
 TOKEN_HEADER = "e2b-traffic-access-token"
@@ -531,23 +531,21 @@ class VerifyBeforeTheBaseIsBuilt(TwoRuntimes, Installation):
         return "\n".join(said)
 
     def test_a_base_that_is_building_is_reported_as_building(self):
-        import os
         from sbx_control import template_builds, templates
         template_builds._transition(templates.BASE, "building", "fake", started_at=template_builds._utc(),
-                                    pid=os.getppid())     # another live process: the build sbx-admin runtime add started
+                                    pid=live_pid(self))     # another live process: the build sbx-admin runtime add started
         said = self.verify()
         self.assertIn("the base template is building on Fake runtime; try again when it's built", said)
         self.assertNotIn("NotBuilt", said)
         self.assertTrue(said.endswith("not verified"))
 
     def test_a_base_never_built_or_failed_says_what_to_do(self):
-        import os
         from sbx_control import template_builds, templates
         self.assertIn("is not built on Fake runtime yet", self.verify())
         self.assertIn(f"sbx-admin jobs run template@fake:{templates.BASE}", self.verify())
         template_builds._transition(templates.BASE, "building", "fake", pid=None)   # cut off: built again on its own
         self.assertIn("is not built on Fake runtime yet; it builds by itself shortly", self.verify())
-        template_builds._transition(templates.BASE, "building", "fake", pid=os.getppid())
+        template_builds._transition(templates.BASE, "building", "fake", pid=live_pid(self))
         template_builds._transition(templates.BASE, "failed", "fake", error="out of disk")
         self.assertIn("the base template's build failed on Fake runtime: out of disk", self.verify())
 

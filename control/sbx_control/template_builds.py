@@ -244,6 +244,8 @@ def _transition(key: str, to: str, kind: str | None = None, **facts):
             before = status(key, row, kind)
             if to not in TRANSITIONS[before]:
                 raise ValueError(f"template build {key}: {before} -> {to} is not allowed")
+            if "pid" in facts and "pid_birth" not in facts:   # a new owner: never the last one's start time
+                facts["pid_birth"] = _birth(facts["pid"]) if facts["pid"] else None
             values = {**(row or {}), **facts, "status": to}
             conn.execute(f"insert into template_builds (runtime, repo, {', '.join(FIELDS)}) "
                          f"values (?, ?{', ?' * len(FIELDS)}) on conflict(runtime, repo) do update set "

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from support import Server
+from support import Server, live_pid
 
 
 def done(stdout=""):
@@ -775,6 +775,10 @@ class WorkspaceTests(Server):
             settle('built')
         # The base came first: the default builds on it.
         self.assertEqual([c.args[0].key for c in build.call_args_list], [templates.BASE, key])
+        # Reloading redefines its classes (NoRoom, ...), which the app and other modules hold: put the
+        # module back as it was once this test ends.
+        saved = dict(vars(template_builds))
+        self.addCleanup(lambda: (vars(template_builds).clear(), vars(template_builds).update(saved)))
         importlib.reload(template_builds)  # a restart: nothing in memory survives it
         self.assertEqual(template_builds.state(key)['status'], 'built')
         self.assertTrue(template_builds.state(key)['template'].startswith('default-'))
@@ -812,10 +816,9 @@ class WorkspaceTests(Server):
         self.assertEqual(template_builds.state(key)['status'], 'built')
 
     def test_a_build_whose_pid_was_reused_reads_interrupted(self):
-        import os
         from sbx_control import template_builds, templates
         key = templates.DEFAULT
-        other = os.getppid()   # a live process that isn't this one
+        other = live_pid(self)   # a live process that isn't this one
         with patch.object(template_builds, '_birth', return_value='100'):
             template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=other,
                                         pid_birth='100')
@@ -823,6 +826,20 @@ class WorkspaceTests(Server):
         with patch.object(template_builds, '_birth', return_value='200'):   # the pid now names another process
             self.assertEqual(template_builds.state(key)['status'], 'interrupted')
         with patch.object(template_builds, '_birth', return_value=None):    # no /proc: the pid alone decides
+            self.assertEqual(template_builds.state(key)['status'], 'building')
+
+    def test_a_new_build_owner_never_keeps_the_last_one_s_start_time(self):
+        from sbx_control import template_builds, templates
+        from sbx_control.state import db
+        key = templates.DEFAULT
+        template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=live_pid(self),
+                                    pid_birth=None)
+        with db() as conn:   # the last owner's start time, as the scheduler's own build stores it
+            conn.execute("update template_builds set pid_birth = '100' where repo = ?", (key,))
+        with patch.object(template_builds, '_birth', return_value='100'):
+            template_builds._transition(key, 'failed', finished_at=template_builds._utc(), error='x')
+        with patch.object(template_builds, '_birth', return_value='300'):   # another process, given only its pid
+            template_builds._transition(key, 'building', started_at=template_builds._utc(), pid=live_pid(self))
             self.assertEqual(template_builds.state(key)['status'], 'building')
 
     def test_a_pid_birth_reads_past_any_process_name(self):

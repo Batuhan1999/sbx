@@ -8,7 +8,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from support import Installation
+from support import Installation, forget_extensions
 
 
 def connector_settings(kind, **changes):
@@ -23,10 +23,9 @@ class ExtensionTests(Installation):
 
     def setUp(self):
         super().setUp()
-        from sbx_control import extensions
         connector_settings("claude", version="2.0.0", enabled=True)
         connector_settings("amp", enabled=False)
-        self.addCleanup(setattr, extensions, "_connectors", None)
+        self.addCleanup(forget_extensions)
 
     def recipe(self, repo, text):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -56,7 +55,7 @@ class ExtensionTests(Installation):
         module.Fixture, module.Impostor, module.Broken = Fixture, Impostor, object
         self.enterContext(patch.dict(sys.modules, {"sbx_fixture_connector": module}))
         entries = [SimpleNamespace(value=f"sbx_fixture_connector:{name}") for name in ("Fixture", "Impostor", "Broken")]
-        extensions._connectors = None  # as at a start of the control service
+        forget_extensions()  # as at a start of the control service
         installed = lambda group: entries if group == "sbx.connectors" else []  # noqa: E731 (what plugin packages declare)
         with patch.object(extensions.importlib.metadata, "entry_points", side_effect=installed):
             kinds = [c.kind for c in extensions.connectors()]

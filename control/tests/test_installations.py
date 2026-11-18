@@ -112,11 +112,10 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         template_builds.build_now(templates.DEFAULT, "fake")
         return template_builds, templates, template_builds.built(templates.DEFAULT, "fake")
 
-    @staticmethod
-    def failed(builds, key, **facts):
+    def failed(self, builds, key, **facts):
         """key's build on fake failed now (one cut off by a restart is interrupted instead, and built again)."""
-        import os
-        builds._transition(key, "building", "fake", started_at=builds._utc(), pid=os.getppid())
+        from support import live_pid
+        builds._transition(key, "building", "fake", started_at=builds._utc(), pid=live_pid(self))
         builds._transition(key, "failed", "fake", finished_at=builds._utc(), **facts)
 
     def start(self, template):
@@ -242,14 +241,14 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         self.assertEqual(builds.state(templates.DEFAULT, "fake")["status"], "built")
 
     def test_a_child_waits_for_a_base_building_elsewhere_without_holding_a_slot(self):
-        import os
         import time
         from sbx_control.state import db
         builds, templates, _ = self.built()
         with db() as conn:   # the base being built again, by another live process
             conn.execute("update template_builds set built_template = null where runtime = 'fake' and repo = ?",
                          (templates.BASE,))
-        builds._transition(templates.BASE, "building", "fake", started_at=builds._utc(), pid=os.getppid())
+        from support import live_pid
+        builds._transition(templates.BASE, "building", "fake", started_at=builds._utc(), pid=live_pid(self))
         began = time.monotonic()
         with self.assertRaisesRegex(builds.BaseNotReady, "builds once it is built"):
             builds.start(templates.DEFAULT, "fake")

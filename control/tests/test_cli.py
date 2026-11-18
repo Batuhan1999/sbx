@@ -82,14 +82,16 @@ class FakeControl:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
     def close(self):
         self.server.shutdown()
         self.server.server_close()
 
 
-class CliTests(unittest.TestCase):
+class Cli(unittest.TestCase):
+    """A home, a fake control service and the CLI loaded against them; no tests of its own, so the
+    classes below share the setup without running each other's tests."""
     def setUp(self):
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-cli-")))
         (self.home / ".ssh").mkdir()
@@ -114,6 +116,8 @@ class CliTests(unittest.TestCase):
                 code = exit.code
         return code, out.getvalue(), err.getvalue()
 
+
+class CliTests(Cli):
     def test_up_uses_what_the_server_returns_and_leaves_ssh_config_alone(self):
         (self.home / ".ssh/config").write_text("Host mine\n  User me\n")
         phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"},
@@ -378,7 +382,7 @@ class CliTests(unittest.TestCase):
                 pass
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Bridge)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         plain = lambda host, port, timeout: http.client.HTTPConnection(host, port, timeout=timeout)   # TLS aside
@@ -671,7 +675,7 @@ def change(state, operation="add", message="", restarting=False):
             "restarting": restarting}
 
 
-class RuntimeCliTests(CliTests):
+class RuntimeCliTests(Cli):
     """sbx runtimes: list, available, and an admin's add | set | remove | default over the HTTP API,
     following the queued change through sbx-control's restart."""
 
@@ -823,7 +827,7 @@ def endpoints(*found, applying=False, failure="", candidates=()):
             "applying": applying, "failure": failure}
 
 
-class EndpointCliTests(CliTests):
+class EndpointCliTests(Cli):
     """sbx endpoints: list, add and rm over the HTTP API, waiting until the server applied the change."""
 
     def setUp(self):
@@ -903,7 +907,7 @@ class EndpointCliTests(CliTests):
         self.assertEqual((code, out), (0, "dev-pg: removed\n"))
 
 
-class SetupCliTests(CliTests):
+class SetupCliTests(Cli):
     """sbx setup: a fresh server set up without a browser, with the setup link (SBX_SETUP_LINK, never argv)
     as the Setup authorization and every secret on stdin."""
 
@@ -1048,7 +1052,7 @@ def templates(phase, boat_phase=None, error=None):
                                         "boat": [row(boat_phase or phase)]}}
 
 
-class ExtensionCliTests(CliTests):
+class ExtensionCliTests(Cli):
     """sbx extensions: the Extensions page for agents, and --wait for the rebuilds a change starts."""
 
     def setUp(self):
@@ -1125,7 +1129,7 @@ def key_request(state="pending", done=(), **over):
             "remaining": sum(1 for i in items if not i["done"]), **over}
 
 
-class SecretsCliTests(CliTests):
+class SecretsCliTests(Cli):
     """sbx secrets: the agent asks for keys and waits; the owner's keys go on stdin, never argv."""
 
     def setUp(self):

@@ -112,7 +112,7 @@ class ApiTests(unittest.TestCase):
                 pass
 
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         cls.addClassCleanup(cls.server.server_close)
         cls.addClassCleanup(cls.server.shutdown)
 

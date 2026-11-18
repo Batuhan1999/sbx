@@ -35,12 +35,20 @@ PYTHONPATH=control .venv/bin/python -m unittest discover -s control/tests -q
 
 Every test class gets a throwaway installation of its own (settings, state
 database and runtime directory under a temporary directory; see
-`control/tests/support.py`), so the whole suite runs in one process. Checks
-that need Linux process handling skip on macOS; CI
-(`.github/workflows/check.yml`, the `check` job) runs everything on Ubuntu for
-every pull request and every push to `main`, and also builds the web app and
-checks shell syntax and release packaging. The desktop CLI's tests are in
-`control/tests/test_cli.py`.
+`control/tests/support.py`), so the whole suite runs in one process, or split
+into shards that run side by side, each a whole set of test classes:
+
+```sh
+printf '%s\n' 1 2 3 4 | PYTHONPATH=control xargs -P 4 -I{} .venv/bin/python control/tests/shard.py {} 4   # non-zero if any fails
+```
+
+Checks that need Linux process handling skip on macOS. CI
+(`.github/workflows/check.yml`) runs everything on Ubuntu for every pull
+request and every push to `main`: one job for lint, the web app, the embed
+tests, shell syntax and release packaging, and four that run the control test
+shards at once. The `check` job passes only when all of them pass; it is the
+status that branch protection and releases wait for. The desktop CLI's tests
+are in `control/tests/test_cli.py`.
 
 Unit tests do not prove a fresh installation, runtime recovery or a working app.
 For lifecycle and service changes, run the
