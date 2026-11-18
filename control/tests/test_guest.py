@@ -224,7 +224,7 @@ class IdentityTests(unittest.TestCase):
 
 
     def test_a_stopped_standalone_sshd_with_no_or_a_stale_pid_is_just_started(self):
-        for pid_file in (None, "", "999999\n", "456\n"):   # 456: a pid another process has now
+        for pid_file in (None, "", "999999\n", "456\n", "457\n"):   # 456, 457: pids other programs have now
             with self.subTest(pid_file=pid_file), tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
                 root = Path(directory)
                 (root / "proc/1").mkdir(parents=True)
@@ -234,6 +234,8 @@ class IdentityTests(unittest.TestCase):
                     (root / "run/sshd.pid").write_text(pid_file)
                 (root / "proc/456").mkdir()
                 (root / "proc/456/exe").symlink_to("/usr/bin/postgres")
+                (root / "proc/457").mkdir()
+                (root / "proc/457/exe").symlink_to("/usr/sbin/sshd-helper")
 
                 def pidfd_open(pid):
                     if not (root / "proc" / str(pid)).exists():

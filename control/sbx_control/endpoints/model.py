@@ -18,6 +18,13 @@ from . import certs
 LOCAL_PORTS = range(17400, 17800)      # the forwarder's listeners in a sandbox, one per endpoint
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 REVISION = state.Setting("endpoints_revision")
+GRANTS = state.Setting("endpoints_grants")   # moves with every change of who may use what
+
+
+def generation() -> str:
+    """What a delivery was issued at: the endpoints' revision and grants. A
+    write issued before either moved is issued again (sandbox.push)."""
+    return f"{REVISION.get('0')}.{GRANTS.get('0')}"
 MANAGED, INTERNAL = "managed-server", "internal"
 
 
@@ -276,6 +283,7 @@ def _change_grants(name: str, change) -> dict:
         ca_cert, reference = _seal_ca(name) if revoked else (None, None)
         with state.db() as conn:
             conn.execute("begin immediate")
+            GRANTS.set(int(GRANTS.get("0", conn=conn)) + 1, conn=conn)
             conn.execute("delete from endpoint_repos where endpoint = ?", (name,))
             conn.executemany("insert into endpoint_repos (endpoint, repo) values (?, ?)", [(name, r) for r in new])
             if revoked:

@@ -15,7 +15,7 @@ import secrets
 
 from .. import contributions, paths, platform, runtime, sandbox_layers, settings, state
 from . import certs
-from .model import INTERNAL, LOCAL_PORTS, REVISION, Refused, address, lock, domain, env_name, join, permitted, split_target
+from .model import INTERNAL, LOCAL_PORTS, Refused, generation, address, lock, domain, env_name, join, permitted, split_target
 from ..tls_front import PORT   # where sandboxes reach endpoints: the HTTPS port, shared by SNI
 from .access import HOSTPORT
 
@@ -161,7 +161,7 @@ def ensure_forwarder(sbx) -> dict:
 
 
 def _issue(name: str, repo: str, kind: str | None, only=None, still=None) -> tuple[str, dict]:
-    """(the endpoints' revision, certs.issue_all for the endpoints (of only,
+    """(the endpoints' generation (revision and grants), certs.issue_all for the endpoints (of only,
     when given) the repo may use now), chosen and signed under the
     endpoints' lock: a revoke's new CA never signs for the repo it revoked.
     {} when it may use none. still(), when given, is checked under the same
@@ -170,15 +170,16 @@ def _issue(name: str, repo: str, kind: str | None, only=None, still=None) -> tup
         if still and not still():
             raise LookupError(f"{name} is another sandbox now")
         names = [r.name for r in routes(kind, repo).rows if only is None or r.name in only]
-        return REVISION.get("0"), certs.issue_all(name, repo, names) if names else {}
+        return generation(), certs.issue_all(name, repo, names) if names else {}
 
 
 def _write_current(sbx, revision: str, issued: dict, again):
     """write_bundles, then again with again()'s for as long as an endpoint
-    changed since the issue (a revoke's new CA, whose own delivery may have
-    written first): the last write is signed by the current CAs."""
+    changed since the issue (a revoke's new CA, a grant: their own delivery
+    may have written first): the last write is signed by the current CAs,
+    for every endpoint the repo may use now."""
     write_bundles(sbx, issued)
-    while REVISION.get("0") != revision:
+    while generation() != revision:
         revision, issued = again()
         write_bundles(sbx, issued)
 

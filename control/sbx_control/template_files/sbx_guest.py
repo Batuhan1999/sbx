@@ -361,7 +361,7 @@ def restart_listener():
         handle = None
         try:   # a pidfd, and sshd's binary behind it: a pid reused by another process is left alone
             handle = os.pidfd_open(old) if old > 1 else None
-            if handle is not None and not str((PROC / str(old) / "exe").resolve()).startswith("/usr/sbin/sshd"):
+            if handle is not None and str((PROC / str(old) / "exe").resolve()) not in ("/usr/sbin/sshd", "/usr/sbin/sshd (deleted)"):
                 os.close(handle)
                 handle = None
         except OSError:

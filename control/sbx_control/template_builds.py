@@ -345,8 +345,10 @@ def phase(key: str, row: dict | None, kind: str | None = None) -> str:
     if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
         if key == templates.BASE:
             return "stuck"
+        # The base it failed on: built before the failure (a build that built its base
+        # first began before the base was done). Only a base built since is a change.
         base = _base_ready(kind)
-        if base and (base["finished_at"] or "") <= (row["started_at"] or ""):
+        if base and (base["finished_at"] or "") <= (row["finished_at"] or ""):
             return "stuck"
     return "current" if _current(row, fingerprint) else "stale"
 

@@ -689,7 +689,10 @@ class RouteTests(Setup, Installation):
             for call in deliver.call_args_list:
                 self.assertEqual((call.args[1], call.kwargs), (["SBX_ENDPOINT_TEMPORAL"], {"restart": False}))
             deliver.reset_mock()
+            issued_at, revision = self.model.generation(), self.model.REVISION.get("0")
             self.endpoints.grant("temporal", "third/repo")                          # a grant alone: no new CA
+            # nginx has nothing new to apply, but a push issued before it is issued again.
+            self.assertEqual((self.model.REVISION.get("0"), self.model.generation() != issued_at), (revision, True))
             self.delivered()
             self.assertEqual([c.args[0] for c in deliver.call_args_list], ["third/repo"])
             self.assertEqual(next(r for r in self.endpoints.rows() if r.name == "temporal").ca_cert,
@@ -1213,7 +1216,7 @@ class DeliveryOrderTests(unittest.TestCase):
         revisions = iter(["2", "4", "6", "6"])   # a revoke lands during each of the first three writes
         written, issued = [], iter([("3", {"dev-pg": "b"}), ("5", {"dev-pg": "c"}), ("6", {"dev-pg": "d"})])
         with patch.object(sandbox, "write_bundles", lambda sbx, bundles: written.append(bundles)), \
-                patch.object(sandbox.REVISION, "get", lambda default=None: next(revisions)):
+                patch.object(sandbox, "generation", lambda: next(revisions)):
             sandbox._write_current(None, "1", {"dev-pg": "a"}, lambda: next(issued))
         self.assertEqual(written, [{"dev-pg": x} for x in "abcd"])   # the last one signed at the current revision
 
