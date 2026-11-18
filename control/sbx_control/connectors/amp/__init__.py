@@ -176,6 +176,7 @@ def _refused_by(kind: str, error: BaseException) -> bool:
 class Amp(extensions.Connector):
     kind = KIND
     title = "Amp"
+    help_url = howto.AMP_PROVIDER
     section = Settings
 
     @property

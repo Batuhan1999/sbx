@@ -427,7 +427,7 @@ class Backend(abc.ABC):
     kind: str
     title: str
     capabilities: Capabilities = Capabilities()
-    help_url = ""         # the owner's how-to page for its account and API key (howto), for its failing checks
+    help_url = ""         # the owner's how-to page for its account and API key (howto), for its failing checks and the keys page
     host = False          # it runs on this server (its host part does something)
     disk_path = ""        # where it keeps templates and snapshots, as messages name it
     # The last hop of a preview: nginx proxies to ingress with the Host

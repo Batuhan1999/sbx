@@ -33,7 +33,7 @@ class Installation(unittest.TestCase):
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
              "managed_servers", "ip_preview_routes", "ip_preview_retired", "ip_preview_missing", "repo_runtimes",
              "runtime_requests", "endpoints", "endpoint_repos", "endpoint_certs", "endpoint_credentials", "users",
-             "user_links")
+             "user_links", "secret_requests")
 
     @classmethod
     def setUpClass(cls):

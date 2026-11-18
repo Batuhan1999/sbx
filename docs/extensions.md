@@ -82,6 +82,7 @@ are plain values rather than part of the contribution:
 | `login` | `extensions.Login`: where a developer's own login for the agent goes in a sandbox, and how `sbx login <kind>` gets it (a pasted token kept in the Keychain, or the agent's own login file). The CLI reads these from `GET /api/me`; the server never sees the login. |
 | `section` | Its settings: a `settings.ExtensionSection` model, stored under its kind; `settings()` reads it and `save_settings()` writes it, asking for the host effects the model's `applies` names. |
 | `cli` | A function run as `sbx-admin <kind> ...`. |
+| `help_url` | An https link that says how to get its secret field's value; the keys page links it for a `connector:<kind>` [key request](reference.md#asking-the-owner-for-keys), which saves the value through `connect()` with its other fields unchanged. |
 
 | Method | Use |
 | --- | --- |

@@ -61,6 +61,7 @@ class Connection:
     # so the web app does not list it).
     group: Group = "platform"
     shown: tuple[str, ...] = ()       # the facts worth showing people, in order
+    help_url = ""                     # how to get its secret, for the keys page (a howto page)
 
     def view(self, status: Status) -> dict:
         """The status for the web app: its group, and the shown facts that

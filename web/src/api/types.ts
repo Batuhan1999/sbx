@@ -224,7 +224,7 @@ export type HostRequestState = 'idle' | 'queued' | 'applying' | 'done' | 'failed
  * restarting: done, and sbx-control's restart that takes it is still to come (the answer is from the process before it). */
 export type HostRequestStatus = { state: HostRequestState; message: string; at: string; restarting?: boolean }
 /** unchanged: done at once, nothing to apply (the default already). */
-export type RuntimeChange = HostRequestStatus & { operation: '' | 'add' | 'change' | 'remove' | 'default'; kind: string; unchanged?: boolean }
+export type RuntimeChange = HostRequestStatus & { operation: '' | 'add' | 'change' | 'remove' | 'default' | 'batch'; kind: string; unchanged?: boolean }
 /** What a runtime's form sends: a plan (its limits resolved by the server), or none, and the values set. */
 export type RuntimeValues = { plan?: string; values: Record<string, string> }
 
@@ -438,6 +438,40 @@ export type Connection = {
 /** runtime: the kind of sandbox runtime it checks, null for the server's own checks. help_url: the owner's how-to page for what it checks, if any. */
 export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null; help_url?: string }
 export type CheckResult = { ok: boolean; checks: Check[] }
+
+/** A key request an agent made (GET /api/secret-requests/ID): where each key goes, never a value. */
+export type SecretRequestItem = {
+  target: string
+  label: string
+  help_url: string
+  what: string
+  hint: string
+  /** The target of the held key this item reuses (nothing to paste), or null. */
+  reuse: string | null
+  reuse_from: string | null
+  done: boolean
+  done_at: string | null
+  done_by: string | null
+  /** A runtime key's change on the server, once queued; null for any other key. */
+  applied: RuntimeApply | null
+}
+/** How far the server is with runtime keys: queued and applied by the host, which then restarts sbx-control. */
+export type RuntimeApply = { state: 'none' | 'queued' | 'applying' | 'restarting' | 'done' | 'failed' | 'unknown'; message: string }
+export type SecretRequest = {
+  id: string
+  url: string
+  state: 'pending' | 'completed' | 'cancelled' | 'expired'
+  created_by: string
+  created_at: string
+  expires_at: string
+  note: string
+  finished_at: string | null
+  finished_by: string | null
+  remaining: number
+  items: SecretRequestItem[]
+  runtime_changes: RuntimeApply
+}
+export type SecretSubmitResult = { request: SecretRequest; ok: boolean; results: { target: string; ok: boolean; error: string }[] }
 
 export type SetupState = {
   complete: boolean
