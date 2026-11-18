@@ -472,13 +472,14 @@ A template is composed from three layers:
 
 1. the **platform layer**: the OS, SSH and its WebSocket bridge, the desktop,
    Node, Chromium and the start contract (the `sbx-base` template);
-2. **contributions** of the extensions: `gh` when GitHub is connected, each
+2. the **recipe**: `.sbx/Dockerfile`, the checkout and `.sbx/build` when
+   `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
+   template);
+3. **contributions** of the extensions: `gh` when GitHub is connected, each
    agent connector's CLI (Claude Code, Codex for `sbx open codex`), and the
    template layers of catalog packages a trusted repository attaches
-   ([extensions](extensions.md#contributions));
-3. the **recipe**: `.sbx/Dockerfile`, the checkout and `.sbx/build` when
-   `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
-   template).
+   ([extensions](extensions.md#contributions)). They are added after the
+   recipe, so `.sbx/Dockerfile` and `.sbx/build` cannot use them.
 
 The fingerprint covers all three layers; of the recipe, what the build
 reads: `.sbx/Dockerfile`, `.sbx/build`, `workdir` and the size. Editing
@@ -542,7 +543,9 @@ A prebuilt template's recipe layer runs, in order:
    ignored: sandboxes start the app with `processes` and `start`. A second
    `FROM` (a multi-stage build), `COPY` and `ADD` are refused; fetch files
    with `RUN curl` or in `.sbx/build`. `ENV` and `ARG` values stay set for
-   the build's later steps.
+   the build's later steps. One exception: Boat does not replay the body of
+   a heredoc (`RUN <<EOF`), so put those commands in `.sbx/build` or a
+   plain `RUN` for a template that builds on Boat.
 2. the checkout of the default branch at `workdir`, as `user`;
 3. `.sbx/build`, as `user` from `workdir`, whatever `USER` and `WORKDIR` the
    Dockerfile ended with.
