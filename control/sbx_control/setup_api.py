@@ -17,7 +17,7 @@ _setup_lock = threading.Lock()
 # Until the first-run setup is complete (setup.py), this host serves the
 # setup and nothing else: there is no sign-in yet to protect the rest.
 SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/api/settings", "/api/catalog",
-              "/api/runtimes", "/connections/github", "/auth/")
+              "/api/runtimes", "/api/secret-requests", "/keys/", "/connections/github", "/auth/")
 # Open by exact path: the release string, which the setup's reachability
 # check fetches from inside a sandbox (reachability.PATH).
 SETUP_OPEN_EXACT = ("/dist/version",)

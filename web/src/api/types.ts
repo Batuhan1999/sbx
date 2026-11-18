@@ -437,6 +437,35 @@ export type Connection = {
 export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null }
 export type CheckResult = { ok: boolean; checks: Check[] }
 
+/** A key request an agent made (GET /api/secret-requests/ID): where each key goes, never a value. */
+export type SecretRequestItem = {
+  target: string
+  label: string
+  help_url: string
+  what: string
+  hint: string
+  /** The target of the held key this item reuses (nothing to paste), or null. */
+  reuse: string | null
+  reuse_from: string | null
+  done: boolean
+  done_at: string | null
+  done_by: string | null
+}
+export type SecretRequest = {
+  id: string
+  url: string
+  state: 'pending' | 'completed' | 'cancelled' | 'expired'
+  created_by: string
+  created_at: string
+  expires_at: string
+  note: string
+  finished_at: string | null
+  finished_by: string | null
+  remaining: number
+  items: SecretRequestItem[]
+}
+export type SecretSubmitResult = { request: SecretRequest; ok: boolean; results: { target: string; ok: boolean; error: string }[] }
+
 export type SetupState = {
   complete: boolean
   steps: { step: 'address' | 'sign_in' | 'runtime'; done: boolean; optional: boolean; summary: string }[]

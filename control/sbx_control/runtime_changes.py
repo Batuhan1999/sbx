@@ -142,6 +142,23 @@ def request(operation: str, kind: str, values: dict | None = None, *, by: str) -
     return status()
 
 
+def checked(operation: str, kind: str, check, *, by: str) -> dict:
+    """check() (runtime_settings.prepare and the like: the values to queue),
+    then request(); a secret check() sealed is discarded again when queueing
+    is refused. Busy while another change is queued or applied; Refused as
+    check() refuses."""
+    values = None
+    try:
+        if busy():
+            raise Busy("a runtime change is being applied already; wait for it to finish")
+        values = check()
+        return request(operation, kind, values, by=by)
+    except BaseException:
+        if values:
+            discard_references(values)
+        raise
+
+
 _PLANS = {"add": runtime_settings.add, "change": runtime_settings.add,
           "remove": lambda kind, values: runtime_settings.remove(kind),
           "default": lambda kind, values: runtime_settings.set_default(kind)}

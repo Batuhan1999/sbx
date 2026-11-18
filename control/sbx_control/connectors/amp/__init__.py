@@ -10,7 +10,7 @@ import time
 from pydantic import ValidationError
 
 from ... import core, extensions, host, settings, vault
-from ...connections.base import Check, Field, Refused, Status
+from ...connections.base import HOWTO, Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
 from .common import CLI, KIND, Settings, TOKEN
 
@@ -67,6 +67,7 @@ def wayland_tools() -> bytes:
 class Amp(extensions.Connector):
     kind = KIND
     title = "Amp"
+    help_url = f"{HOWTO}/amp.md"
     section = Settings
 
     @property

@@ -7,6 +7,7 @@ from the server. `sbx COMMAND -h` explains a command.
 """
 import argparse
 import base64
+import calendar
 import getpass
 import hashlib
 import http.server
@@ -753,6 +754,155 @@ def wait_endpoints(name, removed, timeout, interval=2.0):
     return next((e for e in found["endpoints"] if e["name"] == name), None)
 
 
+# sbx secrets: ask the owner for keys on the server's keys page, and follow the request
+
+
+DURATION = re.compile(r"^(\d+)([smhd]?)$")
+DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def duration(text):
+    """30m, 24h, 7d (or seconds) as seconds."""
+    found = DURATION.match((text or "").strip().lower())
+    if not found:
+        sys.exit(f"--expires {text}: a duration such as 30m, 24h or 7d")
+    return int(found.group(1)) * DURATION_UNITS[found.group(2)]
+
+
+def secrets_client(args):
+    """The first-run setup link's client when one is given (an agent setting up a fresh server), else the
+    signed-in session's."""
+    if getattr(args, "link_file", None) or os.environ.get("SBX_SETUP_LINK"):
+        return setup_client(args)
+    return Client(CONTROL)
+
+
+def secrets_cmd(args):
+    """sbx secrets request | status | ls | cancel | submit (admins; request, status, ls and cancel also with
+    the setup link)."""
+    client = secrets_client(args)
+    if args.action == "request":
+        return secrets_request(args, client)
+    if args.action == "ls":
+        found = client.api("GET", "/api/secret-requests")["requests"]
+        if args.json:
+            print(json.dumps(found))
+            return
+        for r in found:
+            print(f"{r['id']}  {r['state']:<9} {len(r['items']) - r['remaining']}/{len(r['items'])} in  "
+                  f"expires {r['expires_at']}  {r['url']}")
+        if not found:
+            print("no key requests")
+        return
+    if not args.args:
+        sys.exit(f"sbx secrets {args.action} ID (sbx secrets ls lists them)")
+    path = f"/api/secret-requests/{urllib.parse.quote(args.args[0], safe='')}"
+    if args.action == "status":
+        found = client.api("GET", path)
+        if args.wait and found["state"] == "pending":
+            found = wait_secrets(client, path, found, args.timeout)
+        print(json.dumps(found) if args.json else secrets_summary(found))
+        if found["state"] in ("expired", "cancelled"):
+            sys.exit(1)
+        return
+    if args.action == "cancel":
+        found = client.api("DELETE", path)
+        print(json.dumps(found) if args.json else f"{found['id']}: cancelled")
+        return
+    secrets_submit(args, client, path)
+
+
+def secrets_request(args, client):
+    """sbx secrets request TARGET LABEL [TARGET LABEL ...]: the keys page's URL for the owner; with --wait,
+    until every key is in (non-zero when the request expires or is cancelled)."""
+    pairs = args.args
+    if not pairs or len(pairs) % 2:
+        sys.exit("sbx secrets request TARGET LABEL [TARGET LABEL ...]: each target with its label, e.g.\n"
+                 '  sbx secrets request runtime:boat "Boat API key" dns:cloudflare "Cloudflare DNS token"')
+    helps = {}
+    for pair in args.help_url or []:
+        target, sep, url = pair.partition("=https://")
+        if not sep:
+            sys.exit(f"--help-url {pair}: expected TARGET=https://...")
+        helps[target] = "https://" + url
+    items = [{"target": t, "label": label, **({"help_url": helps.pop(t)} if t in helps else {})}
+             for t, label in zip(pairs[::2], pairs[1::2])]
+    if helps:
+        sys.exit(f"--help-url names targets the request does not ask for: {', '.join(helps)}")
+    body = {"items": items, "expires_in": duration(args.expires), **({"note": args.note} if args.note else {})}
+    found = client.api("POST", "/api/secret-requests", body)
+    said = f"send the owner this link (they sign in to use it; it expires {found['expires_at']})"
+    if not args.wait:
+        if args.json:
+            print(json.dumps(found))
+        else:
+            print(found["url"])
+            note(f"{said}; `sbx secrets status {found['id']} --wait` waits for the keys")
+        return
+    note(f"{said}: {found['url']}")
+    if not args.json:
+        print(found["url"])
+    path = f"/api/secret-requests/{urllib.parse.quote(found['id'], safe='')}"
+    found = wait_secrets(client, path, found, args.timeout)
+    print(json.dumps(found) if args.json else secrets_summary(found))
+
+
+def secrets_summary(found):
+    total = len(found["items"])
+    lines = [f"{found['id']}: {found['state']}, {total - found['remaining']}/{total} keys in "
+             f"(expires {found['expires_at']})"]
+    lines += [f"  {'in' if i['done'] else '..'}  {i['target']}: {i['label']}" for i in found["items"]]
+    return "\n".join(lines)
+
+
+def wait_secrets(client, path, first, timeout):
+    """The request once every key is in; exits non-zero when it expires or is cancelled, or past timeout
+    (default: until it expires). A poll sbx-control's restart fails (a runtime key restarts it) is retried."""
+    def verdict(found):
+        state = found["state"]
+        if state in ("expired", "cancelled"):
+            return None, f"the key request {found['id']} is {state}; {found['remaining']} key(s) never came"
+        total = len(found["items"])
+        return (None if state == "completed" else
+                f"waiting for the owner: {total - found['remaining']}/{total} keys in"), state == "completed"
+    if timeout is None:
+        try:
+            ends = calendar.timegm(time.strptime(first["expires_at"], "%Y-%m-%dT%H:%M:%SZ"))
+            timeout = max(0, ends - time.time()) + 30
+        except (KeyError, ValueError):
+            timeout = 86400
+    return follow(lambda: client.request("GET", path, timeout=30), verdict, timeout, interval=3, first=first,
+                  retry_statuses=RETRIED,
+                  late=lambda found: f"still waiting for {found['remaining']} key(s) of {found['id']}: "
+                                     f"sbx secrets status {found['id']} --wait")
+
+
+def secrets_submit(args, client, path):
+    """sbx secrets submit ID [TARGET ...]: the keys themselves, one line of stdin each, in order (hidden at a
+    terminal), never on the command line; without TARGET, every key the request still asks for. A key that
+    reuses one the server holds needs no value. Non-zero when any is refused."""
+    found = client.api("GET", path)
+    if found["state"] != "pending":
+        sys.exit(f"{found['id']} is {found['state']}")
+    wanted = args.args[1:] or [i["target"] for i in found["items"] if not i["done"] and not i["reuse"]]
+    values = {}
+    for target in wanted:
+        item = next((i for i in found["items"] if i["target"] == target or i["target"].startswith(target + ":")), None)
+        value = _read_secret(f"{item['label'] if item else target} ({target})")
+        if not value:
+            sys.exit(f"no value for {target} on stdin")
+        values[target] = value
+    done = client.api("POST", f"{path}/submit", {"values": values})
+    if args.json:
+        print(json.dumps(done))
+    else:
+        for r in done["results"]:
+            print(f"{'ok ' if r['ok'] else 'NO '} {r['target']}" + ("" if r["ok"] else f": {r['error']}"))
+        print(secrets_summary(done["request"]))
+    if not done["ok"]:
+        sys.exit(1)
+
+
 # sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
 
 
@@ -1448,6 +1598,31 @@ def parser():
     p.add_argument("--no-wait", action="store_true", help="add, rm: return once recorded")
     p.add_argument("--timeout", type=int, default=300, help="seconds to wait for the server to apply it (default 300)")
     p.add_argument("--json", action="store_true", help="as the API answers")
+
+    p = command("secrets", secrets_cmd, "ask the owner for keys: a page on the server they sign in to, where each "
+                "key goes straight to where it is used; and follow the request (admins)",
+                epilog="sbx secrets request [--wait] TARGET LABEL [TARGET LABEL ...]\n"
+                       "    TARGET: runtime:KIND[:KEY]  dns:cloudflare  connector:KIND[:FIELD]  repo:OWNER/NAME:VAR\n"
+                       "    repo:OWNER/NAME:VAR=from:SOURCE reuses a key the server holds instead of asking\n"
+                       "    (SOURCE: runtime:KIND[:KEY], dns:cloudflare, repo:OWNER/NAME:VAR, or another target)\n"
+                       "sbx secrets status ID [--wait]       which keys are in (never a value)\n"
+                       "sbx secrets ls | cancel ID\n"
+                       "sbx secrets submit ID [TARGET ...]   the keys yourself, one line of stdin each\n"
+                       "With SBX_SETUP_LINK or --link-file, request, status, ls and cancel use the first-run\n"
+                       "setup link; keys are always submitted by a signed-in admin.",
+                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("action", choices=["request", "status", "ls", "cancel", "submit"])
+    p.add_argument("args", nargs="*", metavar="ARG")
+    p.add_argument("--wait", action="store_true", help="request, status: until every key is in; non-zero when the "
+                   "request expires or is cancelled")
+    p.add_argument("--timeout", type=int, help="seconds to wait (default: until the request expires)")
+    p.add_argument("--expires", default="24h", help="request: how long the page works (30m .. 7d; default 24h)")
+    p.add_argument("--note", help="request: a line for the owner on the page")
+    p.add_argument("--help-url", action="append", metavar="TARGET=URL",
+                   help="request: where the owner learns to get that key (default: sbx's guide for it)")
+    p.add_argument("--json", action="store_true", help="as the API answers")
+    p.add_argument("--link-file", metavar="FILE", help="the first-run setup link's file (else SBX_SETUP_LINK)")
+    p.add_argument("--insecure", action="store_true", help="with the setup link: accept a self-signed certificate")
 
     p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the link install.sh "
                 "printed (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")

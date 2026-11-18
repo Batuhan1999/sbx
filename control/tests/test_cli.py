@@ -686,6 +686,105 @@ class SetupCliTests(CliTests):
             self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
 
 
+def key_request(state="pending", done=(), **over):
+    """A key request as GET /api/secret-requests/ID answers it."""
+    items = [{"target": "runtime:boat:BOAT_API_KEY", "label": "Boat API key", "reuse": None},
+             {"target": "dns:cloudflare", "label": "Cloudflare DNS token", "reuse": None},
+             {"target": "repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY", "label": "Boat key for the app",
+              "reuse": "runtime:boat:BOAT_API_KEY"}]
+    items = [{**i, "done": n in done, "help_url": "", "what": "", "hint": ""} for n, i in enumerate(items)]
+    return {"id": "req12345", "url": "https://login.sbx.example/keys/req12345", "state": state,
+            "expires_at": "2099-01-01T00:00:00Z", "created_by": "ada@example.com", "items": items,
+            "remaining": sum(1 for i in items if not i["done"]), **over}
+
+
+class SecretsCliTests(CliTests):
+    """sbx secrets: the agent asks for keys and waits; the owner's keys go on stdin, never argv."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.routes[("POST", "/api/secret-requests")] = lambda q, body: (201, key_request())
+
+    def polls(self, *answers):
+        found = iter(answers)
+        last = answers[-1]
+        self.routes[("GET", "/api/secret-requests/req12345")] = lambda q, body: next(found, last)
+
+    def test_request_sends_each_target_with_its_label_and_prints_the_page(self):
+        code, out, err = self.run_cli("secrets", "request", "runtime:boat", "Boat API key", "dns:cloudflare",
+                                      "Cloudflare DNS token", "--expires", "2h", "--note", "for the first sandbox",
+                                      "--help-url", "dns:cloudflare=https://example.com/howto")
+        self.assertEqual((code, out), (0, "https://login.sbx.example/keys/req12345\n"), err)
+        self.assertIn("sbx secrets status req12345 --wait", err)
+        method, path, _, body, authorization = self.control.calls[-1]
+        self.assertEqual((method, path, authorization), ("POST", "/api/secret-requests", "Bearer sbx_test"))
+        self.assertEqual(body, {"items": [{"target": "runtime:boat", "label": "Boat API key"},
+                                          {"target": "dns:cloudflare", "label": "Cloudflare DNS token",
+                                           "help_url": "https://example.com/howto"}],
+                                "expires_in": 7200, "note": "for the first sandbox"})
+        code, out, err = self.run_cli("secrets", "request", "runtime:boat", "--json")
+        self.assertIn("each target with its label", str(code))
+        code, out, err = self.run_cli("secrets", "request", "dns:cloudflare", "x", "--expires", "soon")
+        self.assertIn("a duration", str(code))
+
+    def test_request_wait_follows_until_every_key_is_in(self):
+        self.polls(key_request(done=(0,)), (502, b"restarting"), key_request("completed", done=(0, 1, 2)))
+        code, out, err = self.run_cli("secrets", "request", "--wait", "--json", "runtime:boat", "Boat API key")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["state"], "completed")      # only the final answer on stdout
+        self.assertIn("https://login.sbx.example/keys/req12345", err)
+        self.assertIn("waiting for the owner: 0/3 keys in", err)
+        self.assertIn("waiting for the owner: 1/3 keys in", err)
+
+    def test_wait_exits_non_zero_when_the_request_expires_or_is_cancelled(self):
+        for state in ("expired", "cancelled"):
+            with self.subTest(state):
+                self.polls(key_request(state))
+                code, out, err = self.run_cli("secrets", "status", "req12345", "--wait")
+                self.assertNotEqual(code, 0)
+                self.polls(key_request(), key_request(state))
+                code, out, err = self.run_cli("secrets", "request", "--wait", "dns:cloudflare", "DNS token")
+                self.assertIn(f"is {state}", str(code))
+        self.polls(key_request(done=(0,)))
+        code, out, err = self.run_cli("secrets", "status", "req12345")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1/3 keys in", out)
+        self.assertIn("in  runtime:boat:BOAT_API_KEY", out)
+
+    def test_submit_reads_each_key_from_stdin_and_fails_when_one_is_refused(self):
+        self.polls(key_request())
+        results = {"ok": False, "request": key_request(done=(0, 2)), "results": [
+            {"target": "runtime:boat:BOAT_API_KEY", "ok": True, "error": ""},
+            {"target": "dns:cloudflare", "ok": False, "error": "Cloudflare refused the token"},
+            {"target": "repo:owner/app:BOAT_API_KEY=from:runtime:boat:BOAT_API_KEY", "ok": True, "error": ""}]}
+        self.routes[("POST", "/api/secret-requests/req12345/submit")] = lambda q, body: results
+        code, out, err = self.run_cli("secrets", "submit", "req12345", stdin="test-only-boat\ntest-only-dns\n")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.control.calls[-1][3], {"values": {"runtime:boat:BOAT_API_KEY": "test-only-boat",
+                                                                "dns:cloudflare": "test-only-dns"}})
+        self.assertIn("NO  dns:cloudflare: Cloudflare refused the token", out)
+        self.assertNotIn("test-only", out + err)
+        code, out, err = self.run_cli("secrets", "submit", "req12345", "dns:cloudflare", stdin="")
+        self.assertIn("no value for dns:cloudflare", str(code))
+
+    def test_ls_and_cancel(self):
+        self.routes[("GET", "/api/secret-requests")] = lambda q, body: {"requests": [key_request()]}
+        self.routes[("DELETE", "/api/secret-requests/req12345")] = lambda q, body: key_request("cancelled")
+        code, out, err = self.run_cli("secrets", "ls")
+        self.assertIn("req12345  pending   0/3 in", out)
+        code, out, err = self.run_cli("secrets", "cancel", "req12345", "--json")
+        self.assertEqual((code, json.loads(out)["state"]), (0, "cancelled"))
+        self.routes[("DELETE", "/api/secret-requests/req12345")] = lambda q, body: (409, {"detail": "the request is completed already"})
+        self.assertIn("completed already", str(self.run_cli("secrets", "cancel", "req12345")[0]))
+
+    def test_a_setup_link_stands_in_for_the_session_while_the_server_is_set_up(self):
+        with patch.dict(os.environ, {"SBX_SETUP_LINK": f"{self.control.url}/setup#t=one-time-token"}):
+            code, out, err = self.run_cli("secrets", "request", "dns:cloudflare", "DNS token")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.control.calls[-1][4], "Setup one-time-token")
+
+
 class CliApiTests(Server):
     def test_scaffold_names_the_files_it_reads_then_drafts_the_recipe(self):
         self.repo_admin()

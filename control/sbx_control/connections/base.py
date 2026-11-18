@@ -6,6 +6,8 @@ import dataclasses
 from typing import Literal
 
 State = Literal["connected", "attention", "not_connected", "off"]
+# The project's how-to guides: where a key comes from, linked from the keys page (secret_requests).
+HOWTO = "https://github.com/Batuhan1999/sbx/blob/main/docs/howto"
 Group = Literal["platform", "agent", "internal"]
 
 
@@ -60,6 +62,7 @@ class Connection:
     # so the web app does not list it).
     group: Group = "platform"
     shown: tuple[str, ...] = ()       # the facts worth showing people, in order
+    help_url = ""                     # how to get its secret, for the keys page (HOWTO/<topic>.md)
 
     def view(self, status: Status) -> dict:
         """The status for the web app: its group, and the shown facts that

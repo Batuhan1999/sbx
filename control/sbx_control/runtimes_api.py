@@ -65,19 +65,11 @@ class Default(BaseModel):
 
 
 def _queue(operation: str, kind: str, who: str, check) -> dict:
-    """Check and queue; a secret check() sealed goes again when queueing is refused."""
-    values = None
+    """Check and queue (runtime_changes.checked), a refusal as the API answers it."""
     try:
-        if runtime_changes.busy():
-            raise runtime_changes.Busy("a runtime change is being applied already; wait for it to finish")
-        values = check()
-        return runtime_changes.request(operation, kind, values, by=who)
-    except BaseException as error:
-        if values:
-            runtime_changes.discard_references(values)
-        if isinstance(error, runtimes.Refused):
-            raise _refused(error) from None
-        raise
+        return runtime_changes.checked(operation, kind, check, by=who)
+    except runtimes.Refused as error:
+        raise _refused(error) from None
 
 
 @router.post("/api/runtimes", status_code=202)

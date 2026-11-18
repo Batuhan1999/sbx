@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 
+from ...connections.base import HOWTO
 from ..base import HOSTNAME, Capabilities, Failed, LimitRefused, LimitSpec, Preset, SettingField, TokenPlace
 from ..e2b import DEFAULT_DOMAIN, ENVD_PORT, Compute, Handle
 from ..hosted import PerSandbox, hosted_status, limit_settings, limits_from, wrapped
@@ -116,6 +117,7 @@ class Cloud(Compute):
     secret_key = API_KEY
     settings = SETTINGS
     presets = PRESETS
+    help_url = f"{HOWTO}/e2b.md"
     upstream_token_at = TokenPlace("header", TOKEN_HEADER)
     # Explicit, not the E2B project's default: a sandbox's ports answer only
     # with its traffic token.

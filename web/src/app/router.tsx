@@ -7,6 +7,7 @@ const page = (load: () => Promise<{ default: React.ComponentType }>) => async ()
 export const routes = [
   { path: '/app/setup', HydrateFallback: Loading, lazy: page(() => import('@/pages/setup/SetupPage')) },
   { path: '/app/sign-in', HydrateFallback: Loading, lazy: page(() => import('@/pages/SignInPage')) },
+  { path: '/app/keys/:id', HydrateFallback: Loading, lazy: page(() => import('@/pages/KeysPage')) },
   { path: '/app/set-password', HydrateFallback: Loading, lazy: page(() => import('@/pages/SetPasswordPage')) },
   {
     path: '/app',

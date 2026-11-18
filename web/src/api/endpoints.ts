@@ -5,7 +5,7 @@ import type {
   RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
-  SetupState, TemplateState, Updates, Audience, Users, PasswordLink,
+  SetupState, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
 } from './types'
 
 const get = <T,>(url: string) => request<T>('GET', url)
@@ -34,6 +34,11 @@ export const api = {
     /** An internal host's repositories, replaced; refused (400) for a managed server's. */
     setRepos: (name: string, repos: string[]) => put<Endpoint>(`/api/endpoints/${enc(name)}`, { repos }),
     remove: (name: string) => del<unknown>(`/api/endpoints/${enc(name)}`),
+  },
+  /** A key request an agent made; submitted by a signed-in admin, each value stored where it goes and never sent back. */
+  secretRequests: {
+    get: (id: string) => get<SecretRequest>(`/api/secret-requests/${enc(id)}`),
+    submit: (id: string, values: Record<string, string>) => post<SecretSubmitResult>(`/api/secret-requests/${enc(id)}/submit`, { values }),
   },
   signIn: (email: string, password: string) => postForm<{ next: string }>('/auth/login', { email, password }),
   /** A set-password link's person, while it is good. */

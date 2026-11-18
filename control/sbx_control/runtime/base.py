@@ -437,6 +437,7 @@ class Backend(abc.ABC):
     # the form offers for its limits.
     settings: tuple = ()
     presets: tuple = ()
+    help_url = ""   # how to get its secret, for the keys page (connections.base.HOWTO/<topic>.md)
     # Where it wants the token it answers its sandboxes' ports with (None:
     # it needs none). The gate hands nginx the token, nginx adds it on that
     # runtime's requests only; a browser never sees it.

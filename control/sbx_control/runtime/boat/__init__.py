@@ -28,6 +28,7 @@ import threading
 import urllib.parse
 import urllib.request
 
+from ...connections.base import HOWTO
 from ..base import HOSTNAME, Backend, Capabilities, Failed, Limits, TokenPlace
 from .account import Account
 from .build import Builds
@@ -47,6 +48,7 @@ class Boat(Sandboxes, Builds, Previews, Account, Backend):
     secret_key = API_KEY
     settings = SETTINGS
     presets = PRESETS
+    help_url = f"{HOWTO}/boat.md"
     upstream_token_at = TokenPlace("cookie", COOKIE)
     desktop = "provider"
     cold_resume = True
