@@ -23,6 +23,11 @@ def database() -> Path:
     return Path(os.environ.get("SBX_STATE") or state_dir() / "sbx.db")
 
 
+def cache() -> Path:
+    """What sbx can make again but keeps to skip the work (build artifacts)."""
+    return state_dir() / "cache"
+
+
 def run() -> Path:
     return Path(os.environ.get("SBX_RUN_DIR", "/run/sbx"))
 
