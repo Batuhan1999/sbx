@@ -20,7 +20,7 @@ node_dir="$HOME/.local/node-$node_major"
 
 install_node() {
   # The installation is moved into place only once complete, so a partial one never stays.
-  if [ -x "$node_dir/bin/node" ]; then
+  if "$node_dir/bin/node" "$node_dir/lib/node_modules/npm/bin/npm-cli.js" --version > /dev/null 2>&1; then
     echo "    node $("$node_dir/bin/node" --version) already installed"
     return
   fi
