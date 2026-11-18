@@ -68,7 +68,7 @@ def steps(info: dict, atts: list, missing: list, build: dict, live: bool, admin:
         out.append(_step("github", "done", "Cloned anonymously; install the GitHub App to push or for private repos"))
     else:
         out.append(_step("github", "todo" if served else "blocked",
-                         "Install the GitHub App on this repository so sandboxes can clone and push", "admin",
+                         "Install the GitHub App on this repository so sandboxes can push (and clone it, if it is private)", "admin",
                          **({"action": info["github_app_install"]} if info.get("github_app_install") else {})))
     out.append(_step("configured", "done", f"Previews: {', '.join(info['previews'])}" if info["previews"] else "Recipe found")
                if recipe else _step("configured", "todo" if served else "blocked",

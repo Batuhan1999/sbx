@@ -48,18 +48,33 @@ resources:
   template, each time it is prepared: the swap file is resized in place. A
   change is refused when the VM lacks the free RAM to do it safely; use a new
   sandbox then. Swap uses disk and is much slower than RAM; it does not replace
-  enough memory.
+  enough memory. Without it a sandbox keeps its template's swap file (below).
 - vCPUs share the cores of the machine the sandbox runs on; they are not
   pinned or dedicated.
 - A recipe change never resizes an existing VM. The snapshot reports
   `allocation_below_recipe` until you build the template again and start a new
   sandbox. Keep source edits and data you need before replacing one.
 
+## Each runtime differs
+
+The same recipe can pass on one runtime and fail on another: a full
+`yarn install` that fit on E2B Cloud was OOM-killed on Boat. Test the recipe
+on every runtime the repository uses, and set what it depends on.
+
+| | Default | Differs because | Set it |
+| --- | --- | --- | --- |
+| Swap | an 8 GiB swap file behind zswap (base template) | a runtime's image can bring its own (Boat's sandboxes showed 2 GiB); the base template replaces a smaller one | `resources.swap_mb` |
+| Node | 22.22.2 in `/usr/local/bin` (base template) | a runtime's image can put another first on `PATH` (Boat's showed Node 24) | install the version the repository pins (`.nvmrc`, `engines`) in `.sbx/setup` or the template, and check `node -v` |
+| Disk | at least `disk_mb` (8 GiB) free after the template build | the runtime gives more: E2B Cloud its plan's disk (Hobby 10 GiB, Pro 20 GiB), Boat its machine's (51 GB and up) | `resources.disk_mb`, then check `df -h /` |
+
 ## Find the size
 
 1. Start without a size. Run the app's real workload (setup, the start
    command, the useful action) and read the snapshot.
-2. If it is short of memory or CPU, first limit build and test parallelism
+2. A command killed with exit code 137 (`killed (exit code 137: out of
+   memory?)`) usually ran out of memory: `sudo dmesg | grep -i oom` in the
+   sandbox names the process. If it is short of memory or CPU, first limit
+   build and test parallelism
    (`CARGO_BUILD_JOBS`, `GOMAXPROCS`, `make -j`, test worker counts) in
    `.sbx/setup`. A smaller job count often fits where a bigger VM was assumed.
 3. Only then request more. As a starting hypothesis, a small app runs in 2 vCPU and 4 GiB; a

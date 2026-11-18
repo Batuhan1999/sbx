@@ -149,6 +149,13 @@ class CliTests(unittest.TestCase):
         code, out, err = self.run_cli("sandbox", "prepare", "try")
         self.assertIn("setup exited 1", str(code))
         self.assertEqual(out, "")
+        # The failure event says why: the command, its exit code, the end of its output.
+        self.routes[("GET", "/api/sandboxes/try/detail")] = lambda q, body: {"events": [
+            {"kind": "prepare failed", "detail": "`.sbx/setup` was killed (exit code 137: out of memory?)"},
+            {"kind": "create failed", "detail": "older"}]}
+        code, out, err = self.run_cli("sandbox", "prepare", "try")
+        self.assertIn("setup exited 1\n`.sbx/setup` was killed (exit code 137: out of memory?)\nfix it", str(code))
+        self.assertNotIn("older", str(code))
 
     def test_lifecycle_operations_print_only_the_sandboxs_json_on_stdout(self):
         phases = iter([{"phase": "starting_app", "active": True, "application": "starting_app"}, SANDBOX["lifecycle"]])
@@ -792,6 +799,19 @@ class CliApiTests(Server):
         bad = self.client.put("/api/repos/owner/app/recipe", json={"files": {".sbx/sbx.yaml": "services: []\n"}})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(recipes.load("owner/app").spec["previews"]["web"], 3000)
+
+    def test_an_admin_reads_the_setup_brief_before_the_repo_is_served(self):
+        from sbx_control import auth, settings
+        self.repo_admin()
+        self.assertIsNone(settings.trust("owner/new"))
+        response = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("# Set up owner/new", response.text)
+        self.app.app.dependency_overrides[auth.api_user] = lambda: "someone@example.test"
+        self.addCleanup(self.app.app.dependency_overrides.clear)
+        refused = self.client.get("/api/repos/owner/new/setup-brief")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("not served here", refused.text)
 
     def test_an_applied_recipe_is_removed_once_its_sandboxes_are_gone(self):
         from types import SimpleNamespace

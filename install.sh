@@ -171,6 +171,8 @@ check_report() {
     echo "verdict:    the upgrade refuses: this installation enables embed, and $unfit"; return 1
   fi
   if [ "$verdict" != 0 ]; then echo "verdict:    sbx can't be installed on this host"
+  elif [ "$installed" = unknown ]; then echo "verdict:    installed; install.sh upgrades it (with sudo, --check names its runtimes)"
+  elif [ -n "$installed" ]; then echo "verdict:    installed with $installed; install.sh upgrades it"
   elif [ -z "$unfit" ]; then echo "verdict:    embed (a provider runtime can be added too)"
   else echo "verdict:    a provider runtime (e2b-cloud or boat): it needs the owner's API key and a domain"
   fi

@@ -357,6 +357,14 @@ class InstallCheckTests(unittest.TestCase):
         self.assertNotIn('needs an E2B API key', result.stdout)
         self.assertIn('boat       yes: needs a Boat API key', result.stdout)
 
+    def test_an_installed_host_gets_the_upgrade_verdict_not_the_first_installs(self):
+        result = self.check(kvm=False, vmx=False, virt='kvm', installed='e2b-cloud boat')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('verdict:    installed with e2b-cloud boat; install.sh upgrades it', result.stdout)
+        self.assertNotIn("the owner's API key", result.stdout)
+        result = self.check(installed='unknown')
+        self.assertIn('verdict:    installed; install.sh upgrades it', result.stdout)
+
     def inventory(self, *, uid, reader=True):
         """install.sh's read of the installed runtimes, as --check runs it, against a root-only runtime.env."""
         text = INSTALL.read_text()

@@ -413,9 +413,10 @@ Keep only the lines you need.
   per sandbox (its own CA, 24-hour certificates, only for the repositories
   allowed to use it). It needs the domain from step 3. **Ask the owner
   before you add one**, naming the service and the address it will have.
-  Binding a repository to a managed server that has an endpoint (its
-  recipe's `connections:`) gives that repository's sandboxes access through
-  it: confirm that with the owner too. Then:
+  Applying a recipe (`sbx recipe apply`, `PUT …/recipe`) whose `connections:`
+  names a managed server with an endpoint is what binds the repository to
+  it, and gives its sandboxes access through the endpoint: confirm with the
+  owner before you apply it. Then:
 
   ```sh
   sbx endpoints                                    # the managed servers without one
@@ -435,22 +436,30 @@ Keep only the lines you need.
 ## 7. Set up the repository
 
 1. **Access.** The owner connects GitHub on the web app's **Extensions** page
-   and selects the repository. A public repository URL works without a
-   GitHub App.
+   and selects the repository. A public repository clones without the GitHub
+   App, which it needs only to push; readiness asks for the App until the
+   server has checked the repository is public (within 10 minutes).
 2. **Recipe.** In the repository's checkout, `sbx repo connect --agent`
-   drafts `.sbx/` and starts Claude Code (or `--agent codex`) with the
-   server's setup brief. Without `--agent`, it only drafts `.sbx/`; then
-   `sbx repo brief` prints the brief for you to follow (the API serves it at
-   `GET /api/repos/OWNER/NAME/setup-brief`). The
-   [setup brief](../control/sbx_control/template_files/setup-brief.md) is the
-   procedure from discovery to a verified first launch. It chooses services
-   with [service selection](service-selection.md), declares every variable,
-   writes a small [recipe](reference.md#recipe), sizes it with the
+   serves the repository, drafts `.sbx/` and starts Claude Code (or
+   `--agent codex`) with the server's setup brief. Without `--agent`, it only
+   drafts `.sbx/`; then `sbx repo brief` prints the brief for you to follow.
+   Without the CLI, an admin's token reads it at
+   `GET /api/repos/OWNER/NAME/setup-brief`, before the repository is served
+   too; applying the recipe (`PUT /api/repos/OWNER/NAME/recipe`) serves it.
+   Read the brief from the server, not its
+   [template](../control/sbx_control/template_files/setup-brief.md): the
+   server adds its packages, its connections and the worked examples. The
+   brief is the procedure from discovery to a verified first launch, with
+   the HTTP API call for each command. It chooses services with
+   [service selection](service-selection.md), declares the variables the
+   owner's chosen mode needs, writes a small [recipe](reference.md#recipe),
+   sizes it with the
    [resource guide](../control/sbx_control/template_files/resource-guide.md)
    (within the runtime's limits: `sbx runtimes` lists them) and launches it.
    For preloaded data, see
    [development baselines](reference.md#development-baselines). Ask the owner
-   for every secret value you can't generate, as a file, never in the chat.
+   for each secret value that mode needs and you can't generate, as a file,
+   never in the chat.
 3. **Coding agents.** Ask which coding agents the team uses. For Claude Code
    cloud sessions, follow [Claude Code](claude-code.md). For Amp threads,
    follow [Amp](amp-orbs.md). Each needs a key that only the owner can copy
@@ -464,7 +473,7 @@ Keep only the lines you need.
 ssh HOST sudo sbx-admin doctor                 # each part: ok / NO with the fix; exit 1 when one is NO
 sbx runtimes test KIND                     # per enabled runtime; exit 1 on a NO (API: POST /api/runtimes/KIND/test)
 ssh HOST sudo sbx-admin runtime verify KIND   # end to end: create, command, file, pause/resume, preview, delete
-curl -sS -o /dev/null -w '%{http_code}\n' https://login.D/   # from your machine: a 200 or 30x, no TLS error
+curl -sS -o /dev/null -w '%{http_code}\n' https://login.D/   # from your machine: a 200 or 30x, no TLS error (-k for the quick test)
 ```
 
 - `doctor` and `runtimes test` print one line per check, `ok` or `NO` with
@@ -518,8 +527,10 @@ Before you start, make sure the recipe gives each sandbox:
   other sandbox's data.
 
 Then check, with two disposable, named sandboxes A and B on each runtime the
-repository uses (`sbx up check-a --runtime KIND`, and `check-b`; a name is
-lowercase letters, digits and dashes):
+repository uses (`sbx up check-a`, and `check-b`; a name is lowercase
+letters, digits and dashes). Names are installation-wide: on each further
+runtime, add its kind (`sbx up check-a-boat --runtime boat`, `check-b-boat`).
+A recipe that passes on one runtime can fail on another.
 
 - [ ] Both launch cleanly from the recipe and pass a useful app action.
 - [ ] Migrate and seed both. Change or reset A's data; B still has its original

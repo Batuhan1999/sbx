@@ -239,6 +239,18 @@ class WorkspaceTests(Server):
             with self.assertRaises(core.SandboxError):
                 core.start_app(vm, app)
 
+    def test_a_health_failure_names_each_url_and_what_it_answered(self):
+        from sbx_control import core, recipes
+        app = recipes.App('owner/app', Path('/unused'), {'health': ['http://localhost:3000/', 'http://localhost:3001/'],
+                                                         'health_timeout': 30})
+        vm = VM(answer=lambda command: '502 000' if 'curl ' in command else None)
+        with patch.object(core.time, 'sleep'), patch.object(core.time, 'time', side_effect=[0, 0, 31]):
+            with self.assertRaises(core.SandboxError) as raised:
+                core.start_app(vm, app)
+        self.assertIn('after 30 s, http://localhost:3000/ answered 502, http://localhost:3001/ did not answer',
+                      str(raised.exception))
+        self.assertEqual(core.health_said(['http://x/'], ['200', 'exited'], 30), 'a process of the app exited')
+
     def test_unverified_workspace_is_not_reported_as_an_app_being_up(self):
         from sbx_control import lifecycle
         finished = {'operation': 'prepare', 'active': False, 'services_ready': True, 'runtime': 'running'}

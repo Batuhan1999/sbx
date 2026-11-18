@@ -837,7 +837,8 @@ def start_app(sbx, a: recipes.App):
     if pid.isdigit():
         probe += f"kill -0 {pid} 2>/dev/null || echo exited; "
     probe += probe_processes or "true"
-    deadline = time.time() + a.spec.get("health_timeout", 240)
+    seconds = a.spec.get("health_timeout", 240)
+    deadline, state = time.time() + seconds, []
     while time.time() < deadline:
         time.sleep(1)
         try:
@@ -850,7 +851,17 @@ def start_app(sbx, a: recipes.App):
             return
     logs = shlex.join([*app_logs(a), sbx_guest.SUPERVISOR_LOG])
     tail = sbx.commands.run(f"grep -hE 'ERROR|Error|error' {logs} 2>/dev/null | grep -v '^ *at ' | tail -15").stdout
-    raise SandboxError(f"the app did not come up:\n{tail}")   # its callers mask it (masked)
+    raise SandboxError(f"the app did not come up: {health_said(a.health, state, seconds)}\n{tail}")   # its callers mask it (masked)
+
+
+def health_said(urls: list, state: list, seconds) -> str:
+    """Why start_app gave up, from the last probe: a process exited, or what
+    each health URL answered (curl's 000: no answer)."""
+    if "exited" in state[len(urls):]:
+        return "a process of the app exited"
+    codes = [*state[:len(urls)], *[""] * len(urls)]
+    return f"after {seconds} s, " + ", ".join(
+        f"{url} " + (f"answered {code}" if code.strip("0") else "did not answer") for url, code in zip(urls, codes))
 
 
 def open_desktop_browser(sbx, a: recipes.App, web_url):

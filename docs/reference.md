@@ -88,7 +88,8 @@ A value may reference:
 | `${SBX_URL}`, `${SBX_URL_<PREVIEW>}` | The preview origin: `https://<sandbox>.<domain>`, or `https://<ip>:<port>` on an IP-only server. Use these for origins, callback URLs and CORS. |
 | `${random:32}`, `${random:hex64}`, `${random:base64:32}` | A generated value, stable for the sandbox. |
 
-Declare every value sbx cannot generate or provision, either by name under
+Declare every value the app's chosen mode needs that sbx cannot generate or
+provision, either by name under
 `secrets:` (the app gets it under that name) or as `${secret:NAME}` inside
 another value. The declarations are how sbx knows what is missing:
 `sbx repo status` (`secrets_missing`) and the repository's **Environment** page
@@ -1023,7 +1024,9 @@ Keep the range clear of other listeners; shrinking it cannot drop assigned URLs.
 
 In both modes the gateway checks the sign-in and the preview's `access`, keeps
 HTTP streaming and WebSockets, and strips sbx's login cookie and API token
-before proxying. It does not rewrite the app: use `${SBX_URL_*}` for origins and
+before proxying. A request that signs in with an API token loses its
+`Authorization` header, so it can't also carry the app's own Bearer token:
+send the app's session cookie instead, or call the app inside the sandbox. It does not rewrite the app: use `${SBX_URL_*}` for origins and
 callbacks. Browser cookies are per host, not per port, so on an IP-only server
 give the app a cookie prefix with `${SBX_NAME}` to keep simultaneous sandboxes'
 logins apart; `sbx_session` is reserved.
@@ -1125,18 +1128,23 @@ building or has no room), with `Retry-After` when waiting helps.
 | `POST /api/endpoints/NAME/repos`, `DELETE /api/endpoints/NAME/repos/OWNER/REPO` | admin | `sbx endpoints grant \| revoke`: body `{"repo": "OWNER/REPO"}`; one repository's grant of an internal host's endpoint, under the endpoints' lock; answers the endpoint. A revoke makes the endpoint's CA anew ([what it cuts](#endpoints)); 404 for a repository without a grant, 400 for a managed server's endpoint. |
 | `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add \| rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories, as one change (the web app's list; 400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
 | `POST /api/sandbox/endpoint-certs` | a sandbox (`Bearer NAME:CREDENTIAL`, the credential its forwarder's configuration holds) | The forwarder's renewal: new certificates and keys for the endpoints the sandbox's repository may use now; 401 for a wrong credential, 404 for a sandbox that is gone, 403 when it may use none. Not cached. |
-| `GET /api/repos/OWNER/NAME/setup-brief` | anyone | The setup brief an agent follows (text). |
-| `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
+| `POST /api/repo-onboarding/connect` | admin | `sbx repo connect`: body `{"repo": "OWNER/NAME"}`; serves and trusts the repository without a recipe (GitHub must find it: public, or the App installed). |
+| `GET /api/repos/OWNER/NAME/setup-brief` | anyone; an admin also for a repository not served yet | `sbx repo brief`: the setup brief an agent follows (text), with the server's packages and saved connections, the worked examples and the guides appended. |
+| `PUT /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe apply`: serve and trust the repository with this recipe, replacing the operator's copy; this binds it to the managed servers its `connections:` name. Body `{"files": {".sbx/sbx.yaml": "...", ".sbx/setup": "..."}, "executable": [".sbx/setup"]}`: every file of the recipe by its path in the repository, and which are executable. |
 | `DELETE /api/repos/OWNER/NAME/recipe` | admin | `sbx recipe rm`; 409 while the repository has sandboxes. |
 | `GET /api/repos/OWNER/NAME/files` | anyone | The recipe the platform reads, and where from. |
 | `POST /api/repos/OWNER/NAME/template` | admin | `sbx template build` on the repository's runtime, in the background; 409 while it builds, 503 without room. |
 | `GET /api/repos/OWNER/NAME/template` | anyone | Its status (`building`, `built`, `failed`), `stale`, the error, and for admins the build's last log lines; `runtime` names the runtime, and with several `runtimes` lists the other runtimes' states. |
 | `DELETE /api/repos/OWNER/NAME/template` | admin | `sbx template rm`. |
+| `GET /api/catalog`, `GET /api/catalog/PACKAGE` | anyone | `sbx catalog ls \| show`: the packages; one with its inputs, outputs, the env it sets and the slots it requires. For a connection package, an admin also gets its saved `connections`. |
+| `POST /api/repos/OWNER/NAME/attachments` | admin | `sbx attach`: body `{"package": "...", "key": "...", "inputs": {...}, "connections": {...}}`. |
 | `GET /api/repos/OWNER/NAME/env`, `PUT /api/repos/OWNER/NAME/env/VAR` | admin (anyone with `"mine": true`) | `sbx env ls`, `sbx env set`; body `{"value": "...", "secret": true}`. |
 | `POST /api/sandboxes` | anyone | `sbx up`: body `{"name": "...", "repo": "OWNER/NAME", "branch": "...", "public_keys": ...}`; `branch` defaults to the default branch, `public_keys` is `authorized_keys` text or a list of keys (optional), `runtime` a kind (optional, see [runtimes](#runtimes)); a runtime that cannot take the sandbox is a 400 naming it and why. Returns when SSH works; `?start_app=false` stops before setup. |
 | `GET /api/sandboxes`, `GET /api/sandboxes/NAME?wait=SECONDS` | owner | Your sandboxes; one, with its lifecycle record and preview URLs. `wait` (at most 60) returns once its operation moves on. |
 | `POST /api/sandboxes/NAME/exec` | owner | Run a script as the sandbox's user: body `{"script": "...", "timeout": 120}`, answers `exit_code`, `stdout`, `stderr`. |
-| `GET /api/sandboxes/NAME/inspect?lines=N` | owner | The checkout's commit and the tails of the setup and process logs. |
+| `GET /api/sandboxes/NAME/inspect?lines=N` | owner | `sbx logs` without ssh: the checkout's commit and the tails of the setup and process logs. |
+| `GET /api/sandboxes/NAME/detail` | owner, admins, anyone for a shared one | The sandbox page: `events` (newest first) carry each failed operation's cause, such as the command, its exit code and the end of its output. |
+| `GET /api/sandboxes/NAME/resources?probe=true` | owner, admins, anyone for a shared one | `sbx sandbox resources`: allocation, recipe, live usage ([resource guide](../control/sbx_control/template_files/resource-guide.md)). |
 | `POST /api/sandboxes/NAME/restart`, `/prepare`, `/pause`, `/resume`; `DELETE /api/sandboxes/NAME` | owner | The [lifecycle](#lifecycle) operations. |
 | `GET /api/users`, `POST /api/users` | admin | The people (email, admin, whether they have a password, last sign-in, API tokens); `POST` with `{"email": "...", "admin": false}` adds one and answers a one-time `link` to set their password, good for 7 days. `sbx-admin user ls`, `user add`. |
 | `PUT /api/users/EMAIL`, `POST /api/users/EMAIL/link`, `DELETE /api/users/EMAIL` | admin | `{"admin": true}` makes them an admin (400 for the last admin); a new set-password link (the older one stops working); remove them, ending their sessions and API tokens (not yourself). |

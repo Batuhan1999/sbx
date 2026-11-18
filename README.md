@@ -37,8 +37,9 @@ Repository to run in sandboxes: <owner/name on GitHub>
    and secrets it needs, from the repository itself. Choose services with
    docs/service-selection.md, write the .sbx/ recipe in the format of
    docs/reference.md (examples/ has complete ones), and size it with
-   control/sbx_control/template_files/resource-guide.md. Declare every value you
-   can't generate as a secret, and ask me for those values instead of guessing.
+   control/sbx_control/template_files/resource-guide.md. Declare every value my
+   mode of the app needs that you can't generate as a secret, and ask me for
+   those values instead of guessing.
 4. Use only the sbx CLI/API and the documented sbx-admin host commands.
 5. Finish with the acceptance checklist in docs/agent-install.md: two independent
    sandboxes, their own data, a restart, and cleanup of everything they created.

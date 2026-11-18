@@ -49,5 +49,12 @@ mkdir -p /etc/systemd/system/system.slice.d /etc/systemd/system/ssh.service.d
 printf '[Slice]\nMemoryMin=384M\nCPUWeight=1000\n' > /etc/systemd/system/system.slice.d/protect.conf
 printf '[Service]\nCPUWeight=1000\n' > /etc/systemd/system/ssh.service.d/cpu.conf
 
+# A runtime's own image may bring a smaller /swapfile, which sbx-swap would
+# keep: replace it, so every runtime starts with the same 8 GiB.
+if [ -f /swapfile ] && [ "$(wc -c < /swapfile)" -lt 8589934592 ]; then
+  swapoff /swapfile 2>/dev/null || true
+  rm -f /swapfile
+fi
+
 systemctl daemon-reload
 systemctl enable -q --now sbx-swap.service

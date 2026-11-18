@@ -82,8 +82,11 @@ class CommandFailed(Failed):
                  command: str = ""):
         tail = (stderr or "").strip()[-1500:] or (stdout or "").strip()[-1500:]
         name = command_name(command)
-        super().__init__(message or (f"`{name}` exited with code {exit_code}" if name else
-                                     f"Command exited with code {exit_code}") + (f" and error:\n{tail}" if tail else ""))
+        what = f"`{name}`" if name else "Command"
+        # 137 is 128 + SIGKILL, which is how the kernel's OOM killer ends a process.
+        said = f"{what} was killed (exit code 137: out of memory?)" if exit_code == 137 else \
+            f"{what} exited with code {exit_code}"
+        super().__init__(message or said + (f" and error:\n{tail}" if tail else ""))
         self.stdout, self.stderr, self.exit_code, self.command = stdout, stderr, exit_code, name
 
 
