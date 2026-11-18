@@ -1076,8 +1076,9 @@ is. A non-HTML request (XHR, websocket, API client) that sbx answers gets
 the status and a JSON body (`{"error": "<state>", ...}`), never the page.
 The SSH bridge is the platform's, not the app's: it waits only while its VM
 is created, pauses, resumes or is deleted, and answers while the app is set
-up or restarted and after the app or its setup failed. `ssh sbx-NAME` (the
-CLI's tunnel) waits up to two minutes on a 503, saying so, and says what to
+up or restarted (on a VM the restart is still resuming, it waits) and after
+the app or its setup failed. `ssh sbx-NAME` (the CLI's tunnel) takes only a
+`wss://` bridge, waits up to two minutes on a 503, saying so, and says what to
 do when the bridge names no sandbox of yours or asks for a sign-in.
 `/.sbx/status` is the one path sbx reserves on preview hosts: it needs a
 sign-in for every method, never wakes a sandbox, and tells someone who may

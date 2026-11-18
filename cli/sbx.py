@@ -362,18 +362,20 @@ def tunnel(args):
     token = keychain_get(API_TOKEN_SERVICE)
     if not token:
         sys.exit("not signed in: run `sbx login`")
+    if urllib.parse.urlsplit(args.url).scheme != "wss":   # the token goes only over TLS
+        sys.exit(f"{args.sandbox_id}: the SSH bridge must be a wss:// URL, not {args.url}")
     binary = websocat() or sys.exit("websocat not found: brew install websocat")
     bridge_ready(args.sandbox_id, args.url, token)
     os.execv(binary, [binary, "--binary", "-B", "65536", f"--header=Authorization: Bearer {token}", "-", args.url])
 
 
-def bridge_status(url, token):
+def bridge_status(url, token, timeout=30):
     """The status the gate answers a WebSocket upgrade to the bridge with
     (101 once it is let through), and its Retry-After."""
     parts = urllib.parse.urlsplit(url)
-    secure = parts.scheme == "wss"
-    connection = (http.client.HTTPSConnection if secure else http.client.HTTPConnection)(
-        parts.hostname, parts.port or (443 if secure else 80), timeout=30)
+    if parts.scheme != "wss":
+        raise ValueError(f"not a wss:// URL: {url}")
+    connection = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=timeout)
     try:
         connection.request("GET", parts.path or "/", headers={
             "Authorization": f"Bearer {token}", "Connection": "Upgrade", "Upgrade": "websocket",
@@ -393,12 +395,12 @@ def bridge_ready(host, url, token):
     deadline, said = time.monotonic() + SSH_REACH_SECONDS, False
     while True:
         try:
-            status, retry = bridge_status(url, token)
+            status, retry = bridge_status(url, token, timeout=max(deadline - time.monotonic(), 1))
         except (OSError, http.client.HTTPException) as error:
             sys.exit(f"{host}: the SSH bridge at {url} did not answer: {error}")
         if status == 404:
             sys.exit(f"{host}: sbx-control finds no sandbox of yours at {url}. If it was deleted or "
-                     f"recreated, `sbx up NAME` writes its SSH config again")
+                     f"recreated, `sbx open NAME ssh` points its SSH config at it again (`sbx up NAME` if it is gone)")
         if status in (302, 401, 403):   # 302: nginx sends a request it can't sign in to the login
             sys.exit(f"{host}: sbx-control refused the SSH bridge ({status}): `sbx login` again, or it is "
                      f"not your sandbox")
@@ -406,12 +408,19 @@ def bridge_ready(host, url, token):
             sys.exit(f"{host}: the sandbox's runtime reports an error; `sbx ls` shows it, restart or delete it in sbx")
         if status != 503:
             return
-        if time.monotonic() > deadline:
-            sys.exit(f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it")
+        late = f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it"
+        if time.monotonic() >= deadline:
+            sys.exit(late)
         if not said:
             note(f"{host}: waiting for the sandbox to be ready ...")
             said = True
-        time.sleep(min(float(retry or 2), 10))
+        try:
+            wait = min(float(retry or 2), 10)
+        except ValueError:   # an HTTP date
+            wait = 2.0
+        time.sleep(min(wait, max(deadline - time.monotonic(), 0)))
+        if time.monotonic() >= deadline:   # no probe after the budget
+            sys.exit(late)
 
 
 def hand_credentials(name):

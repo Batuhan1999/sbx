@@ -358,6 +358,10 @@ def _waiting(target: Target, mode: Mode, request: Request) -> Outcome | None:
         sandbox = listed(sandbox_id, fresh=True) or sandbox
     if sandbox.state == runtime.FAILED:
         return Show(preview_pages.failed(name, "Its runtime reports an error. Restart or delete it in sbx.", mine))
+    if record and record["active"] and sandbox.state != "running":
+        # The SSH bridge while sbx works on a paused VM (a restart resumes
+        # it): wait for that, since a resume of our own would collide with it.
+        return Show(Page("waking", name, step="Waking up"))
     could_not_wake = Show(preview_pages.failed(name, "It could not wake up. Restart it in sbx.", mine))
     if mode is Mode.POLL:
         sandbox = listed(sandbox_id, fresh=time.time() - _snapshot.fetched_at > STATUS_FRESH_SECONDS) or sandbox

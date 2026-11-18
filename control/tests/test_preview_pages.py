@@ -399,7 +399,7 @@ class HostIds(unittest.TestCase):
 
     def test_what_host_id_never_makes_names_no_sandbox(self):
         from sbx_control import addressing
-        for label in ("bx_3f8tnb7k", "a-b", "a-", "-5", "A", "", "a-zz"):
+        for label in ("bx_3f8tnb7k", "a-b", "a-", "-5", "A", "", "a-zz", "a-62", "-5fx-5F"):
             with self.subTest(label=label):
                 self.assertIsNone(addressing.sandbox_id_of(label))
 
@@ -452,3 +452,25 @@ class SshBridge(GateCase):
         op.advance("deleting")
         self.assertEqual(self.bridge(self.vm).headers.get("x-sbx-gone") or
                          self.bridge(self.vm).headers.get("x-sbx-page"), "deleted")
+
+    def test_an_id_that_starts_or_ends_with_an_escape_is_reached(self):
+        from urllib.parse import urlsplit
+        from sbx_control import addressing
+        for sandbox_id in ("_x_", "bx_3f8tnb7k"):   # a leading escape; one in the middle as the control
+            with self.subTest(sandbox_id=sandbox_id):
+                host = urlsplit(addressing.ssh_url("unused", self.app, sandbox_id)).hostname
+                self.assertEqual(addressing.raw_host(host), (8081, sandbox_id))
+        self.assertIsNone(addressing.raw_host("8081-a-62.example.test"))   # not how host_id spells "ab"
+
+    def test_the_bridge_waits_without_a_second_resume_while_a_restart_resumes_the_vm(self):
+        from sbx_control import core, lifecycle
+        self.runtime.pause(self.vm)
+        self.gate.sandbox_owner(self.vm, fresh=True)
+        lifecycle.begin("memos-a", "restart").advance("starting_app")
+        with patch.object(core, "attach") as attach:
+            response = self.bridge(self.vm)
+        self.assertEqual(response.headers.get("x-sbx-page"), "waking")
+        attach.assert_not_called()
+        self.runtime.connect(self.vm)
+        self.gate.sandbox_owner(self.vm, fresh=True)
+        self.assertEqual(self.bridge(self.vm).status_code, 200)   # running: through during the app's restart

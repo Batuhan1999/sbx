@@ -244,7 +244,7 @@ class CliTests(unittest.TestCase):
 
     def test_the_tunnel_waits_while_the_sandbox_gets_ready_then_hands_over_to_websocat(self):
         answers = iter([(503, "1"), (503, None), (101, None)])
-        with patch.object(self.cli, "bridge_status", side_effect=lambda url, token: next(answers)) as status, \
+        with patch.object(self.cli, "bridge_status", side_effect=lambda url, token, timeout: next(answers)) as status, \
                 patch.object(self.cli.time, "sleep") as sleep, \
                 patch.object(self.cli, "websocat", return_value="/bin/websocat"), \
                 patch.object(self.cli.os, "execv") as execv:
@@ -256,7 +256,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execv.call_args.args[1][-1], "wss://8081-bx-5f3f8tnb7k.sbx.example")
 
     def test_the_tunnel_says_what_to_do_when_the_bridge_names_no_sandbox_or_refuses(self):
-        for answer, words in (((404, None), "`sbx up NAME` writes its SSH config again"),
+        for answer, words in (((404, None), "`sbx open NAME ssh` points its SSH config at it again"),
                               ((302, None), "`sbx login` again"),
                               ((502, None), "runtime reports an error"),
                               ((503, "2"), "still not ready")):
@@ -287,8 +287,34 @@ class CliTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        self.assertEqual(self.cli.bridge_status(f"ws://127.0.0.1:{server.server_address[1]}", "sbx_test"), (503, "2"))
+        plain = lambda host, port, timeout: http.client.HTTPConnection(host, port, timeout=timeout)   # TLS aside
+        with patch.object(self.cli.http.client, "HTTPSConnection", side_effect=plain):
+            self.assertEqual(self.cli.bridge_status(f"wss://127.0.0.1:{server.server_address[1]}", "sbx_test"),
+                             (503, "2"))
         self.assertEqual((seen["Authorization"], seen["Upgrade"]), ("Bearer sbx_test", "websocket"))
+
+    def test_the_tunnel_sends_the_token_only_over_tls(self):
+        with patch.object(self.cli, "bridge_status") as status, patch.object(self.cli.os, "execv") as execv, \
+                patch.object(self.cli, "websocat", return_value="/bin/websocat"):
+            with self.assertRaises(SystemExit) as exit:
+                self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="ws://8081-vm1.sbx.example"))
+        self.assertIn("must be a wss:// URL", str(exit.exception.code))
+        status.assert_not_called()
+        execv.assert_not_called()
+        with self.assertRaises(ValueError):
+            self.cli.bridge_status("ws://8081-vm1.sbx.example", "sbx_test")
+
+    def test_the_tunnel_keeps_to_its_deadline_and_reads_a_date_as_two_seconds(self):
+        clock = iter([0, 115, 117, 117, 120])   # deadline, probe timeout, after the probe, the sleep, after it
+        with patch.object(self.cli, "bridge_status", return_value=(503, "Wed, 21 Oct 2026 07:28:00 GMT")), \
+                patch.object(self.cli.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(self.cli.time, "sleep") as sleep, patch.object(self.cli.os, "execv") as execv, \
+                patch.object(self.cli, "websocat", return_value="/bin/websocat"):
+            with self.assertRaises(SystemExit) as exit:
+                self.cli.tunnel(SimpleNamespace(sandbox_id="vm1", url="wss://8081-vm1.sbx.example"))
+        self.assertIn("still not ready", str(exit.exception.code))
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0])
+        execv.assert_not_called()
 
     def test_open_points_the_ssh_config_at_the_bridge_the_server_names_now(self):
         self.cli.write_host("try", {**SANDBOX, "ssh_url": "wss://8081-bx_3f8tnb7k.sbx.example", "host_key": "k"})

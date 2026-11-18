@@ -10,7 +10,7 @@ from . import ip_previews, recipes, runtime, settings
 
 # <port>-<host id>.<domain>: a sandbox's port by its runtime's sandbox id,
 # spelled as a host name label (host_id).
-RAW_HOST = re.compile(r"^(\d+)-([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$")
+RAW_HOST = re.compile(r"^(\d+)-([a-z0-9-]+)$")   # the id's spelling: sandbox_id_of decides
 _ESCAPE = re.compile(r"-([0-9a-f]{2})")
 
 
@@ -29,9 +29,10 @@ def sandbox_id_of(label: str) -> str | None:
     if not re.fullmatch(r"(?:[a-z0-9]|-[0-9a-f]{2})+", label):
         return None
     try:
-        return _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), label).encode("latin-1").decode()
+        decoded = _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), label).encode("latin-1").decode()
     except UnicodeError:
         return None
+    return decoded if host_id(decoded) == label else None   # one host per sandbox: no escape of a-z0-9
 
 
 def domain() -> str:
