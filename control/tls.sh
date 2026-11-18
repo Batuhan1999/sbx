@@ -384,26 +384,45 @@ if [ "$dns" = none ]; then
   /usr/local/sbin/sbx-tls-nginx
   exit 0
 fi
+# The Let's Encrypt account: with an email only when one is given (Let's
+# Encrypt sends no expiry emails any more).
+account="--register-unsafely-without-email"
+[ -z "$email" ] || account="-m $email"
+# Why the last issuance failed, for the setup (/api/setup access.certificate_error):
+# the port 53 probe's finding or certbot's last lines; gone once it works.
+error="$dir/certificate-error"
+cat > /usr/local/sbin/sbx-tls-renew <<RENEW
+#!/bin/sh
+set -eu
+cd $current
+RENEW
 envfile=""
 case "$dns" in
   delegated)
     # This host answers the challenge itself (sbx_control/acme_dns.py, on 53):
     # certbot runs here, in the venv, with the hooks that set and clear the token.
     [ -x venv/bin/certbot ] || venv/bin/pip install -q certbot >/dev/null
-    cat > /usr/local/sbin/sbx-tls-renew <<RENEW
-#!/bin/sh
-set -eu
-cd $current
-venv/bin/certbot certonly --manual --preferred-challenges dns \\
-  --manual-auth-hook 'venv/bin/python -m sbx_control.acme_dns set "\$CERTBOT_VALIDATION"' \\
-  --manual-cleanup-hook 'venv/bin/python -m sbx_control.acme_dns clear' \\
-  --config-dir $dir/letsencrypt --work-dir $dir/certbot-work --logs-dir $dir/certbot-logs \\
-  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos -m $email -n
-/usr/local/sbin/sbx-tls-nginx
-[ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
+    # The firewall opens 53 for the responder (settings.opened_ports) before
+    # the probe and certbot need it; the responder runs already (host._tls).
+    systemctl restart sbx-host-guard
+    # Before asking Let's Encrypt for a certificate (none yet, or due within
+    # 30 days): whether a public resolver reaches the responder at all. A
+    # dropped port 53 then says so in seconds instead of a certbot timeout.
+    cat >> /usr/local/sbin/sbx-tls-renew <<RENEW
+live=$dir/letsencrypt/live/$domain/fullchain.pem
+if [ ! -f \$live ] || ! openssl x509 -in \$live -noout -checkend 2592000 >/dev/null 2>&1; then
+  if ! venv/bin/python -m sbx_control.acme_dns probe > $error.new 2>&1; then
+    mv $error.new $error
+    cat $error >&2
+    exit 1
+  fi
+  rm -f $error.new
+fi
 RENEW
-    chmod 0755 /usr/local/sbin/sbx-tls-renew
-    delegated=1 ;;
+    issue="venv/bin/certbot certonly --manual --preferred-challenges dns \\
+  --manual-auth-hook 'venv/bin/python -m sbx_control.acme_dns set \"\$CERTBOT_VALIDATION\"' \\
+  --manual-cleanup-hook 'venv/bin/python -m sbx_control.acme_dns clear' \\
+  --config-dir $dir/letsencrypt --work-dir $dir/certbot-work --logs-dir $dir/certbot-logs" ;;
   route53)
     # The instance role on EC2; elsewhere (bare metal) an access key from the
     # platform secrets, for an IAM user that may change the zone's
@@ -421,11 +440,16 @@ RENEW
     plugin="--dns-cloudflare"; creds="--dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini" ;;
   *) echo "acme: $dns is not supported (delegated, route53, cloudflare, none)"; exit 1 ;;
 esac
-[ -n "${delegated:-}" ] || cat > /usr/local/sbin/sbx-tls-renew <<RENEW
-#!/bin/sh
-set -eu
-docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds \\
-  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos -m $email -n
+[ -n "${issue:-}" ] || issue="docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds"
+cat >> /usr/local/sbin/sbx-tls-renew <<RENEW
+if ! $issue \\
+  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos $account -n \\
+  > $dir/certbot.log 2>&1; then
+  tail -n 12 $dir/certbot.log > $error
+  cat $error >&2
+  exit 1
+fi
+rm -f $error
 /usr/local/sbin/sbx-tls-nginx
 [ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
 RENEW

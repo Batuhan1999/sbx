@@ -5,18 +5,23 @@ The operator adds one NS record at their DNS provider,
 and from then on certbot's DNS-01 challenge is answered by this host
 itself: no DNS API credential, at any provider, renewals included. It
 answers TXT for that name (the challenge tokens certbot wrote to
-/run/sbx/acme/*.txt), SOA and NS for it, and REFUSED for anything else.
-No recursion, nothing cached, UDP and TCP on port 53 (sbx-acme-dns.service).
+/run/sbx/acme/*.txt), SOA and NS for it, TXT for a running port 53 probe's
+name under it (probe()), NXDOMAIN for any other name under it, and REFUSED
+for anything else. No recursion, nothing cached, UDP and TCP on port 53
+(sbx-acme-dns.service).
 
   python -m sbx_control.acme_dns serve            the server
   python -m sbx_control.acme_dns set TOKEN        certbot's auth hook: add a token
   python -m sbx_control.acme_dns clear            certbot's cleanup hook
+  python -m sbx_control.acme_dns probe            whether a public resolver reaches this server on 53 (exit 1: no)
 """
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import struct
+import subprocess
 import sys
 import time
 
@@ -27,7 +32,19 @@ from . import paths, settings
 def token_dir():
     """Where the certificate's pending challenge answers are."""
     return paths.run() / "acme"
+
+
+def probe_dir():
+    """A running port 53 probe's answer: one file per probe name (probe())."""
+    return token_dir() / "probe"
+
+
 TTL = 30
+PROBE_LABEL = re.compile(r"sbx-probe-[0-9a-f]{8}")
+# Public resolvers, asked in turn: Let's Encrypt looks the challenge up from the open internet too.
+RESOLVERS = ("1.1.1.1", "8.8.8.8")
+PORT_53_FIX = ("allow TCP and UDP port 53 in your provider's firewall, or use a DNS API token "
+               "(sbx setup address --dns cloudflare)")
 
 
 def zone() -> str:
@@ -77,10 +94,16 @@ def answer(query: bytes) -> bytes | None:
     question = query[12:offset + 4]
     mine = zone()
     header_flags = 0x8400  # response, authoritative
+    host = settings.current().domain.name.rstrip(".")
+    if qname.endswith(f".{mine}") and qclass == 1:   # a name under the zone: only a running probe's has records
+        found = _probe_answer(qname[:-len(mine) - 1]) if qtype in (16, 255) else None
+        if found is not None:
+            return (struct.pack("!HHHHHH", ident, header_flags, 1, 1, 0, 0) + question
+                    + _rr(qname, 16, bytes([len(found)]) + found.encode()))
+        return struct.pack("!HHHHHH", ident, header_flags | 3, 1, 0, 1, 0) + question + _soa(mine, host)  # NXDOMAIN
     if qname != mine or qclass != 1:
         return struct.pack("!HHHHHH", ident, header_flags | 5, 1, 0, 0, 0) + question  # REFUSED
     records = []
-    host = settings.current().domain.name.rstrip(".")
     if qtype in (16, 255):  # TXT, ANY
         for token in tokens():
             data = bytes([len(token)]) + token.encode()
@@ -88,14 +111,67 @@ def answer(query: bytes) -> bytes | None:
     if qtype in (2, 255):  # NS
         records.append(_rr(mine, 2, _labels(host)))
     if qtype in (6, 255) or not records:  # SOA (also as the authority of an empty answer)
-        soa = _labels(host) + _labels(f"hostmaster.{host}") + struct.pack("!IIIII", int(time.time()) % 2**32, 300, 60, 86400, TTL)
-        records.append(_rr(mine, 6, soa))
+        records.append(_soa(mine, host))
     body = b"".join(records)
     return struct.pack("!HHHHHH", ident, header_flags, 1, len(records), 0, 0) + question + body
 
 
 def _rr(name: str, rtype: int, data: bytes) -> bytes:
     return _labels(name) + struct.pack("!HHIH", rtype, 1, TTL, len(data)) + data
+
+
+def _soa(zone_name: str, host: str) -> bytes:
+    data = _labels(host) + _labels(f"hostmaster.{host}") + struct.pack(
+        "!IIIII", int(time.time()) % 2**32, 300, 60, 86400, TTL)
+    return _rr(zone_name, 6, data)
+
+
+def _probe_answer(label: str) -> str | None:
+    """The value a running probe published for label, else None."""
+    if not PROBE_LABEL.fullmatch(label):
+        return None
+    try:
+        return (probe_dir() / label).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _txt(server: str, name: str, timeout: int) -> list[str]:
+    """The TXT values server answers for name (empty: none, or no answer in time)."""
+    try:
+        out = subprocess.run(["dig", f"@{server}", f"+time={timeout}", "+tries=1", "+short", "TXT", name],
+                             capture_output=True, text=True, timeout=timeout + 5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip().strip('"') for line in out.splitlines() if line.startswith('"')]
+
+
+def probe(timeout: int = 5) -> tuple[bool, str, str]:
+    """Whether the internet reaches this server's responder on port 53, as
+    Let's Encrypt must: publish a random TXT value at a random name under
+    the delegated zone, ask this host's responder for it, then a public
+    resolver (RESOLVERS in turn). Returns (ok, detail, fix); the value is
+    gone again afterwards, and the name is never asked for twice."""
+    if not settings.current().domain.name:
+        return False, "no domain yet", ""
+    label = f"sbx-probe-{secrets.token_hex(4)}"
+    value = secrets.token_hex(12)
+    name = f"{label}.{zone()}"
+    probe_dir().mkdir(parents=True, exist_ok=True)
+    path = probe_dir() / label
+    path.write_text(value + "\n")
+    try:
+        local = primary_address()
+        if local and value not in _txt(local, name, timeout):
+            return (False, f"sbx's DNS responder does not answer on {local}:53",
+                    "sudo systemctl restart sbx-acme-dns, or sudo sbx-apply tls, which starts it")
+        for resolver in RESOLVERS:
+            if value in _txt(resolver, name, timeout):
+                return True, f"a public resolver ({resolver}) reached this server on port 53", ""
+        return (False, f"no public resolver ({', '.join(RESOLVERS)}) reached this server on port 53 within {timeout} s",
+                PORT_53_FIX)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 class _UDP(asyncio.DatagramProtocol):
@@ -160,6 +236,10 @@ def main(argv: list) -> int:
     elif argv[:1] == ["clear"]:
         for p in token_dir().glob("*.txt"):
             p.unlink()
+    elif argv[:1] == ["probe"]:   # tls.sh, before it asks Let's Encrypt: what this prints is the certificate's error
+        ok, detail, fix = probe()
+        print(f"port 53: {detail}" + (f"; fix: {fix}" if fix else ""))
+        return 0 if ok else 1
     else:
         print(__doc__, file=sys.stderr)
         return 2

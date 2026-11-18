@@ -107,6 +107,12 @@ class Installation(unittest.TestCase):
         # Every base template build serves Amp's desktop tools; no test reads them from Amp's registry.
         from sbx_control.connectors.amp import registry
         self.enterContext(patch.object(registry, "extract", return_value=amp_tools()))
+        # No test asks public DNS: a domain's records are empty unless a test says otherwise, and a
+        # port 53 probe hears nothing back (domain._dig, acme_dns._txt: the lookups).
+        from sbx_control import acme_dns
+        from sbx_control.connections import domain
+        self.enterContext(patch.object(domain, "_dig", return_value=[]))
+        self.enterContext(patch.object(acme_dns, "_txt", return_value=[]))
         self.addCleanup(_builds_settled)   # after the patch: cleanups run last first, so builds settle before it goes
         with state.db() as conn:
             present = state.tables(conn)
