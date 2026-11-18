@@ -15,8 +15,8 @@ In the Amp web app:
    `/home/user/workspace/repo`, with renewable git credentials.
 3. Add an orb type for each repository the provider serves. On the server,
    `sbx-admin amp routes` lists the orb type name for each repository (a slug
-   of `owner/repo`). With one repository, or a default one set in sbx, you can
-   skip this.
+   of `owner/repo`). With one repository you can skip this: sbx runs it for
+   threads without an orb type.
 4. Copy the provider token Amp shows. Never paste it into a chat or onto a
    command line.
 
@@ -46,16 +46,16 @@ Then paste the token in one of these places:
 - **The keys page** your agent sends you (`https://login.<domain>/keys/…`),
   next to any other keys it needs. Amp stays on and its provider starts.
 - **Extensions → Coding agents → Amp** in the web app: paste the provider
-  token, choose a default repository if you like, and keep **Enabled** on
-  **Yes**.
+  token and choose **Test and save**. Saving turns Amp on; **Disconnect**
+  turns it off.
 
-  ![The Amp form on the Extensions page: orb provider token, default repository and Enabled](images/extensions-amp.png)
+  ![The Amp form on the Extensions page with the orb provider token field](images/extensions-amp.png)
 
 - On the server, with the token on stdin:
 
   ```sh
   read -r -s AMP_TOKEN
-  printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=- enabled=true repo=owner/repository
+  printf '%s\n' "$AMP_TOKEN" | sbx-admin connect amp provider_token=-
   unset AMP_TOKEN
   ```
 

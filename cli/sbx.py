@@ -1963,7 +1963,7 @@ def parser():
                    help="none or ls: list them; set KIND: save its fields (tested first); disconnect KIND: remove "
                         "its saved credentials and turn it off")
     p.add_argument("kind", nargs="?", metavar="KIND", help="set, disconnect: the extension (amp, claude-code, ...)")
-    p.add_argument("--set", action="append", metavar="FIELD=VALUE", help="set: a field (enabled=true, repo=...)")
+    p.add_argument("--set", action="append", metavar="FIELD=VALUE", help="set: a non-secret field, FIELD=VALUE")
     p.add_argument("--secret", action="append", metavar="FIELD",
                    help="set: a secret field, its value read from stdin (one line each), never argv")
     p.add_argument("--wait", action="store_true",

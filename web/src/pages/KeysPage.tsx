@@ -28,9 +28,8 @@ export default function KeysPage() {
   const found = request.data
   if (found.state !== 'pending') return <AuthFrame title={TITLE} wide><Finished request={found} /></AuthFrame>
   return <AuthFrame title={TITLE} wide description={<>
-    Paste each key once. It goes straight to where it is used and is never shown again.
-    {found.note && <span className="mt-2 block text-ink">{found.note}</span>}
-    <span className="mt-1 block text-[12.5px]">Asked by {found.created_by === 'setup' ? 'the setup' : found.created_by} · this page expires {ago(found.expires_at)}</span>
+    {found.note && <span className="block text-ink">{found.note}</span>}
+    <span className="block text-[12.5px]">Never shown again · expires {ago(found.expires_at)}</span>
   </>}>
     <KeysForm request={found} />
   </AuthFrame>
@@ -102,7 +101,7 @@ function KeysForm({ request }: { request: SecretRequest }) {
           validators={{ onSubmit: () => undefined }}
           listeners={{ onChange: ({ fieldApi }) => fieldApi.setMeta(m => ({ ...m, errorMap: { ...m.errorMap, onSubmit: undefined } })) }}>
           {f => <f.TextField label={item.label} type="password" autoComplete="off" spellCheck={false}
-            help={item.hint ? `${capital(item.what)}. ${item.hint}` : capital(item.what)} />}
+            help={item.help_url ? undefined : capital(item.what)} />}
         </form.AppField>}
       {!item.done && !item.reuse && item.help_url && <a href={item.help_url} target="_blank" rel="noreferrer"
         className="mt-1 inline-flex items-center gap-1 text-[12px] text-accent hover:underline">How do I get this?<ExternalLink className="size-3" /></a>}

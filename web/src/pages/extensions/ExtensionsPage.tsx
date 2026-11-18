@@ -23,10 +23,10 @@ import { keyError, required } from '@/lib/validation'
 import { ConnectionCard } from './ConnectionCard'
 import { LinkedText } from '@/components/LinkedText'
 
-function Section({ id, title, description, actions, children }: { id: string; title: string; description: string; actions?: React.ReactNode; children: React.ReactNode }) {
+function Section({ id, title, description, actions, children }: { id: string; title: string; description?: string; actions?: React.ReactNode; children: React.ReactNode }) {
   return <section id={id} aria-labelledby={`${id}-h`} className="scroll-mt-16">
     <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-      <div><h2 id={`${id}-h`} className="text-[15px] font-semibold">{title}</h2><p className="text-[13px] text-muted">{description}</p></div>
+      <div><h2 id={`${id}-h`} className="text-[15px] font-semibold">{title}</h2>{description && <p className="text-[13px] text-muted">{description}</p>}</div>
       {actions}
     </div>
     {children}
@@ -46,15 +46,15 @@ export default function ExtensionsPage() {
   const agents = list.filter(c => c.group === 'agent')
   const github = list.find(c => c.kind === 'github')
   return <>
-    <PageHeader title="Extensions" description="What plugs into your sandboxes: coding agents that start them, GitHub, and catalog packages for databases and credentials." />
+    <PageHeader title="Extensions" />
     <div className="space-y-8">
       {connections.error && <ErrorState error={connections.error} retry={() => connections.refetch()} />}
-      <Section id="agents" title="Coding agents" description="Agent connectors run sessions in sandboxes with your repository's recipe.">
+      <Section id="agents" title="Coding agents">
         {connections.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows rows={2} /></div>
           : agents.length === 0 ? <EmptyState title="No agent connectors installed" />
           : <div className="grid gap-3 xl:grid-cols-2">{agents.map(c => <ConnectionCard key={c.kind} c={c} icon={<Bot className="size-4" />} />)}</div>}
       </Section>
-      <Section id="github" title="GitHub" description="Clones and pushes without keys, pull-request previews, and the gh CLI inside sandboxes.">
+      <Section id="github" title="GitHub">
         {github ? <ConnectionCard c={github} icon={<Github className="size-4" />}>
           {github.state !== 'connected' && <GitHubAppCreate />}
         </ConnectionCard> : connections.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows rows={1} /></div> : null}
@@ -86,7 +86,7 @@ function GitHubAppCreate() {
   })
   return <AppForm form={form} className="flex flex-col gap-2 sm:flex-row sm:items-end">
     <div className="grow"><form.AppField name="owner" validators={{ onChange: ({ value }) => value && !/^[A-Za-z0-9-]+$/.test(value) ? 'Use a GitHub organization name.' : undefined }}>
-      {field => <field.TextField label="Create a GitHub App for this server" optional placeholder="organization (empty: your account)" autoComplete="off" spellCheck={false} />}
+      {field => <field.TextField label="GitHub organization" optional placeholder="Your account" autoComplete="off" spellCheck={false} />}
     </form.AppField></div>
     <SubmitButton form={form}><Github />Create on GitHub</SubmitButton>
   </AppForm>
@@ -128,15 +128,15 @@ function SharedConnections() {
     setAdding(asked)
     navigate(location.pathname + location.hash, { replace: true, state: null })
   }, [asked, navigate, location.pathname, location.hash])
-  return <Section id="connections" title="Connections" description="The accounts and servers sandboxes get their own resources on: an OpenRouter account, a Neon project, a Postgres server."
+  return <Section id="connections" title="Connections" description="Accounts each sandbox gets its own database or key on."
     actions={<Button size="sm" variant="primary" onClick={() => setAdding(true)}><Plus />Add connection</Button>}>
     <div className="overflow-hidden rounded-lg border border-line bg-panel">
       {shared.error ? <div className="p-4"><ErrorState error={shared.error} compact retry={() => shared.refetch()} /></div>
         : shared.isPending ? <SkeletonRows rows={2} />
-        : shared.data.length === 0 ? <EmptyState icon={Network} title="No connections yet" className="py-8">Connect an account or server from the catalog below, and each sandbox gets its own database or key on it.</EmptyState>
+        : shared.data.length === 0 ? <EmptyState icon={Network} title="No connections yet" className="py-8" />
         : <ul className="divide-y divide-line">{shared.data.map(s => <ConnectionRow key={s.key} s={s} onRemoved={() => qc.invalidateQueries({ queryKey: keys.sharedConnections })} />)}</ul>}
     </div>
-    <Dialog open={adding !== false} onOpenChange={o => !o && setAdding(false)} title="Add a connection" description="Checked before it’s saved. Keys and passwords stay on this server." wide>
+    <Dialog open={adding !== false} onOpenChange={o => !o && setAdding(false)} title="Add a connection" wide>
       <AddConnection initial={typeof adding === 'string' ? adding : null} onDone={() => setAdding(false)} />
     </Dialog>
   </Section>
@@ -238,7 +238,7 @@ function Catalog({ admin }: { admin: boolean }) {
   const list = catalog.data ? providers(catalog.data) : []
   const chosen = list.find(p => p.id === open)
   const connectionsOf = (p: Provider) => (shared.data ?? []).filter(s => s.package === p.account?.name)
-  return <Section id="packages" title="Package catalog" description="What sandboxes can get: databases, API keys and services. Connect an account once, then add its package to a repository, and each sandbox gets its own.">
+  return <Section id="packages" title="Package catalog" description="Databases, keys and services a repository's sandboxes can get.">
     {admin && !!problems.data?.length && <div role="alert" className="mb-3 rounded-lg border border-warn/30 bg-warn-soft px-4 py-3 text-[13px]">
       <p className="font-medium">{plural(problems.data.length, 'package')} in this server’s catalog could not be read</p>
       <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-muted">{problems.data.map(p => <li key={p}>{p}</li>)}</ul>

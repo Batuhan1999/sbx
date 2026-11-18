@@ -129,18 +129,18 @@ class ClaudeCode(extensions.Connector):
     def status(self) -> Status:
         s = self.settings()
         secret = vault.facts(SECRET)
-        facts = {"version": s.version}
+        facts = {}
         if not s.enabled:
-            state_, summary = "off", "off"
+            state_, summary = "off", ""
         elif not secret.set:
-            state_, summary = "not_connected", "waiting for the environment secret from claude.ai"
+            state_, summary = "not_connected", "Needs its environment secret"
         else:
-            state_, summary = "connected", f"connected · version {s.version}"
+            state_, summary = "connected", f"Version {s.version}"
             facts["sessions_running"] = _sessions_running()
+        # Saving the secret turns it on and Disconnect turns it off; the version is
+        # pinned by sbx and set from the CLI (sbx extensions set claude --set version=...).
         fields = (Field("environment_secret", "Environment secret", secret=True, set=secret.set,
-                        help="From claude.ai: Settings → Self-hosted environments"),
-                  Field("enabled", "Enabled", value="true" if s.enabled else "false"),
-                  Field("version", "Claude Code version", value=s.version))
+                        help="From claude.ai: Settings → Self-hosted environments"),)
         return Status(self.kind, self.title, state_, summary, facts, fields, ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:

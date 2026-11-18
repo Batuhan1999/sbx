@@ -14,9 +14,7 @@ import tarfile
 import time
 import zlib
 
-from pydantic import ValidationError
-
-from ... import core, extensions, host, howto, paths, settings, vault
+from ... import core, extensions, host, howto, paths, vault
 from ...connections.base import Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
 from .common import CLI, KIND, Settings, TOKEN
@@ -270,20 +268,14 @@ class Amp(extensions.Connector):
         state = "not_connected" if not token.set else "off" if not amp.enabled else "attention"
         if token.set and amp.enabled and active():
             state = "connected"
-        summary = {"not_connected": "In every template; add an orb provider token from Amp Settings → Orbs"
-                   if amp.chosen else "Add an orb provider token from Amp Settings → Orbs",
+        summary = {"not_connected": "In every template; needs its provider token"
+                   if amp.chosen else "Needs a provider token",
                    "off": "Provider stopped; existing orb disks are retained",
                    "attention": "Provider configured; check its service and Amp connection",
                    "connected": "Provider running · verify its connection in Amp Settings → Orbs"}[state]
         return Status(self.kind, self.title, state, summary, {}, (
             Field("provider_token", "Orb provider token", secret=True, set=token.set,
-                  help="From Amp Settings → Orbs → Add Provider; stored in the secret vault"),
-            Field("repo", "Default repository", value=amp.repo,
-                  help="owner/repository; with multiple repos, Amp orb types use the routes shown by sbx-admin amp routes"),
-            # Chosen in the setup counts as on: saving the card or the keys page with the
-            # token keeps Amp in the templates and starts its provider, instead of dropping it.
-            Field("enabled", "Enabled", value="true" if amp.enabled or amp.chosen else "false",
-                  help="Enabled, Amp is in every template; templates rebuild by themselves"),
+                  help="From Amp Settings → Orbs → Add Provider"),
         ), ("connect", "test", "disconnect"))
 
     def test(self, values: dict | None = None) -> list[Check]:
@@ -313,23 +305,14 @@ class Amp(extensions.Connector):
         return Check("desktop tools", True, f"fetched on {runtime.title(kind)} at the next template build")
 
     def connect(self, values: dict, *, by: str) -> Status:
-        amp = self.settings().model_dump()
-        amp["enabled"] = str(values.get("enabled", "true")).lower() in ("true", "1", "on", "yes")
-        if not amp["enabled"]:   # off: out of the templates too, as before it was chosen
-            amp["chosen"] = False
-        if "repo" in values:
-            amp["repo"] = str(values["repo"]).strip()
-        try:
-            validated = Settings.model_validate(amp)
-        except ValidationError:
-            raise Refused("enter a GitHub owner/repository")
-        if validated.repo and settings.trust(validated.repo) != "trusted":
-            raise Refused("connect and prepare that repository in sbx first")
+        # Connecting turns Amp on; Disconnect turns it off. An orb's repository
+        # comes from its Amp orb type (sbx-admin amp routes), not from a setting.
+        validated = Settings.model_validate({**self.settings().model_dump(), "enabled": True})
         token = str(values.get("provider_token") or "").strip()
         if token and (not token.startswith("aop_live_") or len(token) < 16 or any(c.isspace() for c in token)):
             raise Refused("enter the orb provider token from Amp Settings → Orbs")
-        if validated.enabled and not (token or vault.facts(TOKEN).set):
-            raise Refused("add an orb provider token before enabling Amp")
+        if not (token or vault.facts(TOKEN).set):
+            raise Refused("add an orb provider token from Amp Settings → Orbs")
         if token:  # a rotation restarts the provider even when the settings stay: the key asks for it
             vault.put(TOKEN, token, by=by)
         self.save_settings(validated, by=by)

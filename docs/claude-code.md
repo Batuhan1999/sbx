@@ -58,13 +58,13 @@ described in [extensions](extensions.md#agent-connectors).
    Anthropic's [quickstart](https://code.claude.com/docs/en/self-hosted-environments-quickstart)
    walks through the claude.ai side; skip its runner steps, sbx runs those.
 3. In sbx **Extensions → Coding agents → Claude Code**, paste the key as the
-   environment secret and enable it. The key goes into the secret store, and
-   saving installs the pinned CLI on the host and starts `claude-orchestrator`.
+   environment secret and save; saving turns it on and **Disconnect** turns it
+   off. The key goes into the secret store, and saving installs the pinned CLI on the host and starts `claude-orchestrator`.
    On the host you can do the same without putting the key in a command line:
 
    ```sh
    read -r -s CLAUDE_KEY
-   printf '%s\n' "$CLAUDE_KEY" | sbx-admin connect claude environment_secret=- enabled=true
+   printf '%s\n' "$CLAUDE_KEY" | sbx-admin connect claude environment_secret=-
    unset CLAUDE_KEY
    ```
 

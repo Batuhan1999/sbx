@@ -281,13 +281,12 @@ class Keys(TwoRuntimes, Server):
         from sbx_control import extensions, vault
         from sbx_control.connectors.amp.common import TOKEN
         self.assertEqual(vault.get(TOKEN), "aop_live_test-only-0123456789")
-        self.assertFalse(extensions.get("amp").settings().enabled)   # saving the token did not turn Amp on
+        self.assertTrue(extensions.get("amp").settings().enabled)   # connecting turns Amp on
 
     def test_amp_chosen_in_the_setup_stays_in_the_templates_and_turns_on_with_its_token(self):
         from sbx_control import extensions
         amp = extensions.get("amp")
         amp.choose(True, by="test")   # the setup's coding agents step
-        self.assertEqual(next(f.value for f in amp.status().fields if f.name == "enabled"), "true")
         found = self.ask(("connector:amp", "Amp provider token"))
         self.assertTrue(self.submit(found["id"], {"connector:amp": "aop_live_test-only-0123456789"})["ok"])
         self.assertTrue(amp.settings().enabled)   # the provider runs once its token is in

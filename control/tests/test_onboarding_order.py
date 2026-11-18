@@ -108,7 +108,7 @@ class TemplateGate(Server):
         self.choose_agents("amp")
         self.client.post("/api/setup/complete", headers=self.headers)
         self.kick.reset_mock()
-        response = self.client.put("/api/connections/amp", json={"values": {"enabled": "false"}})
+        response = self.client.delete("/api/connections/amp")
         self.assertEqual(response.status_code, 200, response.text)
         report = response.json()["rebuilds"]
         self.assertEqual(report["keys"], {"embed": [self.templates.DEFAULT]})   # the base has no extensions
@@ -118,7 +118,7 @@ class TemplateGate(Server):
         self.assertIn("Existing sandboxes keep the templates they started from", report["message"])
         self.kick.assert_called_once()
         self.assertNotIn("amp", [c.name for c in self.builds.plan(self.templates.DEFAULT).contributions])
-        again = self.client.put("/api/connections/amp", json={"values": {"enabled": "false"}}).json()["rebuilds"]
+        again = self.client.delete("/api/connections/amp").json()["rebuilds"]
         self.assertEqual((again["runtimes"], again["building"]), ({}, False))
         self.assertIn("nothing rebuilds", again["message"])
         self.assertNotIn("rebuilds", self.client.put("/api/connections/domain", json={"values": {}}).json())
@@ -127,8 +127,7 @@ class TemplateGate(Server):
         self.choose_ip()
         self.create_admin()
         self.choose_agents("amp")
-        report = self.client.put("/api/connections/amp", headers=self.headers,
-                                 json={"values": {"enabled": "false"}}).json()["rebuilds"]
+        report = self.client.delete("/api/connections/amp", headers=self.headers).json()["rebuilds"]
         self.assertEqual(report["runtimes"], {"embed": 1})
         self.assertFalse(report["building"])
         self.assertIn("none is built yet", report["message"])

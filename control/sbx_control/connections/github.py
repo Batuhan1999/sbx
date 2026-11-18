@@ -94,7 +94,7 @@ class GitHub(extensions.Connector):
         elif key.set:
             state_, summary = "connected", "deploy key over SSH (no App: no PR previews by label, no push rebuilds)"
         else:
-            state_, summary = "not_connected", "no App yet: one click creates it on GitHub"
+            state_, summary = "not_connected", "No App yet"
         fields = (Field("owner", "Organization", value="", help="empty: your own account (for creating the App)"),
                   Field("id", "App id", value=s.get("id", "") if s else ""),
                   Field("slug", "App slug", value=s.get("slug", "") if s else ""),

@@ -66,7 +66,7 @@ export function ConnectionCard({ c, icon, children }: { c: Connection; icon?: Re
       <ErrorState error={test.error} compact />
       {children}
     </div>}
-    <Dialog open={open} onOpenChange={setOpen} title={`${c.title}`} description="Tested before anything is saved; nothing is written when a check fails." wide>
+    <Dialog open={open} onOpenChange={setOpen} title={`${c.title}`} wide={c.fields.length > 2}>
       <ConnectionForm c={c} onDone={() => setOpen(false)} />
     </Dialog>
   </article>
@@ -94,7 +94,7 @@ export function ConnectionForm({ c, onDone }: { c: Connection; onDone: () => voi
     },
   })
   return <AppForm form={form} className="space-y-4">
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className={c.fields.length > 1 ? 'grid gap-3 sm:grid-cols-2' : 'grid gap-3'}>
       {c.fields.map(f => <form.AppField key={f.name} name={f.name}>
         {field => f.value === 'true' || f.value === 'false'
           ? <field.SelectField label={f.label} help={f.help}><option value="true">Yes</option><option value="false">No</option></field.SelectField>

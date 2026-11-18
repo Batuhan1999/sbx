@@ -25,7 +25,7 @@ each key once and choose **Save keys**. Each key goes straight to where sbx
 uses it and is never shown again. **How do I get this?** under a field opens
 the guide for that key ([E2B](e2b.md), [Boat](boat.md), [Amp](amp.md)).
 
-![The keys page with fields for a Boat key, an E2B key and an Amp provider token](images/keys-page.png)
+![The keys page asking for a Boat API key and an Amp provider token](images/keys-page.png)
 
 After you save, the page shows when the server has applied runtime keys; you
 can close it then. A key sbx refuses is marked under its field: fix it and

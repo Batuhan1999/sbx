@@ -41,7 +41,7 @@ its field and choose **Save keys**. sbx checks the key with E2B, stores it and
 adds E2B Cloud; the page shows when the server has applied it. Each **How do
 I get this?** link leads back here.
 
-![The keys page with fields for a Boat key, an E2B key and an Amp provider token](images/keys-page.png)
+![The keys page asking for a Boat API key and an Amp provider token](images/keys-page.png)
 
 Other ways, with the key read from a file or stdin, never typed on a
 command line:

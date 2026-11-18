@@ -102,8 +102,7 @@ sudo() {
         from sbx_control import vault
         from sbx_control.connectors.amp import orbs
         self.repo_admin()
-        for values in ({"repo": "not a repository", "provider_token": "aop_live_disposable_test_only"},
-                       {"provider_token": "wrong-token"}, {"enabled": "true"}):
+        for values in ({"provider_token": "wrong-token"}, {}):   # a malformed token; connecting with none
             with self.subTest(values=values):
                 response = self.client.put("/api/connections/amp", json={"values": values})
                 self.assertEqual(response.status_code, 400, response.text)

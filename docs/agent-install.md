@@ -291,7 +291,7 @@ The base and default templates take about 10 minutes the first time:
 `sbx templates` shows them; wait until `sbx-base` and `default` are `current`
 on each runtime.
 
-**An agent chosen later** (`sbx extensions set amp --set enabled=true`, or the
+**An agent chosen later** (`sbx extensions set amp --secret provider_token < FILE`, a key page with `connector:amp`, or the
 web app's Extensions page) changes every template: the answer says how many
 rebuild on each runtime; existing sandboxes keep their templates and new ones
 start from the old ones until the rebuilds finish. Add `--wait` to wait for

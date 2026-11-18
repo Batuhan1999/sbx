@@ -42,7 +42,8 @@ describe('KeysPage', () => {
       'https://github.com/o/sbx/blob/main/docs/howto/boat.md', 'https://github.com/o/sbx/blob/main/docs/howto/cloudflare.md'])
     expect(screen.queryByLabelText('Boat key for the app')).toBeNull()
     expect(screen.getByText(/Nothing to paste: the Boat API key you paste here is used for BOAT_API_KEY/)).toBeTruthy()
-    expect(screen.getByText(/Asked by ada@example.com/)).toBeTruthy()
+    expect(screen.getByText(/Never shown again · expires/)).toBeTruthy()
+    expect(screen.queryByText(/Asked by/)).toBeNull()
   })
 
   it('submits the pasted keys, clears the saved ones and shows a refused key under its field', async () => {
