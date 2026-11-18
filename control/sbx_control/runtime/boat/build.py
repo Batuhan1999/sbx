@@ -61,20 +61,23 @@ class Builds:
             if time.monotonic() > deadline:
                 raise Timeout(f"Boat was still saving an earlier {name} after {int(seconds)} s")
             try:
+                # Boat-directed resends of this POST stay within the save's own deadline.
                 self.call(lambda: self.api().save_saved_snapshot(
-                    SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)), sandbox_id=sandbox_id)
+                    SavedSnapshotSaveRequest(sandbox_id=sandbox_id, name=name)), sandbox_id=sandbox_id,
+                    retry_seconds=max(0.0, deadline - time.monotonic()))
                 break
             except BoatError as error:
                 # save_in_progress: an earlier save under this name runs (a build a restart cut
                 # off, whose builder Boat still saves): wait for it to settle, then save this one.
-                if error.code != "save_in_progress":
+                if error.status != 409 or error.code != "save_in_progress":
                     raise
             time.sleep(POLL_SECONDS)
             while time.monotonic() <= deadline and self._saving(name):
                 time.sleep(POLL_SECONDS)
         while True:
             found = self.call(lambda: self.api().get_saved_snapshot(name), read=True).snapshot
-            if found.status == "ready":
+            # Ready counts only as this build's save: another save under the name replaces it.
+            if found.status == "ready" and found.source_sandbox_id in (None, "", sandbox_id):
                 return name
             if found.status == "failed":
                 raise Failed(f"Boat could not save {name}: {found.error or 'failed'}")

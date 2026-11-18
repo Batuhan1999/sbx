@@ -550,6 +550,34 @@ class Backend(unittest.TestCase):
             self.backend._save(handle.sandbox_id, "cache", seconds=1)
         self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls[before:]), 1)
 
+    def test_save_in_progress_is_trusted_only_as_a_409(self):
+        from sbx_control.runtime.boat.errors import BoatError
+        handle = self.create()
+        before = len(self.fake.calls)
+        self.fake.fail("POST", "/saved-snapshots", 500, "save_in_progress")
+        with self.assertRaises(BoatError):
+            self.backend.snapshot(handle.sandbox_id, "cache")
+        self.assertEqual(sum(m == "POST" and p == "/saved-snapshots" for m, p, _, _ in self.fake.calls[before:]), 1)
+
+    def test_a_ready_snapshot_from_another_sandbox_is_not_this_builds(self):
+        import types
+        from sbx_control.runtime.base import Timeout
+        build = self.boat_module.build
+        handle = self.create()
+        clock = [0.0]
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock[0],
+                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        real_get = self.backend.api().get_saved_snapshot
+
+        def replaced(name):   # a later save under the name, from another builder, finished first
+            found = real_get(name)
+            found.snapshot.status, found.snapshot.source_sandbox_id = "ready", "another"
+            return found
+        with patch.object(build, "time", fake_time), \
+                patch.object(type(self.backend.api()), "get_saved_snapshot", side_effect=lambda name: replaced(name)), \
+                self.assertRaises(Timeout):
+            self.backend._save(handle.sandbox_id, "cache", seconds=5)
+
     def test_a_body_nested_past_the_decoders_limit_is_unreadable(self):
         import types
         from sbx_control.runtime.boat import errors
