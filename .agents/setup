@@ -19,22 +19,36 @@ node_major=22
 node_dir="$HOME/.local/node-$node_major"
 
 install_node() {
+  # The installation is moved into place only once complete, so a partial one never stays.
   if [ -x "$node_dir/bin/node" ]; then
     echo "    node $("$node_dir/bin/node" --version) already installed"
     return
   fi
-  local version tmp
+  local arch version tmp
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; return 1 ;;
+  esac
   version="$(curl -fsSL "https://nodejs.org/dist/latest-v$node_major.x/SHASUMS256.txt" \
-    | grep -o "node-v$node_major\.[0-9.]*-linux-x64\.tar\.xz" | head -n1)"
-  tmp="$(mktemp -d)"
+    | grep -o "node-v$node_major\.[0-9.]*-linux-$arch\.tar\.xz" | head -n1)"
+  mkdir -p "$(dirname "$node_dir")"
+  tmp="$(mktemp -d "$node_dir.XXXXXX")"
   curl -fsSL "https://nodejs.org/dist/latest-v$node_major.x/$version" -o "$tmp/$version"
-  mkdir -p "$node_dir"
-  tar -xJf "$tmp/$version" -C "$node_dir" --strip-components=1
+  mkdir "$tmp/node"
+  tar -xJf "$tmp/$version" -C "$tmp/node" --strip-components=1
+  "$tmp/node/bin/node" "$tmp/node/lib/node_modules/npm/bin/npm-cli.js" --version > /dev/null
+  rm -rf "$node_dir"
+  mv "$tmp/node" "$node_dir"
   rm -rf "$tmp"
 }
 
 persist_node_path() {
   local marker="# sbx: Node $node_major for the web app"
+  # A new ~/.bash_profile would stop login shells reading ~/.profile.
+  if [ ! -e "$HOME/.bash_profile" ] && [ -f "$HOME/.profile" ]; then
+    echo '. "$HOME/.profile"' > "$HOME/.bash_profile"
+  fi
   if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
     cat >> "$HOME/.bash_profile" <<EOF
 
