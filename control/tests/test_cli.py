@@ -235,6 +235,17 @@ class CliTests(unittest.TestCase):
         code, out, err = self.run_cli("down", "a", "--json")
         self.assertEqual((code, json.loads(out)), (0, {"deleted": "a", "cleanup": None}))
 
+    def test_down_without_an_answer_in_time_says_the_outcome_is_unknown(self):
+        def slow(q, body):
+            threading.Event().wait(1)   # not time.sleep: some subclasses patch it
+            return {"deleted": "a", "cleanup": None}
+        self.routes[("DELETE", "/api/sandboxes/a")] = slow
+        with patch.object(self.cli, "DOWN_TIMEOUT_SECONDS", 0.2):
+            code, out, err = self.run_cli("down", "a")
+        self.assertIn("unknown", str(code))
+        self.assertIn("sbx ls", str(code))
+        self.assertNotIn("deleted\n", out)
+
     def test_recipe_rm_and_template_rm_call_the_delete_routes(self):
         self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {
             "repo": "owner/app", "removed": True, "recipe": "none"}

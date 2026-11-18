@@ -231,10 +231,12 @@ def sbx_env(name: str, slug: str, a: recipes.App, owner: str = "", branch: str =
             "SBX_HOST_SUFFIX": addressing.host_suffix(), **addressing.env_urls(slug, a)}
 
 
-def run_in(sbx, script, timeout=60, env=f"{RUN}/env"):
+def run_in(sbx, script, timeout=60, env=f"{RUN}/env", env_required=False):
     """Run with the sandbox's env as SSH shells and agents see it, or with
-    the app's (env=f"{RUN}/app-env", which adds the provider keys)."""
-    return sbx.commands.run(f"bash -c {shlex.quote(f'. {env}; ' + script)}", timeout=timeout)
+    the app's (env=f"{RUN}/app-env", which adds the provider keys).
+    env_required: fail, without running script, when env can't be loaded."""
+    load = f". {env} || {{ echo 'sbx: {env} could not be loaded' >&2; exit 1; }}; " if env_required else f". {env}; "
+    return sbx.commands.run(f"bash -c {shlex.quote(load + script)}", timeout=timeout)
 
 
 # $$, ${NAME}, ${secret:NAME}, ${outputs.NAME} (a service's own, in its env:)
@@ -1002,7 +1004,13 @@ def run_cleanup(name: str, info, operation=None) -> dict | None:
     try:
         sbx, info = connect(name, "to run .sbx/cleanup before it is deleted", info)
         # A sandbox booted from its disk gets its env back; its app, which the delete stops, is not started.
-        if restore_runtime(sbx, info, start_app=False) and operation:
+        try:
+            restored = restore_runtime(sbx, info, start_app=False)
+        except Exception:
+            if operation:   # it may have stopped the app part way
+                operation.invalidate_application()
+            raise
+        if restored and operation:
             operation.invalidate_application()
         recipes.ship(sbx, a, APP_SCRIPTS)
         if not has_app_script(sbx, "cleanup", a):
@@ -1011,7 +1019,8 @@ def run_cleanup(name: str, info, operation=None) -> dict | None:
             return outcome
         used = app_env_values(sbx)   # what the hook gets, should the store have changed since
         try:
-            result = app_script(sbx, "cleanup", a, env=f"{RUN}/app-env", timeout=CLEANUP_TIMEOUT_SECONDS)
+            result = app_script(sbx, "cleanup", a, env=f"{RUN}/app-env", timeout=CLEANUP_TIMEOUT_SECONDS,
+                                env_required=True)
         except runtime.CommandFailed as failed:
             result = failed
         output = "".join(filter(None, (result.stdout, result.stderr)))
@@ -1037,10 +1046,12 @@ def _cleanup_output(output: str, info, used: dict | None) -> str:
     masked = mask(output, info, used)
     meta = info.metadata or {}
     try:
-        secret = variables.secret_values(app_of(info).repo, meta.get("owner", ""))
+        # The installation's too: a repo's or owner's secret of the same name shadows it here, not in the env.
+        scopes = (variables.secret_values(None), variables.secret_values(app_of(info).repo, meta.get("owner", "")))
     except Exception:
         return "(hidden: the values to mask in it could not be read)"
-    short = {v for v in (*secret.values(), *(used[k] for k in secret if k in used)) if 0 < len(v) < 6}
+    short = {v for secret in scopes for v in (*secret.values(), *(used[k] for k in secret if k in used))
+             if 0 < len(v) < 6}
     if any(v in masked for v in short):
         return "(hidden: it may hold a secret too short to mask)"
     return masked

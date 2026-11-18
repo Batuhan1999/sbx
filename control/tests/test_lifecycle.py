@@ -682,10 +682,10 @@ class LifecycleTests(Installation):
     class CleanupVM(FakeVM):
         """A VM whose .sbx/cleanup prints or fails as told; it records the commands that ran it."""
 
-        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env=""):
+        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env="", env=""):
             super().__init__()
             self.exit_code, self.output, self.ran = exit_code, output, []
-            self.has_hook, self.app_env = has_hook, app_env
+            self.has_hook, self.app_env, self.env = has_hook, app_env, env
 
         def run(self, command, **kwargs):
             from sbx_control import runtime
@@ -693,10 +693,10 @@ class LifecycleTests(Installation):
                 return done("ok")
             if "echo present" in command:
                 return done("present" if self.has_hook else "")
-            if command.startswith("test ! -e /run/sbx/app-env"):
+            if command.startswith("cat /run/sbx/env && echo && "):
                 if self.app_env is None:
                     raise runtime.CommandFailed(stdout="", stderr="unreadable", exit_code=1)
-                return done(self.app_env)
+                return done(self.env + "\n" + self.app_env)
             if '"$d/cleanup"' in command:
                 self.ran.append(("cleanup", command, kwargs.get("timeout")))
                 if self.exit_code:
@@ -714,6 +714,7 @@ class LifecycleTests(Installation):
         self.assertEqual([step[0] for step in order], ["cleanup", "kill"])
         command, timeout = order[0][1], order[0][2]
         self.assertIn(". /run/sbx/app-env", command)              # the app's env, as setup gets
+        self.assertIn("could not be loaded", command)             # and nothing runs without it
         self.assertIn("cd /home/user/repo", command)
         self.assertEqual(timeout, self.core.CLEANUP_TIMEOUT_SECONDS)
         self.assertIn(("cleanup ran", "exit 0: released"),
@@ -836,6 +837,18 @@ class LifecycleTests(Installation):
         # When the env it ran with can't be read, only its exit status is told.
         self.assertNotIn("old-app-secret-1", self.core._cleanup_output("token old-app-secret-1", self.info, None))
 
+    def test_cleanup_output_is_masked_with_the_sandbox_env_the_app_env_sources(self):
+        self.healthy()
+        self.cleanup_recipe()
+        vm = self.CleanupVM(output="token rotated-away-1\n", env="export SHARED_TOKEN=rotated-away-1\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertNotIn("rotated-away-1", response.text)
+        self.assertNotIn("rotated-away-1", str(self.state.events("fixture")))
+        # A short one rotated since: withheld, not shown.
+        with patch.object(self.core.variables, "secret_values", return_value={"PIN": "n3w9"}):
+            response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n", env="export PIN=0ld7\n"))
+        self.assertNotIn("0ld7", response.text)
+
     def test_cleanup_output_holding_a_short_secret_is_withheld(self):
         self.healthy()
         self.cleanup_recipe()
@@ -863,6 +876,57 @@ class LifecycleTests(Installation):
                 self.core.delete("fixture")
         self.assertEqual(restore.call_args.kwargs, {"start_app": False})
         self.assertNotEqual(self.lifecycle.get("fixture")["application"], "healthy")
+
+    def test_a_restore_for_cleanup_that_fails_invalidates_the_app(self):
+        self.healthy()
+        self.cleanup_recipe()
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("writing the env failed")
+        with patch.object(self.core, "find", return_value=self.info), \
+                patch.object(self.core.runtime, "connect", return_value=self.CleanupVM()), \
+                patch.object(self.core, "restore_runtime", side_effect=fail), \
+                patch.object(self.core.runtime, "kill", side_effect=fail), \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]):
+            with self.assertRaises(RuntimeError):
+                self.core.delete("fixture")
+        self.assertNotEqual(self.lifecycle.get("fixture")["application"], "healthy")
+
+    def test_a_restore_for_cleanup_owes_the_restart_before_writing_the_env(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], True)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", side_effect=RuntimeError("part way")):
+            with self.assertRaises(RuntimeError):
+                self.core.restore_runtime(self.CleanupVM(), paused, start_app=False)
+        self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_cleanup_does_not_run_when_the_app_env_cannot_be_loaded(self):
+        marker = Path(self.enterContext(tempfile.TemporaryDirectory())) / "ran"
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        result = self.core.run_in(Local(), f"touch {marker}", env="/nonexistent/app-env", env_required=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not be loaded", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_a_shadowed_short_installation_secret_is_still_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        scoped = {None: {"PIN": "k3y9"}}
+        with patch.object(self.core.variables, "secret_values",
+                          side_effect=lambda repo, owner="": scoped.get(repo, {"PIN": "a-longer-personal-pin"})):
+            response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n",
+                                                                  app_env="export SERVICE_PIN=k3y9\n"))
+        self.assertNotIn("k3y9", response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
 
     def test_a_restore_for_cleanup_writes_queued_env_without_restarting_and_keeps_it_queued(self):
         from sbx_control import delivery

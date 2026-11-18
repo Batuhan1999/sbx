@@ -183,9 +183,10 @@ def restore_runtime(sbx, info, start_app: bool = True) -> bool:
         name = meta.get("sbx")
         pending = delivery.pending(name) if isinstance(name, str) and name else None
         if pending and paused and not start_app:
+            if pending[1]:   # owed before the new env is in place, should writing it fail part way
+                delivery.restart_required(name, mark=True)
             core._refresh_env(sbx, info, False)
             if pending[1]:
-                delivery.restart_required(name, mark=True)
                 return True
         elif pending and paused:
             _, restart, revision = pending
@@ -214,9 +215,10 @@ def written_env(sbx) -> dict:
 
 
 def app_env_values(sbx) -> dict | None:
-    """The values only the app gets, as the sandbox holds them now; None when they can't be read."""
+    """The values the app gets (app-env sources env), as the sandbox holds them now; None when they can't be read."""
     try:
-        return _exports(sbx.commands.run(f"test ! -e {RUN}/app-env || cat {RUN}/app-env", timeout=30).stdout)
+        return _exports(sbx.commands.run(f"cat {RUN}/env && echo && {{ test ! -e {RUN}/app-env || cat {RUN}/app-env; }}",
+                                         timeout=30).stdout)
     except Exception:
         return None
 
@@ -259,7 +261,8 @@ def has_app_script(sbx, script: str, a: recipes.App) -> bool:
     return sbx.commands.run(command, timeout=30).stdout.strip() == "present"
 
 
-def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None):
+def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, operation=None, process_scope=None,
+               env_required=False):
     """Run one of the recipe's scripts: the shipped copy when it is the
     operator's, else the checkout's .sbx/ (a branch may change its scripts)."""
     from . import core
@@ -272,7 +275,7 @@ def app_script(sbx, script: str, a: recipes.App, env=f"{RUN}/env", timeout=60, o
         command = f"umask 077; exec > {sbx_guest.SETUP_LOG} 2>&1; " + command
         command = f"flock -n {shlex.quote(SETUP_LOCK)} bash -c {shlex.quote(command)}"
     try:
-        return core.run_in(sbx, command, timeout=timeout, env=env)
+        return core.run_in(sbx, command, timeout=timeout, env=env, env_required=env_required)
     except runtime.CommandFailed as error:
         if not (operation and script == "setup"):
             raise

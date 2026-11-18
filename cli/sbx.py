@@ -104,14 +104,17 @@ class Client:
                               "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
-    def api(self, method, path, body=None, raw=False, timeout=600):
+    def api(self, method, path, body=None, raw=False, timeout=600, late=None):
         """request(), exiting with the refusal or why the server could not be reached (request() itself
-        raises OSError, which follow() retries while sbx-control restarts)."""
+        raises OSError, which follow() retries while sbx-control restarts); with late, when no answer
+        came within timeout."""
         try:
             return self.request(method, path, body, raw, timeout)
         except Refused as error:
             sys.exit(str(error))
         except OSError as error:
+            if late and isinstance(error, TimeoutError):
+                sys.exit(late)
             reason = getattr(error, "reason", None) or error
             hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
             sys.exit(f"cannot reach {self.base}: {reason}{hint}")
@@ -121,8 +124,8 @@ def request(method, path, body=None, raw=False, timeout=600):
     return Client(CONTROL).request(method, path, body, raw, timeout)
 
 
-def api(method, path, body=None, raw=False, timeout=600):
-    return Client(CONTROL).api(method, path, body, raw, timeout)
+def api(method, path, body=None, raw=False, timeout=600, late=None):
+    return Client(CONTROL).api(method, path, body, raw, timeout, late)
 
 
 def note(text):
@@ -913,7 +916,9 @@ def down(args):
     delete, so it is a warning, not the exit status (--json has it all)."""
     # The server answers once its cleanup ran: a paused sandbox's resume (a
     # provider's can take up to 25 minutes) and the hook's 5 come first.
-    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS) or {}
+    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS,
+                 late=f"no answer from sbx-control within {DOWN_TIMEOUT_SECONDS // 60} minutes, so whether "
+                      f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
     forget_host(args.name)
     if args.json:
         print(json.dumps(result))
