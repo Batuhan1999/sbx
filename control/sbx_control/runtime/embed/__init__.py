@@ -25,7 +25,7 @@ class Embed(Compute):
     kind = "embed"
     title = "E2B Embed"
     host = True
-    capabilities = Capabilities(snapshots=True, private_networks=True, egress_rules=True)
+    capabilities = Capabilities(snapshots=True, private_networks=True, egress_rules=True, image_import=True)
     disk_path = str(storage.ROOT)
     ingress = f"http://127.0.0.1:{CLIENT_PROXY_PORT}"
     ingress_cleared = ("E2b-Sandbox-Id", "E2b-Sandbox-Port")   # client-proxy routes on them too

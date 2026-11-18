@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 
-from support import Server
+from support import Installation, Server
 
 
 class AmpTests(Server):
@@ -414,3 +414,74 @@ sudo() {
         with patch.object(runtime, "sandboxes", return_value=["first", "second"]) as listing:
             self.assertEqual(amp_orbs.sandboxes_of("amp-test"), ["first", "second"])
         listing.assert_called_once_with({"connector": "amp", "orbId": "amp-test"}, [runtime.RUNNING, runtime.PAUSED])
+
+
+class AmpToolsTests(Installation):
+    """Amp's desktop tools come from its container image: fetched once on a
+    runtime that imports images, whichever is the default, and kept on the
+    host for every runtime's builds."""
+
+    def setUp(self):
+        super().setUp()
+        from sbx_control import runtime
+        from sbx_control.connectors import amp
+        from sbx_control.runtime.fake import Fake
+
+        class BoatLike(Fake):
+            """Starts only from its own Ubuntu, as Boat does."""
+            kind, id_prefix = "boat", "bt"
+            capabilities = runtime.Capabilities(snapshots=True)
+
+            def build_template(self, spec, **kwargs):
+                if any(what == "image" and value != "ubuntu:24.04" for what, value in spec.steps):
+                    raise runtime.Failed("Boat starts every sandbox from its own Ubuntu 24.04")
+                return super().build_template(spec, **kwargs)
+
+        def tools(box, command):
+            if command.startswith("tar -C /opt"):
+                box.files["/tmp/sbx-amp-tools.tar.gz"] = "amp-wayland tarball"
+            return None
+
+        self.runtime, self.amp, self.boat, self.fake = runtime, amp, BoatLike(), Fake()
+        self.fake.respond = tools
+        self.enterContext(patch.dict(runtime._backends, {"boat": self.boat, "fake": self.fake}))
+        self.enterContext(patch.object(runtime, "enabled", return_value=["boat", "fake"]))
+        self.enterContext(patch.object(runtime, "default", return_value="boat"))
+        if amp.tools_cache().exists():
+            for path in amp.tools_cache().iterdir():
+                path.unlink()
+
+    def fetches(self, backend) -> int:
+        return sum(cmd.startswith("tar -C /opt") for _, cmd in backend.ran)
+
+    def test_a_default_runtime_without_image_import_fetches_on_one_that_has_it(self):
+        self.assertEqual(self.amp.tools_runtime(), "fake")
+        self.assertEqual(self.amp.Amp._tools_check().detail, "fetched on Fake runtime at the next template build")
+        self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+        self.assertEqual((self.fetches(self.fake), self.boat.ran, self.boat.boxes), (1, [], {}))
+        self.assertEqual((self.fake.boxes, self.fake.built), ({}, {}))   # its builder and template are gone
+        self.assertEqual(self.amp.cached_tools().read_bytes(), b"amp-wayland tarball")
+
+    def test_the_kept_tools_are_reused_and_other_digests_dropped(self):
+        stale = self.amp.tools_cache() / "0000.tar.gz"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"older image")
+        self.amp.wayland_tools()
+        self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+        self.assertEqual(self.fetches(self.fake), 1)                  # the second build reused it
+        self.assertFalse(stale.exists())
+        self.assertEqual(self.amp.Amp._tools_check().detail, "kept on this host")
+        with patch.object(self.runtime, "enabled", return_value=["boat"]):   # Boat alone builds from the copy
+            self.assertEqual(self.amp.wayland_tools(), b"amp-wayland tarball")
+        self.assertEqual(self.fetches(self.fake), 1)
+
+    def test_no_runtime_that_imports_images_says_what_to_enable(self):
+        with patch.object(self.runtime, "enabled", return_value=["boat"]):
+            self.assertIsNone(self.amp.tools_runtime())
+            check = self.amp.Amp._tools_check()
+            with self.assertRaisesRegex(RuntimeError, "no enabled sandbox runtime builds templates from one"):
+                self.amp.wayland_tools()
+        self.assertFalse(check.ok)
+        self.assertIn("Enable a runtime that does (E2B Embed, E2B Cloud", check.fix)
+        self.assertEqual((self.boat.ran, self.boat.built), ([], {}))
+        self.assertFalse(self.amp.cached_tools().exists())

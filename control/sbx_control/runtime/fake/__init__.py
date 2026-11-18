@@ -100,7 +100,8 @@ class _Handle:
 class Fake(Backend):
     kind = "fake"
     title = "Fake runtime"
-    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)
+    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False,
+                                image_import=True)
     ingress = "http://127.0.0.1:3999"
     ingress_cleared = ("X-Fake-Sandbox",)
     internal_suffix = INTERNAL_HOST_SUFFIX

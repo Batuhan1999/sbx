@@ -683,8 +683,8 @@ Its sandboxes do not reach this host's private network
 `network.internal_cidrs` hosts through [endpoints](#endpoints), and a
 repository that uses one without an endpoint is refused on it, naming the
 command that adds it. It applies `deny_out`
-(`egress_rules`), so untrusted repos can run there, and takes filesystem
-snapshots.
+(`egress_rules`), so untrusted repos can run there, takes filesystem
+snapshots and builds templates from any container image (`image_import`).
 
 ### Boat (`boat`)
 
@@ -727,7 +727,8 @@ How sbx runs on it:
 
 - **Templates are saved snapshots.** A build replays the template's steps
   in a builder sandbox (from the parent template's saved snapshot, or Boat's
-  own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused), saves it
+  own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused:
+  `image_import` is false), saves it
   under the template's name and deletes the builder. A Dockerfile's `RUN`,
   `ENV`, `WORKDIR`, `USER` and `ARG` replay; `COPY` and `ADD` are refused
   (fetch the file in a `RUN`); `ENV` and `ARG` values expand `$VAR` and

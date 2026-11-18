@@ -433,7 +433,7 @@ class Cloud(unittest.TestCase):
         backend = runtime.make("e2b-cloud")
         self.assertEqual((backend.kind, backend.title, backend.host), ("e2b-cloud", "E2B Cloud", False))
         self.assertEqual(backend.capabilities, runtime.Capabilities(snapshots=True, private_networks=False,
-                                                                    egress_rules=True))
+                                                                    egress_rules=True, image_import=True))
         self.assertEqual((backend.host_units(), backend.host_commands(None), backend.jobs()), ([], {}, []))
         self.assertEqual(backend.capacity(4096), {"known": False})
         self.assertTrue(backend.apply_host("runtime-env"))

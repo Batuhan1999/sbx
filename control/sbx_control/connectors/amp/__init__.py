@@ -3,13 +3,15 @@ sandboxes of their own. A paused orb is never deleted for its age: its disk
 is its thread's state."""
 from __future__ import annotations
 
+import fcntl
+import os
 import pathlib
 import subprocess
 import time
 
 from pydantic import ValidationError
 
-from ... import core, extensions, host, settings, vault
+from ... import core, extensions, host, paths, settings, vault
 from ...connections.base import Check, Field, Refused, Status
 from ...contributions import Artifact, Check as Ready, Contribution, TemplateLayer
 from .common import CLI, KIND, Settings, TOKEN
@@ -46,19 +48,80 @@ def active() -> bool:
     return _active["value"]
 
 
+def tools_cache() -> pathlib.Path:
+    """Where the host keeps the desktop tools, one tarball per image digest."""
+    return paths.cache() / "amp-tools"
+
+
+def cached_tools() -> pathlib.Path:
+    return tools_cache() / f"{IMAGE.rpartition('@sha256:')[2]}.tar.gz"
+
+
+def tools_runtime() -> str | None:
+    """The enabled runtime that fetches the tools from IMAGE: one that builds
+    from container images, the default when it does."""
+    from ... import runtime
+    return next(iter(runtime.able("image_import")), None)
+
+
+def no_tools_runtime() -> str:
+    from ... import runtime
+    importers = []
+    for kind in runtime.kinds():
+        try:
+            backend = runtime.make(kind)
+        except Exception:   # a runtime whose package can't load here can't be suggested
+            continue
+        if backend.capabilities.image_import:
+            importers.append(backend.title)
+    which = f" ({', '.join(importers)})" if importers else ""
+    return ("Amp's desktop tools come from its container image, and no enabled sandbox runtime builds templates from "
+            f"one. Enable a runtime that does{which} and build again: the tools are then kept on this host for "
+            "every runtime.")
+
+
 def wayland_tools() -> bytes:
+    """The tarball of /opt/amp-wayland from IMAGE: the host's copy for its
+    digest, else fetched once on a runtime that imports images and kept,
+    dropping the copies of other digests."""
+    found = cached_tools()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    with (found.parent / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)   # builds on several runtimes fetch once
+        if found.is_file():
+            data = found.read_bytes()
+        else:
+            kind = tools_runtime()
+            if kind is None:
+                raise RuntimeError(no_tools_runtime())
+            data = _fetch_tools(kind)
+            partial = found.with_name(found.name + ".partial")
+            partial.write_bytes(data)
+            os.replace(partial, found)
+        for other in found.parent.iterdir():
+            if other not in (found, found.parent / ".lock"):
+                other.unlink(missing_ok=True)
+    return data
+
+
+def _fetch_tools(kind: str) -> bytes:
     from ... import runtime
     runtime.build_template(runtime.TemplateSpec().from_image(IMAGE).set_start_cmd("sleep infinity", "true"),
-                           alias=TOOLS, cpu=1, memory_mb=1024, disk_mb=1024)
+                           alias=TOOLS, cpu=1, memory_mb=1024, disk_mb=1024, kind=kind)
     vm = None
     try:
-        with core.reserve_capacity(1024):
-            vm = runtime.create(TOOLS, timeout=180, metadata={"sbx_cache_build": TOOLS}, on_timeout="kill")
+        with core.reserve_capacity(1024, kind):
+            vm = runtime.create(TOOLS, timeout=180, metadata={"sbx_cache_build": TOOLS}, on_timeout="kill",
+                                kind=kind)
         vm.commands.run("tar -C /opt -czf /tmp/sbx-amp-tools.tar.gz amp-wayland", timeout=60)
         data = vm.files.read("/tmp/sbx-amp-tools.tar.gz", format="bytes")
     finally:
         if vm is not None:
             runtime.kill(vm.sandbox_id)
+        try:   # the host keeps the tools; the template would only hold the runtime's storage
+            runtime.delete_template(TOOLS, kind)
+        except runtime.Failed as error:
+            print(f"could not delete the {TOOLS} template on {kind}: {error}", flush=True)
     if len(data) > 64 * 1024 * 1024:
         raise RuntimeError("Amp desktop tools exceed the expected build artifact size")
     return data
@@ -171,8 +234,19 @@ class Amp(extensions.Connector):
         token = bool((values or {}).get("provider_token")) or vault.facts(TOKEN).set
         return [Check("provider token", token, "set" if token else "not set", "add a provider in Amp Settings → Orbs"),
                 Check("Amp CLI", CLI.is_file(), "installed" if CLI.is_file() else "missing", "save the enabled connection"),
+                self._tools_check(),
                 Check("provider service", active(), "check connection status in Amp Settings → Orbs",
                       "journalctl -u sbx-amp; verify the token and outbound HTTPS")]
+
+    @staticmethod
+    def _tools_check() -> Check:
+        if cached_tools().is_file():
+            return Check("desktop tools", True, "kept on this host")
+        kind = tools_runtime()
+        if kind is None:
+            return Check("desktop tools", False, "no enabled runtime builds from container images", no_tools_runtime())
+        from ... import runtime
+        return Check("desktop tools", True, f"fetched on {runtime.title(kind)} at the next template build")
 
     def connect(self, values: dict, *, by: str) -> Status:
         amp = self.settings().model_dump()

@@ -690,6 +690,15 @@ def capabilities(kind: str | None = None) -> Capabilities:
     return get(kind).capabilities
 
 
+def able(capability: str) -> list[str]:
+    """The enabled kinds that have capability (a Capabilities field), the
+    default first."""
+    kinds_now = enabled()
+    first = default() if kinds_now else None
+    ordered = [first, *(k for k in kinds_now if k != first)] if first else []
+    return [k for k in ordered if getattr(get(k).capabilities, capability)]
+
+
 def title(kind: str | None = None) -> str:
     return get(kind).title
 
