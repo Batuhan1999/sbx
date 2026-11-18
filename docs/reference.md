@@ -631,7 +631,7 @@ domain.
 What it needs:
 
 - **A domain reachable from the internet.** Its sandboxes call this
-  installation back at `login.<domain>` on 443: the template builds' repo
+  installation back at its sign-in host (`app.<domain>`) on 443: the template builds' repo
   bundles, git credentials, catalog actions. The installer refuses E2B Cloud
   without a domain; the setup's reachability check covers the rest. With
   `--dns none` the certificate is self-signed: sbx's own calls from a
