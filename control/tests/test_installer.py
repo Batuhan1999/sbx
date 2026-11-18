@@ -423,9 +423,7 @@ class SetupInferTests(Installation):
         settings.update('domain', {'address': '203.0.113.10'}, by='test')
         settings.update('access', {'admins': ['operator@example.com']}, by='test')
         users.set_password('operator@example.com', 'test-only-password', by='test')
-        self.assertEqual(self.infer(), 3)   # the coding agents are not chosen yet: the wizard stays open
-        setup.AGENTS.set([])
-        self.assertEqual(self.infer(), 0)
+        self.assertEqual(self.infer(), 0)   # choosing coding agents is optional
         self.assertTrue(setup.complete())
         self.assertEqual(self.infer(), 0)
 

@@ -15,7 +15,7 @@ import shlex
 import time
 import uuid
 
-from ..base import CommandFailed, Failed, LimitRefused, Snapshot, TemplateGone, TemplateSpec, Timeout
+from ..base import CommandFailed, Failed, LimitRefused, Snapshot, TemplateGone, TemplateSpec, Timeout, step_line
 from ..dockerfile import ShellWord, dockerfile_steps, export_line
 from ..listening import listening
 from .errors import POLL_SECONDS, BoatError
@@ -199,12 +199,15 @@ class Builds:
         # ENV, as in Docker.
         user, workdir, env, inherited = "user", HOME, [], ""
         commands = handle.commands
+        total, number = sum(what not in ("template", "image") for what, _ in steps), 0
         for what, value in steps:
             if what == "template":
                 inherited, workdir = self._inherited(commands)
                 continue
             if what == "image":
                 continue
+            number += 1   # each step as E2B's builder logs it, which the build's progress reads (step_line)
+            log(step_line(number, total, _step_name(what, value)))
             if what == "user":
                 user = value
             elif what == "workdir":
@@ -217,7 +220,6 @@ class Builds:
             elif what == "env":
                 env.append(list(value.items()))
             elif what == "run":   # the env so far is in TEMPLATE_FILE, which every command reads
-                log(f"RUN {value[:200]}")
                 commands.run(value, user=user, cwd=workdir, timeout=0, on_output=lambda text: [
                     log(line) for line in text.splitlines() if line.strip()])
             elif what == "start":
@@ -283,3 +285,12 @@ class Builds:
             time.sleep(POLL_SECONDS)
         raise Failed(f"the template's start command was not ready after 300 s "
                      f"({'nothing on port ' + str(ready) if isinstance(ready, int) else ready})")
+
+
+def _step_name(what: str, value) -> str:
+    """A step as its log line names it: an ENV by its keys only (a value may be a secret)."""
+    if what == "env":
+        return "ENV " + " ".join(value)
+    if what == "start":
+        return "START"
+    return f"{what.upper()} {str(value)[:200]}"

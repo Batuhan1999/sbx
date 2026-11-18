@@ -261,6 +261,15 @@ class Backend(unittest.TestCase):
         logs = []
         self.assertEqual(self.backend.build_template(spec, alias="abcd1234--repo-1", cpu=2, memory_mb=4096,
                                                      disk_mb=10240, on_log=logs.append), "abcd1234--repo-1")
+        # Each step logged as E2B's builder logs it (the build's progress reads it); an ENV by its keys only.
+        from sbx_control.runtime import build_step
+        steps = [build_step(line) for line in logs if build_step(line)]
+        self.assertEqual([s[0] for s in steps], list(range(1, len(steps) + 1)))
+        self.assertEqual({s[1] for s in steps}, {len(steps)})
+        self.assertEqual(steps[1][2], "RUN apt-get install -y jq")
+        self.assertIn("ENV TOOL_HOME", [s[2] for s in steps])
+        self.assertFalse(any("/opt/tool" in s[2] for s in steps if s[2].startswith("ENV")))
+        self.assertEqual(steps[-1][2], "START")
         builder = self.body("POST", "/sandboxes")
         self.assertEqual((builder["from"], builder["type"], builder["noEnv"]), ("tpl", "small", True))
         self.assertEqual((builder["labels"], builder["ttlSeconds"]),
@@ -623,6 +632,18 @@ class Backend(unittest.TestCase):
 
 
 class Settings(unittest.TestCase):
+    def test_the_plan_is_read_from_boat_s_plan_key(self):
+        from sbx_control.runtime.boat.plans import preset_of
+        for key, preset in (("trial", "trial"), ("free_trial", "trial"), ("box_20", "20"), ("20", "20"),
+                            ("box_100", "100"), ("BOX_2000", "2000"), ("box_7", None), ("", None), (None, None)):
+            with self.subTest(key=key):
+                self.assertEqual(preset_of(key), preset)
+        backend, fake = configured()
+        fake.plan = "box_100"
+        self.assertEqual(backend.account_plan(), "100")
+        self.assertEqual(backend.refused_plans, {"trial": backend.refused_plans["trial"]})
+        self.assertIn("then save the key again", backend.refused_plans["trial"])
+
     def test_presets_are_the_trial_and_the_paid_plans_and_the_defaults_the_20_plan(self):
         from sbx_control.runtime import boat
         self.assertEqual([p.name for p in boat.PRESETS], ["trial", "20", "100", "500", "2000"])

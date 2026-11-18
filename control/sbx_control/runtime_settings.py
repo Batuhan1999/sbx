@@ -308,6 +308,29 @@ def with_plan(backend, plan: str | None, values: dict, current: dict, *, adding:
     return {**planned, **values}
 
 
+def _account_plan(backend, values: dict, current: dict, *, adding: bool) -> str | None:
+    """The preset the key's account is on (Backend.account_plan), asked when
+    a key is added or a new one given; Refused, as a failed check next to the
+    key, for a plan the backend refuses (refused_plans). None when it does
+    not say or can't be asked yet (the provider's checks then say why)."""
+    from . import secret_store
+    secret = backend.secret_key
+    given = str((values or {}).get(secret) or "").strip() if secret else ""
+    if not backend.presets or not given:   # only a key given here: the stored one goes nowhere new
+        return None
+    merged = {**current, **{k: v for k, v in (values or {}).items() if v}}
+    plain = {k: secret_store.unseal(v) if secret_store.is_reference(v) else v for k, v in merged.items() if v}
+    try:
+        backend.configure(plain)
+        found = backend.account_plan()
+    except (Exception, SystemExit):
+        return None
+    if why := backend.refused_plans.get(found or ""):
+        raise Refused(why, checks=[{"name": f"{backend.title} plan", "ok": False, "detail": why, "fix": "",
+                                    "runtime": None, "help_url": backend.help_url, "field": secret}])
+    return found
+
+
 def prepare(kind: str, values: dict, *, adding: bool, plan: str | None = None) -> dict:
     """A change from the web app, checked as add() will make it but
     nothing written: the runtime (a provider's), enabled or not as asked,
@@ -329,6 +352,10 @@ def prepare(kind: str, values: dict, *, adding: bool, plan: str | None = None) -
     if sent:
         raise Refused(f"{', '.join(sent)}: a reference into the secret store is not a value; send the value itself")
     current = vault.runtime(backend.credential_keys) if on else {}
+    found = _account_plan(backend, values or {}, current, adding=adding)
+    limits = {key for preset in backend.presets for key in preset.by_key()}
+    if adding and plan is None and found and not limits & set(values or {}):
+        plan = found   # the account's own plan, as the provider says it
     changes = _validated(backend, kind, with_plan(backend, plan, values or {}, current, adding=adding), current,
                          changing=not adding)
     found = fields(backend)
@@ -348,6 +375,7 @@ def add(kind: str, values: dict) -> Edit:
     backend = _settable(kind)
     enabled = runtime.enabled()
     raw = _raw(backend)
+    _account_plan(backend, values, vault.runtime(backend.credential_keys), adding=kind not in enabled)
     changes = _validated(backend, kind, values, vault.runtime(backend.credential_keys), changing=kind in enabled)
     found = fields(backend)
     edit = Edit({}, lambda: "")

@@ -741,6 +741,16 @@ class RuntimeCliTests(Cli):
         self.assertEqual(self.control.calls[-2][3] if self.control.calls[-2][0] == "PUT" else
                          next(c[3] for c in self.control.calls if c[0] == "PUT"), {"kind": "e2b-cloud"})
 
+    def test_a_key_the_provider_s_plan_refuses_exits_non_zero_with_why(self):
+        why = ("Boat's free trial saves no snapshots: make the first payment in Boat's dashboard (Billing), then save "
+               "the key again.")
+        self.routes[("POST", "/api/runtimes")] = lambda q, body: (400, {"detail": {"message": why, "checks": [
+            {"name": "Boat plan", "ok": False, "detail": why, "fix": "", "help_url": "", "field": "BOAT_API_KEY"}]}})
+        code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
+                                      stdin=CLOUD_KEY + "\n")
+        self.assertEqual(code, f"sbx-control: {why}")   # the check that says the same is not repeated
+        self.assertNotIn(CLOUD_KEY, out + err)
+
     def test_test_prints_each_check_and_fails_when_one_does(self):
         checks = [{"name": "E2B Cloud API", "ok": True, "detail": "answers; 3 template names", "fix": "", "runtime": "e2b-cloud"},
                   {"name": "Base template", "ok": False, "detail": "its last build failed: boom",
@@ -780,7 +790,7 @@ class RuntimeCliTests(Cli):
             "status": {"state": "connected", "summary": "0 running"}}]}
         self.assertIn("E2B Cloud (Pro plan): 0 running", self.run_cli("runtimes")[1])
 
-    def test_add_without_a_plan_is_on_hobby_and_set_without_one_sends_only_what_it_names(self):
+    def test_add_without_a_plan_leaves_it_to_the_server_and_set_without_one_sends_only_what_it_names(self):
         self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
         self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "change"))
         self.polls(change("done", message="ok"))
@@ -788,7 +798,7 @@ class RuntimeCliTests(Cli):
                                       stdin=CLOUD_KEY + "\n")
         self.assertEqual(code, 0, err)
         self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3],
-                         {"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})
+                         {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})   # the account's plan
         code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--set", "E2B_CLOUD_MAX_CPU=16")
         self.assertEqual(code, 0, err)
         self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3],
@@ -1022,7 +1032,7 @@ class SetupCliTests(Cli):
         with patch.object(self.cli, "keychain_get", return_value=None):   # not signed in: the setup link
             self.assertEqual(finish()[4], "Setup one-time-token")
 
-    def test_the_coding_agents_are_chosen_before_finishing(self):
+    def test_the_coding_agents_may_be_chosen_optionally(self):
         self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
                                 {"kind": "amp", "title": "Amp", "chosen": False}]
         code, out, err = self.run_cli("setup", "agents")
@@ -1124,6 +1134,32 @@ class ExtensionCliTests(Cli):
         code, out, err = self.run_cli("templates")
         self.assertEqual(code, 0, err)
         self.assertIn("embed      default                          stuck      default-0123abcd  (apt-get failed)", out)
+
+    def test_templates_wait_says_each_step_and_exits_when_all_are_built(self):
+        building = templates("building", "current")
+        building["runtimes"]["embed"][1].update(step=3, steps=12, step_name="RUN apt-get install -y jq", eta_s=240)
+        later = templates("building", "current")
+        later["runtimes"]["embed"][1].update(step=9, steps=12, step_name="RUN make", eta_s=30)
+        self.polls((503, b"restarting"), building, building, later, templates("current"))
+        code, out, err = self.run_cli("templates", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("templates: 2 of 3 built; building default on embed: step 3 of 12 (RUN apt-get install -y jq), "
+                      "about 4 min left", err)
+        self.assertEqual(err.count("step 3 of 12"), 1)   # a line only when the progress changes
+        self.assertIn("step 9 of 12 (RUN make), under a minute left", err)
+        self.assertIn("embed      default                          current", out)
+
+    def test_templates_wait_exits_non_zero_on_a_failure_a_blocked_setup_or_the_timeout(self):
+        # sys.exit with a message: exit status 1, the message on stderr.
+        self.polls(templates("building"), templates("stuck", error="apt-get failed"))
+        code, _, _ = self.run_cli("templates", "--wait")
+        self.assertEqual(code, "the default template failed on embed: apt-get failed")
+        self.polls({**templates("stale"), "blocked": "templates build once the setup is finished"})
+        code, _, _ = self.run_cli("templates", "--wait")
+        self.assertEqual(code, "no template builds yet: templates build once the setup is finished")
+        self.polls(templates("building"))
+        code, _, _ = self.run_cli("templates", "--wait", "--timeout", "0")
+        self.assertRegex(code, r"^the templates are not all built after 0 s \(templates: 1 of 3 built")
 
 
 def key_request(state="pending", done=(), **over):

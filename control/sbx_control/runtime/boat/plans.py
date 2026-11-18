@@ -2,6 +2,8 @@
 sbx may ask of a Boat account (Limits) and the machine class a size needs."""
 from __future__ import annotations
 
+import re
+
 from ..base import LimitRefused, LimitSpec, Preset, SettingField, limit_settings
 
 KIND = "boat"
@@ -60,9 +62,22 @@ def _plan(name, title, sandboxes, largest, timeout=None, note=""):
 PRESETS = (_plan("trial", "Trial", 2, "default", timeout=2 * 3600, note=TRIAL_NOTE), _plan("20", "$20", 100, "large"),
            _plan("100", "$100", 300, "xlarge"),
            _plan("500", "$500", 1000, "xlarge"), _plan("2000", "$2000", 2000, "xlarge"))
-TRIAL_REFUSAL = ("Boat's free trial saves no snapshots (\"Saved snapshots are not available during the free "
-                 "trial\"), and sbx's templates are saved snapshots: make the first payment in Boat's dashboard "
-                 "(Billing), then build again.")
+_TRIAL_WHY = ("Boat's free trial saves no snapshots (\"Saved snapshots are not available during the free "
+              "trial\"), and sbx's templates are saved snapshots: make the first payment in Boat's dashboard "
+              "(Billing), then ")
+TRIAL_REFUSAL = _TRIAL_WHY + "build again."
+# A trial key is refused when it is saved (Boat.refused_plans): the setup builds templates, which it can't.
+TRIAL_KEY_REFUSAL = _TRIAL_WHY + "save the key again."
+
+
+def preset_of(plan_key: str) -> str | None:
+    """The preset Boat's plan key names (limits' sandboxPlanKey: "trial", "box_20", "20"), None for one sbx
+    does not know: its number is the paid plan's price."""
+    key = (plan_key or "").strip().lower()
+    if "trial" in key:
+        return "trial"
+    digits = re.findall(r"\d+", key)
+    return next((p.name for p in PRESETS if digits and p.name == digits[-1]), None)
 KEY_WARN_DAYS = 14
 PLAN_CACHE_SECONDS = 300
 

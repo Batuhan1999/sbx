@@ -79,14 +79,16 @@ async def api_connection_delete(kind: str, email: str = Depends(admin_user)):
 
 
 @router.get("/api/templates")
-def api_templates(email: str = Depends(admin_user)):
+def api_templates(email: str = Depends(setup_or_admin)):
     """Every template sandboxes start from, per enabled runtime, and where its
-    build stands (template_builds.progress); what `sbx extensions ... --wait` follows."""
+    build stands (template_builds.progress): what `sbx templates --wait` and
+    `sbx extensions ... --wait` follow, and the setup page (the setup token
+    while the setup is open, before any account exists)."""
     return template_builds.progress()
 
 
 # The web app's pages GitHub may send the browser back to after the App is installed.
-RETURN_PAGES = ("/app/extensions", "/app/repos/new")
+RETURN_PAGES = ("/app/extensions", "/app/repos", "/app/repos/new")
 
 
 class ManifestStart(BaseModel):

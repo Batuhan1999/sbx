@@ -214,6 +214,25 @@ LIMIT_FIELDS = ("timeout_seconds", "cpu", "memory_mb", "disk_mb", "sandboxes")
 # out between two.
 MIN_TIMEOUT_SECONDS = 5 * 60
 
+# A template build's step as its log says it: E2B's builder (and Embed's)
+# logs each step as "[builder K/N] RUN ...", "CACHED " first for a step it
+# took from its cache and " [hash]" last (e2b-dev/infra, phases.layerInfo).
+# A runtime that replays the steps itself logs them the same way (step_line),
+# so one reading (build_step) follows every runtime's builds.
+_STEP = re.compile(r"\[builder (\d+)/(\d+)\] ?(.*?)(?: \[[0-9a-f]{8,}\])?$")
+
+
+def step_line(number: int, total: int, text: str) -> str:
+    return f"[builder {number}/{total}] {text}"
+
+
+def build_step(line: str) -> tuple[int, int, str] | None:
+    """(step, steps, the step's short name) a build log line starts, or None."""
+    found = _STEP.search(line)
+    if not found:
+        return None
+    return int(found[1]), int(found[2]), " ".join(found[3].split())[:80]
+
 
 # A host name, lowercase, without a trailing dot: what a "hostname" setting
 # takes (SettingField.view hands the web app the same pattern).
@@ -454,6 +473,8 @@ class Backend(abc.ABC):
     # the form offers for its limits.
     settings: tuple = ()
     presets: tuple = ()
+    # Presets an account may not be added on: name -> why, said when its key is saved (account_plan).
+    refused_plans: Mapping[str, str] = {}
     # Where it wants the token it answers its sandboxes' ports with (None:
     # it needs none). The gate hands nginx the token, nginx adds it on that
     # runtime's requests only; a browser never sees it.
@@ -558,6 +579,12 @@ class Backend(abc.ABC):
     def failure(self, error: BaseException) -> bool:
         """Whether an error is the runtime's or the connection's to it."""
         return False
+
+    def account_plan(self) -> str | None:
+        """The preset (a name in presets) the configured key's account is on,
+        as the provider says it; None when it does not say. Saving a key
+        without a plan takes this one's limits."""
+        return None
 
     def upstream_token(self, sandbox_id: str, port: int, *, fetch: bool = True) -> str:
         """The sandbox's token for its port, for a runtime with upstream_token_at

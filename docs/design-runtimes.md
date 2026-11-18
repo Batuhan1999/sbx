@@ -170,11 +170,12 @@ servers and internal hosts through endpoints (`sbx_control/endpoints/`;
    waits on the page until the port listens. Non-HTML requests get the
    status with `Retry-After`. The gate starts a resume and answers within
    2.5 seconds instead of holding nginx.
-4. **A trial account is accepted; templates need the first payment.** Run
+4. **A trial key is refused; templates need the first payment.** Run
    live on a trial account: the base template's replay worked on real
    Boat and the save was refused ("Saved snapshots are not available during
-   the free trial"). sbx now refuses a build on the trial before it starts a
-   builder and says so in the status, the check and the trial preset.
+   the free trial"). sbx refuses a trial key when it is saved (the plan is
+   read from the key), and, should an account go back to the trial, a build
+   before it starts a builder, saying so in the status and the check.
 
 ## Out of phase 1
 

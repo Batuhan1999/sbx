@@ -33,19 +33,20 @@ can close it then. A key sbx refuses is marked under its field: fix it and
 save again. The link works for 24 hours unless your agent chose otherwise; ask
 it for a new one after that.
 
-## Sandbox runtime and coding agents
+## Sandbox runtime
 
-Your agent normally fills in these steps for you; you can also do them on the
+Your agent normally fills in this step for you; you can also do it on the
 setup page. **Sandbox runtime** is where sandboxes run: E2B Embed on this
-server (it needs `/dev/kvm`), or a hosted one such as E2B Cloud or Boat.
+server (it needs `/dev/kvm`), or a hosted one such as E2B Cloud or Boat. A
+Boat key sets its plan from your Boat account; a key still on Boat's free
+trial is refused ([why](boat.md#plan)).
 
 ![The setup's Sandbox runtime step: E2B Embed, E2B Cloud and Boat](images/setup-runtime.png)
 
-**Coding agents** are the agents your team starts sandboxes from. Every
-sandbox template has each of them, chosen or not; choosing one decides which
-key sbx asks for, and adding it later rebuilds nothing. Choosing none is fine.
-
-![The setup's Coding agents step with Amp chosen](images/setup-agents.png)
+There is no coding-agent step: every sandbox template has every coding
+agent. You connect the ones your team uses after the setup, under
+**Extensions**: Amp's self-hosted orb provider ([Amp](amp.md)) and Claude
+Code's self-hosted environment; Codex needs nothing.
 
 The first template builds start once the address and the sandbox runtime are
 chosen and take about 10 minutes; you can finish the setup while they run.

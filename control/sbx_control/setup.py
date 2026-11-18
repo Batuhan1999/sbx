@@ -1,12 +1,13 @@
-"""First-run control-plane setup: an address, admin access, a sandbox
-runtime (added here when install.sh enabled none), the coding agents, and
-live runtime checks. Repository and provider connections follow after the
-server is ready.
+"""First-run control-plane setup: an address, a sandbox runtime (added here
+when install.sh enabled none), the admin account last, and live runtime
+checks. Repository and provider connections follow after the server is
+ready.
 
 Templates build as soon as there is a runtime and an address, during the
-setup too: the coding agents' layers are in every template whether chosen or
-not (Amp's in the base), so the choice decides only which keys the setup
-asks for, and the setup's reachability check needs a built base template."""
+setup too: every template has every coding agent's layer (Amp's in the
+base), so choosing coding agents (choose_agents) is optional: it records
+which agents' connections to suggest, and nothing waits for it. The setup's
+reachability check needs a built base template."""
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +22,7 @@ from .state import Setting
 
 COMPLETE = Setting("setup_complete")
 TOKEN_HASH = Setting("setup_token_hash")
-# The coding agents chosen in the setup: a list of extension kinds ([]: none); unset: not chosen yet.
+# The coding agents chosen (optional): a list of extension kinds ([]: none); unset: not chosen.
 AGENTS = Setting("setup_agents", encoded=True)
 
 
@@ -47,11 +48,10 @@ def configured() -> bool:
 
 def infer_complete() -> bool:
     """sbx-admin setup-infer (host-install.sh on every deploy, and
-    install-report.sh): an installation that is configured and has its
-    coding agents chosen counts as set up. Without that choice the setup
-    stays open (a redeploy mid-wizard never skips the agents step). Returns
-    whether it marked anything."""
-    if complete() or not configured() or AGENTS.get() is None:
+    install-report.sh): an installation that is configured counts as set
+    up (the admin account, which needs a way to sign in, is the setup's last
+    step). Returns whether it marked anything."""
+    if complete() or not configured():
         return False
     mark_complete("infer")
     return True
@@ -64,15 +64,15 @@ def offered_agents() -> list:
 
 
 def agents_chosen() -> bool:
-    """Whether the coding-agent choice is made: in the setup, or the setup is
-    complete (an installation set up before the step existed chose by what
-    it enabled since)."""
+    """Whether coding agents were chosen (optional): in the setup, or the
+    setup is complete (they are enabled under Extensions since)."""
     return complete() or AGENTS.get() is not None
 
 
 def choose_agents(kinds, by: str) -> list:
-    """Record the coding agents (kinds of offered_agents): which keys the
-    setup asks for; each one's own key may come later (Connector.choose)."""
+    """Record the coding agents (kinds of offered_agents) whose connections
+    to suggest; each one's own key may come later (Connector.choose). Every
+    template has every agent's layer whatever is chosen."""
     offered = {c.kind: c for c in offered_agents()}
     kinds = sorted({k.strip().lower() for k in kinds if k.strip()})
     unknown = [k for k in kinds if k not in offered]
@@ -192,16 +192,18 @@ def readiness() -> dict:
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 
-# What finishing says while a step is not done, in the steps' order.
-NEEDED = {"address": "Choose the server address and configure admin access first.",
-          "sign_in": "Choose the server address and configure admin access first.",
+# What finishing says while a step is not done, in the setup page's order:
+# the admin account last (creating it is what finishes the setup there).
+NEEDED = {"address": "Choose the server address first.",
           "runtime": "Add a sandbox runtime first: sandboxes need one to run on.",
-          "agents": "Choose the coding agents first (none is a choice): sbx asks for their keys."}
+          "sign_in": "Create the admin account first."}
 
 
 def missing(found: dict) -> str:
-    """Why state() can't finish yet by its steps ("" when every one is done)."""
-    return next((NEEDED[step["step"]] for step in found["steps"] if not step["done"]), "")
+    """Why state() can't finish yet ("" when every required step is done): the first not done, in NEEDED's
+    order (choosing coding agents is optional)."""
+    undone = {step["step"] for step in found["steps"] if not step["done"]}
+    return next((message for step, message in NEEDED.items() if step in undone), "")
 
 
 def state(email: str | None, address: str = "") -> dict:
@@ -216,9 +218,9 @@ def state(email: str | None, address: str = "") -> dict:
               "optional": False, "summary": sign_in.summary},
              {"step": "runtime", "done": bool(kinds), "optional": False,
               "summary": ", ".join(runtime.title(k) for k in kinds) if kinds else runtime.NO_RUNTIME},
-             {"step": "agents", "done": agents_chosen(), "optional": False, "summary": _agents_summary()}]
+             {"step": "agents", "done": agents_chosen(), "optional": True, "summary": _agents_summary()}]
     signed_in = bool(email) and email != "anonymous"
-    can_complete = all(step["done"] for step in steps) and (signed_in or s.sign_in.method == "none")
+    can_complete = all(step["done"] or step["optional"] for step in steps) and (signed_in or s.sign_in.method == "none")
     server_address = s.domain.address or ip_address(address) or domain_connection.public_ip()
     return {"complete": complete(), "steps": steps, "signed_in": signed_in, "email": email,
             "open_access": s.sign_in.method == "none",
@@ -247,7 +249,7 @@ def _certificate_error(d) -> str:
 def _agents_summary() -> str:
     chosen = AGENTS.get()
     if chosen is None:
-        return "as enabled under Extensions" if complete() else "not chosen yet"
+        return "as enabled under Extensions" if complete() else "optional: none chosen"
     titles = {c.kind: c.title for c in offered_agents()}
     return ", ".join(titles.get(k, k) for k in chosen) or "none"
 

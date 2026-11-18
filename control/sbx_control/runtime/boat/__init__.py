@@ -34,7 +34,8 @@ from .account import Account
 from .build import Builds
 from .errors import call, is_failure
 from .lifecycle import Sandboxes
-from .plans import API_KEY, API_URL_KEY, DEFAULT_API_URL, KIND, LIMITS, ORG_KEY, PRESETS, SETTINGS, SOURCE
+from .plans import (API_KEY, API_URL_KEY, DEFAULT_API_URL, KIND, LIMITS, ORG_KEY, PRESETS, SETTINGS, SOURCE,
+                    TRIAL_KEY_REFUSAL)
 from .previews import COOKIE, HOSTED_DOMAIN, RESERVED_PORTS, Previews
 
 
@@ -49,6 +50,7 @@ class Boat(Sandboxes, Builds, Previews, Account, Backend):
     secret_key = API_KEY
     settings = SETTINGS
     presets = PRESETS
+    refused_plans = {"trial": TRIAL_KEY_REFUSAL}
     upstream_token_at = TokenPlace("cookie", COOKIE)
     desktop = "provider"
     cold_resume = True

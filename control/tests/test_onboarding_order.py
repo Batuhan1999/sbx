@@ -1,7 +1,8 @@
 """The onboarding order: templates build as soon as there is a runtime and
-an address, during the setup too (every template has the coding agents'
-layers whether chosen or not, and the setup's reachability check needs a
-built base); a later change to an extension says what it rebuilds."""
+an address, during the setup too (every template has every coding agent's
+layer whether chosen or not, and the setup's reachability check needs a
+built base); choosing coding agents is optional; a later change to an
+extension says what it rebuilds."""
 import io
 import os
 from contextlib import redirect_stderr, redirect_stdout
@@ -37,6 +38,8 @@ class TemplatesDuringTheSetup(Server):
                 self.scheduler.start_template_builds("embed")   # a runtime just added
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 self.assertEqual(self.builds.main(["base", "--if-stale"]), 0)   # install.sh's
+        # No coding agents chosen: finishing does not wait for them.
+        self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["can_complete"])
         self.assertEqual([c.args for c in build.call_args_list],
                          [(self.templates.BASE, "embed"), (self.templates.DEFAULT, "embed")])
         detached.assert_called_once_with("embed")
@@ -102,7 +105,9 @@ class TemplatesDuringTheSetup(Server):
         unknown = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["nope"]})
         self.assertEqual(unknown.status_code, 400)
         self.assertIn("claude, amp", unknown.text)
-        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": False,
+        chosen = self.choose_agents("amp")
+        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
+        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": True,
                                                              "summary": "none"})
         self.assertEqual(self.client.post("/api/setup/complete", headers=self.headers).status_code, 200)
         late = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["amp"]})

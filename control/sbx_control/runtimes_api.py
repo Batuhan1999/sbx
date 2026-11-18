@@ -24,7 +24,9 @@ def signed_in_or_setup(request: Request) -> str:
 
 
 def _refused(error: runtimes.Refused) -> HTTPException:
-    return HTTPException(409 if isinstance(error, runtimes.Conflict) else 400, str(error))
+    """409 or 400 with the message; with {message, checks} when the provider's checks refused it."""
+    detail = {"message": str(error), "checks": error.checks} if error.checks else str(error)
+    return HTTPException(409 if isinstance(error, runtimes.Conflict) else 400, detail)
 
 
 @router.get("/api/runtimes")

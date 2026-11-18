@@ -1,7 +1,8 @@
 """/api/setup: the first-run wizard's state and completion. Before the setup
 is complete the one-time token (`Authorization: Setup <token>`, from the
-link install.sh printed) stands in for an admin here and on
-/api/connections; afterwards admins only, as everywhere."""
+link install.sh printed) stands in for an admin here, on /api/connections,
+/api/runtimes and /api/templates, so the setup page runs every step before
+the admin account (its last); afterwards admins only, as everywhere."""
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,7 +26,7 @@ SETUP_OPEN = ("/setup", "/app", "/assets/", "/api/setup", "/api/connections", "/
 # and sign-out; the desktop CLI's installer and `sbx login` (/cli/: a session
 # or a one-time code), so an agent signs in as the admin once the account
 # exists and finishes the setup itself; /api/me answers only a sign-in;
-# /api/templates (admins) shows the builds.
+# /api/templates (the setup token, or admins) says how the first builds stand.
 SETUP_OPEN_EXACT = ("/dist/version", "/bundles", "/login", "/logout", "/install", "/dist/sbx.tgz", "/dist/sbx.tgz.sha256", "/api/me",
                     "/api/templates")
 
@@ -128,8 +129,9 @@ class Agents(BaseModel):
 
 @router.put("/api/setup/agents")
 def api_setup_agents(body: Agents, request: Request, who: str = Depends(setup_or_admin)):
-    """The coding agents the setup asks keys for (state()'s agents: the
-    ones offered; [] for none); their own keys may come later. Under the
+    """Optional: the coding agents whose connections to suggest (state()'s
+    agents: the ones offered; [] for none); their own keys may come later,
+    and every template has every agent's layer whatever is chosen. Under the
     setup lock, as finishing is: never saved after the setup completed."""
     with _setup_lock:
         if setup.complete():

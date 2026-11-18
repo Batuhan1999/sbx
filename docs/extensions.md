@@ -51,13 +51,14 @@ extension never adds steps to the template builder itself. Saving or
 disconnecting an extension answers how many templates that rebuilds on each
 runtime (`rebuilds`; `sbx extensions set KIND --wait` waits for them).
 
-A connector with `choosable = True` is offered in the first-run setup's
-coding-agents step. `choose(on, by=...)` records the choice in its own
-settings (Amp: its `chosen` setting), which decides only which key the setup
-asks for: its template layer must not depend on it, because templates build
-during the setup, before the choice. Amp's layer is in the base template
-(`base_contribution`, below) and Claude Code's CLI is in every template
-(`contribution`), chosen or not, so nothing rebuilds when the key comes later.
+A connector with `choosable = True` is offered as a coding agent by `PUT
+/api/setup/agents` (`sbx setup agents`), an optional choice that records
+which agents' connections to suggest. `choose(on, by=...)` records it in the
+connector's own settings (Amp: its `chosen` setting). Every coding agent's
+layer is in every template whatever is chosen (Amp's in the base, Claude
+Code's CLI everywhere), so the choice moves no template, and
+templates build during the setup, before any choice: a layer must never
+depend on it.
 
 An extension can instead put its layer into the base template of every
 installation, whatever its settings, with `base_contribution()`: a
