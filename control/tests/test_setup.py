@@ -163,6 +163,7 @@ class SetupTests(Server):
         self.app.app.middleware_stack = None
         self.choose_ip()
         self.create_admin()
+        self.choose_agents()
         done = self.client.post("/api/setup/complete", headers=self.headers)
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
