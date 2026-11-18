@@ -12,7 +12,8 @@ plug in is described in [extensions](extensions.md#agent-connectors).
 - **Template layer**, while Amp is enabled: the Amp CLI, the Wayland desktop
   tools taken from Amp's published image, and their packages. Enabling or
   disabling Amp changes the template fingerprint, so templates rebuild by
-  themselves.
+  themselves. See [Desktop tools](#desktop-tools) for where the tools come
+  from.
 - **A host service**, `sbx-amp`, that runs Amp's outbound provider controller.
   Only outbound HTTPS/WSS to Amp is needed; no public port is opened.
 - **A job route** on the control service's loopback interface. Amp's dispatch
@@ -81,6 +82,32 @@ continue in sbx. Amp still runs the repository's `.agents/setup` and
 `.agents/resume`, so keep those idempotent and do not duplicate database resets
 or server starts there. sbx writes `.amp/portals/sbx-previews.json` (excluded
 from git) so Amp's Portal tab links to the sandbox's preview URLs.
+
+## Desktop tools
+
+The Wayland desktop tools (`/opt/amp-wayland`) come from Amp's orb image,
+pinned by digest in the connector. The first template build that needs them
+starts a throwaway template and sandbox from that image, copies the directory
+out as a tarball and deletes both. Only a runtime that builds templates from
+container images can do that (`image_import`: E2B Embed and E2B Cloud, not
+Boat), so sbx uses the default runtime when it can and otherwise the first
+enabled runtime that can.
+
+The host keeps the tarball in `$SBX_STATE_DIR/cache/amp-tools/<digest>.tar.gz`
+(`/var/lib/sbx/cache/amp-tools/` by default).
+Every later template build, on any runtime and Boat included, unpacks that
+copy instead of fetching again; when the pinned digest changes, the next build
+fetches the new image and removes the copies of other digests. A copy that is
+empty, damaged or missing one of the tools is fetched again the same way. Clearing the folder only makes
+the next build fetch again, but do it only while no template build is running
+(a running build holds the folder's lock file), and on a host whose only
+runtime is Boat, enable a runtime that imports images first (see below).
+
+An installation whose only runtime is Boat therefore needs a runtime that
+imports images for the first fetch of each digest: enable E2B Cloud (or E2B
+Embed) for it, build, and disable it again if you like. Until then, template
+builds with Amp enabled fail with a message that says so, and the Amp
+connection test shows **desktop tools** as not ready.
 
 ## Project snapshots
 

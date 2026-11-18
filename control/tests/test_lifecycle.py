@@ -657,6 +657,437 @@ class LifecycleTests(Installation):
         cleanup.assert_called_once_with("fixture")
         self.assertEqual(self.lifecycle.get("fixture")["phase"], "deleted")
 
+    def cleanup_recipe(self, script="#!/bin/sh\necho released\n", executable=True, env=None):
+        """The fixture's recipe with a .sbx/cleanup (and env: its sbx.yaml's env)."""
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (folder / "sbx.yaml").write_text("previews: {'': 3000}\n")
+        if script is not None:
+            (folder / "cleanup").write_text(script)
+            (folder / "cleanup").chmod(0o755 if executable else 0o644)
+        recipe = self.recipes.App("owner/repo", folder, {"previews": {"": 3000}, "workdir": "/home/user/repo",
+                                                         **({"env": env} if env else {})})
+        self.enterContext(patch.object(self.recipes, "load", return_value=recipe))
+        return recipe
+
+    def deleting(self, info, vm, connect=None):
+        """Delete the fixture through the API; (response, the runtime's kill mock, order of what ran)."""
+        order = []
+        vm.ran = order
+        with patch.object(self.core, "find", return_value=info), \
+                patch.object(self.core.runtime, "connect", side_effect=connect or (lambda *a, **k: vm)) as connected, \
+                patch.object(self.core.runtime, "kill", side_effect=lambda vm_id: order.append(("kill", vm_id))) as kill, \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]):
+            response = self.client.delete("/api/sandboxes/fixture")
+        return response, kill, order, connected
+
+    class CleanupVM(FakeVM):
+        """A VM whose .sbx/cleanup prints or fails as told; it records the commands that ran it."""
+
+        def __init__(self, exit_code=0, output="released\n", has_hook=True, app_env="", env="", readable=""):
+            super().__init__()
+            self.exit_code, self.output, self.ran = exit_code, output, []
+            self.has_hook, self.app_env, self.env, self.readable = has_hook, app_env, env, readable
+
+        def run(self, command, **kwargs):
+            from sbx_control import runtime
+            if "test -f /run/sbx/env" in command:
+                return done("ok")
+            if "echo present" in command:
+                return done("present" if self.has_hook else "")
+            if command.startswith("cat /run/sbx/env && echo && "):
+                if self.app_env is None:
+                    raise runtime.CommandFailed(stdout="", stderr="unreadable", exit_code=1)
+                return done(self.env + "\n" + self.app_env)
+            if command.startswith("test -r /run/sbx/"):
+                return done(self.readable)
+            if '"$d/cleanup"' in command:
+                self.ran.append(("cleanup", command, kwargs.get("timeout")))
+                if self.exit_code:
+                    raise runtime.CommandFailed(stdout=self.output, stderr="it broke\n", exit_code=self.exit_code)
+                return done(self.output)
+            return super().run(command, **kwargs)
+
+    def test_delete_runs_the_recipe_cleanup_first_and_reports_its_output(self):
+        self.healthy()
+        self.cleanup_recipe()
+        vm = self.CleanupVM()
+        response, kill, order, _ = self.deleting(self.info, vm)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"], {"exit_code": 0, "output": "released\n"})
+        self.assertEqual([step[0] for step in order], ["cleanup", "kill"])
+        command, timeout = order[0][1], order[0][2]
+        self.assertIn(". /run/sbx/app-env", command)              # the app's env, as setup gets
+        self.assertIn("could not be loaded", command)             # and nothing runs without it
+        self.assertIn("cd /home/user/repo", command)
+        self.assertEqual(timeout, self.core.CLEANUP_TIMEOUT_SECONDS)
+        self.assertIn(("cleanup ran", "exit 0: released"),
+                      [(kind, detail) for _, kind, detail, _ in self.state.events("fixture")])
+        self.assertEqual(self.lifecycle.get("fixture")["phase"], "deleted")
+
+    def test_a_failing_cleanup_is_recorded_and_the_sandbox_is_deleted_anyway(self):
+        self.healthy()
+        self.cleanup_recipe()
+        response, kill, order, _ = self.deleting(self.info, self.CleanupVM(exit_code=3, output="half done\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["exit_code"], 3)
+        self.assertIn("half done", response.json()["cleanup"]["output"])
+        self.assertIn("it broke", response.json()["cleanup"]["output"])
+        kill.assert_called_once_with("fixture-vm")
+        self.assertIn("cleanup failed", [kind for _, kind, _, _ in self.state.events("fixture")])
+        self.assertEqual(self.lifecycle.get("fixture")["phase"], "deleted")
+
+    def test_a_paused_sandbox_is_resumed_for_its_cleanup(self):
+        self.healthy()
+        self.cleanup_recipe()
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        vm = self.CleanupVM()
+        with patch.object(self.core.extensions, "on_resume"):
+            response, kill, order, connected = self.deleting(paused, vm)
+        self.assertEqual(response.status_code, 200, response.text)
+        connected.assert_called_once()
+        self.assertEqual([step[0] for step in order], ["cleanup", "kill"])
+        self.assertIn("resumed", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_a_paused_sandbox_whose_resume_fails_is_deleted_without_its_cleanup(self):
+        self.healthy()
+        self.cleanup_recipe()
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+
+        def refuse(*args, **kwargs):
+            raise RuntimeError("no room to resume")
+        response, kill, order, _ = self.deleting(paused, self.CleanupVM(), connect=refuse)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("no room to resume", response.json()["cleanup"]["error"])
+        self.assertEqual(order, [("kill", "fixture-vm")])
+        self.assertEqual(self.lifecycle.get("fixture")["phase"], "deleted")
+
+    def test_without_a_cleanup_hook_delete_does_not_touch_the_vm(self):
+        self.healthy()
+        self.cleanup_recipe(script=None)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        response, kill, order, connected = self.deleting(paused, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["cleanup"])
+        connected.assert_not_called()   # a paused sandbox is not woken for nothing
+        self.assertEqual(order, [("kill", "fixture-vm")])
+
+    def test_a_cleanup_that_is_not_executable_is_skipped_with_a_reason(self):
+        self.healthy()
+        self.cleanup_recipe(executable=False)
+        response, kill, order, connected = self.deleting(self.info, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("not executable", response.json()["cleanup"]["error"])
+        connected.assert_not_called()
+        self.assertIn("cleanup skipped", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_an_unreadable_recipe_is_a_failed_cleanup_not_a_missing_one(self):
+        self.healthy()
+        self.cleanup_recipe()
+        with patch.object(self.recipes, "load", side_effect=ValueError("bad yaml")):
+            response, kill, order, connected = self.deleting(self.info, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"],
+                         {"error": "the recipe's sbx.yaml could not be read, so .sbx/cleanup did not run"})
+        connected.assert_not_called()
+        kill.assert_called_once_with("fixture-vm")
+        self.assertIn("cleanup failed", [kind for _, kind, _, _ in self.state.events("fixture")])
+
+    def test_a_checkout_without_the_hook_is_reported_as_skipped(self):
+        self.healthy()
+        self.cleanup_recipe()
+        response, kill, order, _ = self.deleting(self.info, self.CleanupVM(has_hook=False))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("did not run", response.json()["cleanup"]["error"])
+        self.assertEqual(order, [("kill", "fixture-vm")])
+        kinds = [kind for _, kind, _, _ in self.state.events("fixture")]
+        self.assertIn("cleanup skipped", kinds)
+        self.assertNotIn("cleanup ran", kinds)
+
+    def test_the_hook_check_looks_where_the_hook_would_run(self):
+        from sbx_control import sandbox_runtime
+        shipped = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        marker = shipped / "ran"
+        (shipped / "cleanup").write_text(f"#!/bin/sh\ntouch {marker}\n")
+        (shipped / "cleanup").chmod(0o755)
+        checkout = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (checkout / ".sbx").mkdir()
+        recipe = self.recipes.App("owner/repo", shipped, {"workdir": str(checkout)})
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        with patch.object(sandbox_runtime, "APP_SCRIPTS", str(shipped)):
+            vm = Local()
+            # The checkout's .sbx/ governs, and has no cleanup: neither checked nor run.
+            self.assertFalse(sandbox_runtime.has_app_script(vm, "cleanup", recipe))
+            with patch.object(self.core, "run_in", side_effect=lambda sbx, command, **_: vm.run(command)):
+                sandbox_runtime.app_script(vm, "cleanup", recipe)
+            self.assertFalse(marker.exists())
+            (checkout / ".sbx" / "cleanup").write_text(f"#!/bin/sh\ntouch {marker}\n")
+            (checkout / ".sbx" / "cleanup").chmod(0o755)
+            self.assertTrue(sandbox_runtime.has_app_script(vm, "cleanup", recipe))
+
+    def test_cleanup_output_is_masked_with_the_env_the_hook_ran_with(self):
+        self.healthy()
+        self.cleanup_recipe()
+        vm = self.CleanupVM(output="token old-app-secret-1\n", app_env="export APP_TOKEN=old-app-secret-1\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertNotIn("old-app-secret-1", response.text)
+        self.assertNotIn("old-app-secret-1", str(self.state.events("fixture")))
+        # When the env it ran with can't be read, only its exit status is told.
+        self.assertNotIn("old-app-secret-1", self.core._cleanup_output("token old-app-secret-1", self.info, None))
+
+    def test_cleanup_output_is_masked_with_the_sandbox_env_the_app_env_sources(self):
+        self.healthy()
+        self.cleanup_recipe()
+        vm = self.CleanupVM(output="token rotated-away-1\n", env="export SHARED_TOKEN=rotated-away-1\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertNotIn("rotated-away-1", response.text)
+        self.assertNotIn("rotated-away-1", str(self.state.events("fixture")))
+
+    def test_cleanup_output_is_withheld_when_the_env_sources_a_login_sbx_does_not_hold(self):
+        self.healthy()
+        self.cleanup_recipe()
+        sources = "if [ -r /run/sbx/claude-env ]; then . /run/sbx/claude-env; fi\n"
+        vm = self.CleanupVM(output="token agent-login-token-1\n", env=sources, readable="claude-env\n")
+        response, *_ = self.deleting(self.info, vm)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["exit_code"], 0)
+        self.assertIn("cannot mask", response.json()["cleanup"]["output"])
+        self.assertNotIn("agent-login-token-1", response.text)
+        self.assertNotIn("agent-login-token-1", str(self.state.events("fixture")))
+
+    def test_cleanup_output_is_shown_when_a_sourced_login_is_not_there(self):
+        self.healthy()
+        self.cleanup_recipe()
+        sources = "if [ -r /run/sbx/claude-env ]; then . /run/sbx/claude-env; fi\n"
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="released\n", env=sources))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["output"], "released\n")
+
+    def test_a_short_secret_rotated_since_is_withheld_from_cleanup_output(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "n3w9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n", env="export PIN=0ld7\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+        self.assertNotIn("0ld7", response.text)
+
+    def test_cleanup_output_holding_a_short_secret_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "k3y9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("k3y9", response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_a_short_secret_rotated_since_under_an_alias_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe(env={"SERVICE_PIN": "${secret:PIN}"})
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "n3w9", "test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="pin 0ld7\n",
+                                                              app_env="export SERVICE_PIN=0ld7\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+        self.assertNotIn("0ld7", response.text)
+        self.assertNotIn("0ld7", str(self.state.events("fixture")))
+
+    def test_an_installation_secret_the_sandbox_was_not_given_does_not_change_its_output(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.core.variables.put(None, "PIN", "k3y9", "test")   # named by no env the sandbox gets
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="code k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["cleanup"]["output"], "code k3y9\n")
+
+    def trusted(self):
+        self.enterContext(patch.object(self.core.settings, "trust", return_value="trusted"))
+
+    def test_mask_hides_everything_when_the_recipe_cannot_be_read(self):
+        with patch.object(self.recipes, "load", side_effect=ValueError("bad yaml")):
+            self.assertIn("hidden", self.core.mask("a secret", self.info))
+
+    def test_a_resume_for_cleanup_that_needs_the_app_started_invalidates_it(self):
+        self.healthy()
+        self.cleanup_recipe()
+
+        def fail(vm_id):
+            raise RuntimeError("the runtime refused the kill")
+        with patch.object(self.core, "find", return_value=self.info), \
+                patch.object(self.core.runtime, "connect", return_value=self.CleanupVM()), \
+                patch.object(self.core, "restore_runtime", return_value=True) as restore, \
+                patch.object(self.core.runtime, "kill", side_effect=fail), \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]):
+            with self.assertRaises(RuntimeError):
+                self.core.delete("fixture")
+        self.assertEqual(restore.call_args.kwargs, {"start_app": False})
+        self.assertNotEqual(self.lifecycle.get("fixture")["application"], "healthy")
+
+    def test_a_restore_for_cleanup_that_fails_invalidates_the_app(self):
+        self.healthy()
+        self.cleanup_recipe()
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("writing the env failed")
+        with patch.object(self.core, "find", return_value=self.info), \
+                patch.object(self.core.runtime, "connect", return_value=self.CleanupVM()), \
+                patch.object(self.core, "restore_runtime", side_effect=fail), \
+                patch.object(self.core.runtime, "kill", side_effect=fail), \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]):
+            with self.assertRaises(RuntimeError):
+                self.core.delete("fixture")
+        self.assertNotEqual(self.lifecycle.get("fixture")["application"], "healthy")
+
+    def test_a_restore_for_cleanup_owes_the_restart_before_writing_the_env(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], True)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", side_effect=RuntimeError("part way")):
+            with self.assertRaises(RuntimeError):
+                self.core.restore_runtime(self.CleanupVM(), paused, start_app=False)
+        self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_cleanup_does_not_run_when_the_app_env_cannot_be_loaded(self):
+        marker = Path(self.enterContext(tempfile.TemporaryDirectory())) / "ran"
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        result = self.core.run_in(Local(), f"touch {marker}", env="/nonexistent/app-env", env_required=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not be loaded", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_cleanup_does_not_run_when_the_env_the_app_env_sources_cannot_be_loaded(self):
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        marker = folder / "ran"
+
+        class Local:
+            def __init__(self):
+                self.commands = self
+
+            def run(self, command, **_):
+                return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        # env is missing: as an app-env from before writes it, and as one written now
+        for first in (f". {folder}/env\n", f". {folder}/env || return 1\n"):
+            (folder / "app-env").write_text(first + "export APP_ONLY=1\n")
+            result = self.core.run_in(Local(), f"touch {marker}", env=f"{folder}/app-env", env_required=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"{folder}/env could not be loaded", result.stderr)
+            self.assertFalse(marker.exists())
+        (folder / "env").write_text("export SHARED=1\n")   # readable: the hook runs
+        result = self.core.run_in(Local(), f"touch {marker}", env=f"{folder}/app-env", env_required=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+
+    def test_a_shadowed_short_installation_secret_is_still_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.enterContext(patch.object(self.core.variables, "installation_layers",
+                                       return_value=[{"SERVICE_PIN": "${secret:PIN}"}]))
+        self.core.variables.put(None, "PIN", "k3y9", "test")
+        self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with k3y9\n",
+                                                              app_env="export SERVICE_PIN=k3y9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("k3y9", response.text)
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_a_short_repo_secret_under_an_alias_shadowed_by_a_personal_one_is_withheld(self):
+        self.healthy()
+        self.cleanup_recipe()
+        self.trusted()
+        self.core.variables.put("owner/repo", "PIN", "r3p9", "test")
+        self.core.variables.put("owner/repo", "PIN", "a-longer-personal-pin", "test", person="owner@example.test")
+        response, *_ = self.deleting(self.info, self.CleanupVM(output="logged in with r3p9\n",
+                                                              app_env="export SERVICE_PIN=r3p9\n"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("r3p9", response.text)
+        self.assertNotIn("r3p9", str(self.state.events("fixture")))
+        self.assertIn("too short to mask", response.json()["cleanup"]["output"])
+
+    def test_a_restore_for_cleanup_writes_queued_env_without_restarting_and_keeps_it_queued(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], True)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", return_value={"restarted": False}) as refresh:
+            self.assertTrue(self.core.restore_runtime(self.CleanupVM(), paused, start_app=False))
+        refresh.assert_called_once()
+        self.assertFalse(refresh.call_args.args[2])          # no restart
+        self.assertIsNotNone(delivery.pending("fixture"))    # still owed, should the delete fail
+        self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_a_restart_requested_while_cleanup_refreshes_the_env_is_owed(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], False)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+
+        def refresh(sbx, info, restart):   # a second update, asking for a restart, lands as it reads the store
+            delivery.queue("fixture", ["OTHER"], True)
+            return {"restarted": False}
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", side_effect=refresh):
+            self.assertTrue(self.core.restore_runtime(self.CleanupVM(), paused, start_app=False))
+        self.assertTrue(delivery.restart_required("fixture"))
+
+    def test_a_cleanup_refresh_with_no_restart_requested_owes_none(self):
+        from sbx_control import delivery
+        self.healthy()
+        delivery.queue("fixture", ["FEATURE"], False)
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        with patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core, "_refresh_env", return_value={"restarted": False}):
+            self.core.restore_runtime(self.CleanupVM(), paused, start_app=False)
+        self.assertFalse(delivery.restart_required("fixture"))
+
+    def test_cleanup_treats_a_vm_sbx_just_paused_as_paused(self):
+        self.healthy()
+        self.cleanup_recipe()
+        seen = []
+        with patch.object(self.core, "_paused_by_us", return_value=True), \
+                patch.object(self.core, "restore_runtime",
+                             side_effect=lambda sbx, info, **kw: seen.append(info.state) or False):
+            response, *_ = self.deleting(self.info, self.CleanupVM())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.info.state, "running")   # the listing's record is left alone
+        self.assertEqual(seen, ["paused"])
+
+    def test_the_keeper_runs_the_cleanup_of_a_long_paused_sandbox_it_deletes(self):
+        from datetime import datetime
+        from sbx_control import keeper
+        self.healthy()
+        self.cleanup_recipe()
+        paused = SimpleNamespace(**{**vars(self.info), "state": "paused"})
+        vm = self.CleanupVM()
+        order = []
+        vm.ran = order
+        with patch.object(self.core, "find", return_value=paused), \
+                patch.object(self.core.runtime, "connect", return_value=vm), \
+                patch.object(self.core.runtime, "kill", side_effect=lambda vm_id: order.append(("kill", vm_id))), \
+                patch.object(self.core.extensions, "on_resume"), \
+                patch.object(self.core.extensions.packages(), "release", return_value=[]), \
+                patch.object(keeper.extensions, "keeper_policy", return_value=None):
+            keeper.delete_paused(SimpleNamespace(**vars(paused), end_at=datetime(2026, 1, 1)))
+        self.assertEqual([step[0] for step in order], ["cleanup", "kill"])
+
     def test_deleting_again_while_the_runtime_still_lists_the_killed_vm_does_nothing_more(self):
         # The runtime lists a killed VM for a while (gate.gone).
         from sbx_control import sandboxes

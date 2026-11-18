@@ -16,12 +16,45 @@ A repository's recipe is its `.sbx/` folder: `sbx.yaml` plus optional scripts.
 | `start` | after `processes` | For apps that need a start script: start servers detached and return; may print the main PID. |
 | `build` | in a template build | Prepare dependencies and caches for a prebuilt template; self-contained (see [the recipe's build](#the-recipes-build)). |
 | `Dockerfile` | in a template build | Extra OS layers for a prebuilt template, as root (see [the recipe's build](#the-recipes-build)). |
+| `cleanup` | before delete | Remove what the app made outside the sandbox (webhooks, cloud resources, external accounts). Must be executable; best effort ([below](#cleanup-before-delete)). |
 | `snapshot` | before a reusable snapshot | Remove the app's secrets and writable data from a copy ([Amp](amp-orbs.md#project-snapshots)). |
 | `services/<name>/` | per sandbox | A repository's own service package ([extensions](extensions.md#repository-packages)). |
 
 Any other file is shipped with the recipe; the whole recipe is at `/run/sbx/app`
 in the sandbox. A recipe holds at most 128 regular files and 1 MiB; symlinks and
 submodules are refused.
+
+### Cleanup before delete
+
+When the recipe sbx reads (the operator's copy, or the one imported from the
+default branch; see [below](#where-the-platform-reads-the-recipe)) has
+`.sbx/cleanup`, every delete runs it first: `sbx down`, `DELETE
+/api/sandboxes/NAME`, the web app, a closed PR preview, and the keeper's
+deletion of a sandbox paused longer than `sandboxes.paused_days`. It runs like
+`setup`: from the workdir, with the app's env, the checkout's `.sbx/cleanup`
+when the checkout has a `.sbx/` and the recipe is not the operator's.
+
+- It is best effort. A nonzero exit, a run longer than 300 seconds or a
+  failure to reach the sandbox is recorded as the sandbox's `cleanup failed`
+  event, and the sandbox is deleted anyway. Make it safe to repeat and quick.
+- A paused sandbox is resumed to run it, so a long-paused sandbox still
+  releases what it holds; if the resume fails, the failure is recorded and the
+  sandbox is deleted without it. A resume for cleanup puts the env back but
+  does not start the app, and on a runtime whose resumes are cold boots the
+  app is then not running: cleanup must not depend on the app (its local
+  admin endpoint, say). Call the outside service directly.
+- A hook sbx cannot run is not reported as a success: a `sbx.yaml` it cannot
+  read is a `cleanup failed` event, and a checkout whose `.sbx/` has no
+  executable `cleanup` a `cleanup skipped` one, with `cleanup: {error}`.
+- What it printed is in the delete's answer as `cleanup: {exit_code,
+  output}` or `cleanup: {error}` (`null` without a hook), with its last 4000
+  characters; the `cleanup ran` or `cleanup failed` event and sbx-control's
+  log get its last 1500. The sandbox's values, and the app env it ran with,
+  are masked; the output is withheld when it holds a secret too short to mask.
+  `sbx down` prints it to stderr and warns when it failed, still exiting 0
+  because the sandbox is gone; `sbx down --json` prints the whole answer, so
+  use the answer for the longer diagnostic.
+- A sandbox whose VM is already gone runs no cleanup.
 
 ### sbx.yaml
 
@@ -420,7 +453,7 @@ preparation.
 | prepare | `POST /api/sandboxes/NAME/prepare` | Refresh the recipe and env, rerun setup and start; source edits are kept. |
 | restart | `POST /api/sandboxes/NAME/restart` (`sbx sandbox restart`) | Restart the app; files and service state are kept. |
 | pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
-| delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Remove the VM and its owned resources. |
+| delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Run the recipe's [`.sbx/cleanup`](#cleanup-before-delete), then remove the VM and its owned resources. Answers `{deleted, cleanup}`. |
 | env_update | (on a variable change) | Rewrite the env files; restart the app when a value changed, unless the change asked for no restart. |
 
 Each sandbox has one lifecycle record (`GET /api/sandboxes/NAME/lifecycle`, also
@@ -716,8 +749,8 @@ Its sandboxes do not reach this host's private network
 `network.internal_cidrs` hosts through [endpoints](#endpoints), and a
 repository that uses one without an endpoint is refused on it, naming the
 command that adds it. It applies `deny_out`
-(`egress_rules`), so untrusted repos can run there, and takes filesystem
-snapshots.
+(`egress_rules`), so untrusted repos can run there, takes filesystem
+snapshots and builds templates from any container image (`image_import`).
 
 ### Boat (`boat`)
 
@@ -760,7 +793,8 @@ How sbx runs on it:
 
 - **Templates are saved snapshots.** A build replays the template's steps
   in a builder sandbox (from the parent template's saved snapshot, or Boat's
-  own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused), saves it
+  own Ubuntu 24.04 for `ubuntu:24.04`; another image is refused:
+  `image_import` is false), saves it
   under the template's name and deletes the builder. A Dockerfile's `RUN`,
   `ENV`, `WORKDIR`, `USER` and `ARG` replay, starting as `root` in `/` as on
   every runtime ([the recipe's build](#the-recipes-build)); `COPY` and `ADD`
@@ -1063,12 +1097,16 @@ Keep the range clear of other listeners; shrinking it cannot drop assigned URLs.
 
 In both modes the gateway checks the sign-in and the preview's `access`, keeps
 HTTP streaming and WebSockets, and strips sbx's login cookie and API token
-before proxying. A request that signs in with an API token loses its
+before proxying. sbx's login cookie is named per installation
+(`sbx_session_<12 hex characters>`, derived from the installation's session
+key), and the gateway strips only that one, so an app may use any other cookie
+name, `sbx_session` included (sbx itself, as a repository on sbx, does). A
+request that signs in with an API token loses its
 `Authorization` header, so it can't also carry the app's own Bearer token:
 send the app's session cookie instead, or call the app inside the sandbox. It does not rewrite the app: use `${SBX_URL_*}` for origins and
 callbacks. Browser cookies are per host, not per port, so on an IP-only server
 give the app a cookie prefix with `${SBX_NAME}` to keep simultaneous sandboxes'
-logins apart; `sbx_session` is reserved.
+logins apart.
 
 Scripts and agents open a preview with an [API token](#http-api) instead of
 a browser session; the app never sees the header:

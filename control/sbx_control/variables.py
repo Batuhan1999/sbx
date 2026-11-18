@@ -135,6 +135,22 @@ def values(repo: str | None) -> dict:
     return {name: value for scope, name, value, *_ in _rows(repo, None)}
 
 
+def granted_secrets(repo: str, owner: str, kind: str, referenced: set) -> list:
+    """(name, value) of each secret a trusted repo's sandbox of kind may
+    hold, each kept where one name shadows another: the repo's and its
+    owner's own for every sandbox or kind, the repo's named in its env
+    (${secret:NAME}), and the installation's named there that the repo has
+    no value of that name for. None of the installation's others."""
+    rows = _rows(repo, owner or None)
+    out = [(name, value) for scope, name, value, secret, audience, *_ in rows
+           if secret and isinstance(value, str)
+           and (audience in ("all", kind) or (name in referenced and not _personal(scope)))]
+    repos = {name for scope, name, *_ in rows if not _personal(scope)}
+    out += [(name, value) for _scope, name, value, secret, *_ in _rows(None, None)
+            if secret and isinstance(value, str) and name in referenced and name not in repos]
+    return out
+
+
 def mask(text: str, repo: str | None, known: dict | None = None) -> str:
     """text, as a sandbox's logs, with the values sbx knows (the platform's,
     the installation's, a trusted repo's, and known: the rest one sandbox

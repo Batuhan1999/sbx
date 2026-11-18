@@ -148,6 +148,9 @@ class Capabilities:
     # The runtime applies each sandbox's own deny_out, so an untrusted repo's
     # sandbox can be fenced (access.public_repos).
     egress_rules: bool = False
+    # A template builds from any container image (TemplateSpec.from_image),
+    # not only from the runtime's own base system.
+    image_import: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

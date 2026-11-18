@@ -67,9 +67,16 @@ class IpPreviewTests(Installation):
         self.assertEqual(addressing.ssh_url('first', a, 'sandbox-id'), 'wss://8081-sandbox-2did.sbx.example')
 
     def test_control_cookie_never_reaches_an_application(self):
-        from sbx_control import preview_proxy
-        self.assertEqual(preview_proxy.app_cookies('app=a; sbx_session=first; other=b; sbx_session=second'),
+        from sbx_control import platform, preview_proxy
+        control = platform.session_cookie()
+        self.assertEqual(preview_proxy.app_cookies(f'app=a; {control}=first; other=b; {control}=second'),
                          'app=a; other=b')
+
+    def test_an_app_s_own_sbx_session_cookie_reaches_it(self):
+        # sbx itself, as a repository on sbx, signs in with a cookie of that name.
+        from sbx_control import platform, preview_proxy
+        self.assertEqual(preview_proxy.app_cookies(f'sbx_session=app; {platform.session_cookie()}=control'),
+                         'sbx_session=app')
 
     def test_the_preview_server_gates_every_request_and_strips_what_the_app_must_not_see(self):
         config_text = self.ip.nginx('203.0.113.10', '203.0.113.10')

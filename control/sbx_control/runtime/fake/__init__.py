@@ -83,7 +83,8 @@ class _Files:
         box = self._runtime._running(self._id)
         if path not in box.files:
             raise CommandFailed(f"{path}: no such file", exit_code=1)
-        return box.files[path].encode() if format == "bytes" else box.files[path]
+        data = box.files[path]
+        return (data if isinstance(data, bytes) else data.encode()) if format == "bytes" else data
 
 
 class _Handle:
@@ -100,7 +101,8 @@ class _Handle:
 class Fake(Backend):
     kind = "fake"
     title = "Fake runtime"
-    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False)
+    capabilities = Capabilities(snapshots=True, private_networks=False, egress_rules=False,
+                                image_import=True)
     ingress = "http://127.0.0.1:3999"
     ingress_cleared = ("X-Fake-Sandbox",)
     internal_suffix = INTERNAL_HOST_SUFFIX

@@ -293,8 +293,9 @@ class Review(GateCase):
     def test_a_cookie_runtime_gets_the_apps_cookies_without_any_token_cookie_then_its_own(self):
         self.fake.upstream_token_at = self.runtime.TokenPlace("cookie", "_port_auth")
         self.fake.upstream_token = lambda sandbox_id, port, fetch=True: "tok"
+        from sbx_control import platform
         response = self.ask("memos-a.example.test", self.owner,
-                            Cookie="a=1; _port_auth=evil; sbx_session=x; b=2; _port_auth=again")
+                            Cookie=f"a=1; _port_auth=evil; {platform.session_cookie()}=x; b=2; _port_auth=again")
         self.assertEqual(response.headers["x-sbx-upstream-cookie"], "a=1; b=2; _port_auth=tok")
 
     def test_a_poll_that_lost_its_session_goes_to_the_login_and_errors_keep_polling(self):
@@ -356,11 +357,15 @@ class Nginx(unittest.TestCase):
         self.assertIn("location @ip_denied {", ip)
 
     def test_the_gate_writes_the_cookie_header(self):
-        from sbx_control import preview_proxy
-        self.assertEqual(preview_proxy.upstream_cookie("a=1; sbx_session=x; b=2"), "a=1; b=2")
+        from sbx_control import platform, preview_proxy
+        ours = "sbx_session_0123456789ab"   # this installation's (platform.session_cookie)
+        self.enterContext(patch.object(platform, "session_cookie", return_value=ours))
+        self.assertEqual(preview_proxy.upstream_cookie(f"a=1; {ours}=x; b=2"), "a=1; b=2")
         self.assertEqual(preview_proxy.upstream_cookie("a=1; _port_auth=evil; b=2", "_port_auth", "tok"),
                          "a=1; b=2; _port_auth=tok")
-        self.assertEqual(preview_proxy.upstream_cookie("sbx_session=x", "_port_auth", "tok"), "_port_auth=tok")
+        self.assertEqual(preview_proxy.upstream_cookie(f"{ours}=x", "_port_auth", "tok"), "_port_auth=tok")
+        # An app's own sbx_session (sbx itself, as a repository on sbx) reaches it.
+        self.assertEqual(preview_proxy.upstream_cookie(f"sbx_session=app; {ours}=x"), "sbx_session=app")
         self.assertEqual(preview_proxy.upstream_cookie("_port_auth=kept"), "_port_auth=kept")   # not a cookie runtime
 
 
