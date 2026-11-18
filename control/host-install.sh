@@ -50,7 +50,18 @@ ln -sfn "$release" "$current.new" && mv -Tf "$current.new" "$current"
 cd "$current"
 export HOME=/root   # the connectors' installers (a unit's prepare) need one
 venv/bin/python -m sbx_control.host install
-sh tls.sh > /tmp/sbx-tls.log 2>&1 || { tail -5 /tmp/sbx-tls.log; exit 1; }
+# A certificate that can't be issued yet (a closed port 53, records still
+# spreading) leaves its reason in certificate-error for the setup page and
+# sbx-admin doctor, and its timer retries: the owner's to fix, so it fails no
+# install or upgrade. Anything else in tls.sh still does.
+if ! sh tls.sh > /tmp/sbx-tls.log 2>&1; then
+  if [ -s /opt/sbx-tls/certificate-error ] || [ -s /opt/sbx-tls/ip-certificate-error ]; then
+    echo "certificate not issued yet (the setup page says why; it is tried again):"
+    cat /opt/sbx-tls/certificate-error /opt/sbx-tls/ip-certificate-error 2>/dev/null | head -n 3
+  else
+    tail -5 /tmp/sbx-tls.log; exit 1
+  fi
+fi
 venv/bin/python -m sbx_control.host prune
 printf 'Activated %s\n' "$version"
 venv/bin/python -m sbx_control.host list
