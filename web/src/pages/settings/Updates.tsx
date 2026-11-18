@@ -146,12 +146,7 @@ function ReleaseCard({ release }: { release: Release }) {
     </div>}
     {notes.sections.map((s, i) => <div key={i} className="space-y-1.5">
       <SectionTitle section={s} />
-      {!!s.items.length && <ul className="space-y-1 text-[13px]">
-        {s.items.map((item, j) => item.code || item.para ? <li key={j}><Item item={item} /></li> : <li key={j} className="flex gap-2">
-          <span aria-hidden className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', s.breaking ? 'bg-warn' : 'bg-faint')} />
-          <span className="min-w-0"><NoteText text={item.text} />{item.pr && <> <a href={item.pr.url} target="_blank" rel="noreferrer" className="text-muted hover:text-accent hover:underline">#{item.pr.number}</a></>}</span>
-        </li>)}
-      </ul>}
+      <SectionItems section={s} />
     </div>)}
     {!notes.steps.length && !notes.sections.length && <p className="text-[13px] text-muted">No notes.</p>}
     {notes.compare && <a href={notes.compare} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12.5px] text-muted hover:text-accent hover:underline">
@@ -159,13 +154,35 @@ function ReleaseCard({ release }: { release: Release }) {
   </section>
 }
 
-/** GitHub's categories as small labels; the release's own headings as headings, by depth. */
+/** GitHub's categories as small labels; the release's own headings as headings
+ * below the card's h3, by depth. */
 function SectionTitle({ section: s }: { section: NoteSection }) {
-  if (s.generated || s.breaking)
+  if (s.generated)
     return <h4 className={cn('text-[12px] font-medium uppercase tracking-wide', s.breaking ? 'text-warn' : 'text-muted')}>{s.title}</h4>
-  return s.level <= 2
-    ? <h4 className="border-t border-line pt-3 text-[14px] font-semibold"><NoteText text={s.title} /></h4>
-    : <h5 className="pt-1 text-[13px] font-semibold"><NoteText text={s.title} /></h5>
+  const tone = s.breaking ? 'text-warn' : undefined
+  const title = <NoteText text={s.title} />
+  if (s.level <= 2) return <h4 className={cn('border-t border-line pt-3 text-[14px] font-semibold', tone)}>{title}</h4>
+  if (s.level === 3) return <h5 className={cn('pt-1 text-[13px] font-semibold', tone)}>{title}</h5>
+  return <h6 className={cn('text-[13px] font-medium', tone)}>{title}</h6>
+}
+
+/** Paragraphs and code as they are; each run of bullets as one list, in order. */
+function SectionItems({ section: s }: { section: NoteSection }) {
+  const blocks: (NoteItem | NoteItem[])[] = []
+  for (const item of s.items) {
+    const last = blocks.at(-1)
+    if (item.code || item.para) blocks.push(item)
+    else if (Array.isArray(last)) last.push(item)
+    else blocks.push([item])
+  }
+  return <>{blocks.map((block, i) => !Array.isArray(block)
+    ? <div key={i} className="text-[13px]"><Item item={block} /></div>
+    : <ul key={i} className="space-y-1 text-[13px]">
+      {block.map((item, j) => <li key={j} className="flex gap-2">
+        <span aria-hidden className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', s.breaking ? 'bg-warn' : 'bg-faint')} />
+        <span className="min-w-0"><NoteText text={item.text} />{item.pr && <> <a href={item.pr.url} target="_blank" rel="noreferrer" className="text-muted hover:text-accent hover:underline">#{item.pr.number}</a></>}</span>
+      </li>)}
+    </ul>)}</>
 }
 
 function Item({ item }: { item: NoteItem }) {
@@ -174,22 +191,28 @@ function Item({ item }: { item: NoteItem }) {
     : <p className={item.para ? 'text-muted' : undefined}><NoteText text={item.text} /></p>
 }
 
-// Inline Markdown in release notes: **bold**, `code` and [text](https://…); bare
-// addresses through LinkedText. Built as elements, never as HTML.
-const INLINE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
+// Inline Markdown in release notes: **bold**, `code` and [text](https://…), whose
+// address may hold balanced parentheses; bare addresses through LinkedText. Built as
+// elements, never as HTML. In a link's text (plain) nothing more becomes a link.
+const INLINE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g
 
-function NoteText({ text }: { text: string }) {
+function NoteText({ text, plain = false }: { text: string; plain?: boolean }) {
   const parts: ReactNode[] = []
   let last = 0
+  const prose = (at: number, end: number) => {
+    const chunk = text.slice(at, end)
+    parts.push(plain ? chunk : <LinkedText key={`t${at}`} text={chunk} />)
+  }
   for (const m of text.matchAll(INLINE)) {
     const at = m.index ?? 0
-    if (at > last) parts.push(<LinkedText key={`t${last}`} text={text.slice(last, at)} />)
-    if (m[1] !== undefined) parts.push(<strong key={at} className="font-semibold"><NoteText text={m[1]} /></strong>)
+    if (m[3] !== undefined && plain) continue   // no link inside a link
+    if (at > last) prose(last, at)
+    if (m[1] !== undefined) parts.push(<strong key={at} className="font-semibold"><NoteText text={m[1]} plain={plain} /></strong>)
     else if (m[2] !== undefined) parts.push(<code key={at} className="rounded bg-sunken px-1 py-px font-mono text-[12px]">{m[2]}</code>)
-    else parts.push(<a key={at} href={m[4]} target="_blank" rel="noreferrer" className="text-accent hover:underline">{m[3]}</a>)
+    else parts.push(<a key={at} href={m[4]} target="_blank" rel="noreferrer" className="text-accent hover:underline"><NoteText text={m[3]} plain /></a>)
     last = at + m[0].length
   }
-  if (last < text.length) parts.push(<LinkedText key={`t${last}`} text={text.slice(last)} />)
+  if (last < text.length) prose(last, text.length)
   return <>{parts}</>
 }
 

@@ -6,8 +6,8 @@
 /** A line of text, or a fenced block kept as written (``` ... ```). In a section, a
  * line that was no bullet is a paragraph (para). Text may hold inline Markdown. */
 export type NoteItem = { text: string; code?: boolean; para?: boolean; pr?: { number: string; url: string } }
-/** level: the heading's depth (2 for ##). generated: one of GitHub's categories
- * (under "What's Changed" or "New Contributors"), not a heading the release wrote. */
+/** level: the heading's depth (2 for ##). generated: in the list GitHub generated
+ * (after its "Release notes generated" comment), not a heading the release wrote. */
 export type NoteSection = { title: string; level: number; breaking: boolean; generated: boolean; items: NoteItem[] }
 export type ReleaseNotes = { steps: NoteItem[]; sections: NoteSection[]; compare?: string }
 
@@ -31,39 +31,47 @@ function withoutComments(text: string): string {
   return out
 }
 
+// GitHub writes this comment above the list it generates; what follows is its.
+const GENERATED = /<!--\s*Release notes generated[\s\S]*?-->/
+const GENERATED_MARK = '\u0001generated'
+
 export function parseNotes(text: string): ReleaseNotes {
   const notes: ReleaseNotes = { steps: [], sections: [] }
   let section: NoteSection | null = null
   let fence: string[] | null = null
-  let generated = false   // under GitHub's "What's Changed" / "New Contributors"
-  let generatedLevel = 0
-  const add = (item: NoteItem) => (section ? section.items : notes.steps).push(item)
-  for (const raw of withoutComments(text.replace(/\r\n/g, '\n')).split('\n')) {
+  let generated = false   // past GitHub's comment: its "What's Changed" and categories
+  let blank = true        // the line before was blank (or a block boundary)
+  const items = () => (section ? section.items : notes.steps)
+  const add = (item: NoteItem) => { items().push(item); blank = false }
+  const source = text.replace(/\r\n/g, '\n').replace(GENERATED, `\n${GENERATED_MARK}\n`)
+  for (const raw of withoutComments(source).split('\n')) {
     const line = raw.trim()
     if (line.startsWith('```')) {
-      if (fence) { add({ text: fence.join('\n'), code: true }); fence = null } else fence = []
+      if (fence) { add({ text: fence.join('\n'), code: true }); fence = null; blank = true } else fence = []
       continue
     }
     if (fence) { fence.push(raw.trimEnd()); continue }
-    if (!line) continue
+    if (!line) { blank = true; continue }
+    if (line === GENERATED_MARK) { generated = true; blank = true; continue }
     const compare = COMPARE.exec(line)
-    if (compare) { notes.compare = compare[1]; continue }
+    if (compare) { notes.compare = compare[1]; blank = true; continue }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading) {
       const level = heading[1].length, title = heading[2].trim()
-      if (generated && level <= generatedLevel) generated = false
-      const opens = /^(what's changed|new contributors)$/i.test(title)
-      if (opens) { generated = true; generatedLevel = level }
       section = { title, level, breaking: /^breaking changes?\b/i.test(title), generated, items: [] }
       notes.sections.push(section)
+      blank = true
       continue
     }
     const bullet = /^[*-]\s+(.*)$/.exec(line)
+    const last = items().at(-1)
+    // A wrapped line belongs to the paragraph or bullet before it, until a blank line.
+    if (!bullet && !blank && last && !last.code && !last.pr) { last.text += ' ' + line; continue }
     if (bullet && section) {
       const pr = PR_LINE.exec(bullet[1])
-      section.items.push(pr ? { text: pr[1], pr: { number: pr[3], url: pr[2] } } : { text: bullet[1] })
+      add(pr ? { text: pr[1], pr: { number: pr[3], url: pr[2] } } : { text: bullet[1] })
     } else if (section) {
-      section.items.push({ text: line, para: true })
+      add({ text: line, para: true })
     } else {
       add({ text: bullet ? bullet[1] : line })
     }
