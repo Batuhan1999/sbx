@@ -290,7 +290,7 @@ class Web(TwoRuntimes, Server):
             self.assertEqual(put.status_code, 200, put.text)
             self.assertNotIn(token, put.text)
             self.assertEqual(vault.get(orbs.TOKEN), token)
-        self.assertEqual(self.call("GET", "/api/templates").json()["blocked"], "templates build once the setup is finished")
+        self.assertIn("runtimes", self.call("GET", "/api/templates").json())   # the setup token reads the builds
         self.assertFalse(self.client.cookies)                                 # still nobody signed in
         with patch("sbx_control.setup.address_ready", return_value=True):
             self.create_admin()                                              # the account, last

@@ -298,19 +298,14 @@ describe('first-run setup without a runtime', () => {
     await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('test-only-key'))
   }, 20000)
 
-  it('says why a provider can’t be added here, and goes back to the domain', async () => {
+  it('starts on the domain step while only the installer’s IP access is set', async () => {
     setSetupToken('one-time-token')
     stubApi({
       'GET /api/setup': { ...SETUP(false), access: { ...SETUP(false).access, mode: 'ip', domain: '' } },
-      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM,
-        edit_blocker: { code: 'needs_domain', message: "E2B Cloud's sandboxes call this server back at its login address: connect a domain first (the server address step, or Settings → General)", sandboxes: [] } })],
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
       'GET /api/runtimes/change': IDLE,
     })
     renderApp(<SetupPage />, '/app/setup')
-    const user = userEvent.setup()
-    expect((await screen.findByRole('alert')).textContent).toContain('Needs a domain first.')
-    expect(screen.queryByLabelText('API key')).toBeNull()
-    await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
   })
 })
