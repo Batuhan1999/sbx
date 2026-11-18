@@ -825,6 +825,17 @@ class WorkspaceTests(Server):
         with patch.object(template_builds, '_birth', return_value=None):    # no /proc: the pid alone decides
             self.assertEqual(template_builds.state(key)['status'], 'building')
 
+    def test_a_pid_birth_reads_past_any_process_name(self):
+        import tempfile
+        from pathlib import Path
+        from sbx_control import template_builds
+        with tempfile.TemporaryDirectory() as proc:
+            (Path(proc) / '7').mkdir()
+            fields = ' '.join(['S'] + [str(n) for n in range(4, 22)] + ['987654'] + ['0'] * 30)
+            (Path(proc) / '7' / 'stat').write_bytes(b'7 (a) \xff\xfe b) ' + fields.encode())
+            self.assertEqual(template_builds._birth(7, Path(proc)), '987654')
+            self.assertIsNone(template_builds._birth(8, Path(proc)))
+
 
 class MissingValuesTests(Server):
     """What a repo still needs: the repo page (secrets_missing) and its env

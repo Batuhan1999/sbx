@@ -185,11 +185,12 @@ def _utc() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 
-def _birth(pid) -> str | None:
+def _birth(pid, proc: Path = Path("/proc")) -> str | None:
     """When pid started (/proc/<pid>/stat field 22), or None where there is no
-    /proc. With the pid it names one process: a reused pid has another start."""
+    /proc. With the pid it names one process: a reused pid has another start.
+    Read as bytes: the process name in the record may be any bytes."""
     try:
-        return (Path("/proc") / str(pid) / "stat").read_text().rpartition(") ")[2].split()[19]
+        return (proc / str(pid) / "stat").read_bytes().rpartition(b") ")[2].split()[19].decode()
     except (OSError, IndexError):
         return None
 
