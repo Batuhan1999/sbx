@@ -536,6 +536,13 @@ class AmpToolsTests(Installation):
         self.assertEqual(self.fake.built, {})
         self.assertFalse(self.amp.cached_tools().exists())
 
+    def test_the_first_error_wins_when_the_template_delete_fails_too(self):
+        with patch.object(self.runtime, "kill", side_effect=self.runtime.Failed("kill refused")), \
+                patch.object(self.fake, "delete_template", side_effect=ValueError("delete broke")), \
+                self.assertRaisesRegex(self.runtime.Failed, "kill refused"):
+            self.amp.wayland_tools()
+        self.assertFalse(self.amp.cached_tools().exists())
+
     def test_a_default_that_imports_images_is_chosen_without_making_the_others(self):
         self.enterContext(patch.object(self.runtime, "default", return_value="fake"))
         self.runtime._backends.pop("boat")

@@ -131,7 +131,7 @@ def _fetch_tools(kind: str) -> bytes:
     name = runtime.template_name(TOOLS, kind)   # this installation's on a runtime several may share
     runtime.build_template(runtime.TemplateSpec().from_image(IMAGE).set_start_cmd("sleep infinity", "true"),
                            alias=name, cpu=1, memory_mb=1024, disk_mb=1024, kind=kind)
-    vm = None
+    vm, primary = None, None
     try:
         try:
             with core.reserve_capacity(1024, kind):
@@ -142,11 +142,14 @@ def _fetch_tools(kind: str) -> bytes:
         finally:
             if vm is not None:
                 runtime.kill(vm.sandbox_id)
+    except BaseException as error:   # the error this fetch ends with, which a failed delete must not replace
+        primary = error
+        raise
     finally:
         try:   # the host keeps the tools; the template would only hold the runtime's storage
             runtime.delete_template(name, kind)
         except Exception as error:   # a runtime's refusal must not cost the tools already read
-            if not (isinstance(error, RuntimeError) or _refused_by(kind, error)):
+            if primary is None and not (isinstance(error, RuntimeError) or _refused_by(kind, error)):
                 raise
             print(f"could not delete the {name} template on {kind}: {error}", flush=True)
     if len(data) > 64 * 1024 * 1024:
