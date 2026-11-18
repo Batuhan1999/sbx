@@ -81,6 +81,9 @@ class Keeper(unittest.TestCase):
 
 
 class Attach(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(core.lifecycle, "get", return_value=None))   # nothing recorded unless a test says
+
     def test_a_sandbox_paused_since_it_was_listed_is_resumed(self):
         paused = listed("a", "paused")
         with patch.object(core, "connect", side_effect=runtime.NotRunning("paused")), \
@@ -90,6 +93,24 @@ class Attach(unittest.TestCase):
             attached = core.attach("a", "test", info=listed("a"))
         self.assertEqual(attached.sbx, "vm")
         self.assertEqual(resume.call_args.args[2], paused)
+
+    def test_a_sandbox_sbx_paused_is_resumed_while_the_provider_still_lists_it_running(self):
+        running = listed("a")
+        record = {"runtime": "paused", "sandbox_id": running.sandbox_id}
+        with patch.object(core.lifecycle, "get", return_value=record), \
+                patch.object(core, "_resume", return_value=("vm", running)) as resume, \
+                patch.object(core, "connect") as connect, \
+                patch.object(core, "app_of"):
+            core.attach("a", "test", info=running)
+        connect.assert_not_called()
+        self.assertEqual(core.runtime_state(resume.call_args.args[2]), "paused")
+        self.assertEqual(core.runtime_state(running), "running")   # the listing's own copy is left as it was
+        with patch.object(core.lifecycle, "get", return_value={**record, "sandbox_id": "another-vm"}), \
+                patch.object(core, "_resume") as resume, \
+                patch.object(core, "connect", return_value=("vm", running)), \
+                patch.object(core, "restore_runtime", return_value=False), patch.object(core, "app_of"):
+            core.attach("a", "test", info=running)
+        resume.assert_not_called()   # another VM's pause says nothing about this one
 
     def test_a_sandbox_deleted_since_it_was_listed_is_no_sandbox(self):
         with patch.object(core, "connect", side_effect=runtime.NotRunning("gone")), \

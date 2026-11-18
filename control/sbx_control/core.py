@@ -5,6 +5,8 @@ contributions; this module writes them and never names an extension.
 Personal agent credentials travel directly from the desktop to the sandbox
 and are not stored by the control service."""
 import contextlib
+import copy
+import dataclasses
 import fcntl
 import json
 import re
@@ -617,6 +619,13 @@ def attach(name: str, why: str, *, info=None, run_app: bool = True, wait: bool =
 def _attach(name, why, info, run_app, wait):
     if not info:
         raise SandboxError(f"no sbx-{name}")
+    if runtime_state(info) == "running" and _paused_by_us(name, info):
+        # A provider's listing can lag its pause by seconds (E2B): sbx's own record wins, so this
+        # is a resume (the app restarted when the recipe asks, the certificates pushed), not a
+        # connect that wakes the VM unseen.
+        info = dataclasses.replace(info, state="paused") if dataclasses.is_dataclass(info) else copy.copy(info)
+        if not dataclasses.is_dataclass(info):
+            info.state = "paused"
     if runtime_state(info) == "paused":
         return _resume(name, why, info, run_app, wait)
     sbx, info = connect(name, why, info)
@@ -626,6 +635,12 @@ def _attach(name, why, info, run_app, wait):
         else:
             lifecycle.in_background(name, "restart", lambda operation: restart(name, operation))
     return sbx, info
+
+
+def _paused_by_us(name: str, info) -> bool:
+    """Whether sbx paused this very VM last (its lifecycle record) and saw no resume since."""
+    record = lifecycle.get(name) or {}
+    return record.get("runtime") == "paused" and record.get("sandbox_id") == info.sandbox_id
 
 
 def _resume(name, why, info, run_app, wait):
