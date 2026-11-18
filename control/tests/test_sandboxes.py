@@ -775,6 +775,10 @@ class WorkspaceTests(Server):
             settle('built')
         # The base came first: the default builds on it.
         self.assertEqual([c.args[0].key for c in build.call_args_list], [templates.BASE, key])
+        # Reloading redefines its classes (NoRoom, ...), which the app and other modules hold: put the
+        # module back as it was once this test ends.
+        saved = dict(vars(template_builds))
+        self.addCleanup(lambda: (vars(template_builds).clear(), vars(template_builds).update(saved)))
         importlib.reload(template_builds)  # a restart: nothing in memory survives it
         self.assertEqual(template_builds.state(key)['status'], 'built')
         self.assertTrue(template_builds.state(key)['template'].startswith('default-'))

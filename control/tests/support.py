@@ -23,6 +23,15 @@ def _builds_settled(seconds: float = 10.0) -> None:
         raise AssertionError(f"template builds still running after {seconds:g} s: {sorted(template_builds._running)}")
 
 
+def forget_extensions() -> None:
+    """Load the extensions afresh next time, with the connections that hold
+    them: never one without the other, or a connection is no longer its
+    extension."""
+    from sbx_control import connections, extensions
+    extensions._connectors = None
+    connections.REGISTRY.clear()
+
+
 def live_pid(test: unittest.TestCase) -> int:
     """The pid of a live process that isn't this one, stopped when test ends:
     another build's or job's owner. Not the parent: a runner may not keep it."""

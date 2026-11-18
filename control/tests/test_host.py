@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from support import Installation
+from support import Installation, forget_extensions
 
 
 def connector_settings(kind, **changes):
@@ -17,8 +17,8 @@ def connector_settings(kind, **changes):
 class HostTests(Installation):
     def setUp(self):
         super().setUp()
-        from sbx_control import extensions, host
-        self.addCleanup(setattr, extensions, "_connectors", None)
+        from sbx_control import host
+        self.addCleanup(forget_extensions)
         connector_settings("claude", enabled=True)
         connector_settings("amp", enabled=False)
         root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-host-")))
