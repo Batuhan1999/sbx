@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Python 3.12 venv with the dev requirements, the web app's bundle, and the dev
+# installation's own state directory and database. Safe to repeat.
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null; then
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+fi
+[ -x .venv/bin/python ] && .venv/bin/python -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' \
+  || uv venv --clear --python 3.12 .venv
+uv pip install --python .venv/bin/python -q -r requirements-dev.txt
+
+echo "node $(node -v)"
+npm --prefix web ci --no-audit --no-fund
+npm --prefix web run build
+
+mkdir -p "$SBX_ETC" "$SBX_STATE_DIR" "$SBX_RUN_DIR"
+chmod 700 "$SBX_ETC"
+# runtime.env, as install.sh writes it: Boat with the repository's key, or no runtime.
+if [ -n "${BOAT_API_KEY:-}" ]; then
+  .venv/bin/python -m sbx_control.runtime env --enable boat BOAT_API_KEY
+else
+  [ -f "$SBX_ETC/runtime.env" ] || printf 'SBX_RUNTIMES=\n' > "$SBX_ETC/runtime.env"
+  echo "BOAT_API_KEY is not set: the dev installation runs without a sandbox runtime"
+fi
+chmod 600 "$SBX_ETC/runtime.env"
+.venv/bin/python -m sbx_control.admin migrate
+echo "sbx dev installation ready"
