@@ -27,7 +27,8 @@ at its sandboxes' size, which the row keeps for capacity (size_of).
   python -m sbx_control.template_builds base|default [OWNER/REPO]|app OWNER/REPO [--runtime KIND]
       build one now (install.sh builds base and default); default with a
       repo: the default template at that repo's size; on the default
-      runtime unless --runtime names another"""
+      runtime unless --runtime names another; with --if-stale, nothing
+      until the setup is complete (setup.templates_blocked)"""
 import argparse
 import os
 import sys
@@ -698,6 +699,68 @@ def summary() -> str:
     return "Templates: " + "; ".join(parts)
 
 
+def planned() -> dict:
+    """{runtime: {key: fingerprint}}: every template some sandbox on each
+    enabled runtime starts from (keys), as planned now."""
+    out = {}
+    for kind in runtime.enabled():
+        found = {}
+        for key in keys(kind):
+            try:
+                found[key] = plan(key).fingerprint
+            except (recipes.RecipeError, OSError):
+                pass
+        out[kind] = found
+    return out
+
+
+def rebuilds(before: dict) -> dict:
+    """What a change (an extension turned on or off, its settings) does to
+    the templates, from planned() before it: {runtimes: {kind: count}, keys:
+    {kind: [key, ...]}, building: whether they build now, message}."""
+    from . import setup
+    changed = {kind: sorted(key for key, fingerprint in found.items()
+                            if before.get(kind, {}).get(key, fingerprint) != fingerprint)
+               for kind, found in planned().items()}
+    changed = {kind: found for kind, found in changed.items() if found}
+    total = sum(len(found) for found in changed.values())
+    blocked = setup.templates_blocked()
+    per = ", ".join(f"{runtime.title(kind)}: {len(found)}" for kind, found in changed.items())
+    if not total:
+        message = "No template changes; nothing rebuilds."
+    elif blocked:
+        message = f"{total} template{'s' if total != 1 else ''} change ({per}); none is built yet: {blocked}."
+    else:
+        message = (f"{total} template{' rebuilds' if total == 1 else 's rebuild'} ({per}), about 10 minutes "
+                   "each. Existing sandboxes keep the templates they started from, and new sandboxes start from "
+                   "the current ones until the rebuilds finish.")
+    return {"runtimes": {kind: len(found) for kind, found in changed.items()}, "keys": changed,
+            "building": bool(total) and not blocked, "message": message}
+
+
+def progress() -> dict:
+    """Every template some sandbox starts from, per enabled runtime, and where
+    its build stands: {blocked, runtimes: {kind: [{key, phase, status,
+    template, error}]}}; phase is phase()'s (current, stale, building,
+    stuck: failed on this plan), or "unplanned" when it can't be planned."""
+    from . import setup
+    out = {}
+    for kind in runtime.enabled():
+        with db() as conn:
+            rows = {key: _read(conn, key, kind) for key in keys(kind)}
+        found = []
+        for key, row in rows.items():
+            try:
+                at = phase(key, row, kind)
+            except (recipes.RecipeError, OSError):
+                at = "unplanned"
+            found.append({"key": key, "phase": at, "status": status(key, row, kind),
+                          "template": (row or {}).get("built_template"),
+                          "error": (row or {}).get("error") if at == "stuck" else None})
+        out[kind] = found
+    return {"blocked": setup.templates_blocked(), "runtimes": out}
+
+
 def _current(row: dict | None, fingerprint: str) -> bool:
     """Whether the template built last (row) is the one planned now. A row
     without a built template (built while the repo had none of its own) is not."""
@@ -740,8 +803,13 @@ def main(argv=None) -> int:
         else:
             print("Base templates: none to build until a sandbox runtime is set up")
         return 0
+    from . import setup
+    blocked = setup.templates_blocked()
     if args.which == "summary":
-        print(summary())
+        print(f"Base templates: none yet; {blocked}" if blocked else summary())
+        return 0
+    if blocked and args.if_stale:   # install.sh and start_detached: what the setup's end starts
+        print(f"NOT YET: {blocked}", file=sys.stderr)
         return 0
     key = {"base": templates.BASE, "default": default_for((args.repo or "").lower() or None)}.get(args.which) \
         or (args.repo or "").lower()

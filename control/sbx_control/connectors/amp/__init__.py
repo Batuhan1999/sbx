@@ -68,6 +68,12 @@ class Amp(extensions.Connector):
     kind = KIND
     title = "Amp"
     section = Settings
+    choosable = True
+
+    def choose(self, on: bool, *, by: str):
+        """Its layer in every template from the first build on; the provider runs once its token is added."""
+        if self.settings().chosen != on:
+            self.save_settings({**self.settings().model_dump(), "chosen": on}, by=by)
 
     @property
     def cli(self):
@@ -87,7 +93,7 @@ class Amp(extensions.Connector):
         return Ready(READY)
 
     def contribution(self, target) -> Contribution | None:
-        if not self.settings().enabled:
+        if not (self.settings().enabled or self.settings().chosen):
             return None
         return Contribution(
             "amp",
@@ -154,7 +160,8 @@ class Amp(extensions.Connector):
         state = "not_connected" if not token.set else "off" if not amp.enabled else "attention"
         if token.set and amp.enabled and active():
             state = "connected"
-        summary = {"not_connected": "Add an orb provider token from Amp Settings → Orbs",
+        summary = {"not_connected": "In every template; add an orb provider token from Amp Settings → Orbs"
+                   if amp.chosen else "Add an orb provider token from Amp Settings → Orbs",
                    "off": "Provider stopped; existing orb disks are retained",
                    "attention": "Provider configured; check its service and Amp connection",
                    "connected": "Provider running · verify its connection in Amp Settings → Orbs"}[state]
@@ -177,6 +184,8 @@ class Amp(extensions.Connector):
     def connect(self, values: dict, *, by: str) -> Status:
         amp = self.settings().model_dump()
         amp["enabled"] = str(values.get("enabled", "true")).lower() in ("true", "1", "on", "yes")
+        if not amp["enabled"]:   # off: out of the templates too, as before it was chosen
+            amp["chosen"] = False
         if "repo" in values:
             amp["repo"] = str(values["repo"]).strip()
         try:
@@ -197,5 +206,5 @@ class Amp(extensions.Connector):
 
     def disconnect(self, *, by: str) -> Status:
         vault.delete(TOKEN, by=by)
-        self.save_settings({**self.settings().model_dump(), "enabled": False}, by=by)
+        self.save_settings({**self.settings().model_dump(), "enabled": False, "chosen": False}, by=by)
         return self.status()

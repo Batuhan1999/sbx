@@ -45,6 +45,7 @@ class ClaudeCode(extensions.Connector):
     title = "Claude Code"
     shown = ("version", "sessions_running")
     section = Settings
+    choosable = True   # its CLI is in every template already (contribution): choosing it changes no template
     ports = (RUNNER_HEALTH_PORT,)
     activity = (f"{platform.HOME}/.claude/projects",)
     busy = ("self-hosted-runner",)           # a session's runner (runner.start)

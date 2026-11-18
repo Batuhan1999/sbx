@@ -10,6 +10,8 @@ from support import Installation, _builds_settled
 
 
 class TemplateRoomTests(Installation):
+    SET_UP = True
+
     def setUp(self):
         super().setUp()
         from sbx_control import core, state, template_builds, templates

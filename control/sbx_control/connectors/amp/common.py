@@ -26,7 +26,8 @@ class JobError(ValueError):
 class Settings(settings.ExtensionSection):
     applies = (APPLY,)
     enabled: bool = False
-    repo: str = ""                  # the repo an orb runs when its type names none
+    chosen: bool = False            # chosen in the setup: in every template before the token is added
+    repo: str = ""                # the repo an orb runs when its type names none
     # The Amp CLI release templates and the host install (AMP_VERSION for
     # ampcode.com/install.sh, which checks the release's sha256): in the
     # install command, so a new one changes the templates' fingerprint.

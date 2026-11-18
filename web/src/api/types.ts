@@ -433,15 +433,24 @@ export type Connection = {
   fields: ConnectionField[]
   actions: string[]
 }
+/** What saving or disconnecting an extension does to the templates (PUT/DELETE /api/connections/{kind}, extensions
+ * only): how many rebuild on each runtime, whether they build now, and the server's sentence for it. */
+export type Rebuilds = { runtimes: Record<string, number>; keys: Record<string, string[]>; building: boolean; message: string }
+export type ConnectionChange = Connection & { rebuilds?: Rebuilds }
 /** runtime: the kind of sandbox runtime it checks, null for the server's own checks. */
 export type Check = { name: string; ok: boolean; detail: string; fix: string; runtime?: string | null }
 export type CheckResult = { ok: boolean; checks: Check[] }
 
+/** A coding agent the setup offers; chosen ones are in every template from the first build on. */
+export type SetupAgent = { kind: string; title: string; chosen: boolean }
 export type SetupState = {
   complete: boolean
-  steps: { step: 'address' | 'sign_in' | 'runtime'; done: boolean; optional: boolean; summary: string }[]
+  steps: { step: 'address' | 'sign_in' | 'runtime' | 'agents'; done: boolean; optional: boolean; summary: string }[]
   signed_in: boolean
   email: string | null
+  /** Nobody signs in (a private network): no admin account to create. */
+  open_access: boolean
+  agents: SetupAgent[]
   can_complete: boolean
   host: { address: string }
   access: { mode: 'ip' | 'domain'; domain: string; url: string; certificate: string; certificate_email: string; certificate_ready: boolean; certificate_error: string; needs_ports: number[] }

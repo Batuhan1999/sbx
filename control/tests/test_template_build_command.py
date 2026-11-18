@@ -8,6 +8,8 @@ from support import Installation
 
 
 class BuildCommand(Installation):
+    SET_UP = True
+
     def test_reports_the_built_template(self):
         from sbx_control import template_builds, templates
         stderr = io.StringIO()

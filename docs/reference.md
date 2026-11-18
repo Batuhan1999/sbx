@@ -935,9 +935,11 @@ before it has its own.
 export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/setup#t=TOKEN
 sbx setup status [--json]                      # each step, done or to do
 sbx setup address --domain sbx.example.com --email ops@example.com   # or: --ip; waits for HTTPS
+sbx setup admin ops@example.com < password-file
 sbx setup runtime available
 sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
-sbx setup admin ops@example.com < password-file
+sbx setup agents                               # the coding agents offered
+sbx setup agents amp claude                    # or: sbx setup agents none
 sbx setup finish --admin ops@example.com < password-file
 ```
 
@@ -950,6 +952,17 @@ sign-in), and `finish --admin` signs in with that account's password (`POST
 /api/setup/complete` with `{"email", "password"}`, for a client without a
 browser session). The link stops working once the
 setup is finished; then `sbx login`.
+
+`agents` (`PUT /api/setup/agents` with `{"agents": ["amp", ...]}`; `[]` for
+none) records the coding agents every template is built with: the extensions
+that set `choosable`, which `GET /api/setup` lists under `agents`. The setup
+can't finish until it is chosen, and **no template builds before the setup is
+finished**: not the scheduler, not a runtime just added, not `install.sh`'s
+`--if-stale` builds. Finishing starts the first builds, so they already carry
+each chosen agent's layer (Amp's, before its provider token is added) instead
+of rebuilding everything once the agent is enabled. An installation that was
+set up before this step counts as having chosen. After the setup, agents are
+turned on and off under Extensions (`sbx extensions`).
 
 ### No runtime yet
 
@@ -1124,6 +1137,9 @@ building or has no room), with `Retry-After` when waiting helps.
 | `PUT /api/repos/OWNER/NAME/runtime` | admin | Body `{"runtime": "KIND"}` sets the runtime of the repository's new sandboxes; `{"runtime": null}` goes back to the installation's default. 400 for a runtime that is not enabled; answers the repository as `GET` does. |
 | `GET /api/runtimes` | anyone, and the first-run setup link | `sbx runtimes`: the enabled runtimes and the default ([runtimes](#runtimes)). |
 | `GET /api/runtimes/available`, `GET /api/runtimes/change`, `POST /api/runtimes`, `PUT /api/runtimes/KIND`, `DELETE /api/runtimes/KIND`, `PUT /api/runtimes/default`, `POST /api/runtimes/KIND/test` | admin, and the first-run setup link | `sbx runtimes available \| add \| set \| remove \| default \| test`: add, change, remove a runtime, choose the default, run its checks; changes are checked, then applied by the host ([from the web app](#from-the-web-app)). |
+| `GET /api/connections`, `PUT /api/connections/KIND`, `DELETE /api/connections/KIND` | admin, and the first-run setup link (not `DELETE`) | `sbx extensions [ls \| set KIND \| disconnect KIND]`: the Extensions page. `PUT` body `{"values": {"FIELD": "VALUE"}}`, tested before it is saved (400 with the failed checks). For an extension, the answer has `rebuilds`: `{"runtimes": {"KIND": N}, "keys": {"KIND": ["default", ...]}, "building", "message"}`, the templates whose plan the change moved, which start building at once once the setup is finished. Existing sandboxes keep the templates they started from; new ones start from the current ones until the rebuilds finish. `--wait` follows `GET /api/templates` until they are built and exits non-zero when one fails. |
+| `GET /api/templates` | admin | `sbx templates`: `{"blocked", "runtimes": {"KIND": [{"key", "phase", "status", "template", "error"}]}}`, every template sandboxes start from on each enabled runtime; `phase` is `current`, `stale` (to build), `building`, `stuck` (failed on the plan of now, with `error`) or `unplanned`; `blocked` says why nothing builds yet (the setup is not finished). |
+| `PUT /api/setup/agents` | the first-run setup link, or an admin, until the setup is finished (then 409) | `sbx setup agents`: body `{"agents": ["KIND", ...]}`; the coding agents every template is built with ([the setup without a browser](#the-first-run-setup-without-a-browser)); 400 for one not offered. |
 | `GET /api/endpoints` | admin | `sbx endpoints`: `{"endpoints": [{"name", "address", "kind": "managed-server" or "internal", "server", "server_kind", "target", "repos", "state": "on" or "applying" or "failed", "message", "used_by"}], "candidates": [{"server", "kind", "address", "target"}], "domain", "needed", "applying", "failure"}`. `repos`: who may use it (an internal host's grants; the repositories attached to a managed server); `used_by`: the repositories whose sandboxes hold its certificate, for which `DELETE` is refused; candidates are the managed servers without an endpoint; `needed` says an enabled runtime's sandboxes don't reach this host's private network; `applying` that a change is not applied yet, `failure` why the last one failed ([endpoints](#endpoints)). |
 | `POST /api/endpoints/NAME/repos`, `DELETE /api/endpoints/NAME/repos/OWNER/REPO` | admin | `sbx endpoints grant \| revoke`: body `{"repo": "OWNER/REPO"}`; one repository's grant of an internal host's endpoint, under the endpoints' lock; answers the endpoint. A revoke makes the endpoint's CA anew ([what it cuts](#endpoints)); 404 for a repository without a grant, 400 for a managed server's endpoint. |
 | `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add \| rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories, as one change (the web app's list; 400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |

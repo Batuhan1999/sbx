@@ -1,9 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUpRight, Settings2, ShieldCheck } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import { api } from '@/api/endpoints'
 import { keys, useAction } from '@/api/queries'
-import type { Check, Connection, ConnectionState } from '@/api/types'
+import type { Check, Connection, ConnectionState, Rebuilds } from '@/api/types'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { AppForm, SubmitButton, useAppForm } from '@/components/form'
 import { ErrorState } from '@/components/states'
@@ -70,8 +71,14 @@ export function ConnectionCard({ c, icon, children }: { c: Connection; icon?: Re
   </article>
 }
 
+/** What a change to an extension rebuilds, in the server's words; '' when no template changes. */
+export function rebuildNote(r?: Rebuilds) {
+  return r && Object.keys(r.runtimes).length > 0 ? r.message : ''
+}
+
 export function ConnectionForm({ c, onDone }: { c: Connection; onDone: () => void }) {
   const [note, setNote] = useState('')
+  const [rebuilds, setRebuilds] = useState('')
   const qc = useQueryClient()
   const save = useAction((values: Record<string, string>) => api.connections.save(c.kind, values), keys.connections, keys.me, keys.setup, keys.settings)
   const form = useAppForm({
@@ -79,8 +86,10 @@ export function ConnectionForm({ c, onDone }: { c: Connection; onDone: () => voi
     onSubmit: async ({ value }) => {
       const sent = Object.fromEntries(Object.entries(value).filter(([k, v]) => !(c.fields.find(f => f.name === k)?.secret && v === '')))
       const result = await save.mutateAsync(sent)
+      const rebuilt = rebuildNote(result.rebuilds)
+      setRebuilds(rebuilt)
       if (result.facts.generated_password) setNote(`Generated password (shown once): ${result.facts.generated_password}`)
-      else onDone()
+      else if (!rebuilt) onDone()
     },
   })
   return <AppForm form={form} className="space-y-4">
@@ -93,11 +102,18 @@ export function ConnectionForm({ c, onDone }: { c: Connection; onDone: () => voi
       </form.AppField>)}
     </div>
     {note && <p role="status" className="rounded-md bg-ok-soft px-3 py-2 font-mono text-[12.5px] text-ok">{note}</p>}
+    {rebuilds && <p role="status" className="rounded-md border border-line bg-sunken px-3 py-2 text-[12.5px]">Saved. {rebuilds}</p>}
     <div className="flex flex-wrap items-center justify-between gap-2">
       {c.actions.includes('disconnect') && c.state !== 'not_connected' ? <ConfirmDialog trigger={<Button variant="danger" size="sm">Disconnect</Button>}
         title={`Disconnect ${c.title}?`} description="Its saved credentials are removed from this server." confirm="Disconnect"
-        onConfirm={async () => { await api.connections.disconnect(c.kind); await qc.invalidateQueries({ queryKey: keys.connections }); onDone() }} /> : <span />}
-      <div className="flex gap-2"><Button variant="ghost" onClick={onDone}>{note ? 'Done' : 'Cancel'}</Button><SubmitButton form={form}>Test and save</SubmitButton></div>
+        onConfirm={async () => {
+          const result = await api.connections.disconnect(c.kind)
+          const rebuilt = rebuildNote(result.rebuilds)
+          if (rebuilt) toast(`${c.title} disconnected`, { description: rebuilt })
+          await qc.invalidateQueries({ queryKey: keys.connections })
+          onDone()
+        }} /> : <span />}
+      <div className="flex gap-2"><Button variant="ghost" onClick={onDone}>{note || rebuilds ? 'Done' : 'Cancel'}</Button><SubmitButton form={form}>Test and save</SubmitButton></div>
     </div>
   </AppForm>
 }

@@ -1,0 +1,144 @@
+"""The onboarding order: no template builds before the setup is finished with
+the coding agents chosen, so the first build already has their layers; a
+later change to an extension says what it rebuilds."""
+import io
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
+
+from support import Server
+
+
+class TemplateGate(Server):
+    def setUp(self):
+        super().setUp()
+        from sbx_control import setup, template_builds, template_scheduler, templates
+        self.setup, self.builds, self.scheduler, self.templates = setup, template_builds, template_scheduler, templates
+
+    def amp(self):
+        from sbx_control import extensions
+        return extensions.get("amp")
+
+    def test_nothing_builds_until_the_setup_is_finished_with_the_agents_chosen(self):
+        self.choose_ip()
+        self.create_admin()
+        self.assertIn("coding agents", self.setup.templates_blocked())
+        with patch.object(self.scheduler, "_build_quietly") as build, \
+                patch.object(self.scheduler, "start_detached") as detached, \
+                patch.object(self.builds, "build_now") as build_now:
+            self.scheduler.build_stale()                       # the scheduler's round
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.scheduler.start_template_builds("embed")   # a runtime just added
+            self.assertIn("not yet", out.getvalue())
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                self.assertEqual(self.builds.main(["base", "--if-stale"]), 0)   # install.sh's
+            self.assertIn("NOT YET", err.getvalue())
+            build.assert_not_called()
+            detached.assert_not_called()
+            build_now.assert_not_called()
+        state = self.client.get("/api/setup", headers=self.headers).json()
+        self.assertFalse(state["can_complete"])
+        refused = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("coding agents", refused.text)
+
+        chosen = self.choose_agents("amp")
+        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
+        self.assertEqual(self.setup.templates_blocked(), "templates build once the setup is finished")
+        self.kick.assert_not_called()
+        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual(self.setup.templates_blocked(), "")
+        self.kick.assert_called_once()                         # the first templates start now
+        with patch.object(self.scheduler, "_build_quietly") as build:
+            self.scheduler.build_stale(kinds=["embed"])
+        self.assertEqual([c.args for c in build.call_args_list],
+                         [(self.templates.BASE, "embed"), (self.templates.DEFAULT, "embed")])
+
+    def test_a_round_now_only_once_templates_may_build(self):
+        import threading
+        ran = threading.Event()
+        with patch.object(self.scheduler, "build_stale", side_effect=lambda: ran.set()) as round_:
+            self.assertFalse(self.real_kick())
+            round_.assert_not_called()
+            self.setup.mark_complete("test")
+            self.assertTrue(self.real_kick())
+            self.assertTrue(ran.wait(5))
+
+    def test_an_agent_chosen_in_the_setup_is_in_the_first_template_before_its_key(self):
+        from sbx_control import vault
+        from sbx_control.connectors.amp.common import TOKEN
+        default = self.builds.plan(self.templates.DEFAULT)
+        self.assertNotIn("amp", [c.name for c in default.contributions])
+        self.choose_ip()
+        self.create_admin()
+        self.choose_agents("amp", "claude")
+        self.assertFalse(vault.facts(TOKEN).set)
+        chosen = self.builds.plan(self.templates.DEFAULT)
+        self.assertIn("amp", [c.name for c in chosen.contributions])
+        self.assertNotEqual(chosen.fingerprint, default.fingerprint)
+        self.assertFalse(self.amp().settings().enabled)        # the provider waits for its token
+        self.assertIn("In every template", self.amp().status().summary)
+        self.choose_agents()                                    # changed before finishing: out again
+        self.assertEqual(self.builds.plan(self.templates.DEFAULT).fingerprint, default.fingerprint)
+
+    def test_the_choice_is_checked_and_belongs_to_the_setup(self):
+        self.choose_ip()
+        self.create_admin()
+        unknown = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["nope"]})
+        self.assertEqual(unknown.status_code, 400)
+        self.assertIn("claude, amp", unknown.text)
+        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": False,
+                                                             "summary": "none"})
+        self.assertEqual(self.client.post("/api/setup/complete", headers=self.headers).status_code, 200)
+        late = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["amp"]})
+        self.assertEqual(late.status_code, 409)
+        self.assertIn("Extensions", late.text)
+
+    def test_an_installation_set_up_before_the_step_is_not_blocked(self):
+        self.setup.mark_complete("test")   # no choice recorded: set up before the step existed
+        self.assertTrue(self.setup.agents_chosen())
+        self.assertEqual(self.setup.templates_blocked(), "")
+        self.assertEqual(self.setup.state(None)["steps"][-1]["summary"], "as enabled under Extensions")
+
+    def test_turning_an_agent_off_later_says_what_rebuilds_and_starts_it(self):
+        self.choose_ip()
+        self.create_admin()
+        self.choose_agents("amp")
+        self.client.post("/api/setup/complete", headers=self.headers)
+        self.kick.reset_mock()
+        response = self.client.put("/api/connections/amp", json={"values": {"enabled": "false"}})
+        self.assertEqual(response.status_code, 200, response.text)
+        report = response.json()["rebuilds"]
+        self.assertEqual(report["keys"], {"embed": [self.templates.DEFAULT]})   # the base has no extensions
+        self.assertEqual(report["runtimes"], {"embed": 1})
+        self.assertTrue(report["building"])
+        self.assertIn("1 template rebuilds (E2B Embed: 1)", report["message"])
+        self.assertIn("Existing sandboxes keep the templates they started from", report["message"])
+        self.kick.assert_called_once()
+        self.assertNotIn("amp", [c.name for c in self.builds.plan(self.templates.DEFAULT).contributions])
+        again = self.client.put("/api/connections/amp", json={"values": {"enabled": "false"}}).json()["rebuilds"]
+        self.assertEqual((again["runtimes"], again["building"]), ({}, False))
+        self.assertIn("nothing rebuilds", again["message"])
+        self.assertNotIn("rebuilds", self.client.put("/api/connections/domain", json={"values": {}}).json())
+
+    def test_a_change_before_the_setup_is_finished_builds_nothing(self):
+        self.choose_ip()
+        self.create_admin()
+        self.choose_agents("amp")
+        report = self.client.put("/api/connections/amp", headers=self.headers,
+                                 json={"values": {"enabled": "false"}}).json()["rebuilds"]
+        self.assertEqual(report["runtimes"], {"embed": 1})
+        self.assertFalse(report["building"])
+        self.assertIn("none is built yet", report["message"])
+        self.kick.assert_not_called()
+
+    def test_the_templates_and_where_their_builds_stand(self):
+        self.repo_admin()
+        found = self.client.get("/api/templates").json()
+        self.assertEqual(found["blocked"], "")
+        self.assertEqual([(t["key"], t["phase"]) for t in found["runtimes"]["embed"]],
+                         [(self.templates.BASE, "stale"), (self.templates.DEFAULT, "stale")])
+        self.client.get("/auth/logout")
+        self.assertEqual(self.client.get("/api/templates").status_code, 401)

@@ -685,6 +685,106 @@ class SetupCliTests(CliTests):
         with patch.dict(os.environ, {"SBX_SETUP_LINK": f"https://127.0.0.1:{port}/setup#t=x"}):
             self.assertNotIn("add --insecure", str(self.run_cli("setup", "status", "--insecure")[0]))
 
+    def test_the_coding_agents_are_chosen_before_finishing(self):
+        self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
+                                {"kind": "amp", "title": "Amp", "chosen": False}]
+        code, out, err = self.run_cli("setup", "agents")
+        self.assertEqual(code, 0, err)
+        self.assertIn("amp          Amp", out)
+
+        def choose(q, body):
+            self.state["steps"].append({"step": "agents", "done": True, "summary": ", ".join(body["agents"]) or "none"})
+            return self.state
+        self.routes[("PUT", "/api/setup/agents")] = choose
+        code, out, err = self.run_cli("setup", "agents", "amp", "claude")
+        self.assertEqual(code, 0, err)
+        self.assertIn("coding agents: amp, claude", out)
+        self.assertEqual(self.control.calls[-1][3], {"agents": ["amp", "claude"]})
+        self.run_cli("setup", "agents", "none")
+        self.assertEqual(self.control.calls[-1][3], {"agents": []})
+        self.routes[("PUT", "/api/setup/agents")] = lambda q, body: (400, {"detail": "no coding agent nope here"})
+        code, _, _ = self.run_cli("setup", "agents", "nope")
+        self.assertEqual(code, "sbx-control: no coding agent nope here")
+
+
+AMP = {"kind": "amp", "title": "Amp", "group": "agent", "state": "off", "summary": "Provider stopped",
+       "display": [], "facts": {}, "actions": ["connect", "test", "disconnect"],
+       "fields": [{"name": "provider_token", "label": "Orb provider token", "secret": True, "set": False},
+                  {"name": "repo", "label": "Default repository", "value": ""},
+                  {"name": "enabled", "label": "Enabled", "value": "false"}]}
+REBUILDS = {"runtimes": {"embed": 1, "boat": 1}, "keys": {"embed": ["default"], "boat": ["default"]},
+            "building": True, "message": "2 templates rebuild (E2B Embed: 1, Boat: 1), about 10 minutes each."}
+
+
+def templates(phase, boat_phase=None, error=None):
+    def row(at):
+        return {"key": "default", "phase": at, "status": "failed" if at == "stuck" else "built",
+                "template": "default-0123abcd", "error": error if at == "stuck" else None}
+    return {"blocked": "", "runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
+                                        "boat": [row(boat_phase or phase)]}}
+
+
+class ExtensionCliTests(CliTests):
+    """sbx extensions: the Extensions page for agents, and --wait for the rebuilds a change starts."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+        self.routes[("GET", "/api/connections")] = lambda q, body: {"connections": [AMP]}
+        self.routes[("PUT", "/api/connections/amp")] = lambda q, body: {**AMP, "state": "connected",
+                                                                         "summary": "Provider running", "rebuilds": REBUILDS}
+
+    def polls(self, *answers):
+        found = list(answers)
+        self.routes[("GET", "/api/templates")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_set_says_what_rebuilds_and_waits_for_it(self):
+        self.polls(templates("stale"), templates("building", "current"), templates("current"))
+        code, out, err = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--secret", "provider_token",
+                                      "--wait", stdin="aop_live_test-only-value\n")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 templates rebuild (E2B Embed: 1, Boat: 1)", out)
+        self.assertIn("the templates are rebuilt", out)
+        self.assertIn("rebuilding templates: 0 of 2 built", err)
+        self.assertIn("rebuilding templates: 1 of 2 built", err)
+        put = next(c for c in self.control.calls if c[0] == "PUT")
+        self.assertEqual(put[3], {"values": {"enabled": "true", "provider_token": "aop_live_test-only-value"}})
+        self.assertNotIn("aop_live_test-only-value", out + err)
+
+    def test_a_failed_rebuild_exits_non_zero(self):
+        self.polls(templates("stale"), templates("stuck", "current", error="apt-get failed"))
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--wait")
+        self.assertEqual(code, "the default template failed on embed: apt-get failed")
+
+    def test_without_wait_or_rebuilds_it_returns_at_once(self):
+        code, out, err = self.run_cli("extensions", "set", "amp", "--set", "enabled=true", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["rebuilds"]["runtimes"], {"embed": 1, "boat": 1})
+        self.assertFalse(any(c[1] == "/api/templates" for c in self.control.calls))
+        self.routes[("DELETE", "/api/connections/amp")] = lambda q, body: {
+            **AMP, "rebuilds": {"runtimes": {}, "keys": {}, "building": False, "message": "No template changes; "
+                                "nothing rebuilds."}}
+        code, out, err = self.run_cli("extensions", "disconnect", "amp", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("nothing rebuilds", out)
+        self.assertFalse(any(c[1] == "/api/templates" for c in self.control.calls))
+
+    def test_secrets_never_come_from_argv_and_fields_are_checked(self):
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "provider_token=aop_live_x")
+        self.assertIn("--secret provider_token reads it from stdin", code)
+        code, _, _ = self.run_cli("extensions", "set", "amp", "--set", "colour=blue")
+        self.assertIn("has no field colour", code)
+        code, _, _ = self.run_cli("extensions", "set", "nope")
+        self.assertIn("there is no extension nope", code)
+
+    def test_ls_and_templates(self):
+        code, out, err = self.run_cli("extensions")
+        self.assertEqual((code, out), (0, "amp            off            Provider stopped\n"), err)
+        self.polls(templates("stuck", error="apt-get failed"))
+        code, out, err = self.run_cli("templates")
+        self.assertEqual(code, 0, err)
+        self.assertIn("embed      default                          stuck      default-0123abcd  (apt-get failed)", out)
+
 
 class CliApiTests(Server):
     def test_scaffold_names_the_files_it_reads_then_drafts_the_recipe(self):
