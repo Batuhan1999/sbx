@@ -39,7 +39,7 @@ database and runtime directory under a temporary directory; see
 into shards that run side by side, each a whole set of test classes:
 
 ```sh
-for i in 1 2 3 4; do PYTHONPATH=control .venv/bin/python control/tests/shard.py $i 4 & done; wait
+printf '%s\n' 1 2 3 4 | PYTHONPATH=control xargs -P 4 -I{} .venv/bin/python control/tests/shard.py {} 4   # non-zero if any fails
 ```
 
 Checks that need Linux process handling skip on macOS. CI
