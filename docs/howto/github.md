@@ -8,7 +8,7 @@ no key to copy. GitHub's pages may differ a little from the labels below.
 ## Create the App
 
 1. Sign in to the sbx web app as an admin, open **Extensions**, and click
-   **Add** on **GitHub** under **Add**.
+   **Set up** on the **GitHub** row.
 2. Enter the GitHub organization that owns the repositories, or leave it
    empty for your own account. Creating an App in an organization needs its
    owner's rights there.

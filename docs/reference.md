@@ -292,7 +292,7 @@ key is refused when it is installed.
 connection saved on this server. A managed server's connection has the
 server's name (`dev-pg` from `sbx-admin server up dev-pg`). `sbx catalog
 show PACKAGE` lists the saved connections a slot can take (to admins), as do
-`sbx-admin catalog connections` and the web app's **Extensions** page. With
+`sbx-admin catalog connections` and the web app's **Services** page. With
 one saved connection of the slot's kind, `connections:` can be left out. A
 name the server doesn't have stops the launch, and the error names the ones it
 has.
