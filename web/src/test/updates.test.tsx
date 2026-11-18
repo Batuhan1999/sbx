@@ -50,6 +50,20 @@ describe('parseNotes', () => {
     expect(hidden.steps).toEqual([{ text: 'Shown.' }, { text: 'Also shown.' }])
   })
 
+  it('reads GitHub\'s marker only outside code, ends its list at Full Changelog and keeps numbered steps apart', () => {
+    const notes = parseNotes([
+      '1. Back up the state.', '2. Restart the service.', '',
+      '```', '<!-- Release notes generated example -->', '```', '',
+      '<!-- Release notes generated using configuration in .github/release.yml at v0.2.0 -->',
+      "## What's Changed", '### Changes', '* Faster previews by @someone in https://github.com/o/sbx/pull/14', '',
+      '**Full Changelog**: https://github.com/o/sbx/compare/v0.1.0...v0.2.0', '',
+      '## Rollback', '- Only if needed.',
+    ].join('\n'))
+    expect(notes.steps).toEqual([{ text: '1. Back up the state.' }, { text: '2. Restart the service.' },
+      { text: '<!-- Release notes generated example -->', code: true }])
+    expect(notes.sections.map(s => [s.title, s.generated])).toEqual([['Changes', true], ['Rollback', false]])
+  })
+
   it('keeps the release\'s own headings, paragraphs and groups apart from the generated list', () => {
     const notes = parseNotes([
       'Intro line that the author', 'wrapped.', '',
@@ -71,7 +85,7 @@ describe('parseNotes', () => {
 describe('Updates page', () => {
   it('renders inline Markdown in the notes as formatting, not characters', async () => {
     const notes = 'Read this.\n\n## Highlights\n- **Boat** runs \`sbx up\`, see [the docs](https://example.com/docs).\n\nA paragraph.\n\n'
-      + '- [Run \`sbx up\`](https://example.com/setup(v2)) first.\n\n#### Deeper\n- x'
+      + '- [Run \`sbx up\`](https://example.com/setup(v2)) first.\n\n#### Deeper\n- x\n\n##### Deepest\n- y'
     stubApi({ 'GET /api/updates': view({ available: { latest: 'v0.2.0', url: 'u', breaking: false, releases: [release('v0.2.0', notes)] } }) })
     renderApp(<Updates />)
     const card = await screen.findByRole('region', { name: 'Release v0.2.0' })
@@ -83,8 +97,9 @@ describe('Updates page', () => {
     expect(run).toHaveProperty('href', 'https://example.com/setup(v2)')
     expect(run.querySelector('code')?.textContent).toBe('sbx up')
     expect(within(card).getByText('A paragraph.').closest('li')).toBeNull()
-    expect(within(card).getAllByRole('list')).toHaveLength(3)   // bullet, paragraph, bullet; then Deeper's
-    expect(within(card).getByRole('heading', { name: 'Deeper' }).tagName).toBe('H6')
+    expect(within(card).getAllByRole('list')).toHaveLength(4)   // bullet, paragraph, bullet; then Deeper's and Deepest's
+    expect(within(card).getByRole('heading', { name: 'Deeper' }).tagName).toBe('H5')   // ## then ####: no level skipped
+    expect(within(card).getByRole('heading', { name: 'Deepest' }).tagName).toBe('H6')
   })
 
   it('lists what changed, asks for the breaking changes to be read, then posts the tag', async () => {

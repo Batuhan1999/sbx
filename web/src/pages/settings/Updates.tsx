@@ -161,8 +161,8 @@ function SectionTitle({ section: s }: { section: NoteSection }) {
     return <h4 className={cn('text-[12px] font-medium uppercase tracking-wide', s.breaking ? 'text-warn' : 'text-muted')}>{s.title}</h4>
   const tone = s.breaking ? 'text-warn' : undefined
   const title = <NoteText text={s.title} />
-  if (s.level <= 2) return <h4 className={cn('border-t border-line pt-3 text-[14px] font-semibold', tone)}>{title}</h4>
-  if (s.level === 3) return <h5 className={cn('pt-1 text-[13px] font-semibold', tone)}>{title}</h5>
+  if (s.depth <= 1) return <h4 className={cn('border-t border-line pt-3 text-[14px] font-semibold', tone)}>{title}</h4>
+  if (s.depth === 2) return <h5 className={cn('pt-1 text-[13px] font-semibold', tone)}>{title}</h5>
   return <h6 className={cn('text-[13px] font-medium', tone)}>{title}</h6>
 }
 
