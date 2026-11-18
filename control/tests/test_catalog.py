@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from catalog_scripts import RedirectingServer
 from support import Server
 
 SCRIPT = """#!/bin/sh
@@ -289,6 +290,10 @@ class CatalogTests(Server):
         # Loopback passes the address check and reaches the SELECT 1 (nothing listens there).
         private = self.catalog.check(server, {"url": "http://127.0.0.1:9", "user": "default", "password": "p"})
         self.assertIn("did not answer SELECT 1", private)
+        with RedirectingServer() as redirecting:
+            redirected = self.catalog.check(server, {"url": redirecting.url, "user": "default", "password": "p"})
+        self.assertIn("did not answer SELECT 1", redirected)
+        self.assertEqual(redirecting.paths, ["/"])
 
     def test_clearing_an_input_the_recipe_sets_checks_the_recipes_value(self):
         self.repo_admin()

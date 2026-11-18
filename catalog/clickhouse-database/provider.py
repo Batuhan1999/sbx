@@ -27,7 +27,7 @@ def run(action):
 
     def query(sql):
         return sbx.fetch('ClickHouse', url, 'POST', {'Authorization': 'Basic ' + credentials}, sql.encode(), timeout=30,
-                         hint='check the server permissions and template compatibility').decode()
+                         hint='check the server permissions and template compatibility', redirects=False).decode()
 
     if action == 'list':
         print(query(f"SELECT name FROM system.databases WHERE startsWith(name, '{sbx.PREFIX}{SEPARATOR}') "

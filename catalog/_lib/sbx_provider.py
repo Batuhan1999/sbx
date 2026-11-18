@@ -33,7 +33,7 @@ import socket
 import sys
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 ACTIONS = ('create', 'delete', 'list')
 PREFIX = 'sbx'
@@ -42,19 +42,32 @@ OUTPUT_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 USER_AGENT = 'sbx'
 
 
-# Shared address space (RFC 6598): Tailscale and other private overlays.
-SHARED = ipaddress.ip_network('100.64.0.0/10')
+# Where plain HTTP is the admin's choice: loopback, RFC 1918, link-local, IPv6
+# ULA, and shared address space (RFC 6598: Tailscale and other private overlays).
+PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10',
+    '::1/128', 'fc00::/7', 'fe80::/10'))
 
 
 def private_host(host):
-    """Whether every address host resolves to is loopback, private or on a
-    private overlay: a network where plain HTTP is the admin's choice."""
+    """Whether every address host resolves to is in PRIVATE_NETWORKS."""
     try:
-        found = {info[4][0].split('%')[0] for info in socket.getaddrinfo(host, None)}
-    except (OSError, UnicodeError):
+        found = {ipaddress.ip_address(info[4][0].split('%')[0]) for info in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError, ValueError):
         return False
-    return bool(found) and all(ipaddress.ip_address(a).is_private or ipaddress.ip_address(a) in SHARED
-                               for a in found)
+    found = {getattr(a, 'ipv4_mapped', None) or a for a in found}
+    return bool(found) and all(any(a in network for network in PRIVATE_NETWORKS) for a in found)
+
+
+class _RefuseRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None  # the 3xx surfaces as an HTTPError
+
+
+def open_without_redirects(request, timeout):
+    """urlopen that never follows a redirect: urllib would resend the request's
+    Authorization header to the new location, which may be plain HTTP."""
+    return build_opener(_RefuseRedirects).open(request, timeout=timeout)
 
 
 class ProviderError(ValueError):
@@ -143,12 +156,13 @@ def write_outputs(values):
         output.writelines(f'{key}={value}\n' for key, value in values.items())
 
 
-def fetch(what, url, method='GET', headers=None, data=None, *, hint='check its access', timeout=20, missing_ok=False):
+def fetch(what, url, method='GET', headers=None, data=None, *, hint='check its access', timeout=20, missing_ok=False,
+          redirects=True):
     """The response body, or None for a 404 when missing_ok. Errors name the
     status only: request headers and response bodies may carry credentials."""
     request = Request(url, data=data, method=method, headers={'User-Agent': USER_AGENT, **(headers or {})})
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with (urlopen if redirects else open_without_redirects)(request, timeout=timeout) as response:
             return response.read()
     except HTTPError as error:
         error.close()

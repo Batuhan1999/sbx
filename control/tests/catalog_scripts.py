@@ -1,5 +1,6 @@
 """Load catalog provider scripts as the runner runs them: from their package
 folder, with the shared sbx_provider module importable."""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
 import json
@@ -8,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -25,6 +27,36 @@ def load(package, filename='provider.py'):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class RedirectingServer:
+    """A local HTTP server that answers every request with a 302 to /moved and
+    records the paths it was asked for."""
+
+    def __enter__(self):
+        paths = self.paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                paths.append(self.path)
+                self.send_response(302)
+                self.send_header('Location', '/moved')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+            do_GET = do_POST
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f'http://127.0.0.1:{self.server.server_port}/'
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
 
 
 def run_script(package, script, env, *args):

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from catalog_scripts import ScriptCase, load, run_script, sbx_provider
+from catalog_scripts import RedirectingServer, ScriptCase, load, run_script, sbx_provider
 
 ADMIN_URL = 'postgresql://admin:fixture@[2001:db8::1]:6543/postgres?sslmode=verify-full&connect_timeout=5'
 
@@ -60,7 +60,7 @@ class ClickHouseTests(ScriptCase):
 
     def test_connections_preserve_https_ipv6_and_query_options(self):
         with patch.dict(os.environ, {'CH_URL': 'https://[2001:db8::2]:8443/service?session_timeout=10'}), \
-                patch.object(sbx_provider, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'')):
+                patch.object(sbx_provider, 'open_without_redirects', side_effect=lambda *a, **k: io.BytesIO(b'')):
             load('clickhouse-database').run('create')
         values = self.values()
         parsed = urlsplit(values['http_url'])
@@ -71,9 +71,10 @@ class ClickHouseTests(ScriptCase):
 
     def test_plain_http_to_a_public_address_is_refused_before_any_request(self):
         provider = load('clickhouse-database')
-        for url in ('http://8.8.8.8:8123', 'http://[2606:4700::1111]:8123', 'http://unresolvable.invalid:8123'):
+        for url in ('http://8.8.8.8:8123', 'http://192.0.2.1:8123', 'http://198.18.0.1:8123', 'http://[2606:4700::1111]:8123',
+                    'http://unresolvable.invalid:8123'):
             with self.subTest(url=url), patch.dict(os.environ, {'CH_URL': url}), \
-                    patch.object(sbx_provider, 'urlopen') as query:
+                    patch.object(sbx_provider, 'open_without_redirects') as query:
                 with self.assertRaisesRegex(sbx_provider.ProviderError, 'must use https://'):
                     provider.run('create')
                 query.assert_not_called()
@@ -81,11 +82,17 @@ class ClickHouseTests(ScriptCase):
             with self.subTest(url=url):
                 self.assertTrue(sbx_provider.private_host(urlsplit(url).hostname))
 
+    def test_a_redirect_is_refused_before_the_password_is_sent_again(self):
+        with RedirectingServer() as server, patch.dict(os.environ, {'CH_URL': server.url}):
+            with self.assertRaisesRegex(sbx_provider.HttpError, 'HTTP 302'):
+                load('clickhouse-database').run('list')
+        self.assertEqual(server.paths, ['/'])
+
     def test_shared_engines_and_views_are_refused_before_creating_resource(self):
         provider = load('clickhouse-database')
         for engine in ('ReplicatedMergeTree', 'SharedMergeTree', 'View', 'MaterializedView', 'PostgreSQL'):
             with self.subTest(engine=engine), patch.dict(os.environ, {'CH_URL': 'http://10.0.0.5:8123', 'INPUT_MODE': 'clone', 'INPUT_TEMPLATE': 'seed'}), \
-                    patch.object(sbx_provider, 'urlopen', side_effect=[io.BytesIO(b'1\n'), io.BytesIO(json.dumps({'name': 'table', 'engine': engine}).encode())]) as query:
+                    patch.object(sbx_provider, 'open_without_redirects', side_effect=[io.BytesIO(b'1\n'), io.BytesIO(json.dumps({'name': 'table', 'engine': engine}).encode())]) as query:
                 with self.assertRaisesRegex(ValueError, 'unsupported'):
                     provider.run('create')
                 self.assertEqual(query.call_count, 2)

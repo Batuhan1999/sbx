@@ -21,7 +21,7 @@ check: |
   python3 - <<'CHECK'
   import base64, ipaddress, os, socket, sys
   from urllib.parse import urlsplit
-  from urllib.request import Request, urlopen
+  from urllib.request import HTTPRedirectHandler, Request, build_opener
   try:
       endpoint = os.environ['INPUT_URL']
       parsed = urlsplit(endpoint)
@@ -31,18 +31,24 @@ check: |
       sys.exit('ClickHouse URL must be an HTTP(S) endpoint')
   if parsed.scheme == 'http':
       # The password goes in every request: plain HTTP only where every address is private or loopback.
+      # Loopback, RFC 1918, link-local, IPv6 ULA, and 100.64.0.0/10 (Tailscale and other private overlays).
+      private = [ipaddress.ip_network(n) for n in ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+                 '169.254.0.0/16', '100.64.0.0/10', '::1/128', 'fc00::/7', 'fe80::/10')]
       try:
-          found = {info[4][0].split('%')[0] for info in socket.getaddrinfo(parsed.hostname, None)}
-      except (OSError, UnicodeError):
+          found = {ipaddress.ip_address(info[4][0].split('%')[0]) for info in socket.getaddrinfo(parsed.hostname, None)}
+      except (OSError, UnicodeError, ValueError):
           found = set()
-      shared = ipaddress.ip_network('100.64.0.0/10')   # Tailscale and other private overlays
-      if not found or not all(ipaddress.ip_address(a).is_private or ipaddress.ip_address(a) in shared for a in found):
+      found = {getattr(a, 'ipv4_mapped', None) or a for a in found}
+      if not found or not all(any(a in n for n in private) for a in found):
           sys.exit('ClickHouse URL must use https:// unless it reaches a private address; '
                    'plain HTTP would send the password unencrypted')
+  class NoRedirects(HTTPRedirectHandler):
+      def redirect_request(self, *args):
+          return None   # a redirect would resend the password, maybe over plain HTTP
   try:
       credentials = base64.b64encode((os.environ['INPUT_USER'] + ':' + os.environ.get('INPUT_PASSWORD', '')).encode()).decode()
       request = Request(endpoint, data=b'SELECT 1', headers={'Authorization': 'Basic ' + credentials})
-      with urlopen(request, timeout=10) as response:
+      with build_opener(NoRedirects).open(request, timeout=10) as response:
           if response.read().strip() != b'1':
               raise ValueError('unexpected response')
   except Exception:
