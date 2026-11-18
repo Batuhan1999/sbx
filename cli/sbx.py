@@ -114,8 +114,8 @@ class Client:
                 detail = "; ".join([detail.get("message") or "refused", *(check_line(c)
                                                                           for c in detail.get("checks") or [] if not c.get("ok"))])
             if error.code == 401:
-                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a "
-                              "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
+                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints the "
+                              "current one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
     def api(self, method, path, body=None, raw=False, timeout=600, late=None):
@@ -1298,6 +1298,8 @@ def setup_address(args, client):
         if _steps(state).get("address", {}).get("done"):
             return None, True
         error = state["access"].get("certificate_error")
+        if error and args.domain:   # saving the domain cleared the last one: this attempt failed, and nothing retries soon
+            return None, f"the certificate failed: {error}\nfix it, then run the same command again (it retries)"
         return f"waiting for the certificate{': ' + error if error else ''}", False
     state = follow(lambda: client.api("GET", "/api/setup"), verdict, args.timeout, interval=5,
                    late=lambda state: f"HTTPS is not ready after {args.timeout} s "
@@ -2027,10 +2029,11 @@ def parser():
                          "until HTTPS works")
     s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
     s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at app.D")
-    s.add_argument("--email", help="for the certificate's expiry notices (with --domain)")
+    s.add_argument("--email", help="optional: a contact for the Let's Encrypt account (with --domain); it sends no expiry emails")
     s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53", "none"],
-                   help="how the wildcard certificate is issued (default delegated); none: self-signed, for a first "
-                        "test (browsers warn, and only sbx setup takes it, with --insecure)")
+                   help="how the wildcard certificate is issued (default delegated: this server answers on port 53); "
+                        "cloudflare, route53: a DNS API token, when port 53 can't open; none: self-signed, for a "
+                        "first test (browsers warn, and only sbx setup takes it, with --insecure)")
     s.add_argument("--secret", action="append", metavar="KEY",
                    help="the DNS provider's credential (cloudflare_api_token, aws_access_key_id, ...) on stdin")
     s.add_argument("--no-wait", action="store_true")

@@ -27,7 +27,8 @@
 #
 # Options:
 #   --domain D        previews at <name>.D, sbx-control at app.D (optional)
-#   --email E         for Let's Encrypt when configuring a domain
+#   --email E         the first admin unless --admin names one; also the Let's
+#                     Encrypt account's contact (optional: it sends no expiry emails)
 #   --dns P           how the wildcard certificate is issued: delegated (the
 #                     default: one NS record hands _acme-challenge.D to this
 #                     host, which answers itself; no credential), route53 (an

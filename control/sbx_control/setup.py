@@ -127,6 +127,16 @@ def mint_token() -> str:
     return token
 
 
+def current_token() -> str:
+    """The token in the file while it still works, else "" (`sbx-admin
+    setup-link` prints its link again rather than replacing it)."""
+    try:
+        token = token_file().read_text().strip()
+    except OSError:
+        return ""
+    return token if token_ok(token) else ""
+
+
 def revoke_token():
     TOKEN_HASH.delete()
     token_file().unlink(missing_ok=True)
@@ -204,7 +214,6 @@ def missing(found: dict) -> str:
 def state(email: str | None, address: str = "") -> dict:
     from . import connections
     from .connections import domain as domain_connection, sign_in as sign_in_connection
-    from .connections.domain import ip_certificate_error
     s = settings.current()
     domain = connections.get("domain").status()
     sign_in = connections.get("sign_in").status()
@@ -225,11 +234,21 @@ def state(email: str | None, address: str = "") -> dict:
                        "url": s.base_url, "certificate": s.domain.acme,
                        "certificate_email": s.domain.acme_email, "certificate_ready": address_ready(),
                        "needs_ports": list(s.domain.needs_ports()),
-                       "certificate_error": ip_certificate_error() if s.domain.address and not s.domain.name else ""},
+                       "certificate_error": _certificate_error(s.domain)},
             "link": link(address=server_address),
             "admins": list(s.access.admins), "version": version(),
             "agents": [{"kind": c.kind, "title": c.title, "chosen": c.kind in (AGENTS.get() or [])}
                        for c in offered_agents()]}
+
+
+def _certificate_error(d) -> str:
+    """Why the address's certificate is not there yet, from its last failed
+    issuance ("" when none failed, or once it is there): the IP's, or the
+    domain's (the port 53 probe's finding or Let's Encrypt's error)."""
+    from .connections.domain import certificate_error, ip_certificate_error
+    if d.name:
+        return "" if d.acme == "none" or address_ready() else certificate_error()
+    return ip_certificate_error() if d.address else ""
 
 
 def _agents_summary() -> str:

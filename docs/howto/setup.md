@@ -14,8 +14,9 @@ with `sbx login` afterwards.
 
 ![The setup's Your account step: admin email, password and repeat password](images/setup-account.png)
 
-If you set up a domain yourself, the **Server address** step comes first; see
-[Cloudflare DNS for sbx](cloudflare.md) for the records and the token.
+If you set up a domain yourself, the **Server address** step comes first: it
+asks for the domain and lists its three DNS records, and port 53 must be open;
+see [Cloudflare DNS for sbx](cloudflare.md#dns-records). It needs no email.
 
 ## Paste your keys
 

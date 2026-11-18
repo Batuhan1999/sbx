@@ -65,8 +65,8 @@ What the agent reads along the way, if you want the details yourself:
   your own connector or catalog package.
 - [Your first-run setup](docs/howto/setup.md): what the owner sees when
   their agent sends the setup link and the keys page.
-- How-to pages for what you set up outside sbx: [Cloudflare DNS and
-  token](docs/howto/cloudflare.md), [E2B Cloud](docs/howto/e2b.md) and
+- How-to pages for what you set up outside sbx: [DNS
+  records](docs/howto/cloudflare.md) (a Cloudflare token where port 53 can't open), [E2B Cloud](docs/howto/e2b.md) and
   [Boat](docs/howto/boat.md) API keys, the [GitHub App](docs/howto/github.md)
   and an [Amp orb provider](docs/howto/amp.md).
 
@@ -180,7 +180,7 @@ without a browser. By hand, on the server:
 4. Open the link, accept the temporary certificate, and take the steps:
    the address (IP access, or a domain with its DNS records), the sandbox
    runtime (a provider's API key, when Embed can't run here) and your admin
-   login. `sudo sbx-admin setup-link` makes a new link if it is lost.
+   login. `sudo sbx-admin setup-link` prints the link again if it is lost.
 
 Admins see a newer release in the web app (**Settings → Updates**: what
 changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host

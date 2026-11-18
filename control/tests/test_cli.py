@@ -962,6 +962,15 @@ class SetupCliTests(Cli):
         self.assertEqual(code, "sbx-control: Check the DNS records and certificate settings below.; "
                                f"*.sbx.example.com resolves: no address (how to: {page}); delegation: no NS record yet")
 
+    def test_a_domain_needs_no_email_and_its_failed_certificate_ends_the_wait(self):
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: {}
+        error = "port 53: no public resolver (1.1.1.1, 8.8.8.8) reached this server on port 53 within 5 s"
+        self.state["access"]["certificate_error"] = error
+        code, out, err = self.run_cli("setup", "address", "--domain", "sbx.example.com", "--insecure")
+        self.assertIn(f"the certificate failed: {error}", str(code))
+        sent = next(c[3] for c in self.control.calls if c[:2] == ("PUT", "/api/connections/domain"))
+        self.assertEqual((sent["values"]["acme"], sent["values"]["acme_email"]), ("delegated", ""))
+
     def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
         self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]
         code, out, err = self.run_cli("setup", "address", "--domain", "203-0-113-7.sslip.io", "--dns", "none", "--insecure")

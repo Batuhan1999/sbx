@@ -17,9 +17,8 @@ the server go through `ssh HOST`, so each block can be pasted as it is, and
 nothing depends on a variable or a `cd` from an earlier block.
 
 **Placeholders.** `HOST` (what you pass to `ssh`, with sudo that asks no
-password), `IP` (the server's public IP, step 1), `D` (the domain), `E` (the
-email for certificate notices), `owner@example.com` (the owner, the first
-admin), `KIND` (a runtime: `embed`, `e2b-cloud` or `boat`), `PLAN` (its plan).
+password), `IP` (the server's public IP, step 1), `D` (the domain),
+`owner@example.com` (the owner, the first admin), `KIND` (a runtime: `embed`, `e2b-cloud` or `boat`), `PLAN` (its plan).
 In step 8, `dev-pg`, `temporal`, `10.0.0.5:7233`, `10.0.0.0/24` and
 `owner/app` are examples.
 
@@ -97,7 +96,7 @@ port the decisions below need; ask the owner to open a dropped one.
 | --- | --- |
 | TCP 22, 443 | always |
 | TCP 80 | IP access (the IP certificate) |
-| UDP and TCP 53 | a domain with `--dns delegated` |
+| UDP and TCP 53 | a domain (the default `delegated` certificate) |
 | TCP 21000–21255 | IP access only: one port per preview |
 
 ## 2. Ask the owner, once
@@ -129,15 +128,18 @@ answers. Ask nothing that `--check` already answered.
    on port 80, previews on ports 21000–21255). For a domain ask for:
    - the domain `D` (usually a subdomain, `sbx.example.com`): the server
      answers at `app.D`, previews at `<name>.D`;
-   - an email `E` for Let's Encrypt's expiry notices;
-   - how the wildcard certificate is issued: `delegated` (no credential:
-     records `D A IP`, `*.D A IP`, `_acme-challenge.D NS D.`, and port 53
-     open), `cloudflare` (the A records and an API token that may edit the
-     zone's DNS: [how-to](howto/cloudflare.md)), `route53` (the A records; the
-     instance role on EC2) or `none` (self-signed, a quick test only: `D`
-     = the IP with dashes plus `.sslip.io` needs no records; browsers warn and
-     the desktop CLI refuses it, so steps 5 to 10 go through the
-     [HTTP API](reference.md#http-api) with `curl -k`).
+   - the records `D A IP`, `*.D A IP` and `_acme-challenge.D NS D.`, and
+     nothing else at `_acme-challenge.D` ([how-to](howto/cloudflare.md)).
+     The certificate is `delegated`: the server answers Let's Encrypt itself
+     on port 53, with no credential and no email. This is all the setup page
+     offers. Only when the provider can't open port 53, ask instead for
+     `cloudflare` (the A records and an API token that may edit the zone's
+     DNS: [how-to](howto/cloudflare.md#api-token)) or `route53` (the A
+     records; the instance role on EC2), without the `NS` record. `none`
+     (self-signed) is a quick test only: `D` = the IP with dashes plus
+     `.sslip.io` needs no records; browsers warn and the desktop CLI refuses
+     it, so steps 5 to 10 go through the [HTTP API](reference.md#http-api)
+     with `curl -k`.
 3. **The owner's email** for their admin account (`owner@example.com`).
 4. **Which coding agents the team uses**: none, [Amp](howto/amp.md),
    [Claude Code](claude-code.md). Every template is built with the ones
@@ -149,7 +151,8 @@ Once the owner says DNS records are in, check them before you go on:
 
 ```sh
 dig +short app.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP
-dig +short NS _acme-challenge.D @1.1.1.1                      # delegated: D.
+dig +short NS _acme-challenge.D @1.1.1.1                      # delegated: D. (cloudflare, route53: nothing)
+dig +short CNAME _acme-challenge.D @1.1.1.1                   # nothing
 ```
 
 ## 3. Install
@@ -177,8 +180,9 @@ The `grep` keeps the setup link out of your output.
 
 ## 4. The setup link: the owner creates their account
 
-Fetch the setup link into a file without printing it. Each call makes a new
-link and the previous one stops working:
+Fetch the setup link into a file without printing it. Each call prints the
+same link until the setup finishes; `sbx-admin setup-link --new` replaces it,
+and the previous one stops working:
 
 ```sh
 ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link
@@ -192,16 +196,21 @@ minutes):
 
 | Decision | Command |
 | --- | --- |
-| domain, `delegated` | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --domain D --email E` |
+| domain (`delegated`) | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --domain D` |
 | domain, `route53` on EC2 | the same with `--dns route53` |
+| domain, `cloudflare` | first the token on a key page (step 6's command with the target `dns:cloudflare "Cloudflare API token"` and `--insecure`), then the same with `--dns cloudflare` |
 | IP only | `python3 ~/.sbx-install/sbx.py setup address --link-file ~/.sbx-install/setup-link --insecure --ip` |
-| quick test | the same as `delegated` with `--dns none` (keep `--insecure` on every command after it) |
-| domain, `cloudflare` | none: the setup page's first screen asks for the domain and the token, and the owner pastes it there |
+| quick test | the same as the domain with `--dns none` (keep `--insecure` on every command after it) |
 
-`address ready: https://app.D` means done; `Check the DNS records ...` names
-the record to fix; a `waiting for the certificate` that runs out is usually a
-closed port (53 for `delegated`, 80 for IP). Then fetch the link again, which
-now names the trusted address:
+`address ready: https://app.D` means done. `Check the DNS records ...` names
+each check that failed and its fix: a missing record, or another record at
+`_acme-challenge.D` to remove. The wait prints the certificate's error as
+soon as an issuance fails: `port 53: no public resolver ... reached this
+server` means a firewall drops port 53 (ask the owner to allow TCP and UDP
+53, or to use a token), anything else is Let's Encrypt's own error. Once
+fixed, run the same command again: it retries. A wait for an IP that runs
+out is usually a closed port 80. Then fetch the link again, which now names
+the trusted address:
 
 ```sh
 ssh HOST sudo sbx-admin setup-link > ~/.sbx-install/setup-link

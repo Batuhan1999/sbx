@@ -1114,7 +1114,7 @@ before it has its own.
 ```sh
 export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/setup#t=TOKEN
 sbx setup status [--json]                      # each step, done or to do
-sbx setup address --domain sbx.example.com --email ops@example.com   # or: --ip; waits for HTTPS
+sbx setup address --domain sbx.example.com     # or: --ip; waits for HTTPS
 sbx setup admin ops@example.com < password-file
 sbx setup runtime available
 sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
@@ -1125,10 +1125,36 @@ sbx setup finish                               # as the admin sbx login signed i
 sbx setup finish --admin ops@example.com < password-file   # or with the link and that admin's password
 ```
 
-Each uses `Authorization: Setup <token>`. `address --domain` takes the DNS
-provider's credentials with `--secret` (`cloudflare_api_token`, ...) and waits
-until the certificate works; `runtime add` takes the flags of `sbx runtimes
-add` and waits through the restart; `admin` makes the first admin's own
+Each uses `Authorization: Setup <token>`. `sudo sbx-admin setup-link` on the
+server prints the link: the same one on each call until the setup is
+finished; `--new` replaces it, and the old one stops working.
+
+`address --domain` (`PUT /api/connections/domain` with `{"values": {"name",
+"address", "acme"}}`) waits until the certificate works. Its default
+certificate mode, `delegated`, the only one the setup page offers, needs the
+records `D A IP`, `*.D A IP` and `_acme-challenge.D NS D.`, inbound TCP and
+UDP 53, and no credential. `--dns cloudflare` or `--dns route53` are the
+fallbacks where port 53 can't open; they take the DNS provider's credentials
+with `--secret` (`cloudflare_api_token`, ...) or from a key page
+(`dns:cloudflare`). `--email` is optional: the Let's Encrypt account's
+contact (Let's Encrypt sends no expiry emails); without one the account is
+registered without an email. Saving the domain is refused (400, `{"message",
+"checks": [{"name", "ok", "detail", "fix", "help_url"}]}`) while a record is
+missing, or while `_acme-challenge.D` holds another record (a `CNAME`, an
+`NS` to elsewhere, or, with a DNS API, any `NS` or `CNAME`): the check
+`other _acme-challenge records` names it, with the fix to remove it. Port 53
+is checked once the domain is saved and sbx's DNS responder answers for it:
+before it asks Let's Encrypt, the certificate's renewal (`tls.sh`) opens 53
+in the host firewall, publishes a random TXT record under
+`_acme-challenge.D` and asks a public resolver (1.1.1.1, else 8.8.8.8) for
+it; no answer is the check `port 53` failed, with the fix. A failed
+issuance, that one or Let's Encrypt's own error, is `GET /api/setup`'s
+`access.certificate_error` at once (an IP's or a domain's), and `address`
+exits with it. Saving the same domain again retries: the check `port 53`
+then runs live (as in `sbx-admin doctor`), and the certificate is asked for
+again.
+
+`runtime add` takes the flags of `sbx runtimes add` and waits through the restart; `admin` makes the first admin's own
 account (their email and password, as the wizard's admin step does; password
 sign-in). Once that account exists, the desktop CLI's installer
 (`/install`) and `sbx login` work while the setup is still open, and `finish`
