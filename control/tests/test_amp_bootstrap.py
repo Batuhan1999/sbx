@@ -124,3 +124,21 @@ exec "$0" "$@"
         running(other, b'orb', b'bootstrap')
         self.assertFalse(function(process, (seed.resolve(),)))
         self.assertFalse(function(root / 'proc/gone', (seed.resolve(),)))
+
+    def test_started_sees_a_running_bootstrap_and_gives_up_on_a_launch_that_never_ran_one(self):
+        functions = runpy.run_path(str(HELPER))
+        guest = functions['sbx_guest']
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (root / '4242').mkdir()
+        (root / 'self').mkdir()
+        clock = [0.0]
+        fake_time = type('T', (), {'monotonic': staticmethod(lambda: clock[0]),
+                                   'sleep': staticmethod(lambda s: clock.__setitem__(0, clock[0] + s))})
+        with patch.object(guest, 'PROC', root), patch.dict(functions['started'].__globals__, time=fake_time):
+            with patch.dict(functions['started'].__globals__, bootstrap_process=lambda p, _: p.name == '4242'):
+                self.assertTrue(functions['started']((root / 'amp',)))
+            self.assertEqual(clock[0], 0)   # at once
+            with patch.dict(functions['started'].__globals__, bootstrap_process=lambda *_: False):
+                self.assertFalse(functions['started']((root / 'amp',), seconds=5))
+            self.assertGreaterEqual(clock[0], 5)
+            self.assertLess(clock[0], 6)   # bounded

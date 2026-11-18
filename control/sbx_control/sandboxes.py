@@ -370,24 +370,27 @@ def deliver_env(repo: str, names, audiences=None, person: str | None = None, res
 
 def deliver_pending(sandbox: str):
     """What waits for the running sandbox, until nothing does; a sandbox
-    busy with an operation gets it at the keeper's next round."""
+    busy with an operation gets it at the keeper's next round. It waits for
+    whoever is creating or deleting the sandbox (core.sandbox_operation), so
+    a delivery never starts in the middle of that and makes it conflict."""
     guard = _delivering.setdefault(sandbox, threading.Lock())
     if not guard.acquire(blocking=False):
         return
     try:
-        for _ in range(3):
-            current = lifecycle.get(sandbox)
-            if current and current["active"]:
-                return
-            waiting = delivery.pending(sandbox)
-            if not waiting:
-                return
-            _, restart, revision = waiting
-            done = core.refresh_env(sandbox, restart)
-            delivery.acknowledge(sandbox, revision)
-            if done["changed"]:
-                state.event(sandbox, "env updated", ", ".join(done["changed"])
-                            + ("; app restarted" if done["restarted"] else "; app restart required"))
+        with core.sandbox_operation(sandbox):
+            for _ in range(3):
+                current = lifecycle.get(sandbox)
+                if current and current["active"]:
+                    return
+                waiting = delivery.pending(sandbox)
+                if not waiting:
+                    return
+                _, restart, revision = waiting
+                done = core.refresh_env(sandbox, restart)
+                delivery.acknowledge(sandbox, revision)
+                if done["changed"]:
+                    state.event(sandbox, "env updated", ", ".join(done["changed"])
+                                + ("; app restarted" if done["restarted"] else "; app restart required"))
     except Exception as error:
         state.event(sandbox, "env update failed", "retained for retry: " + str(error)[-1000:])
     finally:

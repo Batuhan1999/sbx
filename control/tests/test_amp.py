@@ -247,6 +247,23 @@ sudo() {
     def amp_job(self, env):
         return self.local.post("/internal/amp/jobs", json=env)
 
+    def spawned(self):
+        """The last detached command run in the guest: Amp's bootstrap launch."""
+        return [c for c in self.sdk.connect.return_value.commands.run.call_args_list if c.kwargs.get("background")][-1]
+
+    def failing_bootstrap(self, error):
+        """Guest commands succeed but the detached bootstrap launch, which
+        raises error; what was launched is recorded."""
+        launched = []
+
+        def run(command, **kwargs):
+            if kwargs.get("background"):
+                launched.append(command)
+                raise error
+            return Mock()
+        self.sdk.connect.return_value.commands.run.side_effect = run
+        return launched
+
     def test_amp_fresh_spawn_uses_core_create_services_and_app_start(self):
         self.amp_fixture()
         response = self.amp_job(self.env)
@@ -269,8 +286,12 @@ sudo() {
         # Amp's bootstrap is shipped into the sandbox and is what runs there, with the orb's token.
         bootstrap = (Path(__file__).parents[1] / 'sbx_control/connectors/amp/bootstrap.py').read_text()
         [shipped] = [path for path, content in written.items() if content == bootstrap]
-        self.assertIn(shipped, guest.commands.run.call_args.args[0])
-        self.assertEqual(guest.commands.run.call_args.kwargs["envs"]["ORB_TOKEN"], self.env["ORB_TOKEN"])
+        self.assertIn(shipped, self.spawned().args[0])
+        self.assertEqual(self.spawned().kwargs["envs"]["ORB_TOKEN"], self.env["ORB_TOKEN"])
+        # Then it is seen to have started, without the token.
+        started = guest.commands.run.call_args
+        self.assertEqual(started.args[0], f"python3 {shipped} --started")
+        self.assertNotIn("envs", started.kwargs)
 
     def test_amp_repeated_spawn_and_pause_reuse_core_lifecycle(self):
         self.amp_fixture()
@@ -281,7 +302,7 @@ sudo() {
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(lifecycle.get(self.name)["operation"], "resume")
         self.created.assert_called_once()
-        envs = self.sdk.connect.return_value.commands.run.call_args.kwargs["envs"]
+        envs = self.spawned().kwargs["envs"]
         self.assertEqual(envs["ORB_TOKEN"], "test-only-new-token")
         self.items[0].state = "running"
         from sbx_control import core
@@ -412,34 +433,78 @@ sudo() {
     def test_amp_spawn_that_fails_in_its_vm_deletes_it_before_preparing_the_app(self):
         self.amp_fixture()
         from sbx_control import core
-        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
+        launched = self.failing_bootstrap(RuntimeError("bootstrap did not start"))
         with patch.object(core, "delete") as delete:
             self.assertEqual(self.amp_job(self.env).status_code, 503)
+        self.assertEqual(len(launched), 1)   # it got as far as launching the bootstrap
+        delete.assert_called_once_with(self.name, self.name)
+        self.started.assert_not_called()
+
+    def test_amp_bootstrap_that_exits_before_it_starts_amp_deletes_a_fresh_vm(self):
+        """The runtime accepted the detached launch, but the helper failed
+        before Amp ran: the check after it says so, and the spawn fails."""
+        self.amp_fixture()
+        from sbx_control import core, runtime
+
+        def run(command, **kwargs):
+            if command.endswith("--started"):
+                raise runtime.CommandFailed(stderr="the Amp bootstrap did not start", command=command)
+            return Mock()
+        self.sdk.connect.return_value.commands.run.side_effect = run
+        with patch.object(core, "delete") as delete:
+            response = self.amp_job(self.env)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("bootstrap did not start", response.text)
         delete.assert_called_once_with(self.name, self.name)
         self.started.assert_not_called()
 
     def test_amp_spawn_that_fails_on_an_existing_vm_keeps_it(self):
-        """A paused thread's VM resumed for a new spawn holds the thread's
-        work: a failure leaves it for Amp to spawn again or delete."""
+        """A VM already there, running or a paused thread's resumed for a new
+        spawn, holds the thread's work: a failure leaves it for Amp to spawn
+        again or delete."""
         self.amp_fixture()
         self.assertEqual(self.amp_job(self.env).status_code, 200)
-        from sbx_control import core
-        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
+        from sbx_control import core, lifecycle
+        for state in ("running", "paused"):
+            with self.subTest(state=state):
+                self.items[0].state = state
+                self.sdk.connect.reset_mock()
+                launched = self.failing_bootstrap(RuntimeError("bootstrap did not start"))
+                with patch.object(core, "delete") as delete:
+                    self.assertEqual(self.amp_job({**self.env, "ORB_TOKEN": "test-only-new-token"}).status_code, 503)
+                self.assertEqual(len(launched), 1)
+                delete.assert_not_called()
+                self.sdk.kill.assert_not_called()
+                self.assertEqual([i.sandbox_id for i in self.items], ["amp-test-vm"])   # not replaced
+                self.created.assert_called_once()
+                self.sdk.connect.assert_called()
+                if state == "paused":
+                    self.assertEqual(lifecycle.get(self.name)["operation"], "resume")
+
+    def test_amp_failed_spawn_leaves_a_registration_that_is_not_this_orb_s(self):
+        """create refused the name (someone else's registration, no VM): the
+        cleanup deletes nothing of it."""
+        self.amp_fixture()
+        from sbx_control import core, sandboxes
+        sandboxes.register(self.name, "someone-else@example.test", "trunk", self.name)
         with patch.object(core, "delete") as delete:
-            self.assertEqual(self.amp_job({**self.env, "ORB_TOKEN": "test-only-new-token"}).status_code, 503)
+            self.assertEqual(self.amp_job(self.env).status_code, 503)
         delete.assert_not_called()
+        self.assertEqual(sandboxes.registered_owner(self.name), "someone-else@example.test")
 
     def test_amp_failed_cleanup_keeps_the_spawn_s_own_error(self):
         self.amp_fixture()
         from sbx_control import core
         from sbx_control.connectors.amp import orbs as amp_orbs
-        self.sdk.connect.return_value.commands.run.side_effect = RuntimeError("bootstrap did not start")
-        with patch.object(core, "delete", side_effect=RuntimeError("runtime unreachable")), \
+        launched = self.failing_bootstrap(RuntimeError("bootstrap did not start"))
+        # The cleanup's error carries the token: it is never what is logged.
+        with patch.object(core, "delete", side_effect=RuntimeError(f"runtime unreachable {self.env['ORB_TOKEN']}")), \
                 contextlib.redirect_stderr(io.StringIO()) as said:
             with self.assertRaisesRegex(RuntimeError, "bootstrap did not start"):
                 amp_orbs.handle_job(self.env)
+        self.assertEqual(len(launched), 1)
         self.assertIn("ORB_OPERATION=delete", said.getvalue())
-        self.assertNotIn("test-only-orb-token", said.getvalue())
+        self.assertNotIn(self.env["ORB_TOKEN"], said.getvalue())
 
     def test_amp_sdk_failure_does_not_leak_token_or_request(self):
         self.amp_fixture()

@@ -545,6 +545,23 @@ class DeliveryTests(Server):
         self.assertEqual(len(calls), 2)  # the change that came in meanwhile is delivered too
         self.assertIsNone(self.delivery.pending("delivery-test"))
 
+    def test_a_delivery_waits_for_the_sandbox_s_create_or_delete(self):
+        """A spawn holding the sandbox's operation lock (creating it, then
+        starting its app) is not interrupted by an env_update."""
+        import threading
+        from sbx_control import core
+        delivered = threading.Event()
+        with patch.object(core, "refresh_env", side_effect=lambda name, restart: (
+                delivered.set(), {"changed": [], "restarted": False})[1]):
+            with core.sandbox_operation("delivery-test"):
+                self.delivery.queue("delivery-test", ["FIRST"], True)
+                worker = threading.Thread(target=self.sandboxes.deliver_pending, args=("delivery-test",))
+                worker.start()
+                self.assertFalse(delivered.wait(0.3))
+            worker.join(5)
+        self.assertTrue(delivered.is_set())
+        self.assertIsNone(self.delivery.pending("delivery-test"))
+
     def test_a_value_the_sandbox_no_longer_gets_leaves_its_env(self):
         write = self.env({"KEPT": "1"}, [{"KEPT": "1", "REMOVED": "old"}])
         done = self.core.refresh_env(self.NAME, restart=False)

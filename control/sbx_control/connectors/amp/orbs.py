@@ -164,17 +164,23 @@ def handle_job(env: dict) -> dict:
             sandboxes.restart(name, info, prepare=True)
             return result
         except Exception:
-            discard(name)
+            discard(name, orb_id)
             raise
 
 
-def discard(name: str):
+def discard(name: str, orb_id: str):
     """A spawn that failed after it began creating the orb's sandbox deletes
     it again, as Amp's delete does: a VM no thread will use must not keep
-    running. The name is this orb's alone (sandbox_name, under its lock). A
-    cleanup that fails is logged; the spawn's own error is what Amp sees."""
+    running. Only a registration and VM tagged as this orb's are deleted;
+    one under its name that something else made (create refused it) stays.
+    A cleanup that fails is logged; the spawn's own error is what Amp sees."""
+    def this_orbs(metadata):
+        return (metadata or {}).get("connector") == KIND and metadata.get("orbId") == orb_id
     try:
-        if core.find(name) or sandboxes.registered_owner(name):
+        info, row = core.find(name), sandboxes.rows().get(name)
+        if (info and not this_orbs(info.metadata)) or (row and not this_orbs(row["metadata"])):
+            return
+        if info or row:
             sandboxes.delete_locked(name)
     except Exception as error:
         print(f"amp: {name} was not deleted after its spawn failed ({type(error).__name__}); "
@@ -210,6 +216,12 @@ def start_orb(name: str, info, job: dict, retry_preparation: bool = False) -> di
     sandbox.ship_guest()   # the bootstrap imports it
     sandbox.write(helper, BOOTSTRAP.read_text(), user="user")
     sandbox.spawn(f"python3 {helper}", envs)
+    # A runtime may return from spawn before the command has run: a helper
+    # that fails before it starts Amp shows here, within seconds.
+    try:
+        sandbox.sbx.commands.run(f"python3 {helper} --started", user="user", timeout=60)
+    except runtime.CommandFailed:
+        raise JobError(f"Amp's bootstrap did not start in the sandbox (see {platform.RUN}/amp-bootstrap.log there)") from None
     return {"name": name, "sandbox_id": info.sandbox_id, "repo": recipe.repo,
             "urls": addressing.urls(name, recipe), "state": "running"}
 

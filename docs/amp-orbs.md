@@ -84,9 +84,16 @@ from git) so Amp's Portal tab links to the sandbox's preview URLs.
 
 A spawn that fails after it created its sandbox deletes it again, as a delete
 job would, so no VM is left running for a thread that never started; Amp's next
-spawn starts over. A spawn that resumed an existing orb's sandbox keeps it on
-failure. If that cleanup itself fails, the control service's log says so, and
-a delete job (`ORB_OPERATION=delete`) removes the sandbox.
+spawn starts over. A spawn counts as failed when Amp's bootstrap is not seen
+running in the sandbox within 20 seconds of its launch. A spawn that resumed an
+existing orb's sandbox keeps it on failure, and the cleanup never touches a
+registration under the orb's name that another workload made. If the cleanup
+itself fails, the control service's log says so. A delete job
+(`ORB_OPERATION=delete`) uses the same path, so it fails for the same reason
+while the cause is there (the runtime not answering, say): fix what the log
+names, send the delete again
+(`ORB_OPERATION=delete ORB_ID=ID sbx-admin amp dispatch`), then check with `sbx-admin amp list` that the
+sandbox is gone.
 
 ## Project snapshots
 
