@@ -3,7 +3,10 @@
 Your agent installs sbx on your server and then sends you two links: the
 **setup link**, where you create your account, and a **keys page**, where you
 paste the keys only you have. This page shows what each one looks like. Your
-agent does the rest of the setup from its side.
+agent does the rest of the setup from its side. The setup link is the
+onboarding link the installer prints as its last line
+(`==> Open the onboarding: https://.../app/setup#t=...`); if you ran the
+installer yourself, open that one.
 
 ## Create your account
 

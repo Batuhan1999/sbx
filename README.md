@@ -174,13 +174,23 @@ without a browser. By hand, on the server:
    use, and which runtimes this server can run (Embed, or E2B Cloud and Boat
    with an API key and a domain).
 3. Install: `sudo sh install.sh`. It installs the control service, the
-   secret store, and Embed with its base templates where the server can run
-   it. It then prints a one-time setup link. Without Embed it installs with
-   no sandbox runtime yet; the setup adds one.
-4. Open the link, accept the temporary certificate, and take the steps:
-   the address (IP access, or a domain with its DNS records), the sandbox
-   runtime (a provider's API key, when Embed can't run here) and your admin
-   login. `sudo sbx-admin setup-link` makes a new link if it is lost.
+   secret store, and Embed where the server can run it. Without Embed it
+   installs with no sandbox runtime yet; the setup adds one. With inbound
+   TCP 80 open and a public IP, it also gets a trusted certificate for that
+   IP. Its last line is your onboarding link:
+
+   ```text
+   ==> Open the onboarding: https://203.0.113.10/app/setup#t=...
+   ```
+
+   The link holds a one-time token: keep it out of shared logs and chats.
+   Without the IP certificate, the line before it says so: your browser warns
+   once, until you set a domain.
+4. Open the link and do the rest in the browser: the server address (done
+   already when the installer got the IP certificate; or a domain with its
+   DNS records), your admin account, the sandbox runtime (a provider's API
+   key, when Embed can't run here) and the coding agents. Finishing the setup builds the first templates.
+   `sudo sbx-admin setup-link` prints a link if it is lost.
 
 Admins see a newer release in the web app (**Settings → Updates**: what
 changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host

@@ -142,6 +142,9 @@ class Server(Installation):
         from sbx_control import app, setup
         from sbx_control.connections import Check
         self.app = app
+        # sbx-control started afresh for this test's installation: the session cookie's domain is read
+        # on the first request (auth.Sessions), and an earlier test's domain must not carry over.
+        app.app.middleware_stack = None
         self.token = setup.mint_token()
         self.headers = {"Authorization": f"Setup {self.token}"}
         self.client = TestClient(app.app, base_url="https://203.0.113.10")

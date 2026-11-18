@@ -1253,6 +1253,72 @@ class SecretsCliTests(Cli):
         self.assertEqual(len(self.control.calls), before)
 
 
+class WaitCliTests(Cli):
+    """Every wait has an overall --timeout, notes its progress at least every 30 s and exits non-zero
+    when the time runs out."""
+    # Each command that waits, with the --timeout it takes, and its default (None: from the request or
+    # DOWN_TIMEOUT_SECONDS).
+    WAITS = ((["login"], 300), (["up", "a"], 1800), (["sandbox", "info", "a", "--wait"], 1800),
+             (["runtimes", "add", "boat"], 600), (["setup", "runtime", "add", "boat"], 600),
+             (["setup", "address", "--ip"], 900), (["endpoints", "add"], 300),
+             (["extensions", "set", "amp", "--wait"], 3600), (["template", "build", "--wait"], 1800),
+             (["secrets", "status", "x", "--wait"], None), (["down", "a"], None))
+
+    def test_every_wait_takes_a_timeout_in_seconds_with_a_default(self):
+        for argv, default in self.WAITS:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.cli.parser().parse_args(argv).timeout, default)
+                self.assertEqual(self.cli.parser().parse_args([*argv, "--timeout", "7"]).timeout, 7)
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    self.cli.parser().parse_args([*argv, "--timeout", "0"])
+
+    def clock(self):
+        """A fake clock that only the CLI's own sleeps move."""
+        now = [0.0]
+        self.enterContext(patch.object(self.cli.time, "monotonic", side_effect=lambda: now[0]))
+        self.enterContext(patch.object(self.cli.time, "sleep",
+                                       side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)))
+
+    def test_a_wait_notes_its_progress_and_exits_non_zero_when_its_timeout_runs_out(self):
+        self.clock()
+        self.routes[("POST", "/api/repos/owner/app/template")] = lambda q, body: {"status": "building"}
+        self.routes[("GET", "/api/repos/owner/app/template")] = lambda q, body: {"status": "building"}
+        code, out, err = self.run_cli("template", "build", "--repo", "owner/app", "--wait", "--timeout", "100")
+        self.assertIn("still building", str(code))
+        self.assertIn("gave up after 100 s", str(code))
+        self.assertEqual(out, "")
+        notes = [line for line in err.splitlines() if "of up to 100 s" in line]
+        self.assertEqual(len(notes), 3)   # at 25, 50 and 75 s: never 30 s without one; at 100 it gives up
+        self.assertIn("still waiting (25 s of up to 100 s)", notes[0])
+
+    def test_progress_that_does_not_change_is_noted_again_with_the_time(self):
+        self.clock()
+        self.routes[("GET", "/api/endpoints")] = lambda q, body: {
+            "endpoints": [{"name": "pg", "state": "applying"}], "candidates": []}
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: {"name": "pg"}
+        code, _, err = self.run_cli("endpoints", "add", "--server", "pg", "--timeout", "60")
+        self.assertIn("still applying after 60 s", str(code))
+        self.assertIn("(gave up after 60 s; --timeout sets how long to wait)", str(code))
+        self.assertEqual(err.count("applying on the server"), 3)   # once as it changed, then at 26 and 52 s
+        self.assertIn("applying on the server (26 s of up to 60 s)", err)
+
+    def test_the_browser_sign_in_gives_up_at_its_timeout(self):
+        with patch.object(self.cli.webbrowser, "open"):
+            code, out, err = self.run_cli("login", "--timeout", "1")
+        self.assertIn("the browser sign-in did not finish (gave up after 1 s", str(code))
+
+    def test_a_delete_says_it_is_still_waiting_for_the_server(self):
+        def slow(q, body):
+            threading.Event().wait(0.3)
+            return {"deleted": "a", "cleanup": None}
+        self.routes[("DELETE", "/api/sandboxes/a")] = slow
+        with patch.object(self.cli, "HEARTBEAT_SECONDS", 0.1):
+            code, out, err = self.run_cli("down", "a", "--timeout", "30")
+        self.assertEqual(code, 0, err)
+        self.assertIn("deleting sbx-a: waiting for the server (0 s of up to 30 s)", err)
+        self.assertIn("sbx-a deleted", out)
+
+
 class CliApiTests(Server):
     def test_scaffold_names_the_files_it_reads_then_drafts_the_recipe(self):
         self.repo_admin()

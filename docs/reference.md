@@ -1104,15 +1104,15 @@ sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail, fix
 
 On a fresh server (one without `/dev/kvm` installs with no runtime, and the
 setup can't finish without one, so `sbx login` can't sign in yet), an agent
-takes every step of the wizard with `sbx setup`, as the holder of the setup
-link install.sh printed. The link is a credential: it goes in
+takes every step of the wizard with `sbx setup`, as the holder of the
+onboarding link install.sh printed as its last line. The link is a credential: it goes in
 `SBX_SETUP_LINK` or a file named by `--link-file`, never on the command line,
 and stdin is left to the secrets (one line per secret, in the order asked).
 `--insecure` accepts the self-signed certificate the server answers with
 before it has its own.
 
 ```sh
-export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/setup#t=TOKEN
+export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/app/setup#t=TOKEN
 sbx setup status [--json]                      # each step, done or to do
 sbx setup address --domain sbx.example.com --email ops@example.com   # or: --ip; waits for HTTPS
 sbx setup admin ops@example.com < password-file
@@ -1381,6 +1381,29 @@ building or has no room), with `Retry-After` when waiting helps.
 | `DELETE /api/secret-requests/ID` | admin, and the first-run setup link | `sbx secrets cancel`; 409 once it is not pending. |
 | `POST /api/secret-requests/ID/submit` | admin, signed in (a session or their token; not the setup link, and refused without sign-in) | The keys page and `sbx secrets submit`: body `{"values": {"TARGET": "VALUE"}}`; each pasted key, and each item that reuses a held key, is stored where it goes. `{"request", "ok", "results": [{"target", "ok", "error"}]}`; a refused item stays pending. 400 for nothing to save or a target the request does not ask for, 409 once it is not pending. `GET /keys/ID` redirects to the page. |
 | `GET /api/updates`, `POST /api/updates`, `POST /api/updates/check` | admin | The installed release, the newer ones with their notes, and the last upgrade with its steps and progress; `POST` with `{"tag": "v0.3.0"}`, the newest release, [installs it](#operating-the-host): 400 for any other tag, 409 while an upgrade runs. `check` asks GitHub now. |
+
+### Waiting in the CLI
+
+Every `sbx` command that waits has an overall limit, `--timeout SECONDS`. While
+it waits it notes its progress on stderr at least every 30 seconds (what it
+waits for, and the seconds so far of the limit). When the limit runs out it
+exits non-zero with what is still pending and `gave up after N s`; the
+server's work goes on, and the command it names follows it.
+
+| Command | Waits for | Default |
+| --- | --- | --- |
+| `sbx login` | the sign-in in the browser | 300 |
+| `sbx up` (unless `--no-wait`), `sbx sandbox info --wait`, `restart`, `prepare`, `resume` | the sandbox's operation | 1800 |
+| `sbx down` | the server's answer (a paused sandbox's resume and `.sbx/cleanup` come first) | 2700 |
+| `sbx runtimes add \| set \| remove \| default`, `sbx setup runtime add` | the host to apply the change and sbx-control to restart | 600 |
+| `sbx endpoints add \| rm` | the host to apply it | 300 |
+| `sbx extensions set \| disconnect --wait` | the templates the change rebuilds | 3600 |
+| `sbx template build --wait`, `sbx template status --wait` | the repository's template build | 1800 |
+| `sbx setup address` | HTTPS at the new address | 900 |
+| `sbx secrets request --wait`, `sbx secrets status --wait` | every key, then the runtime keys applied | until the request expires, plus 600 |
+
+The SSH tunnel (`sbx tunnel`, which ssh runs) waits up to 120 seconds for a
+sandbox that is being made or waking up.
 
 ## Operating the host
 

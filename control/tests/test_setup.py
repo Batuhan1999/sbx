@@ -136,6 +136,83 @@ class SetupTests(Server):
         self.choose_agents()
         self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
 
+    def test_the_onboarding_link_opens_the_setup_page_with_a_new_one_time_token(self):
+        self.ip_expiry.return_value = None
+        found = self.setup.onboarding()
+        self.assertTrue(found["link"].startswith("https://203.0.113.10/app/setup#t="))
+        token = found["link"].split("#t=", 1)[1]
+        self.assertTrue(self.setup.token_ok(token))
+        self.assertFalse(self.setup.token_ok(self.token))   # the one before stops working
+        self.assertEqual((found["trusted"], found["domain"]), (False, ""))
+        self.headers = {"Authorization": f"Setup {token}"}
+        self.ip_expiry.return_value = datetime.now(timezone.utc) + timedelta(hours=160)
+        self.choose_ip()
+        found = self.setup.onboarding()
+        self.assertTrue(found["trusted"])
+        self.headers = {"Authorization": f"Setup {found['link'].split('#t=', 1)[1]}"}
+        self.create_admin()
+        self.choose_agents()
+        self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
+        with self.assertRaises(RuntimeError):   # a set-up server prints no link
+            self.setup.onboarding()
+
+    def first_certificate(self, *, issued=True, error="", public=True, port_free=True):
+        """setup.first_certificate with the host's tls effect played by its sleep: it takes the request
+        and leaves the certificate (or Certbot's error)."""
+        def apply(_seconds):
+            self.effects()
+            if issued:
+                self.ip_expiry.return_value = datetime.now(timezone.utc) + timedelta(hours=160)
+        self.ip_expiry.return_value = None
+        with patch.object(self.setup, "_public", return_value=public), \
+                patch.object(self.setup, "_port_free", return_value=port_free), \
+                patch("sbx_control.connections.domain.ip_certificate_error", return_value=error):
+            return self.setup.first_certificate(sleep=apply)
+
+    def test_the_installer_gets_the_ip_certificate_before_the_first_visit(self):
+        trusted, said = self.first_certificate()
+        self.assertTrue(trusted, said)
+        self.assertEqual(self.settings.current().domain.address, "203.0.113.10")
+        self.assertIn(80, self.settings.opened_ports(self.settings.current()))
+        self.assertTrue(self.setup.onboarding()["link"].startswith("https://203.0.113.10/app/setup#t="))
+        view = self.client.get("/api/setup", headers={"Authorization": f"Setup {self.setup.mint_token()}"}).json()
+        self.assertTrue(view["steps"][0]["done"])   # the page opens on the account step
+
+    def test_without_the_certificate_the_setup_keeps_the_address_step_and_certbots_error(self):
+        trusted, said = self.first_certificate(issued=False, error="Certbot failed\nTimeout during connect")
+        self.assertFalse(trusted)
+        self.assertIn("Timeout during connect", said)
+        self.assertEqual(self.settings.current().domain.address, "203.0.113.10")   # the renewal keeps trying
+        self.assertFalse(self.setup.onboarding()["trusted"])
+
+    def test_no_public_address_or_a_busy_port_80_changes_nothing(self):
+        self.effects()   # the installation's own, before
+        for kwargs, words in (({"public": False}, "no public IP"), ({"port_free": False}, "port 80 is in use")):
+            with self.subTest(words=words):
+                trusted, said = self.first_certificate(**kwargs)
+                self.assertFalse(trusted)
+                self.assertIn(words, said)
+                self.assertEqual(self.settings.current().domain.address, "")
+                self.assertEqual(self.effects(), [])
+
+    def test_the_installer_stops_waiting_for_the_certificate_at_its_timeout(self):
+        now = [0.0]
+        self.ip_expiry.return_value = None
+        with patch.object(self.setup, "_public", return_value=True), \
+                patch.object(self.setup, "_port_free", return_value=True):
+            trusted, said = self.setup.first_certificate(
+                30, sleep=lambda seconds: now.__setitem__(0, now[0] + seconds), clock=lambda: now[0])
+        self.assertFalse(trusted)
+        self.assertIn("within 30 s", said)
+
+    def test_a_domain_or_a_finished_setup_is_left_to_its_own_certificate(self):
+        self.settings.update("domain", {**self.settings.current().domain.model_dump(), "name": "sbx.example.com"},
+                             by="test")
+        self.effects()
+        trusted, said = self.first_certificate()
+        self.assertIn("sbx.example.com gets its own certificate", said)
+        self.assertEqual((self.settings.current().domain.address, self.effects()), ("", []))
+
     def test_validation_and_existing_admin_cannot_be_overwritten(self):
         from sbx_control import users
         body = {"email": "operator@example.com", "password": "test-only-password-123"}
@@ -467,7 +544,7 @@ class SetupTests(Server):
         self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
         self.assertTrue(self.setup.address_ready())
         view = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual(view["link"], "https://app.sbx.example.com/setup")
+        self.assertEqual(view["link"], "https://app.sbx.example.com/app/setup")
         self.assertEqual(view["access"]["needs_ports"], [80, 53])  # delegated DNS answers here, on 53
         self.assertEqual(view["host"]["address"], "203.0.113.10")
         self.expiry.return_value = datetime.now(timezone.utc) - timedelta(days=1)

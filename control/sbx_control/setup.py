@@ -15,6 +15,7 @@ import ipaddress
 import pathlib
 import secrets
 import sqlite3
+import sys
 
 from . import paths, runtime, settings, users, vault
 from .state import Setting
@@ -140,15 +141,120 @@ def token_ok(token: str) -> bool:
 
 
 def link(token: str | None = None, address: str = "") -> str:
-    """Where the operator finishes the setup: the domain's sign-in host once
-    the certificate is there, else the public address (self-signed)."""
+    """Where the operator finishes the setup, the web app's setup page: the
+    domain's sign-in host once the certificate is there, else the address
+    (its trusted IP certificate once issued, else self-signed). The token
+    goes in the fragment, which the browser keeps to itself."""
     from .connections import domain
     s = settings.current()
     host = f"{s.domain.login_host}.{s.domain.name}" if s.domain.name and domain.certificate_ready() else (
         s.domain.address or ip_address(address) or domain.public_ip())
     if ":" in host:
         host = f"[{host}]"
-    return f"https://{host}/setup" + (f"#t={token}" if token else "")
+    return f"https://{host}/app/setup" + (f"#t={token}" if token else "")
+
+
+def onboarding() -> dict:
+    """install.sh's last line while the setup is open (install-report.sh):
+    the onboarding link with a new one-time token (the previous one stops
+    working), and whether the browser trusts the certificate it opens on.
+    Shown on the installer's terminal only, never written to a file."""
+    from .connections import domain
+    if complete():
+        raise RuntimeError("the setup is complete")
+    return {"link": link(mint_token()), "trusted": domain.certificate_ready(),
+            "domain": settings.current().domain.name}
+
+
+# install.sh waits this long for the IP certificate before it prints the link.
+IP_CERTIFICATE_SECONDS = 300
+
+
+def _public(address: str) -> bool:
+    """An address Let's Encrypt can reach: a global one, not a private or documentation range."""
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+def _port_free(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
+
+
+def first_certificate(timeout: float = IP_CERTIFICATE_SECONDS, *, sleep=None, clock=None) -> tuple[bool, str]:
+    """install.sh, before it prints the onboarding link of a server with no
+    address yet: IP access with its trusted certificate, as the setup's
+    "IP access" choice makes it (the address in the settings; tls.sh has
+    Certbot validate it over HTTP on port 80), so the first visit opens
+    without a browser warning. Only with a public IP and port 80 free on
+    this host; the provider's firewall shows only in Certbot's answer. Waits
+    for the host's tls effect up to timeout seconds. Returns (trusted, what
+    happened). Without the certificate, setup keeps the address step open
+    with Certbot's error and its retry; a domain can still be chosen there."""
+    import time
+    from . import host_requests
+    from .connections import domain
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    s = settings.current()
+    if complete():
+        return domain.certificate_ready(), "the setup is complete"
+    if s.domain.name:
+        return domain.certificate_ready(), f"the domain {s.domain.name} gets its own certificate"
+    if s.domain.address:   # chosen before: its renewal (the sbx-tls-renew timer) keeps trying
+        if domain.certificate_ready():
+            return True, f"trusted certificate for {s.domain.address}"
+        return False, f"no trusted certificate for {s.domain.address} yet: {_last_line(domain.ip_certificate_error())}"
+    address = domain.public_ip()
+    if not _public(address):
+        return False, "this server has no public IP address (none seen from outside)"
+    if not _port_free(80):
+        return False, "port 80 is in use on this server; the IP certificate needs it"
+    settings.update("domain", {**s.domain.model_dump(), "address": address}, by="install.sh")
+    deadline = clock() + timeout
+    while host_requests.requested("tls") or host_requests.applying("tls"):
+        if clock() > deadline:
+            return False, f"no certificate for {address} within {int(timeout)} s; the renewal keeps trying"
+        sleep(2)
+    if domain.certificate_ready():
+        return True, f"trusted certificate for {address} (Let's Encrypt)"
+    return False, f"no trusted certificate for {address}: {_last_line(domain.ip_certificate_error())}"
+
+
+def _last_line(error: str) -> str:
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    return lines[-1] if lines else "inbound TCP port 80 must reach this server, in any cloud firewall too"
+
+
+def main(argv=None) -> int:
+    """python -m sbx_control.setup onboarding | first-certificate (install.sh, as root)."""
+    import argparse
+    import shlex
+    parser = argparse.ArgumentParser(prog="python -m sbx_control.setup")
+    parser.add_argument("command", choices=["onboarding", "first-certificate"])
+    parser.add_argument("--timeout", type=int, default=IP_CERTIFICATE_SECONDS)
+    a = parser.parse_args(argv)
+    if a.command == "first-certificate":
+        if complete():   # an upgrade of a server that is set up: nothing to say
+            return 0
+        trusted, said = first_certificate(a.timeout)
+        print(f"{'ok' if trusted else 'self-signed for now'}: {said}")
+        return 0
+    try:
+        found = onboarding()
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 3
+    print(f"link={shlex.quote(found['link'])}\ntrusted={'1' if found['trusted'] else ''}\n"
+          f"domain={shlex.quote(found['domain'])}")
+    return 0
 
 
 def host_facts() -> dict:
@@ -251,3 +357,7 @@ def version() -> str:
         return (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
     except OSError:
         return "dev"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
