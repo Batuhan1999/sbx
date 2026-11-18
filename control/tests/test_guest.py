@@ -223,6 +223,24 @@ class IdentityTests(unittest.TestCase):
                         self.assertEqual(sbx_guest.listener_pid(), expected)
 
 
+    def test_a_stopped_standalone_sshd_with_no_or_a_stale_pid_is_just_started(self):
+        for pid_file in (None, "", "999999\n"):
+            with self.subTest(pid_file=pid_file), tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
+                root = Path(directory)
+                (root / "proc/1").mkdir(parents=True)
+                (root / "proc/1/comm").write_text("init\n")
+                if pid_file is not None:
+                    (root / "run").mkdir()
+                    (root / "run/sshd.pid").write_text(pid_file)
+                started, killed = [], []
+                with patch.object(sbx_guest, "Path", lambda path: root / str(path).lstrip("/")), \
+                        patch.object(sbx_guest, "PROC", root / "proc"), \
+                        patch.object(sbx_guest.os, "kill", lambda pid, sig: killed.append(pid)), \
+                        patch.object(sbx_guest.subprocess, "run", lambda *a, **kw: started.append(a[0])), \
+                        patch.object(sbx_guest, "listener_alive", return_value=True):
+                    sbx_guest.restart_listener()
+                self.assertEqual((started, killed), ([["/usr/sbin/sshd"]], []))
+
     def test_the_standalone_sshd_starts_again_only_once_the_old_one_has_let_go_of_the_port(self):
         with tempfile.TemporaryDirectory(prefix="sbx-guest-root-") as directory:
             root = Path(directory)

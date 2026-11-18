@@ -354,10 +354,17 @@ def restart_listener():
         subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        old = int(Path("/run/sshd.pid").read_text().strip())
-        os.kill(old, signal.SIGTERM)
-        if not wait_until(lambda: exited(old), 15):   # it holds the port until it exits
-            raise GuestError("workspace SSH listener did not stop")
+        try:
+            old = int(Path("/run/sshd.pid").read_text().strip())
+        except (OSError, ValueError):   # none recorded (stopped, or a machine just booted): only start it
+            old = 0
+        if old > 1 and not exited(old):
+            try:
+                os.kill(old, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if not wait_until(lambda: exited(old), 15):   # it holds the port until it exits
+                raise GuestError("workspace SSH listener did not stop")
         subprocess.run(["/usr/sbin/sshd"], check=True, timeout=30)
     if not wait_until(lambda: listener_alive(), 15):
         raise GuestError("workspace SSH listener did not start again")
