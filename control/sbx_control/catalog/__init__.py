@@ -353,7 +353,7 @@ def _server(name: str, given, kind: str, source: str, files: dict, inputs: dict)
     services = compose.get("services") if isinstance(compose, dict) else None
     if not isinstance(services, dict) or not services or not all(isinstance(v, dict) for v in services.values()):
         raise PackageError(f"{name}: {compose_file} has no services")
-    if service not in services:
+    if not isinstance(service, str) or service not in services:
         raise PackageError(f"{name}: server.service is one of {compose_file}'s services ({', '.join(services)})")
     if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
         raise PackageError(f"{name}: server.port is the port server.service listens on")

@@ -229,6 +229,27 @@ describe('servers this host runs', () => {
     await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toEqual({ name: 'dev-pg', package: 'postgres-server' }))
   })
 
+  it('shows a server that failed to start again as failed, though its earlier connection remains', async () => {
+    const saved = { ...SAVED, key: 'dev-pg', package: 'postgres-server', title: 'Postgres server', managed: { kind: 'postgres', status: 'failed' } }
+    stubApi(base({ ...catalog, 'GET /api/catalog/connections': { connections: [saved] },
+      'GET /api/servers': { servers: [{ ...MANAGED, status: 'failed', error: 'docker compose up failed (exit 1)' }], packages: [] } }))
+    renderApp(<ServicesPage />)
+    const rows = await (await group('Connected')).findAllByText('dev-pg')
+    expect(rows).toHaveLength(1)
+    expect(within(rows[0].closest('li')!).getByText('Failed to start')).toBeTruthy()
+  })
+
+  it('keeps a managed server\'s name from a connection to one the owner runs', async () => {
+    stubApi(base({ ...catalog, 'GET /api/servers': { servers: [{ ...MANAGED, name: 'postgres', status: 'failed' }], packages: [] } }))
+    renderApp(<ServicesPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('radio', { name: /Connect one you run/ }))
+    await user.click(await within(dialog).findByText('More options'))
+    expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('postgres-2')
+  })
+
   it('removes a server with its connection, saying that its data goes', async () => {
     const saved = { ...SAVED, key: 'dev-pg', package: 'postgres-server', title: 'Postgres server', managed: { kind: 'postgres', status: 'ready' } }
     const calls = stubApi(base({ ...catalog, 'GET /api/catalog/connections': { connections: [saved] }, 'GET /api/servers': { servers: [MANAGED], packages: [] },

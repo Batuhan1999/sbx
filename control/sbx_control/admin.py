@@ -480,8 +480,12 @@ def main(argv: list) -> int:
                 elif a.action == 'down':
                     result = hosted_services.down(a.name, delete_data=a.delete_data)
                 else:
-                    presets = dict(line.split("=", 1) for line in sys.stdin.read().splitlines()
-                                   if "=" in line) if a.secrets_stdin else None
+                    presets = None
+                    if a.secrets_stdin:
+                        lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
+                        if not all("=" in line for line in lines):
+                            raise ValueError("--secrets-stdin: NAME=VALUE lines")
+                        presets = dict(line.split("=", 1) for line in lines)
                     result = hosted_services.up(a.name, a.kind, package=a.package, data_root=a.data_root,
                                                 storage_gb=a.storage_gb, presets=presets)
             else:

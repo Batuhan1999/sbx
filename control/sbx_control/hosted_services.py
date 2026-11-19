@@ -187,12 +187,24 @@ def _old_postgres(server: Server, values: dict) -> bool:
 def records():
     with state.db() as conn:
         names = [r[0] for r in conn.execute("select name from managed_servers order by name")]
-    return [record(name) for name in names]
+    return [found for found in map(record, names) if found]
 
 
-def record(name: str) -> dict:
-    """A managed server as its listings show it (never a secret)."""
-    server, values, status = _record(name)
+def exists(name: str) -> bool:
+    try:
+        with state.db() as conn:
+            return conn.execute("select 1 from managed_servers where name = ?", (name,)).fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
+
+
+def record(name: str) -> dict | None:
+    """A managed server as its listings show it (never a secret), or None
+    when there is none (one removed while it was listed)."""
+    found = _record(name)
+    if not found:
+        return None
+    server, values, status = found
     return {"name": name, "kind": server.kind,
             "package": values.get("package") if server.kind == PACKAGE else DRIVERS[server.kind]["package"],
             "status": status, "error": values.get("error", "") if status == "failed" else "",
@@ -386,6 +398,8 @@ def _begin(name, kind, package, data_root, storage_gb, presets):
         raise ValueError("refusing to adopt a container not owned by this server")
     if server.kind == "postgres" and details and not _matches(server, details, values):
         raise ValueError("the existing container does not match its PostgreSQL 18 storage record; it is unchanged")
+    if found:
+        _status(server.name, "preparing")   # a failed or stopped server starting again
     return server, values, details
 
 
@@ -395,7 +409,8 @@ def _finish(server: Server, values: dict, details: dict | None):
     try:
         result = _run(server, values, details)
     except Exception as error:
-        _save(server, {**values, "error": str(error)[:400]}, "failed")
+        current = _record(server.name)   # what _run or _check saved before it failed
+        _save(server, {**(current[1] if current else values), "error": str(error)[:400]}, "failed")
         raise
     return result
 
@@ -412,6 +427,7 @@ def _run(server: Server, values: dict, details: dict | None):
             _save(server, values)
         volumes = cow_storage.volume_prepare(server.name, values["storage"], declared.server["volumes"])
         hosted_compose.up(server.name, declared, values, NETWORK, LABEL, volumes)
+        deadline = time.monotonic() + 120   # the check's window starts once it runs, not before a long pull
         package, inputs = values["package"], catalog.render_server_inputs(declared, address, values["secrets"])
     else:
         mount_unit = cow_storage.prepare(values["storage"]) if server.kind == "postgres" else ""

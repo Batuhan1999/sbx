@@ -1059,7 +1059,11 @@ def wait_server(name, timeout, interval=3.0):
         if server["status"] == "failed":
             return None, f"the server {name} failed: {server['error'] or 'see the server log'}"
         return f"{name}: {server['status']}", False
-    found = follow(lambda: api("GET", "/api/servers"), verdict, timeout, interval=interval,
+    deadline = time.monotonic() + timeout
+
+    def fetch():   # each poll within what is left of the wait, and short enough for the heartbeat
+        return request("GET", "/api/servers", timeout=max(1.0, min(HEARTBEAT_SECONDS, deadline - time.monotonic())))
+    found = follow(fetch, verdict, timeout, interval=interval, retry_statuses=RETRIED,
                    late=f"the server {name} is still starting after {timeout} s: sbx servers shows it")
     return next(s for s in found["servers"] if s["name"] == name)
 

@@ -48,9 +48,11 @@ function AdminServices() {
   const connectedPackages = new Set((shared.data ?? []).map(s => s.package))
   const newAccounts = accounts.filter(p => !connectedPackages.has(p.name))
   const chosen = adding ? accounts.find(p => p.name === adding) : undefined
-  // A server this host runs has its connection once it is ready: until then, and when it failed, it shows here.
+  // A server this host runs shows as its connection once it is ready. Until then, and when it failed or stopped
+  // (a connection saved before may remain), it shows as the server, with its error and Start again.
   const connected = new Set((shared.data ?? []).map(s => s.key))
-  const unconnected = (servers.data ?? []).filter(s => !connected.has(s.name))
+  const unconnected = (servers.data ?? []).filter(s => !connected.has(s.name) || s.status !== 'ready')
+  const asServer = new Set(unconnected.map(s => s.name))
   // A server that became ready has a connection now.
   const ready = (servers.data ?? []).filter(s => s.status === 'ready').map(s => s.name).join(' ')
   const refetchShared = shared.refetch
@@ -66,7 +68,7 @@ function AdminServices() {
         {shared.isPending ? <SkeletonRows rows={2} />
           : <ul className="divide-y divide-line">
             {unconnected.map(s => <ServerRow key={s.name} s={s} pkg={(catalog.data ?? []).find(p => p.name === s.package)} />)}
-            {(shared.data ?? []).map(s => <SharedRow key={s.key} s={s} catalog={catalog.data ?? []} onAnother={() => setAdding(s.package)} />)}
+            {(shared.data ?? []).filter(s => !asServer.has(s.key)).map(s => <SharedRow key={s.key} s={s} catalog={catalog.data ?? []} onAnother={() => setAdding(s.package)} />)}
           </ul>}
       </div>
     </Group>}
@@ -222,8 +224,8 @@ function PackageConnectionForm({ pkg, existing, onDone }: { pkg?: CatalogPackage
       <RadioCard value="here" title="Run it on this server" description="sbx starts it, private to this server’s sandboxes." />
       <RadioCard value="own" title="Connect one you run" description="Give its address and credentials." />
     </RadioGroup>}
-    {offered && where === 'here' ? <RunServerForm pkg={pkg} taken={taken} onDone={onDone} /> : <ConnectionFields inputs={Object.entries(pkg.inputs).filter(([, i]) => !i.hidden)} existing={existing} taken={shared.data.map(s => s.key)}
-      defaultKey={existing?.key ?? suggestKey(pkg.name, shared.data.map(s => s.key))}
+    {offered && where === 'here' ? <RunServerForm pkg={pkg} taken={taken} onDone={onDone} /> : <ConnectionFields inputs={Object.entries(pkg.inputs).filter(([, i]) => !i.hidden)} existing={existing} taken={taken}
+      defaultKey={existing?.key ?? suggestKey(pkg.name, taken)}
       onSubmit={async v => { await add.mutateAsync(v); onDone() }} onCancel={onDone} />}
   </div>
 }

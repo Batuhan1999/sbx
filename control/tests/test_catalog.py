@@ -689,10 +689,37 @@ class ManagedServerTests(Server):
             failed = self.hosted.records()[0]
             self.assertEqual((failed["status"], failed["error"]), ("failed", "docker compose up failed (exit 1)"))
             up.side_effect = None
-            self.hosted.begin("app", package="fixture-app")   # the same name and package: again
+            # The same name and package again: it reads as starting before the API answers.
+            self.assertEqual(self.hosted.begin("app", package="fixture-app")["status"], "preparing")
             self.hosted.finish("app")
             again = self.hosted.records()[0]
             self.assertEqual((again["status"], again["error"]), ("ready", ""))
+
+    def test_a_failed_start_keeps_what_it_saved_and_its_check_waits_after_compose_up(self):
+        self.server_package()
+        compose = self.hosted.hosted_compose
+        clock = [0, 1000]   # compose up took longer than the check's whole window
+
+        def up(name, package, values, *rest):
+            self.hosted._save(self.hosted.Server(name, "package"), {**values, "marker": "saved by the run"})
+        with self.docker_without_containers(), patch.object(compose, "exists", return_value=False), \
+                patch.object(compose, "up", side_effect=up), patch.object(self.hosted.time, "sleep"), \
+                patch.object(self.hosted.time, "monotonic", side_effect=lambda: clock.pop(0) if len(clock) > 1 else clock[0]), \
+                patch.object(self.hosted.connections, "save",
+                             side_effect=[self.hosted.PackageError("not yet"), RuntimeError("refused")]):
+            self.hosted.begin("app", package="fixture-app")
+            with self.assertRaisesRegex(RuntimeError, "refused"):   # retried once, not given up at once
+                self.hosted.finish("app")
+        values = self.hosted._record("app")[1]
+        self.assertEqual((values["marker"], values["error"]), ("saved by the run", "refused"))
+
+    def test_a_server_removed_while_listed_is_left_out(self):
+        self.record("gone", "clickhouse", {"address": "172.29.50.10", "password": "fixture"})
+        real = self.hosted._record
+        with patch.object(self.hosted, "_record", side_effect=lambda name: None if name == "gone" else real(name)):
+            self.assertEqual(self.hosted.records(), [])
+        self.assertTrue(self.hosted.exists("gone"))
+        self.assertFalse(self.hosted.exists("other"))
 
     def test_a_name_with_containers_but_no_record_is_not_adopted_by_a_package(self):
         self.server_package()
@@ -734,6 +761,8 @@ class ManagedServerTests(Server):
             catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("  storage_gb: 3\n", "")}, "operator")
         with self.assertRaisesRegex(catalog.PackageError, "server.service is one of"):
             catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("service: app", "service: web")}, "operator")
+        with self.assertRaisesRegex(catalog.PackageError, "server.service is one of"):
+            catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("service: app", "service: [app]")}, "operator")
 
     def test_the_shipped_packages_that_run_a_server_declare_all_their_compose_files_read(self):
         import re
@@ -799,6 +828,9 @@ class ManagedServerTests(Server):
             orphaning = self.client.delete("/api/catalog/connections/app")   # would leave the server running unseen
             self.assertEqual(orphaning.status_code, 409)
             self.assertIn("sbx servers rm app", orphaning.json()["detail"])
+            taking = self.client.post("/api/catalog/connections", json={"package": "fixture-app", "key": "app",
+                                                                        "inputs": {"url": "http://x", "token": "x"}})
+            self.assertEqual(taking.status_code, 409, taking.text)   # the server's name stays its own
             removed = self.client.delete("/api/servers/app")
             self.assertEqual((removed.status_code, removed.json()["data_deleted"]), (200, True))
             self.assertEqual(down.call_args.kwargs, {"delete_data": True})

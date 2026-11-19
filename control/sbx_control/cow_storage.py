@@ -161,7 +161,7 @@ def _create_image(image, size_gb, what):
     """A file of size_gb, every block reserved, formatted XFS; removed again if either fails."""
     size = size_gb * GIB
     if shutil.disk_usage(image.parent).free < size + 2 * GIB:
-        raise ValueError(f'not enough disk for the requested {what} volume plus 2 GiB headroom')
+        raise ValueError(f'not enough disk for the requested volume of {what} plus 2 GiB headroom')
     created = False
     try:
         with image.open('xb') as file:
