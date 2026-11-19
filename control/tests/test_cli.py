@@ -1108,6 +1108,23 @@ class ExtensionCliTests(Cli):
         code, _, _ = self.run_cli("extensions", "set", "nope")
         self.assertIn("there is no extension nope", code)
 
+    def test_test_runs_the_saved_values_checks_and_fails_when_one_does(self):
+        checks = [{"name": "Provider token", "ok": True, "detail": "accepted", "fix": "", "help_url": ""},
+                  {"name": "Provider", "ok": False, "detail": "not running", "fix": "sbx-admin doctor",
+                   "help_url": "https://github.com/o/sbx/blob/main/docs/howto/amp.md"}]
+        self.routes[("POST", "/api/connections/amp/test")] = lambda q, body: {"ok": False, "checks": checks}
+        code, out, err = self.run_cli("extensions", "test", "amp")
+        self.assertEqual(code, 1)
+        self.assertIn("ok  Provider token: accepted", out)
+        self.assertIn("NO  Provider: not running — sbx-admin doctor\n    how to: "
+                      "https://github.com/o/sbx/blob/main/docs/howto/amp.md", out)
+        self.assertIsNone(self.control.calls[-1][3])   # the saved values: nothing is sent
+        self.routes[("POST", "/api/connections/amp/test")] = lambda q, body: {"ok": True, "checks": checks[:1]}
+        code, out, err = self.run_cli("extensions", "test", "amp", "--json")
+        self.assertEqual((code, json.loads(out)), (0, {"ok": True, "checks": checks[:1]}), err)
+        self.assertEqual(self.run_cli("extensions", "test", "nope")[0], "sbx-control: no route")
+        self.assertIn("sbx extensions test KIND", self.run_cli("extensions", "test")[0])
+
     def test_ls_and_templates(self):
         code, out, err = self.run_cli("extensions")
         self.assertEqual((code, out), (0, "amp            off            Provider stopped\n"), err)

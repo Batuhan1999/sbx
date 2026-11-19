@@ -754,7 +754,11 @@ def runtime_test(args, client):
     """sbx runtimes test KIND: the runtime's checks, as Settings and sbx-admin doctor run them; non-zero when any fails."""
     if not args.kind:
         sys.exit("sbx runtimes test KIND (sbx runtimes lists the enabled ones)")
-    found = client.api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test")
+    print_checks(args, client.api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test"))
+
+
+def print_checks(args, found):
+    """A test's checks ({ok, checks}), one line each; non-zero when any fails."""
     if args.json:
         print(json.dumps(found))
     else:
@@ -1090,10 +1094,10 @@ def secrets_submit(args, client, path):
 
 
 def extensions_cmd(args):
-    """sbx extensions [ls | set KIND | disconnect KIND] (admins): the Extensions page. set takes --set
-    FIELD=VALUE and --secret FIELD (from stdin); a change to what every template holds says how many
+    """sbx extensions [ls | set KIND | test KIND | disconnect KIND] (admins): the Extensions page. set takes
+    --set FIELD=VALUE and --secret FIELD (from stdin); a change to what every template holds says how many
     templates rebuild on each runtime, and with --wait waits until they are built (non-zero when one
-    fails)."""
+    fails). test runs the saved values' checks, as the page's Test does; non-zero when any fails."""
     if args.action in (None, "ls"):
         found = api("GET", "/api/connections")["connections"]
         if args.json:
@@ -1105,6 +1109,8 @@ def extensions_cmd(args):
     if not args.kind:
         sys.exit(f"sbx extensions {args.action} KIND (sbx extensions lists them)")
     kind = urllib.parse.quote(args.kind, safe="")
+    if args.action == "test":
+        return print_checks(args, api("POST", f"/api/connections/{kind}/test"))
     if args.action == "set":
         current = next((c for c in api("GET", "/api/connections")["connections"] if c["kind"] == args.kind), None)
         if current is None:
@@ -1974,10 +1980,11 @@ def parser():
     p.add_argument("--json", action="store_true", help="as the API answers")
     p = command("extensions", extensions_cmd, "admins: the extensions (GitHub, coding agents) as the Extensions "
                 "page shows them; set or disconnect one, and how many templates that rebuilds")
-    p.add_argument("action", nargs="?", choices=["ls", "set", "disconnect"],
-                   help="none or ls: list them; set KIND: save its fields (tested first); disconnect KIND: remove "
-                        "its saved credentials and turn it off")
-    p.add_argument("kind", nargs="?", metavar="KIND", help="set, disconnect: the extension (amp, claude-code, ...)")
+    p.add_argument("action", nargs="?", choices=["ls", "set", "test", "disconnect"],
+                   help="none or ls: list them; set KIND: save its fields (tested first); test KIND: its saved "
+                        "values' checks, non-zero when one fails; disconnect KIND: remove its saved credentials "
+                        "and turn it off")
+    p.add_argument("kind", nargs="?", metavar="KIND", help="set, test, disconnect: the extension (amp, claude-code, ...)")
     p.add_argument("--set", action="append", metavar="FIELD=VALUE", help="set: a non-secret field, FIELD=VALUE")
     p.add_argument("--secret", action="append", metavar="FIELD",
                    help="set: a secret field, its value read from stdin (one line each), never argv")
