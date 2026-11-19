@@ -1549,7 +1549,8 @@ def recipe_cmd(args):
     repo = this_repo(args.repo)
     if args.action == "rm":
         r = api("DELETE", f"/api/repos/{repo}/recipe")
-        print(f"{repo}: the recipe installed with sbx recipe apply is removed; "
+        print(json.dumps(r) if args.json else
+              f"{repo}: the recipe installed with sbx recipe apply is removed; "
               + ("the default branch's .sbx/ applies now" if r["recipe"] == "imported" else "it needs a recipe now"))
         return
     if args.action == "pr" and args.status:
@@ -1568,7 +1569,8 @@ def recipe_cmd(args):
     files, executable = recipe_files(default_folder(args.dir))
     if args.action == "apply":
         r = api("PUT", f"/api/repos/{repo}/recipe", {"files": files, "executable": executable})
-        print(f"{repo}: {r['files']} recipe file(s) installed on the server"
+        print(json.dumps(r) if args.json else
+              f"{repo}: {r['files']} recipe file(s) installed on the server"
               + ("; it has a template of its own: sbx template build" if r["prebuilt"] else ""))
         return
     if not args.yes:
@@ -1737,7 +1739,8 @@ def installation_env(args):
         return
     if args.action == "rm":
         for name in args.args:
-            print(f"removed {name}; {applied(api('DELETE', f'/api/secrets/{name}'))}")
+            r = api("DELETE", f"/api/secrets/{name}")
+            print(json.dumps(r) if args.json else f"removed {name}; {applied(r)}")
         return
     if args.action != "set" or not args.args:
         sys.exit("sbx env ls|set NAME [VALUE]|rm NAME --installation")
@@ -1746,7 +1749,8 @@ def installation_env(args):
         sys.stdin.read().rstrip("\n") if not sys.stdin.isatty() else getpass.getpass(f"{name} for this installation (hidden): "))
     if not value:
         sys.exit("no value; nothing set")
-    print(f"set {name} (secret) for this installation; {applied(api('PUT', f'/api/secrets/{name}', {'value': value}))}")
+    r = api("PUT", f"/api/secrets/{name}", {"value": value})
+    print(json.dumps(r) if args.json else f"set {name} (secret) for this installation; {applied(r)}")
 
 
 def env_cmd(args):
@@ -1773,7 +1777,7 @@ def env_cmd(args):
         for name in args.args:
             r = api("DELETE", f"{base}/{name}?mine={'true' if args.mine else 'false'}"
                               f"&restart={'false' if args.no_restart else 'true'}")
-            print(f"removed {name}; {applied(r)}")
+            print(json.dumps(r) if args.json else f"removed {name}; {applied(r)}")
         return
     if args.action == "import":
         if len(args.args) != 1:
@@ -1782,7 +1786,8 @@ def env_cmd(args):
         r = api("POST", f"{base}-import", {"text": text, "mine": args.mine, "restart": not args.no_restart,
                                            "audience": args.audience, "agent": not args.hide_from_agents})
         secret = [n for n, s in r["set"].items() if s]
-        print(f"set {len(r['set'])} ({len(secret)} as secrets: {', '.join(secret) or 'none'}); {applied(r)}")
+        print(json.dumps(r) if args.json else
+              f"set {len(r['set'])} ({len(secret)} as secrets: {', '.join(secret) or 'none'}); {applied(r)}")
         return
     if not args.args:
         sys.exit("sbx env set NAME [VALUE]: without VALUE it asks (hidden), or reads stdin")
@@ -1801,7 +1806,8 @@ def env_cmd(args):
     r = api("PUT", f"{base}/{name}", {"value": value, "secret": secret, "audience": args.audience,
                                       "agent": not args.hide_from_agents, "mine": args.mine,
                                       "restart": not args.no_restart})
-    print(f"set {name}{' (secret)' if r['secret'] else ''} for {audiences.get(args.audience, args.audience)}"
+    print(json.dumps(r) if args.json else
+          f"set {name}{' (secret)' if r['secret'] else ''} for {audiences.get(args.audience, args.audience)}"
           f"{' of yours' if args.mine else ''}; {applied(r)}")
 
 
@@ -2114,7 +2120,7 @@ def parser():
     p.add_argument("--yes", action="store_true", help="pr: publish without asking")
     p.add_argument("--status", action="store_true", help="pr: the recipe's PR (its link), or why sbx could not "
                    "open it (exits 1)")
-    p.add_argument("--json", action="store_true", help="pr: as the API answers")
+    p.add_argument("--json", action="store_true", help="as the API answers")
     p = command("template", template_cmd, "build the repo's template from its default branch, its build's status, "
                 "or rm: delete its templates and build record (admins)")
     p.add_argument("action", choices=["build", "status", "rm"])

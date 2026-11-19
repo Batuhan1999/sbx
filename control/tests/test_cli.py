@@ -575,6 +575,25 @@ class CliTests(Cli):
         self.assertEqual(code, 0, err)
         self.assertIn("stored; delivery pending", out)
 
+    def test_json_prints_what_the_server_answered_to_a_change(self):
+        changed = {"name": "TOKEN", "secret": True, "running": 1, "paused": 0}
+        self.routes[("PUT", "/api/repos/owner/app/env/TOKEN")] = lambda q, body: changed
+        self.routes[("DELETE", "/api/repos/owner/app/env/TOKEN")] = lambda q, body: {**changed, "deleted": True}
+        self.routes[("POST", "/api/repos/owner/app/env-import")] = lambda q, body: {"set": {"TOKEN": True}, "running": 1}
+        self.routes[("PUT", "/api/secrets/SHARED_KEY")] = lambda q, body: {"name": "SHARED_KEY", "set": True, "running": 0}
+        self.routes[("DELETE", "/api/repos/owner/app/recipe")] = lambda q, body: {"repo": "owner/app", "recipe": "none"}
+        for argv, stdin, expected in (
+                (("env", "set", "TOKEN", "--repo", "owner/app"), "test-only-value\n", changed),
+                (("env", "rm", "TOKEN", "--repo", "owner/app"), "", {**changed, "deleted": True}),
+                (("env", "import", "-", "--repo", "owner/app"), "TOKEN=test-only-value\n", {"set": {"TOKEN": True}, "running": 1}),
+                (("env", "set", "SHARED_KEY", "--installation"), "test-only-value\n",
+                 {"name": "SHARED_KEY", "set": True, "running": 0}),
+                (("recipe", "rm", "--repo", "owner/app"), "", {"repo": "owner/app", "recipe": "none"})):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv, "--json", stdin=stdin)
+                self.assertEqual((code, json.loads(out)), (0, expected), err)
+                self.assertNotIn("test-only-value", out + err)
+
     def test_env_set_installation_sets_an_installation_secret(self):
         self.routes[("PUT", "/api/secrets/SHARED_KEY")] = lambda q, body: {"name": "SHARED_KEY", "running": 1, "paused": 0}
         code, out, err = self.run_cli("env", "set", "SHARED_KEY", "value", "--installation")
