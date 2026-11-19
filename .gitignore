@@ -10,6 +10,7 @@ control/dist/
 control/sbx_control/web_dist/
 web/node_modules/
 .claude/
+.amp/portals/*
 
 web/tsconfig.tsbuildinfo
 .DS_Store

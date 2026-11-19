@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb to develop sbx: Python 3.12 in .venv with the dev
+# requirements, Node 22 with the web app's dependencies, and the web bundle
+# the control tests and release packaging need. Matches .github/workflows/check.yml.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local name="$1"; shift
+  local start=$SECONDS
+  echo "==> $name"
+  "$@"
+  echo "    $name took $((SECONDS - start))s"
+}
+
+node_major=22
+node_dir="$HOME/.local/node-$node_major"
+
+install_node() {
+  # The installation is moved into place only once complete, so a partial one never stays.
+  if "$node_dir/bin/node" "$node_dir/lib/node_modules/npm/bin/npm-cli.js" --version > /dev/null 2>&1; then
+    echo "    node $("$node_dir/bin/node" --version) already installed"
+    return
+  fi
+  local arch version tmp
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; return 1 ;;
+  esac
+  version="$(curl -fsSL "https://nodejs.org/dist/latest-v$node_major.x/SHASUMS256.txt" \
+    | grep -o "node-v$node_major\.[0-9.]*-linux-$arch\.tar\.xz" | head -n1)"
+  mkdir -p "$(dirname "$node_dir")"
+  tmp="$(mktemp -d "$node_dir.XXXXXX")"
+  curl -fsSL "https://nodejs.org/dist/latest-v$node_major.x/$version" -o "$tmp/$version"
+  mkdir "$tmp/node"
+  tar -xJf "$tmp/$version" -C "$tmp/node" --strip-components=1
+  "$tmp/node/bin/node" "$tmp/node/lib/node_modules/npm/bin/npm-cli.js" --version > /dev/null
+  rm -rf "$node_dir"
+  mv "$tmp/node" "$node_dir"
+  rm -rf "$tmp"
+}
+
+persist_node_path() {
+  local marker="# sbx: Node $node_major for the web app"
+  # A new ~/.bash_profile would stop login shells reading ~/.profile.
+  if [ ! -e "$HOME/.bash_profile" ] && [ -f "$HOME/.profile" ]; then
+    echo '. "$HOME/.profile"' > "$HOME/.bash_profile"
+  fi
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >> "$HOME/.bash_profile" <<EOF
+
+$marker
+case ":\$PATH:" in
+  *":$node_dir/bin:"*) ;;
+  *) export PATH="$node_dir/bin:\$PATH" ;;
+esac
+EOF
+  fi
+}
+
+python_deps() {
+  if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))'; then
+    uv venv --quiet --clear --python 3.12 .venv
+  fi
+  uv pip install --quiet --python .venv/bin/python -r requirements-dev.txt
+}
+
+web_deps() {
+  # npm ci always wipes node_modules; skip it when the lockfile and Node are unchanged.
+  local stamp="web/node_modules/.sbx-setup-stamp" want
+  want="$(node --version) $(sha256sum web/package-lock.json | cut -d' ' -f1)"
+  if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
+    echo "    web/node_modules matches package-lock.json"
+    return
+  fi
+  npm --prefix web ci --no-audit --no-fund
+  echo "$want" > "$stamp"
+}
+
+step "Node $node_major" install_node
+step "Node PATH in ~/.bash_profile" persist_node_path
+export PATH="$node_dir/bin:$PATH"
+step "Python 3.12 venv and dev requirements" python_deps
+step "Web app dependencies" web_deps
+# The control tests and control/release.sh need the built bundle (git ignores it).
+step "Web app build" npm --prefix web run build --silent
