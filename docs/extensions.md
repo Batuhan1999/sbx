@@ -6,7 +6,7 @@ specific to an agent product or a service provider is an extension:
 
 | Kind | Where | Examples |
 | --- | --- | --- |
-| Agent connector | `control/sbx_control/connectors/<name>`, or an installed Python package | Claude Code, Codex, [Amp](amp-orbs.md) |
+| Agent connector | `control/sbx_control/connectors/<name>`, or an installed Python package | Claude Code, Codex, [Amp](amp-orbs.md), [Agent47](agent47.md) |
 | Catalog package | `catalog/<name>/`, `/etc/sbx/catalog/<name>/`, or a repository's `.sbx/services/<name>/` | Postgres, ClickHouse, Neon, PlanetScale, Supabase, Tinybird, Upstash, AWS |
 | GitHub | `control/sbx_control/connections/github.py`, a platform connection | `gh`, git credentials and PR previews |
 | Sandbox runtime | `control/sbx_control/runtime/<kind>/`, or an installed Python package registered under `sbx.runtimes` | E2B Embed |
@@ -69,7 +69,9 @@ slow to build, at the cost of every template carrying it.
 ## Agent connectors
 
 A connector lets an agent product start sessions in sandboxes: Claude Code's
-self-hosted runner, Amp's orb provider. Subclass `extensions.Connector`:
+self-hosted runner, Amp's orb provider. One for a plain CLI (Codex,
+[Agent47](agent47.md)) only builds it into templates and hands its login or
+key to sandboxes. Subclass `extensions.Connector`:
 
 ```python
 from sbx_control import extensions

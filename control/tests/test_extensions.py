@@ -59,7 +59,7 @@ class ExtensionTests(Installation):
         installed = lambda group: entries if group == "sbx.connectors" else []  # noqa: E731 (what plugin packages declare)
         with patch.object(extensions.importlib.metadata, "entry_points", side_effect=installed):
             kinds = [c.kind for c in extensions.connectors()]
-        self.assertEqual(kinds, ["github", "codex", "claude", "amp", "fixture"])
+        self.assertEqual(kinds, ["github", "codex", "claude", "amp", "agent47", "fixture"])
         self.assertEqual(extensions.get("claude").title, "Claude Code")
         made = SimpleNamespace(metadata={"connector": "fixture", "sbx": "f"})
         self.assertEqual(extensions.origin(made)["label"], "Fixture run")

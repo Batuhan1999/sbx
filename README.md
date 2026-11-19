@@ -8,8 +8,8 @@ it needs from a shared catalog and writes one small `.sbx/` recipe. From then
 on, every sandbox gets its own databases and other resources on your shared or
 hosted services, its secrets injected, the app running and HTTPS preview links,
 and all of it is cleaned up when the sandbox goes. `sbx up`, Claude Code
-sessions, Amp threads and PR previews all start from that recipe; Codex and
-any other agent work over SSH.
+sessions, Amp threads and PR previews all start from that recipe; Codex,
+Agent47 and any other agent work over SSH.
 
 Each sandbox is a VM on a runtime the installation enables. Built in are
 [E2B Embed](vendor/e2b-embed/compose/README.md), Firecracker VMs on your own
@@ -60,9 +60,9 @@ What the agent reads along the way, if you want the details yourself:
 - [Resource guide](control/sbx_control/template_files/resource-guide.md): how
   much CPU, RAM, disk and swap a sandbox gets, from evidence.
 - [Examples](examples/): complete recipes for Memos, Umami and Maple.
-- [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md) and
-  [Extensions](docs/extensions.md): optional agent connectors, and how to add
-  your own connector or catalog package.
+- [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md),
+  [Agent47](docs/agent47.md) and [Extensions](docs/extensions.md): optional
+  agent connectors, and how to add your own connector or catalog package.
 - [Your first-run setup](docs/howto/setup.md): what the owner sees when
   their agent sends the setup link and the keys page.
 - How-to pages for what you set up outside sbx: [Cloudflare DNS and
@@ -78,8 +78,9 @@ What the agent reads along the way, if you want the details yourself:
   previews.
 - **Extensions** plug into the core through one interface and compose into each
   sandbox and its template:
-  - *agent connectors* (Claude Code, Codex, Amp) build an agent's CLI into
-    templates, and Claude Code's and Amp's start agent sessions in sandboxes;
+  - *agent connectors* (Claude Code, Codex, Amp, Agent47) build an agent's
+    CLI into templates, and Claude Code's and Amp's start agent sessions in
+    sandboxes;
   - *catalog packages* provide per-sandbox resources on shared or hosted
     services (Postgres, ClickHouse, Neon, PlanetScale, AWS, ...);
   - *GitHub* gives sandboxes repository access and `gh`, and runs PR previews.
@@ -234,6 +235,7 @@ sbx is early software.
 | Development data | Per-sandbox databases, branches or namespaces through catalog packages; you verify isolation per repository. |
 | Claude Code | Optional; cloud sessions through self-hosted runners (Team/Enterprise); see the [Claude Code guide](docs/claude-code.md). |
 | Amp | Optional self-hosted orb provider; see the [Amp guide](docs/amp-orbs.md). |
+| Agent47 | Optional; its CLI in every sandbox with the installation's model provider key, run over SSH; see the [Agent47 guide](docs/agent47.md). |
 | Other agents | Work over SSH and the CLI; no native "new session" integration. |
 | PR previews | Through the GitHub App's `preview` label; verify updates, links and cleanup per repository. |
 | Runtime changes | Recreating the runtime with existing sandboxes is not supported; apply service networks before creating sandboxes. |
@@ -252,6 +254,7 @@ examples, not a compatibility guarantee.
 | [Extensions](docs/extensions.md) | Writing an agent connector or a catalog package. |
 | [Claude Code](docs/claude-code.md) | Running Claude Code cloud sessions in sandboxes. |
 | [Amp](docs/amp-orbs.md) | Running Amp threads in sandboxes. |
+| [Agent47](docs/agent47.md) | Running the Agent47 CLI in sandboxes. |
 | [Resource allocation](control/sbx_control/template_files/resource-guide.md) | CPU, RAM, disk and swap: requested, allocated and observed. |
 | [Development](docs/development.md) | Working on sbx itself: checks, builds, releases. |
 | [Contributing](CONTRIBUTING.md) | Reports and pull requests. |

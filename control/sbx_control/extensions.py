@@ -28,7 +28,8 @@ from .connections.base import Connection
 
 GROUP = "sbx.connectors"
 BUILTIN = ("sbx_control.connections.github:GitHub", "sbx_control.connectors.codex:Codex",
-           "sbx_control.connectors.claude_code:ClaudeCode", "sbx_control.connectors.amp:Amp")
+           "sbx_control.connectors.claude_code:ClaudeCode", "sbx_control.connectors.amp:Amp",
+           "sbx_control.connectors.agent47:Agent47")
 PACKAGES = "sbx_control.catalog.provisioning"   # the catalog's side of a sandbox's lifecycle
 
 

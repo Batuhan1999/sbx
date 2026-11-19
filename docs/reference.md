@@ -612,8 +612,8 @@ A template is composed from three layers:
    `sbx.yaml` sets `template:`; otherwise common toolchains (the `default`
    template);
 3. **contributions** of the extensions: `gh` when GitHub is connected, each
-   agent connector's CLI (Claude Code, Codex for `sbx open codex`; Amp's is
-   in the base), and the
+   agent connector's CLI (Claude Code, Codex for `sbx open codex`,
+   [Agent47](agent47.md) when it is on; Amp's is in the base), and the
    template layers of catalog packages a trusted repository attaches
    ([extensions](extensions.md#contributions)). They are added after the
    recipe, so `.sbx/Dockerfile` and `.sbx/build` cannot use them.
