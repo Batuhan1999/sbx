@@ -772,6 +772,22 @@ def _read_secret(prompt):
     return value.strip()
 
 
+def _secret_for(name, prompt):
+    """_read_secret, exiting when stdin holds no value for name."""
+    return _read_secret(prompt) or sys.exit(f"no value for {name} on stdin")
+
+
+def key_values(pairs, form, flag=""):
+    """Each KEY=VALUE argument as (key, value); exits on one without =, naming its flag and the form."""
+    found = []
+    for pair in pairs or []:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            sys.exit(f"{flag + ' ' if flag else ''}{pair}: expected {form}")
+        found.append((key, value))
+    return found
+
+
 def _runtime_body(args, runtime, adding):
     """What a change sends: --plan (the first plan when adding without one; the server resolves its limits),
     each --set, and each --secret read from stdin (one line each, in order; hidden at a terminal): a secret
@@ -779,10 +795,7 @@ def _runtime_body(args, runtime, adding):
     settings = {s["key"]: s for s in runtime.get("settings") or []}
     presets = runtime.get("presets") or []
     values = {}
-    for pair in args.set or []:
-        key, sep, value = pair.partition("=")
-        if not sep:
-            sys.exit(f"--set {pair}: expected KEY=VALUE")
+    for key, value in key_values(args.set, "KEY=VALUE", "--set"):
         if (settings.get(key) or {}).get("secret"):
             sys.exit(f"{key} is a secret: --secret {key} reads it from stdin, never the command line")
         values[key] = value
@@ -790,10 +803,7 @@ def _runtime_body(args, runtime, adding):
         setting = settings.get(key)
         if setting is None or not setting.get("secret"):
             sys.exit(f"{key} is no secret of {runtime['title']}; sbx runtimes available lists them")
-        value = _read_secret(f"{setting['label']} for {runtime['title']}")
-        if not value:
-            sys.exit(f"no value for {key} on stdin")
-        values[key] = value
+        values[key] = _secret_for(key, f"{setting['label']} for {runtime['title']}")
     plan = args.plan or (presets[0]["name"] if adding and presets else None)
     return {"plan": plan, "values": values} if plan else {"values": values}
 
@@ -1073,10 +1083,7 @@ def secrets_submit(args, client, path):
     values = {}
     for target in wanted:
         item = next((i for i in found["items"] if i["target"] == target or i["target"].startswith(target + ":")), None)
-        value = _read_secret(f"{item['label'] if item else target} ({target})")
-        if not value:
-            sys.exit(f"no value for {target} on stdin")
-        values[target] = value
+        values[target] = _secret_for(target, f"{item['label'] if item else target} ({target})")
     done = client.api("POST", f"{path}/submit", {"values": values})
     if args.json:
         print(json.dumps(done))
@@ -1110,10 +1117,7 @@ def extensions_cmd(args):
             sys.exit(f"there is no extension {args.kind}: sbx extensions lists them")
         fields = {f["name"]: f for f in current.get("fields") or []}
         values = {}
-        for pair in args.set or []:
-            key, sep, value = pair.partition("=")
-            if not sep:
-                sys.exit(f"--set {pair}: expected FIELD=VALUE")
+        for key, value in key_values(args.set, "FIELD=VALUE", "--set"):
             if key not in fields:
                 sys.exit(f"{current['title']} has no field {key}; it has: {', '.join(fields) or 'none'}")
             if fields[key].get("secret"):
@@ -1122,10 +1126,7 @@ def extensions_cmd(args):
         for key in args.secret or []:
             if not (fields.get(key) or {}).get("secret"):
                 sys.exit(f"{key} is no secret field of {current['title']}")
-            value = _read_secret(f"{fields[key]['label']} for {current['title']}")
-            if not value:
-                sys.exit(f"no value for {key} on stdin")
-            values[key] = value
+            values[key] = _secret_for(key, f"{fields[key]['label']} for {current['title']}")
         changed = api("PUT", f"/api/connections/{kind}", {"values": values})
     else:
         changed = api("DELETE", f"/api/connections/{kind}")
@@ -1280,10 +1281,7 @@ def setup_address(args, client):
         values = {"name": args.domain, "address": state["host"].get("address", ""), "acme": args.dns,
                   "acme_email": args.email or ""}
         for key in args.secret or []:   # the DNS provider's credentials (cloudflare_api_token, aws_...)
-            value = _read_secret(key)
-            if not value:
-                sys.exit(f"no value for {key} on stdin")
-            values[key] = value
+            values[key] = _secret_for(key, key)
         client.api("PUT", "/api/connections/domain", {"values": values})
     else:
         address = args.ip or state["host"].get("address", "")
@@ -1874,12 +1872,7 @@ def attach_cmd(args):
     spec = next((e for e in api("GET", "/api/catalog")["packages"] if e["name"] == args.package), None)
     if not spec:
         sys.exit(f"no package {args.package}; sbx catalog ls lists them")
-    inputs = {}
-    for pair in args.pairs:
-        name, sep, value = pair.partition("=")
-        if not sep:
-            sys.exit(f"{pair}: expected name=value")
-        inputs[name] = value
+    inputs = dict(key_values(args.pairs, "name=value"))
     if sys.stdin.isatty():
         for name, v in spec["inputs"].items():
             if name in inputs or not (v["required"] or v["secret"]):
