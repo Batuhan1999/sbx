@@ -216,6 +216,31 @@ class LifecycleTests(Installation):
         self.assertEqual((response.status_code, response.headers.get("retry-after")), (503, "60"), response.text)
         self.assertIn("keeps running", response.json()["detail"])
 
+    def test_pausing_a_sandbox_whose_app_stopped_records_the_pause(self):
+        # The keeper found its app gone (application failed, the phase still app_ready): the VM
+        # paused, then the pause failed on a checkpoint the record no longer held.
+        self.healthy()
+        self.assertTrue(self.lifecycle.app_stopped("fixture", "fixture-vm", "its processes exited"))
+        with patch.object(self.core.runtime, "pause") as pause:
+            self.core.pause("fixture", self.info)
+        pause.assert_called_once_with("fixture-vm")
+        record = self.lifecycle.get("fixture")
+        self.assertEqual((record["phase"], record["runtime"], record["active"], record["application"]),
+                         ("services_ready", "paused", False, "failed"))
+        self.assertEqual(record["error"], "the app stopped: its processes exited")
+
+    def test_a_refused_pause_of_a_sandbox_whose_app_stopped_leaves_it_as_it_was(self):
+        self.healthy()
+        self.lifecycle.app_stopped("fixture", "fixture-vm", "its processes exited")
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", ()), \
+                patch.object(self.core.runtime, "pause", side_effect=self.busy()), \
+                patch.object(self.core, "find", return_value=self.info), \
+                self.assertRaises(self.core.PauseRefused):
+            self.core.pause("fixture", self.info)
+        record = self.lifecycle.get("fixture")
+        self.assertEqual((record["status"], record["runtime"], record["active"]), ("failed", "running", False))
+        self.assertEqual(record["error"], "the app stopped: its processes exited")
+
     def full_run_vm(self, probe="exited"):
         """A VM whose /run tmpfs is full of Codex's files, its supervisor gone (probe)."""
         def run(command, **_):

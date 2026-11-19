@@ -1130,7 +1130,8 @@ def pause(name: str, info=None, *, before_pause=None):
         if not info:
             raise SandboxError(f"no sbx-{name}")
         lifecycle.assert_binding(name, info.sandbox_id)
-        before = lifecycle.get(name)["previous_phase"]
+        record = lifecycle.get(name)
+        after = lifecycle.resting(record, record["previous_phase"])
         operation.advance("pausing")
         if runtime_state(info) == "running":   # a paused VM is left as it is, not woken
             extensions.before_pause(info)
@@ -1142,11 +1143,9 @@ def pause(name: str, info=None, *, before_pause=None):
             if runtime_state(now) != "running":
                 raise refused  # the VM did not survive the refusal: the operation fails
             why = pause_refusal(info, refused)
-            operation.advance(before if before in lifecycle.TERMINAL - {"deleted"} else "unknown",
-                              finish=True, sandbox_id=info.sandbox_id, runtime="running")
+            operation.advance(after, finish=True, sandbox_id=info.sandbox_id, runtime="running")
             state.event(name, "pause refused", why)
             raise PauseRefused(why)
         for failed in extensions.packages().paused(name):
             state.event(name, "service pause hook deferred", failed, internal=True)
-        operation.advance(before if before in lifecycle.TERMINAL - {"deleted"} else "unknown",
-                          finish=True, sandbox_id=info.sandbox_id, runtime="paused")
+        operation.advance(after, finish=True, sandbox_id=info.sandbox_id, runtime="paused")

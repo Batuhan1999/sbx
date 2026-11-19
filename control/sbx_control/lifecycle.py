@@ -154,6 +154,17 @@ def settled(record: dict) -> str:
             "services_ready" if record["services_ready"] else "workspace_ready")
 
 
+def resting(record: dict, phase: str) -> str:
+    """The checkpoint an operation that changes none (pause) leaves the
+    sandbox at: phase, the one it was at, or settled() when the record no
+    longer holds it (the keeper found its app stopped since: app_stopped)."""
+    if phase not in TERMINAL - {"deleted"}:
+        return "unknown"
+    if phase in CHECKPOINTS and record[CHECKPOINTS[phase][1]] != CHECKPOINTS[phase][2]:
+        return settled(record)
+    return phase
+
+
 def started(health: bool) -> str:
     return "app_ready" if health else "app_unverified"
 
