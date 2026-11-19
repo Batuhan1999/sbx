@@ -658,6 +658,35 @@ class CliTests(Cli):
         self.assertEqual(code, 0, err)
         self.assertEqual((root / "current").resolve(), (root / "2").resolve())
 
+    def closed_port(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return f"http://127.0.0.1:{probe.getsockname()[1]}"
+
+    def test_update_says_why_when_the_server_has_no_release_or_cannot_be_reached(self):
+        self.cli.VERSION = "1"
+        code, out, err = self.run_cli("update")   # the fake control serves no /dist
+        self.assertEqual(code, "sbx-control: /dist/version: HTTP 404")
+        self.cli.CONTROL = self.closed_port()
+        code, out, err = self.run_cli("update")
+        self.assertTrue(str(code).startswith(f"cannot reach {self.cli.CONTROL}: "), code)
+
+    def test_login_says_why_when_the_code_cannot_be_exchanged(self):
+        import urllib.request
+
+        def browser(url):
+            query = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+            callback = f"http://127.0.0.1:{query['port']}/callback?state={query['state']}&code=one-time"
+            threading.Thread(target=lambda: urllib.request.urlopen(callback, timeout=5).read(), daemon=True).start()
+
+        with patch.object(self.cli.webbrowser, "open", side_effect=browser), patch.object(self.cli, "keychain_set") as kept:
+            code, out, err = self.run_cli("login")   # the fake control has no /cli/token
+            self.assertEqual(code, "sign-in failed: HTTP 404")
+            self.cli.CONTROL = self.closed_port()
+            code, out, err = self.run_cli("login")
+            self.assertTrue(str(code).startswith(f"cannot reach {self.cli.CONTROL}: "), code)
+        kept.assert_not_called()
+
 
 # GET /api/runtimes/available's E2B Cloud, as the server declares it (runtime/e2b_cloud).
 CLOUD_KEY = "test-only-cli-key-91c2"

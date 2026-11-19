@@ -143,6 +143,21 @@ def api(method, path, body=None, raw=False, timeout=600, late=None):
     return Client(CONTROL).api(method, path, body, raw, timeout, late)
 
 
+def fetch(path, body=None, timeout=30, refused=None):
+    """What sbx-control answers a call without a token (its CLI release, the sign-in's code exchange), as
+    bytes; exits with why when it refuses (refused(status) words that) or cannot be reached."""
+    call = urllib.request.Request(f"{CONTROL}{path}", method="GET" if body is None else "POST",
+                                  data=None if body is None else json.dumps(body).encode(),
+                                  headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(call, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        sys.exit(refused(error.code) if refused else f"sbx-control: {path}: HTTP {error.code}")
+    except (OSError, http.client.HTTPException) as error:
+        sys.exit(f"cannot reach {CONTROL}: {getattr(error, 'reason', None) or error}")
+
+
 def note(text):
     print(text, file=sys.stderr)
 
@@ -222,15 +237,9 @@ def login_control():
     server.server_close()
     if "code" not in received:
         sys.exit("sign-in timed out")
-    exchange = urllib.request.Request(f"{CONTROL}/cli/token", method="POST",
-                                      data=json.dumps({"code": received["code"], "verifier": verifier}).encode(),
-                                      headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(exchange, timeout=30) as response:
-            token = json.loads(response.read())["token"]
-    except urllib.error.HTTPError as error:
-        sys.exit(f"sign-in failed: HTTP {error.code}")
-    keychain_set(API_TOKEN_SERVICE, token)
+    exchanged = fetch("/cli/token", {"code": received["code"], "verifier": verifier},
+                      refused=lambda status: f"sign-in failed: HTTP {status}")
+    keychain_set(API_TOKEN_SERVICE, json.loads(exchanged)["token"])
     print(f"signed in as {api('GET', '/api/me')['email']}")
 
 
@@ -1429,16 +1438,12 @@ def update(_args):
     switch to it; older versions stay for a rollback (ln -sfn …/<old> …/current)."""
     if VERSION == "dev":
         sys.exit("this sbx runs from a repo checkout; update with git pull")
-    with urllib.request.urlopen(f"{CONTROL}/dist/version", timeout=30) as response:
-        latest = response.read().decode().strip()
+    latest = fetch("/dist/version").decode().strip()
     if latest == VERSION:
         print(f"sbx {VERSION} is current")
         return
-    with urllib.request.urlopen(f"{CONTROL}/dist/sbx.tgz", timeout=60) as response:
-        tarball = response.read()
-    with urllib.request.urlopen(f"{CONTROL}/dist/sbx.tgz.sha256", timeout=30) as response:
-        expected = response.read().decode().strip()
-    install(tarball, expected, latest)
+    tarball = fetch("/dist/sbx.tgz", timeout=60)
+    install(tarball, fetch("/dist/sbx.tgz.sha256").decode().strip(), latest)
     print(f"sbx {VERSION} -> {latest}")
 
 
