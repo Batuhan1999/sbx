@@ -327,6 +327,16 @@ IDENTITY_LOCK = Path("/run/sbx-ssh-identity.lock")
 KEPT_KEYS = Path("/etc/sbx-host-keys")   # root's copy: a runtime whose cold boot makes new host keys gets these back
 
 
+def under_systemd():
+    """Whether systemd runs sshd here (ssh.service), not the standalone sshd START runs."""
+    return Path("/proc/1/comm").read_text().strip() == "systemd"
+
+
+def bounded(deadline, most, least=0.1):
+    """The seconds until deadline (time.monotonic()), within least..most: a bound for one wait."""
+    return max(least, min(most, deadline - time.monotonic()))
+
+
 def key_permissions(directory):
     for kind in HOST_KEYS:
         (directory / f"ssh_host_{kind}_key").chmod(0o600)
@@ -337,7 +347,7 @@ def listener_pid(timeout=10):
     """sshd's pid: systemd's ssh.service, or the standalone sshd START runs
     where there is no systemd."""
     pid = 0
-    if Path("/proc/1/comm").read_text().strip() == "systemd":
+    if under_systemd():
         service = subprocess.run(["systemctl", "show", "ssh.service", "--property=MainPID", "--value"],
                                  capture_output=True, text=True, check=True, timeout=timeout)
         pid = int(service.stdout.strip())
@@ -352,11 +362,8 @@ def restart_listener(timeout=60):
     """Start sshd again: systemd's ssh.service, or the standalone one, within
     about timeout seconds."""
     end = time.monotonic() + timeout
-
-    def left(most):
-        return max(0.1, min(most, end - time.monotonic()))
-    if Path("/proc/1/comm").read_text().strip() == "systemd":
-        subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=left(30),
+    if under_systemd():
+        subprocess.run(["systemctl", "restart", "ssh.service"], check=True, timeout=bounded(end, 30),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         try:
@@ -378,11 +385,11 @@ def restart_listener(timeout=60):
                 pass
             finally:
                 os.close(handle)
-            if not wait_until(lambda: exited(old), left(15)):   # it holds the port until it exits
+            if not wait_until(lambda: exited(old), bounded(end, 15)):   # it holds the port until it exits
                 raise GuestError("workspace SSH listener did not stop")
-        subprocess.run(["/usr/sbin/sshd"], check=True, timeout=left(30))
+        subprocess.run(["/usr/sbin/sshd"], check=True, timeout=bounded(end, 30))
     # Each look is bounded by what is left, so the last one does not overrun it.
-    if not wait_until(lambda: listener_alive(timeout=left(10)), left(15)):
+    if not wait_until(lambda: listener_alive(timeout=bounded(end, 10)), bounded(end, 15)):
         raise GuestError("workspace SSH listener did not start again")
 
 
@@ -430,7 +437,7 @@ def settled_listener(deadline, unwatched):
     while True:
         handle = None
         try:
-            pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+            pid = listener_pid(timeout=bounded(deadline, 10))
             if (not restarted and deadline > time.monotonic()
                     and executable(pid) == "/usr/sbin/sshd (deleted)"):
                 # sshd started before its binary was replaced (an upgrade, a disk
@@ -439,12 +446,12 @@ def settled_listener(deadline, unwatched):
                 unwatched()
                 # Looked at again: the runtime may have put a healthy sshd
                 # there meanwhile, which is left running.
-                pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+                pid = listener_pid(timeout=bounded(deadline, 10))
                 if (deadline > time.monotonic()
                         and executable(pid) == "/usr/sbin/sshd (deleted)"):
                     restarted = True   # one attempt, counted once it begins
                     restart_listener(timeout=deadline - time.monotonic())
-                    pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
+                    pid = listener_pid(timeout=bounded(deadline, 10))
             handle = os.pidfd_open(pid)
             if executable(pid) == "/usr/sbin/sshd":
                 return pid, handle
@@ -501,7 +508,7 @@ def identity(workspace, ssh_port):
             # Always ahead of a step that needs KEYS_SECONDS after it: never eats into them.
             sessions = subprocess.run(["ss", "-Htn", "state", "established", f"( sport = :{ssh_port} )"],
                                       capture_output=True, text=True, check=True,
-                                      timeout=max(0.1, min(10, deadline - KEYS_SECONDS - time.monotonic())))
+                                      timeout=bounded(deadline - KEYS_SECONDS, 10))
             if sessions.stdout.strip():
                 raise SessionOpen("fresh workspace has an unexpected SSH session")
         unwatched()
@@ -513,7 +520,7 @@ def identity(workspace, ssh_port):
                 for kind in HOST_KEYS:
                     subprocess.run(["ssh-keygen", "-q", "-t", kind, "-N", "", "-f", str(temporary / f"ssh_host_{kind}_key")],
                                    check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   timeout=max(1, min(30, deadline - KEYS_SECONDS - time.monotonic())))
+                                   timeout=bounded(deadline - KEYS_SECONDS, 30, least=1))
                 key_permissions(temporary)
                 # sshd may have taken a session while it was waited for or the
                 # keys were made: looked at last, just before they replace its own.
@@ -548,7 +555,7 @@ def identity(workspace, ssh_port):
                 raise GuestError("workspace SSH listener kept restarting while it took its fresh identity")
         def adopted():
             try:   # each scan bounded by what is left; one that times out is looked at again
-                return serves(expected, timeout=max(0.1, min(3, deadline - time.monotonic())))
+                return serves(expected, timeout=bounded(deadline, 3))
             except subprocess.TimeoutExpired:
                 return False
         if not wait_until(adopted, max(1, deadline - time.monotonic())):
