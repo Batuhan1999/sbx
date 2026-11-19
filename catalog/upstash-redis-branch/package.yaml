@@ -3,9 +3,9 @@ name: upstash-redis-branch
 title: Upstash Redis branch
 logo: logo.svg
 description: >
-  A branch of one of your Upstash Redis databases per sandbox: its keys as they
-  were when the sandbox started, with its own endpoint and password, deleted
-  with the sandbox. Writes on either side stay separate. Only global databases
+  A branch of one of your Upstash Redis databases per sandbox, deleted with the
+  sandbox. It has the database's keys as they were when the sandbox started,
+  and its own endpoint and password. Writes on either side stay separate. Only global databases
   on a paid plan can be branched, on an account with a payment method. Every
   branch is billed as Pay as You Go, up to the monthly budget you set for it, so
   copy from a development database whose size you accept paying for per sandbox.

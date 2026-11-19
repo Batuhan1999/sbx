@@ -3,8 +3,8 @@ name: supabase-branch
 title: Supabase branch
 logo: logo.svg
 description: >
-  A Supabase preview branch of your project per sandbox, with its own Postgres
-  database, API URL and keys, deleted with the sandbox. Supabase sets it up as
+  A Supabase preview branch per sandbox, deleted with the sandbox. Each has its
+  own Postgres database, API URL and keys. Supabase sets it up as
   any preview branch, running the project's migrations, and copies the
   project's data only when you ask. Each branch is billed as its own compute
   while it exists; creating one takes a few minutes.

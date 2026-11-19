@@ -4,7 +4,7 @@ title: AWS development role
 logo: logo.svg
 description: >
   Connects to a development AWS role with an access key pair that stays on this
-  server; sandboxes only ever get temporary credentials for it. An existing host
+  server. Sandboxes only get temporary credentials for it. An existing host
   profile can sign in instead, for advanced setups.
 docs: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
 inputs:

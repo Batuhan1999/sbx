@@ -3,9 +3,9 @@ name: planetscale-database
 title: PlanetScale Postgres database
 logo: logo.svg
 description: >
-  Connects to an existing PlanetScale PostgreSQL database with a database-scoped
-  service token that can read, create and delete branches, and create and
-  connect development roles.
+  Connects to an existing PlanetScale PostgreSQL database with a service token.
+  The token is database-scoped and can read, create and delete branches, and
+  create and connect development roles.
 docs: https://planetscale.com/docs/api/service-tokens
 inputs:
   organization:

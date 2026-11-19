@@ -3,8 +3,8 @@ name: supabase-project
 title: Supabase project
 logo: logo.svg
 description: >
-  Connects to an existing Supabase project through the Management API with an
-  access token that can manage the project's branches. Branching needs a paid
+  Connects to an existing Supabase project with an access token that can manage
+  its branches, through the Management API. Branching needs a paid
   plan. No local server is needed.
 docs: https://supabase.com/docs/reference/api/introduction
 identity: [project]
