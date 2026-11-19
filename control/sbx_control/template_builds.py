@@ -467,11 +467,16 @@ def no_address(key: str, kind: str | None = None) -> str:
             continue   # the build fails on the recipe and says so
         if serves:
             try:
-                templates.bundle_origin()
+                origin = templates.bundle_origin()
             except ValueError:
                 return (f"the {one} template's build fetches files from this server, which has no address yet: "
                         "choose a domain or an IP address (or set SBX_TEMPLATE_BUNDLE_ORIGIN), and the scheduler "
                         "builds it")
+            if not os.environ.get("SBX_TEMPLATE_BUNDLE_ORIGIN") and settings.current().domain.name:
+                from .connections import domain   # its builders verify the certificate: not until it's issued
+                if not domain.certificate_ready():
+                    return (f"the {one} template's build fetches files from {origin}, whose certificate is not "
+                            "issued yet; the scheduler builds it once it is")
     return ""
 
 
