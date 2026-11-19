@@ -28,7 +28,10 @@ export default function RepoEnv() {
 }
 
 function EnvPage({ repo, env }: { repo: string; env: EnvView }) {
-  const [editing, setEditing] = useState<EnvRow | 'new' | null>(null)
+  // What the dialog is for stays while it fades out, so its title never reads "Edit null" as it closes.
+  const [editing, setEditing] = useState<EnvRow | 'new'>('new')
+  const [open, setOpen] = useState(false)
+  const edit = (what: EnvRow | 'new') => { setEditing(what); setOpen(true) }
   const [importing, setImporting] = useState(false)
   const shown = env.variables
   return <div className="space-y-4">
@@ -41,16 +44,16 @@ function EnvPage({ repo, env }: { repo: string; env: EnvView }) {
     <Panel title="Variables" bodyClassName="p-0"
       actions={<>
         <Button size="sm" onClick={() => setImporting(true)}><FileUp />Import .env</Button>
-        <Button size="sm" variant="primary" onClick={() => setEditing('new')}><Plus />Add variable</Button>
+        <Button size="sm" variant="primary" onClick={() => edit('new')}><Plus />Add variable</Button>
       </>}>
       {shown.length === 0 ? <EmptyState icon={KeyRound} title="No variables yet" className="py-10" />
         : <ul className="divide-y divide-line">
-          {shown.map((v, i) => <VariableRow key={`${v.name}-${v.kind}-${i}`} v={v} repo={repo} admin={env.admin} onEdit={() => setEditing(v)} />)}
+          {shown.map((v, i) => <VariableRow key={`${v.name}-${v.kind}-${i}`} v={v} repo={repo} admin={env.admin} onEdit={() => edit(v)} />)}
         </ul>}
     </Panel>
-    <Dialog open={!!editing} onOpenChange={o => !o && setEditing(null)} title={editing === 'new' ? 'Add variable' : `Edit ${editing && editing.name}`}
+    <Dialog open={open} onOpenChange={setOpen} title={editing === 'new' ? 'Add variable' : `Edit ${editing.name}`}
       description="Running sandboxes restart their app with it.">
-      {editing && <VariableForm repo={repo} admin={env.admin} row={editing === 'new' ? null : editing} onDone={() => setEditing(null)} />}
+      <VariableForm repo={repo} admin={env.admin} row={editing === 'new' ? null : editing} onDone={() => setOpen(false)} />
     </Dialog>
     <Dialog open={importing} onOpenChange={setImporting} title="Import a .env file" description="Each line is saved as a secret.">
       <ImportForm repo={repo} admin={env.admin} onDone={() => setImporting(false)} />
