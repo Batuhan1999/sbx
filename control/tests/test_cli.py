@@ -964,6 +964,17 @@ class SetupCliTests(Cli):
         self.assertEqual({c[4] for c in self.control.calls}, {"Setup one-time-token"})   # never a Bearer token
         self.assertNotIn("one-time-token", out + err)
 
+    def test_a_new_domain_is_waited_for_through_sbx_control_s_restart(self):
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: {}
+        ready = json.loads(json.dumps(SETUP_STATE))
+        next(s for s in ready["steps"] if s["step"] == "address")["done"] = True
+        answers = iter([self.state, self.state, (502, b"Bad Gateway"), ready])   # the name restarts sbx-control
+        self.routes[("GET", "/api/setup")] = lambda q, body: next(answers, ready)
+        code, out, err = self.run_cli("setup", "address", "--domain", "sbx.example.com", "--email", "a@example.com")
+        self.assertEqual(code, 0, err)
+        self.assertIn("address ready: ", out)
+        self.assertIn("waiting for the certificate", err)
+
     def test_a_refused_domain_names_each_failed_check_and_its_how_to(self):
         page = "https://github.com/o/sbx/blob/main/docs/howto/cloudflare.md#dns-records"
         self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (400, {"detail": {

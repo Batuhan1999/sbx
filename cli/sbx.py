@@ -1296,7 +1296,9 @@ def setup_address(args, client):
             return None, True
         error = state["access"].get("certificate_error")
         return f"waiting for the certificate{': ' + error if error else ''}", False
-    state = follow(lambda: client.api("GET", "/api/setup"), verdict, args.timeout, interval=5,
+    # A new domain name restarts sbx-control: a poll that fails meanwhile is tried again.
+    state = follow(lambda: client.request("GET", "/api/setup", timeout=30), verdict, args.timeout, interval=5,
+                   retry_statuses=RETRIED,
                    late=lambda state: f"HTTPS is not ready after {args.timeout} s "
                                       f"({state['access'].get('certificate_error') or 'no certificate yet'}); "
                                       "sbx setup status")
