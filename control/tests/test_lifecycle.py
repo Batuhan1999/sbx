@@ -380,6 +380,22 @@ class LifecycleTests(Installation):
                 self.assertIsNone(ip_previews.route(22000))
         create.assert_not_called()
 
+    def test_a_create_the_runtime_has_no_room_for_says_so_and_gives_its_preview_ports_back(self):
+        # The runtime refused the VM (NoRoom): none was made, so nothing is kept for it.
+        from sbx_control import ip_previews
+        recipe = self.recipes.App("owner/repo", Path("/unused"), {"previews": {"": 3000}})
+        with self.creating(recipe, FakeVM()) as create, \
+                patch.object(ip_previews, "address", return_value="203.0.113.10"), \
+                patch.object(ip_previews, "port_range", return_value=(22000, 22009)):
+            create.side_effect = self.core.runtime.NoRoom("the node is full")
+            response = self.client.post("/api/sandboxes?start_app=false", json={
+                "name": "no-room", "repo": "owner/repo", "public_keys": ""})
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertIn("no free capacity on the sandbox host", response.json()["detail"])
+            self.assertIsNone(ip_previews.route(22000))
+        record = self.lifecycle.get("no-room")
+        self.assertEqual((record["status"], record["sandbox_id"]), ("failed", None))
+
     def test_webhook_reports_creation_failure_without_a_runtime(self):
         from fastapi import HTTPException
         from sbx_control import github_api as previews, github_app

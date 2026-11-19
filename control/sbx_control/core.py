@@ -420,7 +420,10 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
         return result
     except Exception as error:
         checkpoint = lifecycle.get(name) if operation else None
-        if checkpoint and (checkpoint.get("sandbox_id") or checkpoint.get("phase") == "allocating"):
+        # A VM that exists, or may (the runtime failed while allocating it), keeps what was made
+        # for it. A runtime that said it has no room made none.
+        refused = isinstance(error, runtime.NoRoom) and not (checkpoint or {}).get("sandbox_id")
+        if checkpoint and not refused and (checkpoint.get("sandbox_id") or checkpoint.get("phase") == "allocating"):
             raise
         if result and result.get("sandbox_id"):
             runtime.kill(result["sandbox_id"])
