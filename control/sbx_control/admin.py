@@ -162,13 +162,8 @@ def do_connect(kind: str, pairs: list) -> int:
     except KeyError:
         print(f"no connection {kind}", file=sys.stderr)
         return 2
-    return _connected(lambda: connection.connect(values, by="sbx-admin"))
-
-
-def _connected(connect) -> int:
-    from . import connections
     try:
-        status = connect()
+        status = connection.connect(values, by="sbx-admin")
     except connections.Refused as error:
         print(f"refused: {error}", file=sys.stderr)
         for check in error.checks:
