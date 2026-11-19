@@ -424,6 +424,50 @@ class LifecycleTests(Installation):
         self.assertIn("Preview failed", comment.call_args.args[2])
         self.assertNotIn("secret detail", comment.call_args.args[2])
 
+    def closed_pr(self, find):
+        """PR 42 of owner/repo closes while it has a preview, pr-42, that core.find() answers as find."""
+        from sbx_control import github_api as previews, github_app
+        payload = {"action": "closed", "number": 42, "repository": {"full_name": "owner/repo"},
+                   "pull_request": {"state": "closed", "labels": [{"name": "preview"}],
+                                    "head": {"ref": "feature", "repo": {"full_name": "owner/repo"}}}}
+        with self.state.db() as conn:
+            conn.execute("insert into sandboxes (name, owner, branch, slug) values ('pr-42', ?, 'feature', 'pr-42')",
+                         (previews.PREVIEW_OWNER,))
+        for target, name, value in ((github_app, "verify", True), (self.core.settings, "trust", "trusted"),
+                                    (previews, "preview_name", "pr-42"), (self.core, "find", find)):
+            self.enterContext(patch.object(target, name, return_value=value))
+        return lambda: self.client.post("/github/webhook", json=payload, headers={"x-github-event": "pull_request"})
+
+    def test_a_pr_closed_while_its_preview_is_prepared_deletes_the_preview_once_it_is_free(self):
+        # GitHub says closed once: refused as busy, the preview and its services stayed for good.
+        from sbx_control import github_api as previews, sandboxes
+        info = SimpleNamespace(sandbox_id="pr-42-vm", state="running",
+                               metadata={"sbx": "pr-42", "owner": previews.PREVIEW_OWNER, "repo": "owner/repo"})
+        close = self.closed_pr(info)
+        op = self.lifecycle.begin("pr-42", "create")
+        op.advance("allocating")
+        op.advance("preparing_workspace", sandbox_id="pr-42-vm", runtime="running")
+        op.advance("workspace_ready", finish=True)
+        preparing = self.lifecycle.begin("pr-42", "prepare")
+        with patch.object(self.core.runtime, "kill") as kill:
+            response = close()
+            self.assertEqual((response.status_code, response.json()), (200, {"preview": "deleting"}), response.text)
+            sandboxes.prepare_waiting({"pr-42"})   # still being prepared: it waits
+            kill.assert_not_called()
+            preparing.fail(RuntimeError("its setup failed"))
+            sandboxes.prepare_waiting({"pr-42"})
+            kill.assert_called_once_with("pr-42-vm")
+        self.assertIsNone(sandboxes.registered_owner("pr-42"))
+        self.assertEqual(self.lifecycle.get("pr-42")["phase"], "deleted")
+
+    def test_a_closed_pr_clears_a_preview_that_failed_before_its_vm_existed(self):
+        from sbx_control import sandboxes
+        close = self.closed_pr(None)
+        self.lifecycle.begin("pr-42", "create").fail(RuntimeError("no template"))
+        response = close()
+        self.assertEqual((response.status_code, response.json()), (200, {"preview": "deleted"}), response.text)
+        self.assertIsNone(sandboxes.registered_owner("pr-42"))
+
     def test_failed_port_probe_never_reclaims_routes(self):
         from sbx_control import ip_previews, routing
         with patch.object(self.core.runtime, "connect", side_effect=RuntimeError("unavailable")), \

@@ -124,13 +124,16 @@ def _no_endpoint_at(slug: str) -> None:
 
 
 def set_branch(name: str, branch: str):
+    """Its caller prepares the sandbox on branch now: nothing waits for it any more."""
     with db() as conn:
-        conn.execute("update sandboxes set branch = ?, updated_at = current_timestamp where name = ?", (branch, name))
+        conn.execute("update sandboxes set branch = ?, prepare_wanted = '', updated_at = current_timestamp "
+                     "where name = ?", (branch, name))
 
 
 # A prepare asked for while the sandbox was busy with another operation (a
 # push to a PR preview while it is still being made): kept here, and run by
-# the keeper's next round once the sandbox is free (prepare_waiting).
+# the keeper's next round once the sandbox is free (prepare_waiting). A
+# delete asked for then (its PR closed) waits the same way: GitHub says so once.
 
 
 def want_prepare(name: str, branch: str, *, force: bool = False):
@@ -141,14 +144,32 @@ def want_prepare(name: str, branch: str, *, force: bool = False):
                      "where name = ?", (branch, "force" if force else "checkout", name))
 
 
+def want_delete(name: str):
+    """Delete the sandbox once it is free; a prepare that waited for it is dropped."""
+    with db() as conn:
+        conn.execute("update sandboxes set prepare_wanted = 'delete', updated_at = current_timestamp where name = ?",
+                     (name,))
+
+
 def prepare_waiting(present: set):
     """The keeper's round: the waiting prepares of the sandboxes in present
-    (those the runtime lists) that no operation holds now."""
+    (those the runtime lists) that no operation holds now, and the waiting
+    deletes of those no operation holds (listed or not: one may have failed
+    before its VM existed)."""
     with db() as conn:
         rows = conn.execute("select name, branch, prepare_wanted from sandboxes where prepare_wanted != ''").fetchall()
     for name, branch, wanted in rows:
         current = lifecycle.get(name)
-        if name not in present or (current and current["active"]):
+        if current and current["active"]:
+            continue
+        if wanted == "delete":
+            try:
+                delete(name)   # its row goes, and what waited with it
+                state.event(name, "deleted", "asked for while it was busy")
+            except Exception as error:   # kept: the next round tries again
+                print(f"deleting {name}, asked for while it was busy: {error!r}", flush=True)
+            continue
+        if name not in present:
             continue
         with db() as conn:
             conn.execute("update sandboxes set prepare_wanted = '' where name = ?", (name,))

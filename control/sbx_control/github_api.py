@@ -124,10 +124,31 @@ def upsert(pr: int, branch: str, repo: str | None) -> dict:
         return {"name": name, "status": "queued"}
 
 
-def delete(pr: int, repo: str | None) -> dict:
-    """Also clears what a failed create may have left: provisioned services, row."""
+def has_preview(pr: int, repo: str | None) -> bool:
+    """Whether the PR has a preview to delete: its VM, or what a create that
+    failed before its VM existed left registered."""
     name = preview_name(pr, repo)
-    sandboxes.delete(name)
+    return bool(core.find(name)) or sandboxes.registered_owner(name) == PREVIEW_OWNER
+
+
+def delete(pr: int, repo: str | None) -> dict:
+    """Also clears what a failed create may have left: provisioned services,
+    row. A preview busy with an operation (still being made or prepared) is
+    deleted by the keeper's next round after it (sandboxes.want_delete), as
+    GitHub says only once that a PR closed: {"deleting": name} then."""
+    name = preview_name(pr, repo)
+    for last in (False, True):
+        try:
+            sandboxes.delete(name)
+            break
+        except lifecycle.Conflict:
+            if sandboxes.registered_owner(name) != PREVIEW_OWNER:
+                raise
+            if name in lifecycle.busy():
+                sandboxes.want_delete(name)
+                return {"deleting": name}
+            if last:   # not busy, so waiting would not help: refused for another reason
+                raise
     return {"deleted": name}
 
 
@@ -178,7 +199,7 @@ async def on_pull_request(repo: str, payload: dict) -> dict:
             return {"preview": "queued"}
         threading.Thread(target=comment_when_up, args=(repo, number), daemon=True).start()
         return {"preview": "starting"}
-    if not wanted and payload["action"] in ("unlabeled", "closed") and core.find(preview_name(number, repo)):
-        await run_in_threadpool(delete, number, repo)
-        return {"preview": "deleted"}
+    if not wanted and payload["action"] in ("unlabeled", "closed") and await run_in_threadpool(has_preview, number, repo):
+        result = await run_in_threadpool(delete, number, repo)
+        return {"preview": "deleting" if "deleting" in result else "deleted"}
     return {"ignored": "pull_request"}
