@@ -65,7 +65,7 @@ def _keep_values(before, after):
 def put(repo: str | None, name: str, value: str | None, who: str, secret: bool = True,
         audience: str = "all", agent: bool = True, person: str | None = None):
     """value None keeps the one set before (to change only how it is given)."""
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         raise ValueError(f"{name} is not a variable name")
     if audience not in AUDIENCES:
         raise ValueError(f"who gets it: one of {', '.join(AUDIENCES)}")

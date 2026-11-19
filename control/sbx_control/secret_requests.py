@@ -166,7 +166,7 @@ def _repo(text: str, target: str) -> str:
 
 
 def _var(name: str, target: str) -> str:
-    if not VAR_RE.match(name or ""):
+    if not VAR_RE.fullmatch(name or ""):
         raise Refused(f"{target}: {name or '(none)'} is not a variable name")
     return name
 
@@ -291,7 +291,7 @@ def create(items: list[dict], *, by: str, expires_in: int | None = None, note: s
 
 
 def _row(request_id: str, conn) -> dict | None:
-    if not ID_RE.match(request_id or ""):
+    if not ID_RE.fullmatch(request_id or ""):
         return None
     row = conn.execute("select id, created_by, created_at, expires_at, state, note, items, finished_at, finished_by "
                        "from secret_requests where id = ?", (request_id,)).fetchone()

@@ -209,7 +209,7 @@ def attach(repo: str, name: str, key: str | None, inputs: dict, chosen: dict, *,
     nothing is saved when that, or its check, fails."""
     package = get(name)
     key = key or package.name
-    if not NAME_RE.match(key):
+    if not NAME_RE.fullmatch(key):
         raise PackageError(f"{key!r} is not a key (a-z, 0-9, - and _)")
     declared = next((m for m in merged(repo) if m[0] == key), None)
     given = {k: v for k, v in inputs.items() if v != ""}

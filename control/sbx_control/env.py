@@ -217,7 +217,7 @@ def api_repo_env_import(body: EnvImport, email: str = Depends(auth.api_user), re
     """Import nonempty values as secrets; visibility can be changed explicitly."""
     auth.require_may_set(email, body.mine)
     values = parse_dotenv(body.text)
-    bad = [k for k in values if not variables.NAME_RE.match(k)]
+    bad = [k for k in values if not variables.NAME_RE.fullmatch(k)]
     if bad:
         raise HTTPException(400, f"not variable names: {', '.join(bad)}")
     person = email if body.mine else None

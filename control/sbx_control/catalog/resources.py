@@ -93,7 +93,7 @@ def _run(package: Package, action: str, ids: dict, inputs: dict, bound: dict, la
         key, sep, value = line.partition("=")
         if not line.strip():
             continue
-        if not sep or not VAR_RE.match(key):
+        if not sep or not VAR_RE.fullmatch(key):
             raise PackageError(f"{label}: {action} wrote a line to $SBX_OUTPUT that is not key=value")
         outputs[key] = value
     if action == "create" and saved and status == "creating" and outputs:
@@ -178,7 +178,7 @@ def create(name: str, repo: str, key: str, uses: str, given: dict, position: int
 
 def _create(name, repo, key, uses, given, position, chosen) -> Created:
     label = f"service {key} ({uses}) of sbx-{name}"
-    if not NAME_RE.match(key):
+    if not NAME_RE.fullmatch(key):
         raise PackageError(f"sbx.yaml services: {key!r} is not a service key (a-z, 0-9, - and _)")
     with state.db() as conn:
         row = conn.execute("select uses, repo, definition, inputs, connections, resource_id from sandbox_services "

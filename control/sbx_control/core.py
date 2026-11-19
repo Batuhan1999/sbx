@@ -181,7 +181,7 @@ def preview_suffixes() -> set:
 def valid_name(name: str) -> str:
     """A name any sandbox may have had: what operating on an existing one
     checks, since a name can become reserved after its sandbox was made."""
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         raise SandboxError(f"name must match {NAME_RE.pattern}")
     return name
 

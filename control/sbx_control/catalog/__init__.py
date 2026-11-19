@@ -117,7 +117,7 @@ class Package:
         """The inputs its scripts get: the given values over the defaults. A
         package that declares no inputs takes any (static values)."""
         for name in given:
-            if not VAR_RE.match(name):
+            if not VAR_RE.fullmatch(name):
                 raise PackageError(f"{label}: input {name} is not a variable name")
             if self.inputs and name not in self.inputs:
                 raise PackageError(f"{label}: {self.title} has no input {name} ({', '.join(self.inputs)})")
@@ -171,7 +171,7 @@ INPUT_TYPES = ("text", "number", "integer", "boolean", "email", "url")
 
 def _input(name, v) -> dict:
     v = v or {}
-    if not VAR_RE.match(str(name)) or not isinstance(v, dict):
+    if not VAR_RE.fullmatch(str(name)) or not isinstance(v, dict):
         raise PackageError(f"{name} is not an input name")
     out = {"required": bool(v.get("required")), "secret": bool(v.get("secret")), "agent": v.get("agent", True) is not False,
            "help": str(v.get("help") or v.get("description") or "")}
@@ -233,7 +233,7 @@ def _choices(name, given) -> list:
 
 
 def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
-    if not NAME_RE.match(name or "") or name in RESERVED:
+    if not NAME_RE.fullmatch(name or "") or name in RESERVED:
         raise PackageError(f"{name!r} is not a package name (a-z, 0-9, - and _)")
     if not isinstance(files, dict) or "package.yaml" not in files:
         raise PackageError(f"{name}: no package.yaml")
@@ -289,7 +289,7 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
         requires[slot] = {"kind": str(req["kind"]), "expose": {str(k): str(v) for k, v in (req.get("expose") or {}).items()}}
     template = _template(name, spec.get("template"), kind)
     tools = spec.get("host_tools") or {}
-    if not isinstance(tools, dict) or not all(NAME_RE.match(str(k)) and isinstance(v, str) and v.strip()
+    if not isinstance(tools, dict) or not all(NAME_RE.fullmatch(str(k)) and isinstance(v, str) and v.strip()
                                                for k, v in tools.items()):
         raise PackageError(f"{name}: host_tools maps a command's name to the shell that installs it")
     if source == "repo" and tools:
@@ -301,7 +301,7 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
         raise PackageError(f"{name}: {logo} is not an SVG of at most {LOGO_BYTES >> 10} KiB")
     outputs = {}
     for out, v in (spec.get("outputs") or {}).items():
-        if not VAR_RE.match(str(out)) or not isinstance(v or {}, dict):
+        if not VAR_RE.fullmatch(str(out)) or not isinstance(v or {}, dict):
             raise PackageError(f"{name}: output {out} is not a variable name")
         outputs[str(out)] = dict(v or {})
     return Package(name=name, kind=kind, title=str(spec.get("title") or name),
@@ -362,7 +362,7 @@ def folder_files(folder: pathlib.Path, name: str) -> dict:
 
 
 def _folders(root: pathlib.Path) -> list:
-    return [p for p in sorted(root.iterdir()) if p.is_dir() and NAME_RE.match(p.name)] if root.is_dir() else []
+    return [p for p in sorted(root.iterdir()) if p.is_dir() and NAME_RE.fullmatch(p.name)] if root.is_dir() else []
 
 
 def shipped() -> list[Package]:
@@ -411,7 +411,7 @@ def host_tools() -> dict[str, str]:
 
 
 def get(name: str) -> Package:
-    if not NAME_RE.match(name or ""):
+    if not NAME_RE.fullmatch(name or ""):
         raise PackageError(f"{name!r} is not a package name")
     found = _found()[0].get(name)
     if found is None:

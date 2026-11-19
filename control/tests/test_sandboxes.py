@@ -928,3 +928,19 @@ class MissingValuesTests(Server):
         row = next(r for r in view["variables"] if r["name"] == "FROM_PATTERN")
         self.assertEqual((row["kind"], row["source"]), ("installation", "server"))   # no config.yaml file exists
         self.assertNotIn("kinds", view)   # /api/me has the audiences
+
+
+class NameTests(Server):
+    """A name is the whole of what it was given: `^...$` with re.match also
+    takes one that ends in a newline, which then reaches lock files, preview
+    hosts and the env file's export lines."""
+
+    def test_a_name_that_ends_in_a_newline_is_refused(self):
+        from sbx_control import core, sandboxes, variables
+        self.assertEqual(core.valid_name("demo"), "demo")
+        with self.assertRaisesRegex(core.SandboxError, "name must match"):
+            core.valid_name("demo\n")
+        with self.assertRaisesRegex(core.SandboxError, "slug must be a DNS label"):
+            sandboxes.check_slug("demo\n")
+        with self.assertRaisesRegex(ValueError, "not a variable name"):
+            variables.put(None, "TOKEN\n", "x", "test")

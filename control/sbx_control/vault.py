@@ -66,7 +66,7 @@ def _fingerprint(value: str) -> str:
 
 
 def put(k: Key, value: str, *, by: str) -> Facts:
-    if not NAME_RE.match(k.name):
+    if not NAME_RE.fullmatch(k.name):
         raise ValueError(f"{k.name} is not a secret name")
     if k.bootstrap:
         secret_store.local().put(secret_store.BOOTSTRAP, k.name, value)

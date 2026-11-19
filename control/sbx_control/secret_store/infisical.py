@@ -203,7 +203,7 @@ class Infisical:
             self._saw(namespace, key, None)
 
     def list(self, namespace: str, fresh=False) -> dict[str, str]:
-        found = {k: v for k, v in self._values(self.path(namespace), fresh=fresh).items() if NAME_RE.match(k)}
+        found = {k: v for k, v in self._values(self.path(namespace), fresh=fresh).items() if NAME_RE.fullmatch(k)}
         if not fresh:
             self._note(namespace, found)
         return found

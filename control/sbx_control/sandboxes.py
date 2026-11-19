@@ -104,7 +104,7 @@ def check_slug(slug: str, name: str = "") -> str:
     """A sandbox's preview host: a DNS label that is no host of the
     installation's own, ends like no preview host, is no other sandbox's
     slug plus -<port>, and no other sandbox than name has."""
-    if not SLUG_RE.match(slug):
+    if not SLUG_RE.fullmatch(slug):
         raise core.SandboxError(f"slug must be a DNS label ({SLUG_RE.pattern})")
     if slug in settings.current().reserved_names or any(slug.endswith(suffix) for suffix in core.preview_suffixes()):
         raise core.SandboxError(f"{slug} is reserved")

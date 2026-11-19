@@ -108,6 +108,6 @@ async def api_submit(request_id: str, body: Submitted, request: Request, email: 
 @router.get("/keys/{request_id}", include_in_schema=False)
 def keys_page(request_id: str):
     """The link an agent hands the owner: the web app's keys page."""
-    if not secret_requests.ID_RE.match(request_id):
+    if not secret_requests.ID_RE.fullmatch(request_id):
         raise HTTPException(404)
     return RedirectResponse(f"/app/keys/{request_id}")

@@ -53,7 +53,7 @@ def save(key: str, name: str, inputs: dict, *, by: str) -> dict:
     is stored when it fails. Saving again updates its values, not its
     endpoint while something uses it."""
     from . import NAME_RE
-    if not NAME_RE.match(key or ""):
+    if not NAME_RE.fullmatch(key or ""):
         raise PackageError(f"{key!r} is not a connection key (a-z, 0-9, - and _)")
     package = get(name)
     if package.kind != "connection":
