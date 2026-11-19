@@ -1849,8 +1849,8 @@ def catalog_cmd(args):
         return
     if action == "test":
         name = args.name or sys.exit("sbx catalog test NAME [--input k=v ...] [--connection slot=key]")
-        inputs = dict(x.split("=", 1) for x in (args.input or []))
-        chosen = dict(x.split("=", 1) for x in (args.connection or []))
+        inputs = dict(key_values(args.input, "k=v", "--input"))
+        chosen = dict(key_values(args.connection, "slot=key", "--connection"))
         r = api("POST", f"/api/catalog/{name}/test", {"inputs": inputs, "connections": chosen})
         for s in r["steps"]:
             print(f"  {'ok ' if s['ok'] else 'NO '} {s['step']}: {s['detail']}")
@@ -1881,7 +1881,7 @@ def attach_cmd(args):
             value = (getpass.getpass if v["secret"] else input)(f"  {name}{f' [{hint}]' if hint else ''}: ").strip()
             if value:
                 inputs[name] = value
-    chosen = dict(x.split("=", 1) for x in (args.connection or []))
+    chosen = dict(key_values(args.connection, "slot=key", "--connection"))
     r = api("POST", f"/api/repos/{repo}/attachments", {"package": args.package, "key": args.key or "", "inputs": inputs,
                                                       "connections": chosen})
     att = r.get("attachment") or {}

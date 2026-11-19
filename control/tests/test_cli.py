@@ -194,6 +194,19 @@ class CliTests(Cli):
         self.assertIn("sets DATABASE_URL: ${outputs.url}", out)
         self.assertIn("requires server: a postgres-server connection (url -> PG_ADMIN_URL); saved: dev-pg", out)
 
+    def test_a_pair_without_an_equals_sign_is_refused_and_nothing_is_sent(self):
+        self.routes[("GET", "/api/catalog")] = lambda q, body: {"packages": [{"name": "postgres-clone", "inputs": {}}]}
+        for argv, said in (
+                (("catalog", "test", "postgres-clone", "--input", "size"), "--input size: expected k=v"),
+                (("catalog", "test", "postgres-clone", "--connection", "server"), "--connection server: expected slot=key"),
+                (("attach", "postgres-clone", "--repo", "owner/app", "--connection", "server"),
+                 "--connection server: expected slot=key"),
+                (("attach", "postgres-clone", "size", "--repo", "owner/app"), "size: expected name=value")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual(code, said)
+        self.assertFalse(any(c[0] == "POST" for c in self.control.calls))
+
     def test_exec_sends_stdin_and_exits_with_the_scripts_code(self):
         self.routes[("POST", "/api/sandboxes/try/exec")] = lambda q, body: {
             "exit_code": 3, "stdout": f"ran {len(body['script'])}\n", "stderr": "warn\n"}
