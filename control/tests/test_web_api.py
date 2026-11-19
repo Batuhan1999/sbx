@@ -91,9 +91,6 @@ class WebApiTests(Server):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "no sandbox nothing-here")
 
-    def test_no_setup_link_is_offered_once_setup_is_complete(self):
-        self.assertIn(self.client.post("/api/setup/token").status_code, (404, 405))
-
     def test_a_sandbox_being_created_before_its_vm_carries_its_lifecycle(self):
         self.creating("early")
         listed = self.client.get("/api/sandbox-list?scope=mine").json()["sandboxes"]
@@ -120,11 +117,25 @@ class WebApiTests(Server):
         self.assertEqual({e["kind"]: e["internal"] for e in events},
                          {"paused": False, "snapshot cleanup deferred": True, "runtime restored": True})
 
+    def test_github_search_says_when_its_limit_is_reached(self):
+        import httpx
+        from sbx_control import github_app
+        found = [{"repo": "vercel/next.js", "description": "", "private": False, "branch": "canary", "pushed_at": ""}]
+        with patch.object(github_app, "search", return_value=found) as search:
+            response = self.client.get("/api/github/search", params={"q": "next"})
+        self.assertEqual(response.json(), {"repositories": found})
+        search.assert_called_once_with("next")
+        limited = httpx.HTTPStatusError("limit", request=httpx.Request("GET", "https://api.github.com"),
+                                        response=httpx.Response(403))
+        with patch.object(github_app, "search", side_effect=limited):
+            response = self.client.get("/api/github/search", params={"q": "next"})
+        self.assertEqual((response.status_code, response.json()["detail"]), (429, "GitHub's search limit is reached. Try again in a minute."))
+
     def test_the_github_app_returns_to_the_extensions_page(self):
         response = self.client.post("/api/connections/github/manifest", json={"return_to": "/app/extensions"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(json.loads(response.json()["manifest"])["setup_url"].endswith("/app/extensions"))
-        # The setup's GitHub step, after it finished: back to the repositories page.
+        # The onboarding's GitHub step: back to the repositories page, where its summary waits.
         response = self.client.post("/api/connections/github/manifest", json={"return_to": "/app/repos"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(json.loads(response.json()["manifest"])["setup_url"].endswith("/app/repos"))
@@ -139,11 +150,13 @@ class WebApiTests(Server):
         policy = self.client.get("/app/sandboxes").headers["content-security-policy"]
         self.assertIn("script-src 'self';", policy)
         self.assertIn("frame-ancestors 'none'", policy)
+        self.assertIn("connect-src 'self';", policy)   # a server that is set up asks nothing but itself
 
-    def test_the_setup_link_and_the_root_land_in_the_app(self):
-        for path, target in (("/", "/app/repos"), ("/setup", "/app/setup")):
+    def test_the_root_and_the_finished_onboarding_land_in_the_app(self):
+        for path in ("/", "/onboarding"):
             response = self.client.get(path, follow_redirects=False)
-            self.assertEqual(response.headers["location"], target)
+            self.assertEqual(response.headers["location"], "/app/repos")
+        self.assertEqual(self.client.get("/setup", follow_redirects=False).status_code, 404)   # the retired link
 
     def test_a_cookie_write_from_another_origin_is_refused_and_a_token_one_is_not(self):
         foreign = {"Origin": "https://preview.elsewhere.example"}
@@ -153,8 +166,11 @@ class WebApiTests(Server):
                               headers={"Origin": "https://203.0.113.10"})
         self.assertEqual(own.status_code, 200, own.text)
         token = self.client.put("/api/settings/sandboxes", json={"value": {"paused_days": 9}},
-                                headers={**foreign, **self.headers})
-        self.assertNotEqual(token.status_code, 403, token.text)
+                                headers={**foreign, **self.as_user("operator@example.com")})
+        self.assertEqual(token.status_code, 200, token.text)
+        retired = self.client.put("/api/settings/sandboxes", json={"value": {"paused_days": 9}},
+                                  headers={**foreign, "Authorization": "Setup anything"})
+        self.assertEqual(retired.status_code, 403)   # only a bearer token is no browser's own
 
     def test_connections_list_what_people_act_on_grouped(self):
         listed = {c["kind"]: c for c in self.client.get("/api/connections").json()["connections"]}

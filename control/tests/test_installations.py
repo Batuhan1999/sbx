@@ -215,6 +215,13 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
                     error="apt failed")
         with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
             builds.template_for(None, "fake")
+        self.assertRegex(str(refused.exception), r"its last build failed \(apt failed\); sbx builds it again at \d\d:\d\d UTC")
+        start.assert_not_called()                         # not before its time
+        for _ in range(2):                                # failed on this plan three times in a row: stuck
+            self.failed(builds, templates.DEFAULT, fingerprint=builds.plan(templates.DEFAULT).fingerprint,
+                        error="apt failed")
+        with patch.object(builds, "start") as start, self.assertRaises(builds.NotBuilt) as refused:
+            builds.template_for(None, "fake")
         self.assertIn("its last build failed (apt failed)", str(refused.exception))
         start.assert_not_called()
         self.assertNotIn(templates.DEFAULT, builds.stale("fake"))
@@ -222,8 +229,9 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
     def test_a_base_that_failed_is_not_rebuilt_from_every_child(self):
         from sbx_control.state import db
         builds, templates, _ = self.built()
-        # The base's last build failed on the plan of now: final until built again explicitly.
-        self.failed(builds, templates.BASE, fingerprint=builds.plan(templates.BASE).fingerprint, error="apt failed")
+        # The base's build failed on the plan of now three times in a row: final until built again explicitly.
+        for _ in range(3):
+            self.failed(builds, templates.BASE, fingerprint=builds.plan(templates.BASE).fingerprint, error="apt failed")
         with db() as conn:   # the default never built since: a create needs it
             conn.execute("update template_builds set built_template = null, built_fingerprint = null "
                          "where runtime = 'fake' and repo = ?", (templates.DEFAULT,))
@@ -272,3 +280,59 @@ class TemplateGoneBehindSbxsBack(SharedAccount):
         other.status_code = 404
         with patch.object(Sandbox, "create", side_effect=other), self.assertRaises(SandboxException):
             cloud.create("tpl", timeout=600)                      # not about a template: as it was
+
+
+class FailedBuildsAreTriedAgain(SharedAccount):
+    """A build that failed is built again by itself, 5 and then 30 minutes later (a mirror or network that was
+    briefly wrong), and stuck only after its plan failed three times in a row; its error is said in words."""
+
+    MIRROR = ("`npx -y playwright@1.58.2 install --with-deps chromium` exited with code 1 and error: E: Failed to fetch "
+              "https://cloud.r-project.org/bin/linux/ubuntu/noble-cran40/Packages.bz2 File has unexpected size "
+              "(68208 != 67689). Mirror sync in progress? E: Some index files failed to download.")
+
+    def fail(self, builds, key):
+        from support import live_pid
+        builds._transition(key, "building", "fake", started_at=builds._utc(), pid=live_pid(self))
+        builds._transition(key, "failed", "fake", finished_at=builds._utc(), error=self.MIRROR,
+                           fingerprint=builds.plan(key).fingerprint)
+        return builds.state_row(key, "fake")
+
+    def test_a_failure_is_built_again_twice_by_itself_then_stuck(self):
+        import time
+        from sbx_control import template_builds as builds, templates
+        key = templates.BASE
+        row = self.fail(builds, key)
+        self.assertEqual((row["failures"], builds.phase(key, row, "fake")), (1, "retrying"))
+        finished = builds._seconds(row["finished_at"])
+        self.assertEqual(builds.retry_at(row), finished + 5 * 60)
+        shown = next(r for r in builds.progress()["runtimes"]["fake"] if r["key"] == key)
+        self.assertEqual(shown["reason"], "A package mirror (cloud.r-project.org) was being updated while the "
+                                          "template built, so its files didn't match.")
+        self.assertIsNotNone(shown["retry_at"])
+        self.assertNotIn(key, builds.stale("fake"))
+        with patch.object(time, "time", return_value=finished + 5 * 60 + 1):
+            self.assertIn(key, builds.stale("fake"))              # the scheduler builds it again
+        row = self.fail(builds, key)
+        self.assertEqual((row["failures"], builds.retry_at(row) - builds._seconds(row["finished_at"])), (2, 30 * 60))
+        row = self.fail(builds, key)
+        self.assertEqual((row["failures"], builds.phase(key, row, "fake"), builds.retry_at(row)), (3, "stuck", None))
+        self.assertIn(f"sbx-admin jobs run template@fake:{key}", builds.base_not_ready(templates.DEFAULT, "fake"))
+
+    def test_a_build_that_succeeds_starts_the_count_again(self):
+        from sbx_control import template_builds as builds, templates
+        key = templates.BASE
+        self.fail(builds, key)
+        self.fail(builds, key)
+        builds.build_now(key, "fake")
+        row = builds.state_row(key, "fake")
+        self.assertEqual((row["failures"], row["failed_fingerprint"]), (0, None))
+        self.assertEqual(self.fail(builds, key)["failures"], 1)
+
+    def test_errors_sbx_does_not_know_are_left_as_they_are(self):
+        from sbx_control import template_builds as builds
+        self.assertEqual(builds.reason("setup exited 1: missing file"), "")
+        self.assertEqual(builds.reason("curl: (6) Could not resolve host: github.com"),
+                         "A download failed on the network.")
+        full = ("Boat's free saved snapshots are used up: your plan keeps 10, and all are taken. "
+                "(Boat said: Boat answered 402 payment_required)")
+        self.assertEqual(builds.reason(full), "Boat's free saved snapshots are used up: your plan keeps 10, and all are taken.")

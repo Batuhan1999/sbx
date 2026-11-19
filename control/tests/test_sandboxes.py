@@ -262,6 +262,7 @@ class WorkspaceTests(Server):
         self.assertEqual(lifecycle.started(False), 'app_unverified')
 
     def test_domainless_workspace_never_advertises_a_malformed_preview_url(self):
+        self.create_admin()
         self.choose_ip()
         from sbx_control import addressing, core, recipes
         app = recipes.App('owner/app', Path('/unused'), {'previews': {'': 3000}})

@@ -26,10 +26,10 @@ class TemplatesDuringTheSetup(Server):
     def test_templates_build_before_the_setup_is_finished(self):
         """The setup's reachability check starts a sandbox from the base template, so nothing may wait
         for the setup to finish: the scheduler, a runtime just added and install.sh's builds all start."""
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.assertFalse(self.setup.complete())
-        self.assertNotIn("blocked", self.client.get("/api/templates", headers=self.headers).json())
+        self.assertNotIn("blocked", self.client.get("/api/templates").json())
         with patch.object(self.scheduler, "_build_quietly") as build, \
                 patch.object(self.scheduler, "start_detached", return_value=("unit", True)) as detached, \
                 patch.object(self.builds, "build_now") as build_now:
@@ -39,7 +39,7 @@ class TemplatesDuringTheSetup(Server):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 self.assertEqual(self.builds.main(["base", "--if-stale"]), 0)   # install.sh's
         # No coding agents chosen: finishing does not wait for them.
-        self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["can_complete"])
+        self.assertTrue(self.client.get("/api/setup").json()["can_complete"])
         self.assertEqual([c.args for c in build.call_args_list],
                          [(self.templates.BASE, "embed"), (self.templates.DEFAULT, "embed")])
         detached.assert_called_once_with("embed")
@@ -47,8 +47,8 @@ class TemplatesDuringTheSetup(Server):
 
     def test_a_runtime_added_during_the_setup_starts_the_base_template(self):
         from sbx_control import runtime_changes
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         with patch.object(self.scheduler, "start_detached", return_value=("unit", True)) as detached, \
                 patch.object(runtime_changes, "perform", return_value="E2B Embed (embed) is enabled"), \
                 patch.object(runtime_changes.settings, "request_effects"), redirect_stdout(io.StringIO()) as said:
@@ -60,19 +60,30 @@ class TemplatesDuringTheSetup(Server):
     def test_the_setup_finishes_while_the_base_template_is_building(self):
         """The deadlock this replaces: finishing waited for a base template that built only after finishing."""
         from sbx_control import template_builds
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents("amp")
         template_builds._transition(self.templates.BASE, "building", started_at=template_builds._utc(),
                                     pid=os.getpid())
         reach = reachability.check("embed")                    # what the setup's checks run once the runtime answers
         self.assertTrue(reach.ok, reach)
         self.assertIn("not checked yet: the base template is still building", reach.detail)
-        self.assertTrue(self.client.get("/api/setup/checks", headers=self.headers).json()["ok"])
-        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertTrue(self.client.get("/api/setup/checks").json()["ok"])
+        done = self.client.post("/api/setup/complete")
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
         self.kick.assert_called()                              # what is still stale builds now
+
+    def test_finishing_runs_no_checks(self):
+        """A click waits for it: each step checked its part already. The whole set is GET /api/setup/checks."""
+        self.create_admin()
+        self.choose_ip()
+        self.runtime.reset_mock()
+        with patch.object(reachability, "check", side_effect=AssertionError("a sandbox was started")) as reach:
+            done = self.client.post("/api/setup/complete")
+        self.assertEqual(done.status_code, 200, done.text)
+        reach.assert_not_called()
+        self.runtime.assert_not_called()   # nor the runtime's own checks
 
     def test_a_round_now_whether_or_not_the_setup_is_finished(self):
         import threading
@@ -88,8 +99,8 @@ class TemplatesDuringTheSetup(Server):
         base, default = self.builds.plan(self.templates.BASE), self.builds.plan(self.templates.DEFAULT)
         self.assertIn("amp", [c.name for c in base.contributions])
         self.assertNotIn("amp", [c.name for c in default.contributions])
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents("amp", "claude")
         self.assertFalse(vault.facts(TOKEN).set)
         self.assertEqual(self.builds.plan(self.templates.BASE).fingerprint, base.fingerprint)   # choosing it rebuilds nothing
@@ -100,17 +111,17 @@ class TemplatesDuringTheSetup(Server):
         self.assertEqual(self.builds.plan(self.templates.BASE).fingerprint, base.fingerprint)
 
     def test_the_choice_is_checked_and_belongs_to_the_setup(self):
-        self.choose_ip()
         self.create_admin()
-        unknown = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["nope"]})
+        self.choose_ip()
+        unknown = self.client.put("/api/setup/agents", json={"agents": ["nope"]})
         self.assertEqual(unknown.status_code, 400)
         self.assertIn("claude, amp", unknown.text)
         chosen = self.choose_agents("amp")
         self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
         self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": True,
                                                              "summary": "none"})
-        self.assertEqual(self.client.post("/api/setup/complete", headers=self.headers).status_code, 200)
-        late = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["amp"]})
+        self.assertEqual(self.client.post("/api/setup/complete").status_code, 200)
+        late = self.client.put("/api/setup/agents", json={"agents": ["amp"]})
         self.assertEqual(late.status_code, 409)
         self.assertIn("Extensions", late.text)
 
@@ -120,10 +131,10 @@ class TemplatesDuringTheSetup(Server):
         self.assertEqual(self.setup.state(None)["steps"][-1]["summary"], "as enabled under Extensions")
 
     def test_turning_amp_off_later_rebuilds_nothing(self):
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents("amp")
-        self.client.post("/api/setup/complete", headers=self.headers)
+        self.client.post("/api/setup/complete")
         self.kick.reset_mock()
         response = self.client.delete("/api/connections/amp")
         self.assertEqual(response.status_code, 200, response.text)
@@ -134,10 +145,10 @@ class TemplatesDuringTheSetup(Server):
         self.assertIn("amp", [c.name for c in self.builds.plan(self.templates.BASE).contributions])
 
     def test_turning_amp_off_during_the_setup_rebuilds_nothing(self):
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents("amp")
-        report = self.client.delete("/api/connections/amp", headers=self.headers).json()["rebuilds"]
+        report = self.client.delete("/api/connections/amp").json()["rebuilds"]
         self.assertFalse(report["building"])
         self.kick.assert_not_called()
 
@@ -153,15 +164,15 @@ class TemplatesDuringTheSetup(Server):
 
 class FinishAsTheSignedInAdmin(Server):
     """The agent signs in with `sbx login` once the owner's account exists, and finishes the setup itself:
-    an admin's API token, no password; the setup link with the password still works (test_runtime_settings)."""
+    an admin's API token, no password."""
 
     def test_sbx_login_works_during_the_setup_and_its_token_finishes_it(self):
         from fastapi.testclient import TestClient
         from sbx_control import auth, users
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents("amp")
-        agent = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session, no setup link
+        agent = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session
         self.addCleanup(agent.close)
         login = agent.get("/cli/login", params={"port": 4000, "state": "s", "challenge": "c" * 43},
                           follow_redirects=False)

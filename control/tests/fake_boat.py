@@ -25,6 +25,8 @@ class FakeBoat:
     def __init__(self):
         self.sandboxes: dict = {}
         self.saved: dict = {}
+        self.free_saved = 10            # saved snapshots the plan keeps for free
+        self.balance = 0.0              # the wallet, in dollars
         self.files: dict = {}           # sandbox id -> {path: bytes}
         self.processes: dict = {}       # process id -> {"polls", "stdout", "exit"}
         self.hosted: dict = {}          # (sandbox id, port) -> {"token", "localhost", "public"}
@@ -101,7 +103,10 @@ class FakeBoat:
             return 202, {"ok": True, "type": "snapshot.saved.saving", "status": "saving",
                          "snapshot": self._saved(self.saved[name])}
         if parts == ["saved-snapshots"] and method == "GET":
-            return 200, {"ok": True, "type": "snapshot.saved.list", "snapshots": [self._saved(s) for s in self.saved.values()]}
+            used = len(self.saved)
+            return 200, {"ok": True, "type": "snapshot.saved.list", "snapshots": [self._saved(s) for s in self.saved.values()],
+                         "allowance": {"included": self.free_saved, "free": self.free_saved, "used": used,
+                                       "extra": max(0, used - self.free_saved), "pricePerExtraMonthlyDollars": 1.68}}
         if parts[0] == "saved-snapshots" and len(parts) == 2:
             found = self.saved.get(parts[1])
             if found is None:
@@ -115,7 +120,8 @@ class FakeBoat:
         if parts == ["limits"]:
             return 200, {"ok": True, "type": "limits", "canStart": True, "billingStatus": "active",
                          "activeSandboxes": sum(b["state"] in ("ready", "provisioning") for b in self.sandboxes.values()),
-                         "maxActiveSandboxes": 100, "sandboxPlanKey": self.plan}
+                         "maxActiveSandboxes": 100, "sandboxPlanKey": self.plan,
+                         "wallet": {"balanceDollars": self.balance}}
         if parts == ["api-keys"]:
             return 200, {"ok": True, "type": "api_keys", "apiKeys": self.keys}
         return 404, {"ok": False, "type": "sandbox.error", "code": "not_found", "message": path}

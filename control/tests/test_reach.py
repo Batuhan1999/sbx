@@ -23,7 +23,8 @@ class CapableRuntimeTests(Server):
     def test_it_offers_both_and_keeps_each_alone(self):
         caps = self.runtime.capabilities()
         self.assertTrue(caps.egress_rules and caps.private_networks)
-        response = self.client.get("/api/settings", headers=self.headers)
+        self.create_admin()
+        response = self.client.get("/api/settings")
         self.assertEqual(response.json()["offered"], {"public_repos": True, "internal_cidrs": True})
         self.settings.update("access", PUBLIC, by="test")
         self.settings.update("access", {"public_repos": False}, by="test")
@@ -51,13 +52,14 @@ class IncapableRuntimeTests(Server):
         from sbx_control import reach, runtime, settings
         self.reach, self.runtime, self.settings = reach, runtime, settings
         self.enterContext(patch.object(runtime, "capabilities", return_value=runtime.Capabilities()))
+        self.create_admin()
 
     def test_the_settings_page_is_offered_neither(self):
-        response = self.client.get("/api/settings", headers=self.headers)
+        response = self.client.get("/api/settings")
         self.assertEqual(response.json()["offered"], {"public_repos": False, "internal_cidrs": False})
 
     def test_public_repos_is_refused_by_the_capability_it_needs(self):
-        response = self.client.put("/api/settings/access", headers=self.headers, json={"value": PUBLIC})
+        response = self.client.put("/api/settings/access", json={"value": PUBLIC})
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("egress_rules", response.text)
         self.assertNotIn("Embed", response.text)

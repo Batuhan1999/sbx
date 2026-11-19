@@ -223,8 +223,47 @@ def owners(*, fetch: bool = True) -> list | None:
     return found
 
 
+SEARCH_LIMIT = 10   # results a search returns
+
+
+def _search_headers(client: httpx.Client) -> dict:
+    """An installation's read-only token when the App has one (GitHub allows
+    30 searches a minute with it), else none (10 a minute, per address)."""
+    configured = settings()
+    if not configured:
+        return {"Accept": "application/vnd.github+json"}
+    headers_app = app_headers(configured)
+    response = client.get(f"{API}/app/installations", headers=headers_app, params={"per_page": 1})
+    response.raise_for_status()
+    installs = [i for i in response.json() if not i.get("suspended_at")]
+    if not installs:
+        return {"Accept": "application/vnd.github+json"}
+    response = client.post(f"{API}/app/installations/{installs[0]['id']}/access_tokens", headers=headers_app,
+                           json={"permissions": {"metadata": "read"}})
+    response.raise_for_status()
+    return {"Authorization": f"Bearer {response.json()['token']}", "Accept": "application/vnd.github+json"}
+
+
+def search(query: str) -> list[dict]:
+    """Public repositories on GitHub whose name matches query, the best match
+    first, in repositories()' shape. httpx.HTTPStatusError when GitHub refuses
+    (403 or 429: its search limit is reached)."""
+    query = " ".join(query.split())[:100]
+    if not query:
+        return []
+    with httpx.Client(timeout=20) as client:
+        response = client.get(f"{API}/search/repositories", headers=_search_headers(client),
+                              params={"q": f"{query} in:name is:public", "per_page": SEARCH_LIMIT})
+        response.raise_for_status()
+        return [{"repo": repo["full_name"].lower(), "description": repo.get("description") or "", "private": False,
+                 "branch": repo.get("default_branch") or "main", "pushed_at": repo.get("pushed_at") or ""}
+                for repo in response.json().get("items", []) if not repo.get("disabled")]
+
+
 def repositories() -> list[dict]:
-    """Repositories accessible to this App, using short-lived read-only tokens."""
+    """Repositories accessible to this App, using short-lived read-only
+    tokens: the last pushed first (pushed_at, GitHub's ISO time; "" when it
+    never was), as a picker lists them."""
     configured = settings()
     if not configured:
         return []
@@ -253,14 +292,16 @@ def repositories() -> list[dict]:
                         if not repo.get("disabled"):
                             name = repo["full_name"].lower()
                             found[name] = {"repo": name, "description": repo.get("description") or "",
-                                           "private": bool(repo.get("private")), "branch": repo.get("default_branch") or "main"}
+                                           "private": bool(repo.get("private")), "branch": repo.get("default_branch") or "main",
+                                           "pushed_at": repo.get("pushed_at") or ""}
                     if len(repos) < 100:
                         break
                     repo_page += 1
             if len(installations) < 100:
                 break
             page += 1
-    return sorted(found.values(), key=lambda repo: repo["repo"])
+    by_name = sorted(found.values(), key=lambda repo: repo["repo"])
+    return sorted(by_name, key=lambda repo: repo["pushed_at"], reverse=True)
 
 
 def installation(repo: str):

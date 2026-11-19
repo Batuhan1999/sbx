@@ -5,7 +5,7 @@ import type {
   RuntimeChange, RuntimeValues,
   GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
-  SetupState, TemplateProgress, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
+  SetupOpen, SetupState, TemplateProgress, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
 } from './types'
 
 const get = <T,>(url: string) => request<T>('GET', url)
@@ -81,6 +81,8 @@ export const api = {
     readRecipe: (repo: string) => post<{ configured: boolean; source: string }>(`${r(repo)}/prepare`),
     setupPr: (repo: string) => get<SetupPr>(`${r(repo)}/setup-pr`),
     github: () => get<{ repositories: GitHubRepository[] }>('/api/github/repositories'),
+    /** Public repositories on GitHub by name; GitHub allows a few searches a minute (429 past that). */
+    githubSearch: (q: string) => get<{ repositories: GitHubRepository[] }>(`/api/github/search?q=${enc(q)}`),
     inspect: (repo: string) => post<RepoInspection>('/api/repo-onboarding/inspect', { repo }),
     connect: (repo: string) => post<RepoInspection>('/api/repo-onboarding/connect', { repo }),
   },
@@ -123,12 +125,17 @@ export const api = {
   templates: () => get<TemplateProgress>('/api/templates'),
 
   setup: {
+    /** Open to anyone: whether the onboarding is done, whether someone can sign in, where the page is. */
+    open: () => get<SetupOpen>('/api/setup/open'),
     state: () => get<SetupState>('/api/setup'),
     checks: () => get<CheckResult>('/api/setup/checks'),
     address: (address: string) => post<SetupState>('/api/setup/address', { address }),
     admin: (email: string, password: string) => post<SetupState>('/api/setup/admin', { email, password }),
     agents: (agents: string[]) => put<SetupState>('/api/setup/agents', { agents }),
     complete: () => post<SetupState>('/api/setup/complete'),
+    /** A one-time code that signs this admin in at the server's domain (the page's move there). */
+    handoff: () => post<{ code: string }>('/api/setup/handoff'),
+    enter: (code: string) => post<SetupOpen>('/api/setup/enter', { code }),
   },
 
   updates: {

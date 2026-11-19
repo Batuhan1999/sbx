@@ -415,9 +415,10 @@ class Verify(TwoRuntimes, Installation):
 
 
 class Api(TwoRuntimes, Server):
-    def test_the_wizard_lists_the_runtimes_with_the_setup_token(self):
+    def test_the_onboarding_page_lists_the_runtimes_once_signed_in(self):
         self.assertEqual(self.client.get("/api/runtimes").status_code, 401)
-        found = self.client.get("/api/runtimes", headers=self.headers)
+        self.create_admin()
+        found = self.client.get("/api/runtimes")
         self.assertEqual(found.status_code, 200, found.text)
         body = found.json()
         self.assertEqual(body["default"], "embed")

@@ -12,7 +12,7 @@ whose plan pays for the sandboxes, and a domain (see
    that should pay.
 2. Open **API keys** and create a key. Copy it once.
 3. Never paste it into a chat or onto a command line. Paste it in the
-   setup page's **Sandboxes** step, or later in sbx's own pages
+   onboarding page's **Sandboxes** step, or later in sbx's own pages
    ([below](#add-it-to-sbx)). sbx checks it with E2B and keeps it in its
    secret store.
 
@@ -38,8 +38,9 @@ every setting.
 
 ## Add it to sbx
 
-During the first-run setup, paste it in the setup page's **Sandboxes**
-step: pick E2B Cloud and choose **Check key** ([the setup](setup.md#sandboxes)).
+During the onboarding, paste it in the onboarding page's **Sandboxes**
+step: pick E2B Cloud and choose **Check key**
+([the onboarding](setup.md#sandboxes)).
 sbx checks the key with E2B, stores it and adds E2B Cloud.
 
 On a server that runs sandboxes itself (Embed), that step has Embed chosen

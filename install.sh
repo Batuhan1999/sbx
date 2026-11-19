@@ -86,15 +86,16 @@
 # inbound UDP and TCP port 53 (this host answers the certificate's DNS
 # challenge). Without a domain: inbound TCP port 80 for the IP certificate,
 # which the installer gets (on a public IP, while the setup is open and has
-# no address yet) before it prints the onboarding link.
+# no address yet) before it prints the onboarding address.
 # The public interface accepts only SSH, HTTPS and what the certificate needs
 # (network.public_ports: sbx-admin config get network); open the same in a
 # cloud firewall.
 #
-# While the first-run setup is open, the last line is the onboarding link,
-# `==> Open the onboarding: https://ADDRESS/app/setup#t=TOKEN` (a one-time
-# token: keep it out of shared logs); the line before it says when the
-# browser will warn. An installation that is set up prints its address instead.
+# While the first-run setup is open, the last line is the onboarding page,
+# `==> Open the onboarding: https://ADDRESS/onboarding` (no credential: its
+# first step makes the first admin's account); the line before it says when
+# the browser will warn. An installation that is set up
+# prints its address instead.
 set -eu
 
 domain="" email="" dns="" sign_in="" repos="" public_repos="" admin="" hugepages="" internal="" skip_templates="" check=""
@@ -293,7 +294,15 @@ echo "ok: $PRETTY_NAME, $mem_mib MiB, $disk_gib GiB free; runtimes:${embed:+ emb
 
 say "Packages and Docker"
 export DEBIAN_FRONTEND=noninteractive
-apt-get -o DPkg::Lock::Timeout=300 update -qq
+# DPkg::Lock::Timeout waits for dpkg's lock, not for the package lists' one,
+# which a new server's own first-boot update holds for a few minutes.
+tries=0
+until apt-get -o DPkg::Lock::Timeout=300 update -qq; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 30 ] || die "apt-get update kept failing for five minutes (see above)"
+  echo "apt-get update failed; another apt run may hold the package lists. Trying again in 10 s."
+  sleep 10
+done
 apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl git iptables rsync e2fsprogs iproute2 \
   python3-venv jq openssl xfsprogs >/dev/null
 command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh >/dev/null 2>&1
@@ -476,10 +485,10 @@ if [ -z "$skip_templates" ]; then
 fi
 
 [ -z "$none" ] || echo "
-No sandbox runtime yet: add one on the setup page's Sandboxes step (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
+No sandbox runtime yet: add one on the onboarding page's Sandboxes step (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
 # While the first-run setup is open on a server with no address yet: IP
 # access with a trusted certificate (Let's Encrypt over port 80), so the
-# onboarding link below opens without a browser warning; without it, the
+# onboarding page below opens without a browser warning; without it, the
 # self-signed one until the setup chooses an address (setup.first_certificate).
 setup_open=0
 sbx-admin setup-infer >/dev/null || setup_open=$?

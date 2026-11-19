@@ -1,6 +1,6 @@
-"""/api/secret-requests: an agent (an admin, or the first-run setup link's
-holder) asks the owner for keys and follows the request; the owner submits
-them on the keys page, signed in as an admin (never by the link alone).
+"""/api/secret-requests: an agent (signed in as an admin) asks the owner for
+keys and follows the request; the owner submits them on the keys page,
+signed in as an admin.
 `sbx secrets request | status | ls | cancel | submit`. Values go in and
 never come out (secret_requests)."""
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import auth, secret_requests, settings
-from .setup_api import setup_or_admin
+from .setup_api import admin_or_first
 
 router = APIRouter()
 
@@ -49,8 +49,8 @@ def _found(request_id: str) -> dict:
 
 def owner(email: str = Depends(auth.admin_user)) -> str:
     """Who may submit keys: an admin signed in as themselves (a session or
-    their API token); not the setup link, and not an installation without
-    sign-in, where anyone with the link would be "signed in"."""
+    their API token); not an installation without sign-in, where anyone
+    with the page's link would be "signed in"."""
     if email == auth.ANONYMOUS:
         raise HTTPException(403, "this server has no sign-in, so a key page would work for anyone with its link: "
                                  "set up sign-in first")
@@ -58,7 +58,7 @@ def owner(email: str = Depends(auth.admin_user)) -> str:
 
 
 @router.post("/api/secret-requests", status_code=201)
-def api_create(body: Asked, request: Request, who: str = Depends(setup_or_admin)):
+def api_create(body: Asked, request: Request, who: str = Depends(admin_or_first)):
     """{id, url, state, items, ...}; 400 for a target the server can't take or a key to reuse it doesn't hold."""
     try:
         found = secret_requests.create([i.model_dump() for i in body.items], by=who, expires_in=body.expires_in,
@@ -69,18 +69,18 @@ def api_create(body: Asked, request: Request, who: str = Depends(setup_or_admin)
 
 
 @router.get("/api/secret-requests")
-def api_list(request: Request, who: str = Depends(setup_or_admin)):
+def api_list(request: Request, who: str = Depends(admin_or_first)):
     return {"requests": [_out(request, r) for r in secret_requests.listed()]}
 
 
 @router.get("/api/secret-requests/{request_id}")
-def api_get(request_id: str, request: Request, who: str = Depends(setup_or_admin)):
+def api_get(request_id: str, request: Request, who: str = Depends(admin_or_first)):
     """The request's state (pending, completed, cancelled, expired) and items; never a value."""
     return _out(request, _found(request_id))
 
 
 @router.delete("/api/secret-requests/{request_id}")
-def api_cancel(request_id: str, request: Request, who: str = Depends(setup_or_admin)):
+def api_cancel(request_id: str, request: Request, who: str = Depends(admin_or_first)):
     try:
         return _out(request, secret_requests.cancel(request_id, by=who))
     except KeyError:

@@ -1,4 +1,4 @@
-import { Bot, ChevronRight, FolderGit2, Plus } from 'lucide-react'
+import { Bot, ChevronRight, FolderGit2, Play, Plus, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router'
 import { useMe, useRepos } from '@/api/queries'
 import type { RepoSummary } from '@/api/types'
@@ -9,8 +9,8 @@ import { StateBadge } from '@/components/StatusBadge'
 import { LinkButton } from '@/components/ui/button'
 import { Badge } from '@/components/ui/primitives'
 import { TemplateProgressLine } from '@/components/TemplateProgressLine'
-import { ago, plural } from '@/lib/format'
 import { ReadyDialog } from './ReadyDialog'
+import { ago, plural } from '@/lib/format'
 
 export default function ReposPage() {
   const me = useMe()
@@ -19,19 +19,17 @@ export default function ReposPage() {
   const list = repos.data ?? []
   const needAgent = list.filter(r => r.trust && !r.configured)
   return <>
-    {admin && <ReadyDialog />}
+    <ReadyDialog />
     <PageHeader title="Repositories"
       actions={admin && <LinkButton variant="primary" to="/app/repos/new"><Plus />Connect repository</LinkButton>} />
     {repos.error ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
       : repos.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
       : list.length === 0 ? <div className="space-y-4">
         {admin && <TemplateProgressLine quiet />}
-        <div className="rounded-lg border border-dashed border-line">
-          <EmptyState icon={FolderGit2} title={admin ? 'Connect your first repository' : 'No repositories yet'}
-            action={admin ? <LinkButton variant="primary" size="sm" to="/app/repos/new"><Plus />Connect repository</LinkButton> : undefined}>
-            {admin ? 'Pick a repository and copy a prompt for your coding agent. The agent writes the recipe and starts the first sandbox.' : undefined}
-          </EmptyState>
-        </div>
+        {admin ? <FirstRepository />
+          : <div className="rounded-lg border border-dashed border-line">
+            <EmptyState icon={FolderGit2} title="No repositories yet">An admin connects them; ask one to connect yours.</EmptyState>
+          </div>}
       </div>
       : <div className="space-y-4">
         {needAgent.length > 0 && <AgentCallout repos={needAgent} />}
@@ -40,6 +38,33 @@ export default function ReposPage() {
         </ul>
       </div>}
   </>
+}
+
+/** How a repository gets its first sandbox, for an admin with none yet: what they do, what their coding agent
+ * does, and what they get. */
+const FIRST_STEPS: [LucideIcon, string, string][] = [
+  [FolderGit2, 'Connect a repository', 'Pick it from GitHub and copy the prompt sbx writes for it.'],
+  [Bot, 'Paste the prompt into your coding agent', 'Claude Code, Codex, Amp or another agent, in a checkout of the repository. It works out how the app is built and started, writes the recipe (.sbx/) and asks you for any key only you have.'],
+  [Play, 'Open the first sandbox', 'The agent starts one and gives you its preview link. From then on, one command or one click starts another.'],
+]
+
+function FirstRepository() {
+  return <section aria-label="Your first repository" className="rounded-lg border border-line bg-panel">
+    <div className="border-b border-line px-5 py-4">
+      <p className="font-medium">Start your first sandbox</p>
+      <p className="mt-0.5 text-[13px] text-muted">Three steps; your coding agent does the middle one.</p>
+    </div>
+    <ol className="divide-y divide-line">
+      {FIRST_STEPS.map(([Icon, title, text], i) => <li key={title} className="flex gap-3.5 px-5 py-4">
+        <span className="grid size-8 shrink-0 place-items-center rounded-md border border-line bg-sunken text-muted"><Icon className="size-4" /></span>
+        <div className="min-w-0 grow">
+          <p className="text-[13.5px] font-medium"><span className="text-faint">{i + 1}.</span> {title}</p>
+          <p className="mt-0.5 max-w-[68ch] text-[13px] text-muted">{text}</p>
+          {i === 0 && <LinkButton variant="primary" size="sm" to="/app/repos/new" className="mt-3"><Plus />Connect repository</LinkButton>}
+        </div>
+      </li>)}
+    </ol>
+  </section>
 }
 
 function AgentCallout({ repos }: { repos: RepoSummary[] }) {

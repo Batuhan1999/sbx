@@ -271,7 +271,10 @@ files in `.sbx/` are theirs to commit); what you verified and what you did
 not (optional providers left unconfigured, for example); the optional
 variables the app reads that the recipe leaves out; and the everyday
 commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`, `sbx down NAME`
-(`sbx down check-a` once they are done with it). A value the recipe
+(`sbx down check-a` once they are done with it). Say that `check-a` keeps
+running for now: it pauses by itself after two hours without use and wakes
+when its link is opened; `sbx sandbox pause check-a` pauses it at once (on a
+hosted runtime a running sandbox is billed). A value the recipe
 generates, such as an admin password from `${random:32}`, is per sandbox;
 give the command that reads it, not the value:
 `echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox exec SANDBOX`. When

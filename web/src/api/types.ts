@@ -180,7 +180,10 @@ export type Runtimes = { default: string; runtimes: SandboxRuntime[] }
 
 export type LimitHit = { field: string; asked: number | null; allowed: number | null; message: string; setting: string; at: string }
 /** One of a runtime's settings: a key of runtime.env. A secret is write-only. limit: the limit an int setting sets. */
-export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string; kind: 'text' | 'int' | 'hostname' | 'url'; optional: boolean; limit: string; rekey?: boolean
+export type RuntimeSetting = { key: string; label: string; secret: boolean; default: string; help: string
+  /** Where to get it: a provider's page for its API key. */
+  help_url?: string
+  kind: 'text' | 'int' | 'hostname' | 'url'; optional: boolean; limit: string; rekey?: boolean
   /** A hostname's pattern, the server's own (runtime.base.HOSTNAME). */
   pattern?: string
   /** An int's range and step, in its unit ("seconds", "MiB", or "" for a count). */
@@ -331,7 +334,9 @@ export type TemplateOnRuntime = {
 
 export type RecipeFiles = { files: { path: string; text: string | null }[] }
 
-export type GitHubRepository = { repo: string; description: string; private: boolean; branch: string }
+export type GitHubRepository = { repo: string; description: string; private: boolean; branch: string
+  /** When it was last pushed (GitHub's time), "" when never: the list comes the last pushed first. */
+  pushed_at?: string }
 export type RepoInspection = { repo: string; description: string; branch: string; private: boolean; github_app: boolean; registered: boolean; url: string }
 export type SetupPr = { available: boolean; pull_request: null | { number: number; url: string; state: string; title?: string; draft?: boolean; merged?: boolean }; record?: RecipePr | null }
 
@@ -515,12 +520,26 @@ export type SetupAgent = { kind: string; title: string; chosen: boolean }
 /** step of steps: where the latest build got to (0 until the runtime names its first step, null when it never
  * did); eta_s: seconds left by the last successful build's duration, while building (null when unknown). */
 export type TemplateBuild = {
-  key: string; phase: 'current' | 'stale' | 'building' | 'stuck' | 'unplanned' | string; status: string | null
+  key: string; phase: 'current' | 'stale' | 'building' | 'retrying' | 'stuck' | 'unplanned' | string; status: string | null
   template: string | null; error: string | null
+  /** A failed build's error in words, when sbx knows it ("" otherwise); retry_at: when sbx builds a retrying one again. */
+  reason?: string; retry_at?: string | null
   started_at?: string | null; step?: number | null; steps?: number | null; step_name?: string | null
   last_duration_s?: number | null; eta_s?: number | null
 }
 export type TemplateProgress = { blocked?: string; runtimes: Record<string, TemplateBuild[]> }
+/** What the onboarding page may know before anyone signs in. */
+export type SetupOpen = {
+  complete: boolean
+  /** Someone can sign in already; else the page's first step makes the first admin. */
+  account: boolean
+  /** This browser is signed in as an admin. */
+  signed_in: boolean
+  /** Where the onboarding page is now: the server's IP address, or its domain once the certificate is there. */
+  link: string
+  version: string
+}
+
 export type SetupState = {
   complete: boolean
   steps: { step: 'address' | 'sign_in' | 'runtime' | 'agents'; done: boolean; optional: boolean; summary: string }[]

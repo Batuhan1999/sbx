@@ -56,3 +56,68 @@ class SchemaOwners(Installation):
             if isinstance(getattr(loaded, "SCHEMA", None), state.Schema):
                 found.add(module.name)
         self.assertEqual(found - set(state.OWNERS), set())
+
+    def test_the_repositories_it_can_use_come_last_pushed_first(self):
+        from unittest.mock import patch
+        import httpx
+        from sbx_control import github_app
+        github_app.save({"id": "7", "pem": "-----BEGIN KEY-----", "slug": "sbx-test"}, by="test")
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/app/installations":
+                return httpx.Response(200, json=[{"id": 1}])
+            if request.url.path.endswith("/access_tokens"):
+                return httpx.Response(201, json={"token": "test-only"})
+            return httpx.Response(200, json={"repositories": [
+                {"full_name": "Acme/Old", "private": True, "default_branch": "main", "pushed_at": "2025-01-02T00:00:00Z"},
+                {"full_name": "acme/new", "description": "fresh", "default_branch": "trunk", "pushed_at": "2026-11-01T00:00:00Z"},
+                {"full_name": "acme/never", "pushed_at": None}]})
+        real = httpx.Client
+        with patch.object(github_app, "app_headers", return_value={}), \
+                patch.object(github_app.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(answer), **kw)):
+            found = github_app.repositories()
+        self.assertEqual([(r["repo"], r["pushed_at"]) for r in found], [
+            ("acme/new", "2026-11-01T00:00:00Z"), ("acme/old", "2025-01-02T00:00:00Z"), ("acme/never", "")])
+        self.assertEqual((found[0]["branch"], found[0]["description"], found[1]["private"]), ("trunk", "fresh", True))
+
+    def search_answers(self, seen: list):
+        import httpx
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path, dict(request.url.params), request.headers.get("authorization", "")))
+            if request.url.path == "/app/installations":
+                return httpx.Response(200, json=[{"id": 1}])
+            if request.url.path.endswith("/access_tokens"):
+                return httpx.Response(201, json={"token": "test-only"})
+            return httpx.Response(200, json={"items": [
+                {"full_name": "Vercel/Next.js", "description": "The React framework", "default_branch": "canary",
+                 "pushed_at": "2026-11-19T00:00:00Z"},
+                {"full_name": "gone/away", "disabled": True}]})
+        return answer
+
+    def test_search_finds_public_repositories_by_name_with_the_apps_token(self):
+        from unittest.mock import patch
+        import httpx
+        from sbx_control import github_app
+        github_app.save({"id": "7", "pem": "-----BEGIN KEY-----", "slug": "sbx-test"}, by="test")
+        seen: list = []
+        real = httpx.Client
+        with patch.object(github_app, "app_headers", return_value={}), \
+                patch.object(github_app.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(self.search_answers(seen)), **kw)):
+            found = github_app.search("  next   js ")
+        self.assertEqual(found, [{"repo": "vercel/next.js", "description": "The React framework", "private": False,
+                                  "branch": "canary", "pushed_at": "2026-11-19T00:00:00Z"}])
+        path, params, auth = seen[-1]
+        self.assertEqual((path, params["q"], params["per_page"]), ("/search/repositories", "next js in:name is:public", "10"))
+        self.assertEqual(auth, "Bearer test-only")   # 30 searches a minute instead of 10
+
+    def test_search_works_without_an_app(self):
+        from unittest.mock import patch
+        import httpx
+        from sbx_control import github_app
+        seen: list = []
+        real = httpx.Client
+        with patch.object(github_app.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(self.search_answers(seen)), **kw)):
+            self.assertEqual([r["repo"] for r in github_app.search("next")], ["vercel/next.js"])
+            self.assertEqual(github_app.search("   "), [])
+        self.assertEqual([(path, auth) for path, _, auth in seen], [("/search/repositories", "")])

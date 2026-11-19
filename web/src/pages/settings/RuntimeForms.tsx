@@ -79,6 +79,14 @@ export function ChangeStatus({ flow, className }: { flow: ChangeFlow; className?
 type Unit = { unit: string; factor: number; step: number; min: number; max: number }
 
 /** A limit's unit, step and range as the form shows them. */
+/** A secret setting's help, with a link to where the provider hands out the key. */
+export function KeyHelp({ setting: s }: { setting: RuntimeSetting }) {
+  if (!s.help_url) return s.help || null
+  const host = s.help_url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+  return <>{s.help ? `${s.help} ` : ''}<a href={s.help_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-accent underline-offset-2 hover:underline">
+    Get one at {host}<ExternalLink aria-hidden className="size-3" /><span className="sr-only">(opens in a new tab)</span></a></>
+}
+
 export function unitOf(s: RuntimeSetting): Unit {
   if (s.unit === 'seconds') return { unit: 'h', factor: 3600, step: 0.5, min: 0.5, max: (s.max ?? 86400) / 3600 }
   if (s.unit === 'MiB') return { unit: 'GB', factor: 1024, step: (s.step ?? 1024) / 1024, min: (s.min ?? 1024) / 1024, max: (s.max ?? 8192) / 1024 }
@@ -173,7 +181,7 @@ export function RuntimeSettingsForm({ runtime: r, mode, flow, onDone, onCancel }
     }}>
       {field => <field.TextField label={secret.label} type="password" autoComplete="off" spellCheck={false}
         placeholder={keySet ? SECRET_KEPT : undefined}
-        help={keySet ? undefined : secret.help || undefined} />}
+        help={keySet ? undefined : <KeyHelp setting={secret} />} />}
     </form.AppField>}
 
     {r.presets.length > 0 && <fieldset className="min-w-0">

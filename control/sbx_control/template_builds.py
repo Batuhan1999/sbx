@@ -36,6 +36,7 @@ import calendar
 import os
 import sys
 import threading
+import re
 import time
 from pathlib import Path
 
@@ -47,7 +48,10 @@ CHECK_SECONDS = 300
 RESUME_SECONDS = 30  # how soon after a start the scheduler looks for what a restart cut off
 
 FIELDS = ("status", "started_at", "finished_at", "error", "fingerprint", "built_fingerprint", "built_template", "pid",
-          "built_memory_mb", "pid_birth", "step", "steps", "step_name", "last_duration_s")
+          "built_memory_mb", "pid_birth", "step", "steps", "step_name", "last_duration_s", "failures",
+          "failed_fingerprint")
+# failures: the builds of failed_fingerprint's plan that failed in a row (a build that succeeds
+# clears both); sbx builds a failed one again by itself RETRY_AFTER later (retry_at).
 # step, steps, step_name: the step the build's runtime is at (runtime.build_step: each step's VM
 # starts from the previous one's snapshot), set as its log says it; last_duration_s: how long the
 # last build that succeeded took, which the next one's estimate (progress: eta_s) starts from.
@@ -265,6 +269,12 @@ def _transition(key: str, to: str, kind: str | None = None, **facts):
                 raise ValueError(f"template build {key}: {before} -> {to} is not allowed")
             if "pid" in facts and "pid_birth" not in facts:   # a new owner: never the last one's start time
                 facts["pid_birth"] = _birth(facts["pid"]) if facts["pid"] else None
+            if to == "failed":
+                again = bool(facts.get("fingerprint")) and (row or {}).get("failed_fingerprint") == facts["fingerprint"]
+                facts["failures"] = ((row or {}).get("failures") or 0) + 1 if again else 1
+                facts["failed_fingerprint"] = facts.get("fingerprint")
+            elif to == "built":
+                facts["failures"], facts["failed_fingerprint"] = 0, None
             values = {**(row or {}), **facts, "status": to}
             conn.execute(f"insert into template_builds (runtime, repo, {', '.join(FIELDS)}) "
                          f"values (?, ?{', ?' * len(FIELDS)}) on conflict(runtime, repo) do update set "
@@ -414,18 +424,40 @@ def _base_ready(kind: str | None = None) -> dict | None:
     return None
 
 
+# How long after a plan's first and second failure in a row sbx builds it
+# again by itself: most failures are a mirror or network that was briefly
+# wrong. After the last, it is stuck until someone builds it again.
+RETRY_AFTER = (5 * 60, 30 * 60)
+
+
+def retry_at(row: dict | None) -> float | None:
+    """When sbx builds a failed template again by itself (epoch seconds), or
+    None when it won't (it failed too often in a row, or did not fail)."""
+    if not row or row.get("status") != "failed":
+        return None
+    failures = row.get("failures") or 1
+    finished = _seconds(row.get("finished_at"))
+    if failures > len(RETRY_AFTER) or finished is None:
+        return None
+    return finished + RETRY_AFTER[failures - 1]
+
+
 def phase(key: str, row: dict | None, kind: str | None = None) -> str:
     """Where key's template stands on the runtime, the one answer every
-    decision here starts from: "building" (now), "stuck" (its last build
-    failed on the plan of now and building again would fail the same way:
-    not when the base it starts from was not ready then or changed since),
-    "current" (built as planned now) or "stale" (to build)."""
+    decision here starts from: "building" (now), "retrying" (its last build
+    failed on the plan of now; sbx builds it again at retry_at), "stuck"
+    (failed on the plan of now too often to try again by itself, and
+    building again would fail the same way: not when the base it starts from
+    was not ready then or changed since), "current" (built as planned now)
+    or "stale" (to build)."""
     if (_kind(kind), key) in _running or (row and status(key, row, kind) == "building"):
         return "building"
     if row and status(key, row, kind) == "interrupted":
         return "stale"   # cut off, not failed: built again whatever it built before
     fingerprint = plan(key).fingerprint
     if row and status(key, row, kind) == "failed" and row["fingerprint"] == fingerprint:
+        if (again := retry_at(row)) is not None:
+            return "stale" if again <= time.time() else "retrying"
         if key == templates.BASE:
             return "stuck"
         # The base it failed on: built before the failure (a build that built its base
@@ -449,9 +481,13 @@ def base_not_ready(key: str, kind: str | None = None) -> str:
     if found == "building":
         return (f"the {templates.BASE} template it starts from is building{_on(kind)}; {key} builds once it is "
                 "built (the scheduler starts it; try again in a few minutes)")
+    if found == "retrying":
+        when = time.strftime("%H:%M UTC", time.gmtime(retry_at(row)))
+        return (f"the {templates.BASE} template failed{_on(kind)}: {reason(row['error'] or '') or (row['error'] or '').strip()[-300:]}; "
+                f"sbx builds it again at {when}, then {key} builds")
     if found == "stuck":
-        return (f"the {templates.BASE} template failed{_on(kind)}: {(row['error'] or '').strip()[-300:]}; fix it "
-                f"and build it again (sbx-admin template build {templates.BASE}), then {key} builds")
+        return (f"the {templates.BASE} template failed{_on(kind)}: {(row['error'] or '').strip()[-300:]}; fix it, "
+                f"then build it again (sbx-admin jobs run template@{_kind(kind)}:{templates.BASE}), then {key} builds")
     return ""
 
 
@@ -484,12 +520,16 @@ def _building(key: str, row: dict | None, kind: str | None = None) -> str:
     """Start key's build unless it is running or failed on this plan; what a refused create says."""
     on = _on(kind)
     try:
-        failed = phase(key, row, kind) == "stuck"
+        at = phase(key, row, kind)
     except (recipes.RecipeError, OSError) as error:
         return f"the {key} template is not built{on} yet and cannot be planned: {error}"
-    if failed:
-        return (f"the {key} template is not built{on}: its last build failed ({(row['error'] or '').strip()[-300:]}); "
-                f"fix it and build again: sbx-admin template build {key}")
+    why = reason(row["error"] or "") or (row["error"] or "").strip()[-300:] if row else ""
+    if at == "retrying":
+        when = time.strftime("%H:%M UTC", time.gmtime(retry_at(row)))
+        return f"the {key} template is not built{on}: its last build failed ({why}); sbx builds it again at {when}"
+    if at == "stuck":
+        return (f"the {key} template is not built{on}: its last build failed ({why}); "
+                f"fix it, then build it again: sbx-admin jobs run template@{_kind(kind)}:{key}")
     if status(key, row, kind) != "building":
         try:
             start(key, _kind(kind))
@@ -807,7 +847,7 @@ def summary() -> str:
         parts.append(f"{names(later, 'more' if now else 'templates')} {verb(later)} in the background afterwards")
     if failed:
         parts.append(f"{names(failed, 'templates')} failed on this plan: fix and build again with "
-                     "sbx-admin template build <key>")
+                     "sbx-admin jobs run template@<runtime>:<key>")
     return "Templates: " + "; ".join(parts)
 
 
@@ -850,8 +890,10 @@ def progress() -> dict:
     """Every template some sandbox starts from, per enabled runtime, and where
     its build stands: {runtimes: {kind: [{key, phase, status,
     template, error, started_at, step, steps, step_name, last_duration_s,
-    eta_s}]}}; phase is phase()'s (current, stale, building, stuck: failed
-    on this plan), or "unplanned" when it can't be planned. step of steps
+    eta_s, reason, retry_at}]}}; phase is phase()'s (current, stale,
+    building, retrying, stuck), or "unplanned" when it can't be planned;
+    reason says a failed build's error in words when sbx knows it, and
+    retry_at when sbx builds a retrying one again. step of steps
     (step_name: the step's short name) is where the latest build got to (0
     until its first step; null before the runtime said); eta_s, while it
     builds, is the seconds left by the last successful build's duration
@@ -866,11 +908,41 @@ def progress() -> dict:
                 at = phase(key, row, kind)
             except (recipes.RecipeError, OSError):
                 at = "unplanned"
+            failed = at in ("stuck", "retrying")
+            error = (row or {}).get("error") if failed else None
             found.append({"key": key, "phase": at, "status": status(key, row, kind),
-                          "template": (row or {}).get("built_template"),
-                          "error": (row or {}).get("error") if at == "stuck" else None, **_steps_of(row, at)})
+                          "template": (row or {}).get("built_template"), "error": error,
+                          "reason": reason(error or "") if failed else "",
+                          "retry_at": _utc_of(retry_at(row)) if at == "retrying" else None, **_steps_of(row, at)})
         out[kind] = found
     return {"runtimes": out}
+
+
+# A build's error as people read it: what went wrong, for the errors sbx knows. A build log's
+# tail is long; the first that matches says it ("" for none: the log is all there is).
+MIRROR = re.compile(r"(?:Mirror sync in progress|File has unexpected size|Hash Sum mismatch)"
+                    r".*?|Failed to fetch https?://([^/\s]+)\S*.*?(?:unexpected size|Hash Sum|sync)", re.S)
+NETWORK = re.compile(r"Temporary failure (?:in name )?resolution|Could not resolve host|Connection (?:timed out|reset)"
+                     r"|TLS handshake timeout|Failed to connect to ([^\s:]+)", re.S)
+
+
+def reason(error: str) -> str:
+    """What went wrong in a failed build, in words, when sbx knows the error ("" when not)."""
+    if not error:
+        return ""
+    if error.startswith(("Boat's free saved snapshots are used up", "Templates need the first payment")):
+        return error.split(" (Boat said:")[0]
+    if (found := MIRROR.search(error)) or ("Some index files failed to download" in error and "sync" in error):
+        host = (found and found.group(1)) or next(iter(re.findall(r"https?://([^/\s]+)", error)), "")
+        return (f"A package mirror{f' ({host})' if host else ''} was being updated while the template built, "
+                "so its files didn't match.")
+    if found := NETWORK.search(error):
+        return f"A download failed on the network{f' ({found.group(1)})' if found.group(1) else ''}."
+    return ""
+
+
+def _utc_of(epoch: float | None) -> str | None:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)) if epoch is not None else None
 
 
 def _steps_of(row: dict | None, at: str) -> dict:
@@ -961,7 +1033,8 @@ def main(argv=None) -> int:
 TABLE = """create table if not exists template_builds (
     runtime text not null, repo text not null, status text not null, started_at text, finished_at text, error text,
     fingerprint text, built_fingerprint text, built_template text, pid integer, built_memory_mb integer,
-    pid_birth text, step integer, steps integer, step_name text, last_duration_s integer,
+    pid_birth text, step integer, steps integer, step_name text, last_duration_s integer, failures integer,
+    failed_fingerprint text,
     primary key (runtime, repo));"""
 
 
@@ -998,7 +1071,8 @@ SCHEMA = Schema(tables=TABLE + """
 create table if not exists template_moved (repo text primary key, since text not null default current_timestamp);
 """, columns=(("template_builds", "pid_birth", "text"), ("template_builds", "step", "integer"),
               ("template_builds", "steps", "integer"), ("template_builds", "step_name", "text"),
-              ("template_builds", "last_duration_s", "integer")), upgrade=_per_runtime)
+              ("template_builds", "last_duration_s", "integer"), ("template_builds", "failures", "integer"),
+              ("template_builds", "failed_fingerprint", "text")), upgrade=_per_runtime)
 
 
 if __name__ == "__main__":

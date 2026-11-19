@@ -57,7 +57,7 @@ which agents' connections to suggest. `choose(on, by=...)` records it in the
 connector's own settings (Amp: its `chosen` setting). Every coding agent's
 layer is in every template whatever is chosen (Amp's in the base, Claude
 Code's CLI everywhere), so the choice moves no template, and
-templates build during the setup, before any choice: a layer must never
+templates build during the onboarding, before any choice: a layer must never
 depend on it.
 
 An extension can instead put its layer into the base template of every

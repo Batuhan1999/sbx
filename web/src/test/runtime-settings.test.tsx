@@ -1,7 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { setSetupToken } from '@/api/client'
 import type { AvailableRuntime, RuntimeChange, SandboxRuntime } from '@/api/types'
 import { Runtimes, runtimeLine } from '@/pages/settings/Runtimes'
 import SetupPage from '@/pages/setup/SetupPage'
@@ -235,21 +234,23 @@ describe('Settings → Sandbox runtimes', () => {
 
 const SETUP = (runtimeDone: boolean) => ({
   complete: false,
-  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' },
+  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' },
     { step: 'runtime', done: runtimeDone, optional: false, summary: '' }, { step: 'agents', done: false, optional: false, summary: '' }],
-  signed_in: false, email: null, open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
   agents: [{ kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'domain', domain: 'sbx.example.com', url: 'https://sbx.example.com', certificate: 'delegated', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
-  link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
+  link: 'http://localhost:3000/onboarding', admins: ['ada@example.com'], version: 'dev',
 })
+// What anyone may know, which the page asks first (before the state's stub: a prefix match).
+const OPEN = { complete: false, account: true, signed_in: true, link: 'http://localhost:3000/onboarding', version: 'dev' }
 const NO_KVM = available('embed', 'E2B Embed', { host: true, can_run: false, why_not: 'needs /dev/kvm: bare metal, or a VM with nested virtualization enabled' })
 
 describe('first-run setup without a runtime', () => {
   it('asks for the provider key alone, adds the runtime and shows it chosen once it is applied', async () => {
-    setSetupToken('one-time-token')
     let added = false
     const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('done', 'add', 'E2B Cloud (e2b-cloud) is enabled') })
     const calls = stubApi({
+      'GET /api/setup/open': OPEN,
       'GET /api/setup': () => ({ status: 200, body: SETUP(added) }),
       'GET /api/runtimes/available': () => ({ status: 200, body: [NO_KVM, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: added, plan: added ? { name: 'hobby', title: 'Hobby' } : null })] }),
       'GET /api/runtimes/change': () => {   // applying until the host has it, then done (runtime.env names it)
@@ -259,8 +260,9 @@ describe('first-run setup without a runtime', () => {
       },
       'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
       'GET /api/templates': { blocked: '', runtimes: {} },
+      'GET /api/connections': { connections: [] },
     })
-    renderApp(<SetupPage />, '/app/setup')
+    renderApp(<SetupPage />, '/onboarding')
     const user = userEvent.setup()
     expect(await screen.findByRole('heading', { name: 'Where will sandboxes run?' })).toBeTruthy()
     expect(await screen.findByText(/\(E2B Embed needs \/dev\/kvm: bare metal, or a VM with nested virtualization enabled\)/)).toBeTruthy()
@@ -270,27 +272,28 @@ describe('first-run setup without a runtime', () => {
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
     await user.type(screen.getByLabelText('API key'), 'test-only-key')
     await user.click(screen.getByRole('button', { name: 'Check key' }))
-    expect(await screen.findByText(/Checking the key and adding the runtime/)).toBeTruthy()
-    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
+    // One step: the button stays busy in place until the runtime runs; no notices, no Continue meanwhile.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Check key/ }).getAttribute('aria-busy')).toBe('true'))
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
     // Applied: the runtime is the one chosen, with the plan the server read from the key, and the owner goes on.
     await waitFor(() => expect(screen.getByRole('list', { name: 'Chosen' }).textContent).toContain('E2B Cloud · Hobby'), { timeout: 10000 })
     expect(screen.queryByLabelText('API key')).toBeNull()
     await user.click(screen.getByRole('button', { name: /Continue/ }))
-    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Connect GitHub' })).toBeTruthy()
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
     expect(post.body).toEqual({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)
 
   it('keeps what was typed when applying the runtime fails', async () => {
-    setSetupToken('one-time-token')
     const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('failed', 'add', 'E2B Cloud refused the key') })
     stubApi({
+      'GET /api/setup/open': OPEN,
       'GET /api/setup': SETUP(false),
       'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
       'GET /api/runtimes/change': () => polls(),
       'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
     })
-    renderApp(<SetupPage />, '/app/setup')
+    renderApp(<SetupPage />, '/onboarding')
     const user = userEvent.setup()
     await user.type(await screen.findByLabelText('API key'), 'test-only-key')
     await user.click(screen.getByRole('button', { name: 'Check key' }))
@@ -299,13 +302,13 @@ describe('first-run setup without a runtime', () => {
   }, 20000)
 
   it('starts on the domain step while only the installer’s IP access is set', async () => {
-    setSetupToken('one-time-token')
     stubApi({
+      'GET /api/setup/open': OPEN,
       'GET /api/setup': { ...SETUP(false), access: { ...SETUP(false).access, mode: 'ip', domain: '' } },
       'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
       'GET /api/runtimes/change': IDLE,
     })
-    renderApp(<SetupPage />, '/app/setup')
+    renderApp(<SetupPage />, '/onboarding')
     expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
   })
 })

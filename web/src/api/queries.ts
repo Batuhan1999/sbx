@@ -21,11 +21,13 @@ export const keys = {
   brief: (repo: string) => ['repo', repo, 'brief'] as const,
   setupPr: (repo: string) => ['repo', repo, 'setup-pr'] as const,
   github: ['github-repositories'] as const,
+  githubSearch: (q: string) => ['github-search', q] as const,
   catalog: ['catalog'] as const,
   catalogEntry: (name: string) => ['catalog', name] as const,
   sharedConnections: ['catalog-connections'] as const,
   connections: ['connections'] as const,
   setup: ['setup'] as const,
+  setupOpen: ['setup', 'open'] as const,
   setupChecks: ['setup', 'checks'] as const,
   settings: ['settings'] as const,
   updates: ['updates'] as const,
@@ -116,6 +118,11 @@ export const useTemplate = (repo: string) => useQuery({
 export const useSetupPr = (repo: string, enabled: boolean) => useQuery({
   queryKey: keys.setupPr(repo), queryFn: () => api.repos.setupPr(repo), enabled, retry: false, staleTime: 60_000,
 })
+/** GitHub-wide search, kept a while: GitHub allows a few searches a minute. */
+export const useGitHubSearch = (q: string) => useQuery({
+  queryKey: keys.githubSearch(q), queryFn: () => api.repos.githubSearch(q).then(d => d.repositories), enabled: q.length >= 2,
+  retry: false, staleTime: 10 * 60_000,
+})
 export const useGitHubRepositories = (enabled: boolean) => useQuery({
   queryKey: keys.github, queryFn: () => api.repos.github().then(d => d.repositories), enabled, retry: false, staleTime: 60_000,
 })
@@ -130,8 +137,10 @@ export const useSharedConnections = (enabled = true) => useQuery({
 })
 export const useConnections = (enabled = true) => useQuery({ queryKey: keys.connections, queryFn: () => api.connections.list().then(d => d.connections), enabled })
 
-export const useSetup = () => useQuery({
-  queryKey: keys.setup, queryFn: api.setup.state, retry: false,
+export const useSetupOpen = (enabled = true) => useQuery({ queryKey: keys.setupOpen, queryFn: api.setup.open, enabled, retry: false })
+/** The onboarding's state, an admin's: polled until the onboarding is complete. */
+export const useSetup = (enabled = true) => useQuery({
+  queryKey: keys.setup, queryFn: api.setup.state, enabled, retry: false,
   refetchInterval: q => (q.state.data?.complete ? false : 4_000),
 })
 /** The templates' builds; polled while there are none yet or one is still to build. Not after a refusal (not an

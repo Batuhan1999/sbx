@@ -3,7 +3,7 @@
 For an owner whose domain's DNS is at Cloudflare; other DNS providers take
 the same records. sbx runs at `app.D` and serves previews at `<name>.D`,
 where `D` is a name you choose, usually a subdomain such as
-`sbx.example.com`. You type `D` on the setup page's **Domain** step, which
+`sbx.example.com`. You type `D` on the onboarding page's **Domain** step, which
 lists the three records with the server's public IP. Cloudflare's dashboard changes from time to time, so the labels below
 may differ a little from what you see.
 
@@ -37,11 +37,11 @@ too ([delegated DNS](#delegated-dns)).
 
 The `NS` record hands `_acme-challenge.D` to the server: sbx answers Let's
 Encrypt's challenge with its own small DNS server, so it needs no
-credential for your DNS provider. This is what the setup page uses.
+credential for your DNS provider. This is what the onboarding page uses.
 
 Before it asks Let's Encrypt, sbx checks the path end to end: its DNS
 server answers a random test record, and sbx asks a public resolver
-(1.1.1.1, else 8.8.8.8) for it. When none hears back, the setup shows
+(1.1.1.1, else 8.8.8.8) for it. When none hears back, the onboarding shows
 `port 53: no public resolver ... reached this server on port 53` with the
 fix: allow TCP and UDP port 53 in your provider's firewall, then choose
 **Try again** (the page says **Port 53 is blocked**). The challenge is answered only while that port is reachable, so
@@ -73,15 +73,16 @@ With a token, remove the `NS` record at `_acme-challenge.sbx`: sbx writes
 the challenge's `TXT` record in the zone itself, and a delegation would send
 Let's Encrypt elsewhere. Port 53 can stay closed.
 
-The setup page offers only the `NS` way, so the token is set from the
-command line, with the onboarding link: save the token in a file only you
-can read, then run (or have your agent run)
-`sbx setup address --link-file LINK-FILE --domain D --dns cloudflare --secret cloudflare_api_token < TOKEN-FILE`
-([without a browser](../agent-install.md#2-the-address)). Never paste the
-token into a chat or onto a command line. The setup page then shows the
-domain done; go on from **Sandboxes**. After the setup, replace the token in
-the web app's **Settings → Domain & certificate**. sbx keeps the token in its
-secret store.
+The onboarding page offers only the `NS` way, so the token is set from the
+command line, after the page's **Account** step: save the token in a file
+only you can read, then run (or have your agent run)
+`sbx setup address --domain D --dns cloudflare --secret cloudflare_api_token < TOKEN-FILE`
+signed in as the admin that step made
+([without a browser](../agent-install.md#3-the-address) has the commands).
+Never paste the token into a chat or onto a command line. Then open
+`https://app.D/onboarding`, sign in when asked, and go on from
+**Sandboxes**. After the onboarding, replace the token in the web app's
+**Settings → Domain & certificate**. sbx keeps the token in its secret store.
 
 ## Why sbx needs the token
 
@@ -97,8 +98,8 @@ notices.
 
 ## Check the records
 
-The setup page's **Check records** checks them. To check them yourself from
-outside:
+The onboarding page's **Check records** checks them. To check them yourself
+from outside:
 
 ```sh
 dig +short app.D @1.1.1.1; dig +short anything.D @1.1.1.1   # both: the public IP

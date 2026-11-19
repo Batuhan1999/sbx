@@ -394,6 +394,30 @@ class Backend(unittest.TestCase):
         with self.assertRaisesRegex(LimitRefused, "first payment"):
             self.backend.snapshot(handle.sandbox_id, "cache")
 
+    def test_a_build_says_in_words_when_the_free_saved_snapshots_are_used_up(self):
+        from sbx_control.runtime import Failed, TemplateSpec
+        self.fake.free_saved = 2
+        for name in ("old-a", "old-b"):   # an earlier server's templates on the same account
+            self.fake.saved[name] = {"name": name, "status": "ready", "sourceSandboxId": "", "createdAt": "2026-11-17T12:00:00Z", "type": "small", "files": {}}
+        with self.assertRaisesRegex(Failed, r"Boat's free saved snapshots are used up: your plan keeps 2.*"
+                                            r"Delete the ones you don't need in Boat's dashboard \(Snapshots\).*\$1\.68 a month"):
+            self.backend.build_template(TemplateSpec().from_image("ubuntu:24.04"), alias="a", cpu=2,
+                                        memory_mb=4096, disk_mb=1024)
+        self.assertEqual(self.fake.sandboxes, {})                # no builder for nothing
+        self.fake.balance = 5.0                                  # a wallet pays for an extra one: it builds
+        self.assertTrue(self.backend.build_template(TemplateSpec().from_image("ubuntu:24.04"), alias="a", cpu=2,
+                                                    memory_mb=4096, disk_mb=1024))
+
+    def test_a_refused_save_is_explained_when_the_allowance_is_used_up(self):
+        from sbx_control.runtime import Failed, TemplateSpec
+        self.fake.free_saved = 1
+        self.fake.fail("POST", "/saved-snapshots", 402, "payment_required")
+        self.fake.saved["old"] = {"name": "old", "status": "ready", "sourceSandboxId": "", "createdAt": "2026-11-17T12:00:00Z", "type": "small", "files": {}}
+        self.fake.balance = 5.0   # room by the numbers, so the build starts; Boat refuses the save anyway
+        with self.assertRaisesRegex(Failed, r"free saved snapshots are used up.*\(Boat said: "):
+            self.backend.build_template(TemplateSpec().from_image("ubuntu:24.04"), alias="a", cpu=2,
+                                        memory_mb=4096, disk_mb=1024)
+
     def test_builders_left_behind_are_reclaimed_and_retries_reuse_one_key(self):
         from sbx_control.runtime import TemplateSpec
         old = self.backend.create("tpl", timeout=600, metadata={"sbx_install": "inst-a", "sbx_build": "x"})

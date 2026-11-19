@@ -386,8 +386,10 @@ class ExtensionTests(Installation):
                 self.assertRaises(RuntimeError):
             # The repo's build begins, its base builds and ends a second later, then the repo's fails.
             template_builds.build_now("owner/app")
+        a_minute_later = template_builds._seconds("2026-11-18 00:00:03") + 60   # before sbx's own retry
         with patch.object(template_builds, "start") as start, \
-                self.assertRaisesRegex(template_builds.NotBuilt, "last build failed \\(clone refused\\)"):
+                patch.object(template_builds.time, "time", return_value=a_minute_later), \
+                self.assertRaisesRegex(template_builds.NotBuilt, "last build failed \\(clone refused\\); sbx builds it again at"):
             template_builds.template_for("owner/app")
         start.assert_not_called()
 

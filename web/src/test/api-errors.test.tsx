@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
-import { ApiError, describeError, errorText, request } from '@/api/client'
+import { afterEach, describe, expect, it } from 'vitest'
+import { ApiError, describeError, errorText, request, RESTART } from '@/api/client'
 import { ErrorState, splitDetail } from '@/components/states'
 import { stubApi } from './render'
 
@@ -22,6 +22,45 @@ describe('request', () => {
   it('returns text for text routes', async () => {
     stubApi({ 'GET /api/repos/a/b/setup-brief': '# Set up a/b' })
     expect(await request('GET', '/api/repos/a/b/setup-brief', undefined, 'text')).toBe('# Set up a/b')
+  })
+})
+
+describe('request while sbx-control restarts', () => {
+  // What the proxy in front of sbx-control answers while it restarts (a new runtime or domain restarts it).
+  const PROXY = { status: 502, body: '<html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>' }
+  const waitMs = RESTART.waitMs
+  afterEach(() => { RESTART.waitMs = waitMs })
+
+  it('asks a read again until the server answers, so the page never shows the restart', async () => {
+    RESTART.waitMs = 0
+    let asked = 0
+    const calls = stubApi({ 'GET /api/runtimes/available': () => (++asked < 3 ? PROXY : { status: 200, body: [{ kind: 'boat' }] }) })
+    expect(await request('GET', '/api/runtimes/available')).toEqual([{ kind: 'boat' }])
+    expect(calls).toHaveLength(3)
+  })
+
+  it('gives up after a few tries with its own words, never the proxy’s page', async () => {
+    RESTART.waitMs = 0
+    const calls = stubApi({ 'GET /api/setup': () => PROXY })
+    const error = await request<never>('GET', '/api/setup').catch((e: ApiError) => e)
+    expect(calls).toHaveLength(RESTART.tries)
+    expect(error.gateway).toBe(true)
+    expect(error.message).toBe('The server isn’t answering right now; it may be restarting. Try again in a moment.')
+    expect(errorText(error)).not.toMatch(/nginx|<html>|Bad Gateway/)
+  })
+
+  it('sends a write once: it may have reached the server before it went away', async () => {
+    const calls = stubApi({ 'POST /api/runtimes': () => PROXY })
+    const error = await request<never>('POST', '/api/runtimes', { kind: 'boat' }).catch((e: ApiError) => e)
+    expect(calls).toHaveLength(1)
+    expect(error.message).toMatch(/isn’t answering right now/)
+  })
+
+  it('takes sbx-control’s own 503 as its answer', async () => {
+    const calls = stubApi({ 'GET /api/sandboxes': () => ({ status: 503, body: { detail: 'no free capacity on the sandbox host' } }) })
+    const error = await request<never>('GET', '/api/sandboxes').catch((e: ApiError) => e)
+    expect(calls).toHaveLength(1)
+    expect([error.gateway, error.message]).toEqual([false, 'no free capacity on the sandbox host'])
   })
 })
 

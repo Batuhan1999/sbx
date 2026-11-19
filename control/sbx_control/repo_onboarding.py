@@ -91,6 +91,20 @@ def _name(body: RepoIn) -> str:
         raise HTTPException(400, str(error)) from None
 
 
+@router.get("/api/github/search")
+def api_github_search(q: str = "", email: str = Depends(admin_user)):
+    """Public repositories on GitHub by name (github_app.search), for the
+    connect page and `sbx repo search`."""
+    try:
+        return {"repositories": github_app.search(q)}
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code in (403, 429):
+            raise HTTPException(429, "GitHub's search limit is reached. Try again in a minute.") from None
+        raise HTTPException(502, "GitHub could not search repositories. Try again.") from None
+    except httpx.HTTPError:
+        raise HTTPException(502, "Could not reach GitHub. Try again.") from None
+
+
 @router.get("/api/github/repositories")
 def api_github_repositories(email: str = Depends(admin_user)):
     try:
