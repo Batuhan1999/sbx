@@ -424,7 +424,7 @@ esac
 [ -n "${delegated:-}" ] || cat > /usr/local/sbin/sbx-tls-renew <<RENEW
 #!/bin/sh
 set -eu
-docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds \\
+docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns:v5.4.0 certonly $plugin $creds \\
   --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos -m $email -n
 /usr/local/sbin/sbx-tls-nginx
 [ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew

@@ -95,7 +95,7 @@ if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     raise SystemExit(0)
 domain = os.environ["SBX_TEST_DOMAIN"]
 values = {"domain": domain, "login": "app." + domain, "bootstrap_address": "203.0.113.10",
-          "email": "operator@example.com", "dns": "delegated", "services": ""}
+          "email": "operator@example.com", "dns": os.environ.get("SBX_TEST_DNS", "delegated"), "services": ""}
 for name, value in values.items():
     print(name + "=" + shlex.quote(value))
 ''')
@@ -177,6 +177,16 @@ path.write_text(path.read_text().replace(before, after))
         self.env["SBX_TEST_FAIL"] = ""
         self.assertEqual(self.run_service().returncode, 0)
         self.assertFalse((self.root / "tls/ip-certificate-error").exists())
+
+    def test_a_dns_provider_issues_with_the_certbot_release_the_ip_certificate_uses(self):
+        # Untagged, each host ran whichever build was latest when it first pulled, for good.
+        self.env.update(SBX_TEST_DOMAIN="sbx.example.com", SBX_TEST_DNS="cloudflare", CLOUDFLARE_API_TOKEN="test-only")
+        result = self.run_service()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        issued = [c for c in self.commands() if "certonly" in c]
+        self.assertEqual(len(issued), 1)
+        self.assertIn("certbot/dns-cloudflare:v5.4.0", issued[0])
+        self.assertIn("certbot/certbot:v5.4.0", (Path(__file__).parents[1] / "tls.sh").read_text())
 
     def test_adding_domain_keeps_ip_renewal_and_ip_certificate_as_tls_default(self):
         self.assertEqual(self.run_service().returncode, 0)
