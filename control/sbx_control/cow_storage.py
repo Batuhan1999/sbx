@@ -1,4 +1,6 @@
-"""Owned XFS storage and mount ordering for managed PostgreSQL."""
+"""Owned XFS storage and mount ordering for managed servers: PostgreSQL's
+copy-on-write volume, and the disk of fixed size a package's server keeps
+all its volumes on."""
 import fcntl
 import os
 from pathlib import Path
@@ -92,6 +94,87 @@ def probe(path):
         return shared
 
 
+def volume_plan(name, size_gb):
+    """Where a package server's disk goes: an image of size_gb, all of it
+    reserved, mounted where its volumes are directories. The server can fill
+    its own disk and nothing else."""
+    if isinstance(size_gb, bool) or not isinstance(size_gb, int) or not 1 <= size_gb <= 4096:
+        raise ValueError('--storage-gb must be between 1 and 4096')
+    root = paths.state_dir() / 'volumes' / f'server-{name}'
+    if root.exists() and any(root.iterdir()):
+        raise ValueError('an unregistered storage directory already exists; it will not be adopted or formatted')
+    storage = {'mode': 'xfs-image', 'path': str(root / 'data'), 'image': str(root / 'volume.xfs'), 'size_gb': size_gb}
+    if any(not re.fullmatch(r'/[A-Za-z0-9_./-]+', storage[key]) for key in ('path', 'image')):
+        raise ValueError('storage paths may contain letters, numbers, slashes, periods, underscores and hyphens')
+    return storage
+
+
+def volume_prepare(name, storage, volumes):
+    """The server's disk made (once) and mounted, with a directory for each
+    of its volumes; returns {volume: directory}. Its mount comes before
+    Docker at boot: a container started without it finds no directory to
+    mount and stays down, instead of writing to the host's own disk."""
+    path, image = Path(storage['path']), Path(storage['image'])
+    if path.is_symlink() or image.is_symlink():
+        raise ValueError('managed storage paths must not be symlinks')
+    image.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not image.exists():
+        _create_image(image, storage['size_gb'], 'the server')
+    if run('blkid', '-p', '-s', 'TYPE', '-o', 'value', image) != 'xfs':
+        raise ValueError('the existing managed image is not XFS; it will not be reformatted')
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mount_unit = run('systemd-escape', '--path', '--suffix=mount', path)
+    (UNITS / mount_unit).write_text(
+        f'[Unit]\nDescription=sbx managed server {name} storage\nRequiresMountsFor={image.parent}\n'
+        'Before=docker.service\n'
+        f'[Mount]\nWhat={image}\nWhere={path}\nType=xfs\nOptions=loop,nodev,nosuid\n'
+        '[Install]\nWantedBy=multi-user.target\n')
+    run('systemctl', 'daemon-reload')
+    run('systemctl', 'enable', '--now', mount_unit)
+    if not os.path.ismount(path):
+        raise RuntimeError("the server's storage is not mounted; nothing was started")
+    found = {}
+    for volume in volumes:
+        (path / volume).mkdir(mode=0o755, exist_ok=True)
+        found[volume] = str(path / volume)
+    return found
+
+
+def volume_remove(storage):
+    """Unmount and delete a package server's disk, after its containers are gone."""
+    path, image = Path(storage['path']), Path(storage['image'])
+    mount_unit = run('systemd-escape', '--path', '--suffix=mount', path)
+    if (UNITS / mount_unit).exists():
+        run('systemctl', 'disable', '--now', mount_unit)
+    if os.path.ismount(path):
+        raise RuntimeError("the server's storage is still mounted; no data file was removed")
+    (UNITS / mount_unit).unlink(missing_ok=True)
+    run('systemctl', 'daemon-reload')
+    image.unlink(missing_ok=True)
+    if path.exists():
+        path.rmdir()
+    if image.parent.exists():
+        image.parent.rmdir()
+
+
+def _create_image(image, size_gb, what):
+    """A file of size_gb, every block reserved, formatted XFS; removed again if either fails."""
+    size = size_gb * GIB
+    if shutil.disk_usage(image.parent).free < size + 2 * GIB:
+        raise ValueError(f'not enough disk for the requested volume of {what} plus 2 GiB headroom')
+    created = False
+    try:
+        with image.open('xb') as file:
+            created = True
+            image.chmod(0o600)
+            os.posix_fallocate(file.fileno(), 0, size)
+        run('mkfs.xfs', '-m', 'reflink=1', image)
+    except BaseException:
+        if created:
+            image.unlink(missing_ok=True)
+        raise
+
+
 def prepare(storage):
     path = Path(storage['path'])
     if path.is_symlink() or (storage.get('image') and Path(storage['image']).is_symlink()):
@@ -101,20 +184,7 @@ def prepare(storage):
         image = Path(storage['image'])
         image.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not image.exists():
-            size = storage['size_gb'] * GIB
-            if shutil.disk_usage(image.parent).free < size + 2 * GIB:
-                raise ValueError('not enough disk for the requested Postgres volume plus 2 GiB headroom')
-            created = False
-            try:
-                with image.open('xb') as file:
-                    created = True
-                    image.chmod(0o600)
-                    os.posix_fallocate(file.fileno(), 0, size)
-                run('mkfs.xfs', '-m', 'reflink=1', image)
-            except BaseException:
-                if created:
-                    image.unlink(missing_ok=True)
-                raise
+            _create_image(image, storage['size_gb'], 'Postgres')
         if run('blkid', '-p', '-s', 'TYPE', '-o', 'value', image) != 'xfs':
             raise ValueError('the existing managed image is not XFS; it will not be reformatted')
         path.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -1,0 +1,25 @@
+kind: provision
+name: langfuse-tracing
+title: Langfuse tracing
+description: >
+  The Langfuse server's address and project keys in each sandbox, as the
+  variables Langfuse's SDKs read. Every sandbox traces into the same project.
+requires:
+  server:
+    kind: langfuse-server
+    expose:
+      url: LANGFUSE_SERVER_URL
+      public_key: LANGFUSE_SERVER_PUBLIC_KEY
+      secret_key: LANGFUSE_SERVER_SECRET_KEY
+outputs:
+  host: {}
+  public_key: {}
+  secret_key: { sensitive: true }
+env:
+  LANGFUSE_HOST: ${outputs.host}
+  LANGFUSE_BASE_URL: ${outputs.host}
+  LANGFUSE_PUBLIC_KEY: ${outputs.public_key}
+  LANGFUSE_SECRET_KEY: ${outputs.secret_key}
+runs:
+  create: create.sh
+timeout: 1m

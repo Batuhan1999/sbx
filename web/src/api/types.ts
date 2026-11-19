@@ -421,8 +421,17 @@ export type CatalogPackage = {
   /** data: URL of the SVG the package names as its logo, or "". */
   logo: string
   used_by: string[]
+  /** This server can run the server the connection is to (POST /api/servers). */
+  server?: boolean
 }
 export type CatalogEntry = CatalogPackage & { readme: string; connections: SharedConnection[]; scripts: string[] }
+
+/** A server this host runs for sandboxes (GET /api/servers, admins); its connection has its name.
+ * status: preparing | checking | ready | failed | stopped; error: why it failed. */
+export type ManagedServer = {
+  name: string; kind: string; package: string; status: string; error: string
+  address: string | null; port: number; used_by: string[]
+}
 
 /** A connection package's values saved once under a key (a Postgres server, a Neon project, an AWS role). */
 export type SharedConnection = {

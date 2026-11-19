@@ -51,14 +51,17 @@ set -eu
 exec 9>$dir/nginx-start.lock
 flock 9
 # A container of an earlier layout (443 on the HTTPS server itself, no main
-# configuration of sbx's) is made again, once: a fresh start binds 443 to the
-# stream front, where a reload might not move it.
+# configuration of sbx's; or no size limit on its log, which Docker otherwise
+# keeps forever) is made again, once: a fresh start binds 443 to the stream
+# front, where a reload might not move it, and log options are fixed when a
+# container is created.
 if docker inspect sbx-tls-nginx >/dev/null 2>&1 &&
-    [ "\$(docker inspect -f '{{index .Config.Labels "sbx.nginx-layout"}}' sbx-tls-nginx)" != 2 ]; then
+    [ "\$(docker inspect -f '{{index .Config.Labels "sbx.nginx-layout"}}' sbx-tls-nginx)" != 3 ]; then
   docker rm -f sbx-tls-nginx >/dev/null
 fi
 docker inspect sbx-tls-nginx >/dev/null 2>&1 || docker run -d --name sbx-tls-nginx --restart unless-stopped \\
-  --label sbx.nginx-layout=2 --network host -v $dir/nginx.conf:/etc/nginx/nginx.conf:ro \\
+  --log-driver json-file --log-opt max-size=50m --log-opt max-file=5 \\
+  --label sbx.nginx-layout=3 --network host -v $dir/nginx.conf:/etc/nginx/nginx.conf:ro \\
   -v $dir/nginx:/etc/nginx/conf.d:ro -v $dir/letsencrypt:/etc/letsencrypt:ro \\
   -v /var/cache/sbx-gate:/var/cache/nginx nginx:1.29-alpine >/dev/null || docker inspect sbx-tls-nginx >/dev/null
 docker exec sbx-tls-nginx nginx -t

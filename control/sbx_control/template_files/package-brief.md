@@ -93,6 +93,7 @@ timeout: 5m
 | `check` | connection | Shell text run with the inputs (exit 0 means usable), or a `.py` file whose `check(values)` returns an error message or `""`. |
 | `connect` | connection | A `.py` file whose `connect(before, given)` returns the inputs to save on an update. |
 | `identity` | connection | Inputs that name the endpoint; they cannot change while resources use the connection. |
+| `server` | connection | How this host runs the server the connection is to, for an owner who has none: `compose` (a Compose file in the folder), `service` (the one sandboxes reach) and its `port`, `storage_gb` (the disk all its volumes share), `secrets` (names made once and given to Compose as variables) and `inputs` (the connection's inputs once it runs, from `${address}`, `${port}` and `${secrets.NAME}`). See [a server this host runs](#a-server-this-host-runs). |
 | `requires` | provision | `SLOT: {kind, expose}`: the connection package it runs on, and in `expose` which of that connection's inputs the scripts see, under which variable names. |
 | `runs` | provision | `create` (required), `delete`, `list`: a script each, or one script for all. |
 | `outputs` | provision | `NAME: {sensitive}`. Recipes read them as `${services.KEY.NAME}`. |
@@ -134,6 +135,44 @@ host has `python3` (standard library), `curl`, `jq` and `openssl`. A command
 your scripts or `check` need beyond those goes in `host_tools`, its name
 mapped to the root shell command that installs it (as `postgres-server` does
 for `psql`); the installer installs it on the next install or upgrade.
+
+### A server this host runs
+
+A connection package can also say how the host runs the server it connects
+to, so the owner chooses **Run it on this server** (`sbx servers up NAME
+--package PACKAGE`) instead of giving an address:
+
+```yaml
+server:
+  compose: compose.yaml          # beside package.yaml
+  service: app                   # the service sandboxes reach
+  port: 8080                     # where it listens
+  storage_gb: 10                 # the disk all its volumes share
+  secrets: [APP_TOKEN]           # made once; ${APP_TOKEN} in the Compose file
+  inputs:                        # this package's inputs, once the server runs
+    url: http://${address}:${port}
+    token: ${secrets.APP_TOKEN}
+```
+
+The Compose file declares `services` and named `volumes` only. The host adds
+the rest: `service` gets the server's address on the managed servers' private
+network, every service keeps a bounded log and the server's label, and
+services without a `restart` restart with the host. So a service sets none of
+`ports`, `networks`, `network_mode`, `container_name`, `privileged`,
+`cap_add`, `devices`, `pid`, `ipc`, `extra_hosts`, and mounts only the file's
+own volumes. `${SBX_ADDRESS}` and `${SBX_NAME}` are the server's address and
+name.
+
+A server is contained, so that one that runs away stops itself and not the
+host. Every service sets `mem_limit` and `cpus` (a package without them is
+refused). All the file's volumes are directories on one disk of
+`storage_gb`, made for the server and reserved in full: size it from what the
+services keep, with room for their own logs and write-ahead files, because a
+full disk stops the server until it is removed and run again with a larger
+one (`--storage-gb`). Give every long-running service a `healthcheck`: the server counts as
+started when all are healthy, and then the package's `check` must pass with
+the rendered inputs. Removing the server removes its containers and volumes.
+A repository's own package cannot run a server.
 
 Rules:
 

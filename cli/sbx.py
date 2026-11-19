@@ -1052,6 +1052,70 @@ def wait_endpoints(name, removed, timeout, interval=2.0):
     return next((e for e in found["endpoints"] if e["name"] == name), None)
 
 
+def servers_cmd(args):
+    """sbx servers [ls | up NAME --package PACKAGE | rm NAME] (admins): the servers this host runs for
+    sandboxes on its private network, each saved as a connection of its name. up waits until the
+    server runs and its connection is saved; rm stops it and deletes its data unless --keep-data."""
+    if args.action in (None, "ls"):
+        found = api("GET", "/api/servers")
+        if args.json:
+            print(json.dumps(found))
+            return
+        for s in found["servers"]:
+            used = f"; used by {', '.join(s['used_by'])}" if s["used_by"] else ""
+            print(f"{s['name']:<20} {s['status']:<10} {s['package']:<20} {s['address']}:{s['port']}{used}"
+                  + (f": {s['error']}" if s["error"] else ""))
+        if not found["servers"]:
+            print("no managed servers; sbx servers up NAME --package PACKAGE runs one of: "
+                  + ", ".join(p["name"] for p in found["packages"]))
+        return
+    if not args.name:
+        sys.exit(f"sbx servers {args.action} NAME" + (" --package PACKAGE" if args.action == "up" else ""))
+    path = f"/api/servers/{urllib.parse.quote(args.name, safe='')}"
+    if args.action == "rm":
+        removed = api("DELETE", path + ("?keep_data=true" if args.keep_data else ""), timeout=300)
+        print(json.dumps(removed) if args.json else
+              f"{args.name}: stopped, its connection removed" + ("" if args.keep_data else ", its data deleted"))
+        return
+    if not args.package:
+        sys.exit("sbx servers up NAME --package PACKAGE (sbx servers lists the packages that run a server)")
+    body = {"name": args.name, "package": args.package}
+    if args.storage_gb:
+        body["storage_gb"] = args.storage_gb
+    if args.secrets_stdin:
+        lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
+        if not all("=" in line for line in lines):
+            sys.exit("--secrets-stdin: NAME=VALUE lines")
+        body["secrets"] = dict(line.split("=", 1) for line in lines)
+    started = api("POST", "/api/servers", body)
+    if args.no_wait:
+        print(json.dumps(started) if args.json else f"{args.name}: starting (sbx servers shows it)")
+        return
+    done = wait_server(args.name, args.timeout)
+    print(json.dumps(done) if args.json else f"{args.name}: ready at {done['address']}:{done['port']}, "
+          f"saved as the connection {args.name}")
+
+
+def wait_server(name, timeout, interval=3.0):
+    """The managed server once it runs and has its connection; exits non-zero when it failed or the wait ran out."""
+    def verdict(found):
+        server = next((s for s in found["servers"] if s["name"] == name), None)
+        if server is None:
+            return None, f"the server {name} is gone"
+        if server["status"] == "ready":
+            return None, True
+        if server["status"] == "failed":
+            return None, f"the server {name} failed: {server['error'] or 'see the server log'}"
+        return f"{name}: {server['status']}", False
+    deadline = time.monotonic() + timeout
+
+    def fetch():   # each poll within what is left of the wait, and short enough for the heartbeat
+        return request("GET", "/api/servers", timeout=max(1.0, min(HEARTBEAT_SECONDS, deadline - time.monotonic())))
+    found = follow(fetch, verdict, timeout, interval=interval, retry_statuses=RETRIED,
+                   late=f"the server {name} is still starting after {timeout} s: sbx servers shows it")
+    return next(s for s in found["servers"] if s["name"] == name)
+
+
 # sbx secrets: ask the owner for keys on the server's keys page, and follow the request
 
 
@@ -2164,6 +2228,22 @@ def parser():
                         "test: an enabled one's checks")
     p.add_argument("kind", nargs="?", help="test, add, set, remove, default: the runtime (e2b-cloud, ...)")
     change_flags(p)
+    p = command("servers", servers_cmd, "admins: the servers this host runs for sandboxes on its private network "
+                "(Postgres, ClickHouse, and what a connection package runs), each saved as a connection")
+    p.add_argument("action", nargs="?", choices=["ls", "up", "rm"],
+                   help="none or ls: list them and the packages that run one; up NAME --package PACKAGE: run one "
+                        "(again: start a stopped or failed one); rm NAME: stop it, remove its connection and "
+                        "delete its data")
+    p.add_argument("name", nargs="?", metavar="NAME", help="up, rm: the server, which is its connection's name too")
+    p.add_argument("--package", help="up: the connection package whose server to run (postgres-server, ...)")
+    p.add_argument("--storage-gb", type=int, help="up, a new server: the size of its disk in GiB (default: 32 for "
+                   "Postgres, else what its package says); the server can fill that and nothing else")
+    p.add_argument("--secrets-stdin", action="store_true",
+                   help="up, a new package server: NAME=VALUE lines on stdin for secrets it would otherwise make")
+    p.add_argument("--keep-data", action="store_true", help="rm: keep the server's data and its record on the host")
+    p.add_argument("--no-wait", action="store_true", help="up: return once recorded")
+    p.add_argument("--timeout", type=seconds, default=1800, help="up: seconds to wait for it (default 1800)")
+    p.add_argument("--json", action="store_true", help="as the API answers")
     p = command("endpoints", endpoints_cmd, "admins: this server's private services (managed servers, internal "
                 "hosts) for sandboxes on runtimes that don't reach its private network, over TLS at <name>.<domain>")
     p.add_argument("action", nargs="?", choices=["ls", "add", "rm", "grant", "revoke"],

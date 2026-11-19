@@ -36,7 +36,7 @@ ACTIONS = ("create", "delete", "list")
 HOOKS = ("pause",)
 KEYS = {"kind", "name", "title", "description", "docs", "inputs", "outputs", "env", "requires", "runs", "hooks",
         "actions", "runtime", "template", "check", "connect", "identity", "live", "scrub", "timeout", "host_tools",
-        "logo"}
+        "logo", "server"}
 TEMPLATE_KEYS = ("apt", "files", "root", "user")
 RESERVED = {"connections"}   # a route of its own under /api/catalog
 MAX_BYTES = 1 << 20
@@ -112,6 +112,9 @@ class Package:
     # command that installs it (host.install_tools, at install and upgrade).
     host_tools: dict = dataclasses.field(default_factory=dict)
     logo: str = ""               # an .svg file in the folder: the provider's mark
+    # How this host runs the server the connection is to (hosted_compose.py):
+    # {compose, service, port, secrets, inputs}; {} for one somebody else runs.
+    server: dict = dataclasses.field(default_factory=dict)
 
     def with_defaults(self, given: dict, label: str) -> dict:
         """The inputs its scripts get: the given values over the defaults. A
@@ -160,7 +163,7 @@ class Package:
         return {"name": self.name, "kind": self.kind, "title": self.title, "description": self.description,
                 "source": self.source, "inputs": self.inputs, "outputs": self.outputs, "env": self.env,
                 "requires": self.requires, "runs": self.runs, "checks": bool(self.check), "docs": self.docs,
-                "logo": self.logo_url(), "used_by": list(used_by)}
+                "logo": self.logo_url(), "used_by": list(used_by), "server": bool(self.server)}
 
 
 # What an input holds, so the web app draws the right control and the
@@ -299,6 +302,7 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
         raise PackageError(f"{name}: logo names an .svg file in its folder")
     if logo and (len(files[logo].encode()) > LOGO_BYTES or not svg_document(files[logo])):
         raise PackageError(f"{name}: {logo} is not an SVG of at most {LOGO_BYTES >> 10} KiB")
+    server = _server(name, spec.get("server"), kind, source, files, spec.get("inputs") or {})
     outputs = {}
     for out, v in (spec.get("outputs") or {}).items():
         if not VAR_RE.match(str(out)) or not isinstance(v or {}, dict):
@@ -313,7 +317,92 @@ def parse(name: str, files: dict, source: str, repo: str = "") -> Package:
                    connect=connect, identity=tuple(str(f) for f in spec.get("identity") or ()),
                    live=bool(spec.get("live")), scrub=tuple(str(p) for p in spec.get("scrub") or ()),
                    timeout=seconds(spec.get("timeout", "5m")), repo=repo,
-                   host_tools={str(k): v.strip() for k, v in tools.items()}, logo=logo)
+                   host_tools={str(k): v.strip() for k, v in tools.items()}, logo=logo, server=server)
+
+
+SERVER_KEYS = {"compose", "service", "port", "storage_gb", "secrets", "inputs"}
+# What a managed server's Compose file may not ask of the host: it is reached
+# on the managed servers' private network only, and keeps its data in volumes
+# of its own, which go with it.
+SERVICE_REFUSED = ("ports", "network_mode", "privileged", "container_name", "cap_add", "devices", "pid", "ipc",
+                   "extra_hosts", "networks", "build", "env_file", "extends", "volumes_from", "security_opt",
+                   "userns_mode", "uts", "cgroup_parent", "sysctls", "group_add", "runtime", "device_cgroup_rules")
+PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
+
+
+def _server(name: str, given, kind: str, source: str, files: dict, inputs: dict) -> dict:
+    """server: in a connection's package.yaml: the Compose file this host
+    runs as the server, the service sandboxes reach and its port, the size
+    of the disk all its volumes share, the names of the secrets to make
+    once, and the connection's inputs once it runs (${address}, ${port},
+    ${secrets.NAME}). A server is contained: what it may use of the host's
+    memory, CPUs and disk is said here, so one that runs away stops itself,
+    not the host."""
+    if not given:
+        return {}
+    if kind != "connection" or source == "repo":
+        raise PackageError(f"{name}: only a connection of the installation's catalog runs a server (server)")
+    if not isinstance(given, dict) or set(given) - SERVER_KEYS:
+        raise PackageError(f"{name}: server has {', '.join(sorted(SERVER_KEYS))}")
+    compose_file, service, port = given.get("compose"), given.get("service"), given.get("port")
+    if not isinstance(compose_file, str) or compose_file not in files:
+        raise PackageError(f"{name}: server.compose names a Compose file in its folder")
+    try:
+        compose = yaml.safe_load(files[compose_file]) or {}
+    except yaml.YAMLError as error:
+        raise PackageError(f"{name}: {compose_file}: {error}") from error
+    services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(services, dict) or not services or not all(isinstance(v, dict) for v in services.values()):
+        raise PackageError(f"{name}: {compose_file} has no services")
+    if not isinstance(service, str) or service not in services:
+        raise PackageError(f"{name}: server.service is one of {compose_file}'s services ({', '.join(services)})")
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        raise PackageError(f"{name}: server.port is the port server.service listens on")
+    if set(compose) - {"services", "volumes"}:
+        raise PackageError(f"{name}: {compose_file} has services and volumes only")
+    volumes = compose.get("volumes") or {}
+    if not isinstance(volumes, dict) or any(v for v in volumes.values()):
+        raise PackageError(f"{name}: {compose_file} declares its volumes by name only")
+    size = given.get("storage_gb")
+    if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 4096:
+        raise PackageError(f"{name}: server.storage_gb is the size in GiB of the disk its volumes share (1 to 4096)")
+    for key, spec in services.items():
+        if not spec.get("mem_limit") or not spec.get("cpus"):
+            raise PackageError(f"{name}: {compose_file}: {key} sets mem_limit and cpus: a service without them "
+                               "may take all the host has")
+        refused = sorted(set(spec) & set(SERVICE_REFUSED))
+        if refused:
+            raise PackageError(f"{name}: {compose_file}: {key} sets {', '.join(refused)}, which a managed server "
+                               "does not: sandboxes reach server.service at server.port on the private network")
+        for mount in spec.get("volumes") or ():
+            source_ = mount.get("source") if isinstance(mount, dict) else str(mount).split(":")[0]
+            if (isinstance(mount, dict) and mount.get("type", "volume") != "volume") or source_ not in volumes:
+                raise PackageError(f"{name}: {compose_file}: {key} mounts {source_}, which is not one of its volumes")
+    secrets = given.get("secrets") or []
+    if not isinstance(secrets, list) or not all(isinstance(v, str) and VAR_RE.match(v) for v in secrets):
+        raise PackageError(f"{name}: server.secrets lists variable names")
+    if any(v.startswith("SBX_") for v in secrets):
+        raise PackageError(f"{name}: server.secrets: SBX_ names are the server's own (SBX_ADDRESS, SBX_NAME)")
+    made = given.get("inputs")
+    if not isinstance(made, dict) or not made or set(made) - set(inputs):
+        raise PackageError(f"{name}: server.inputs gives the connection's inputs ({', '.join(inputs)})")
+    known = {"address", "port", *(f"secrets.{v}" for v in secrets)}
+    for field, template in made.items():
+        unknown = sorted(set(PLACEHOLDER.findall(str(template))) - known)
+        if unknown:
+            raise PackageError(f"{name}: server.inputs.{field} names {', '.join(unknown)}; "
+                               f"there is {', '.join(sorted(known))}")
+    return {"compose": compose_file, "service": service, "port": port, "storage_gb": size,
+            "volumes": sorted(volumes), "secrets": list(secrets),
+            "inputs": {str(k): str(v) for k, v in made.items()}}
+
+
+def render_server_inputs(package: Package, address: str, secrets: dict) -> dict:
+    """The connection's inputs for the package's server at that address."""
+    known = {"address": address, "port": str(package.server["port"]),
+             **{f"secrets.{k}": v for k, v in secrets.items()}}
+    return {field: PLACEHOLDER.sub(lambda m: known[m.group(1)], template)
+            for field, template in package.server["inputs"].items()}
 
 
 def _template(name: str, value, kind: str) -> dict:

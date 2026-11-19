@@ -35,7 +35,8 @@ product mode.
 | ClickHouse | `clickhouse-server` + `clickhouse-database` | Empty schemas, or clones of supported local MergeTree tables. |
 | Upstash Redis | `upstash-account` + `upstash-redis` | A separate Redis database; run the repository's seeds, if any. |
 | Upstash Redis with development data worth copying | `upstash-account` + `upstash-redis-branch` | A branch of the selected global, paid parent database: its keys at creation, billed as Pay as You Go. |
-| Temporal | `temporal-server` + `temporal-namespace`, or the local dev server as a process | A namespace, or a development store of its own. |
+| Temporal | `temporal-server` (one you run, or the development server this host runs: `sbx servers up temporal --package temporal-server`) + `temporal-namespace`, or the local dev server as a process | A namespace, or a development store of its own. |
+| Langfuse | `langfuse-server` (one you run or Langfuse Cloud, or the one this host runs: `sbx servers up langfuse --package langfuse-server`) + `langfuse-tracing` | The server's address and project keys as `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`; every sandbox traces into the same project. A Langfuse 4 made new takes traces over OpenTelemetry only. To sign in to the web UI of the one this host runs, give `ADMIN_PASSWORD` on `--secrets-stdin` when it is made: sbx never shows one it made ([managed servers](reference.md#managed-shared-servers)). |
 | Redis with a native client | A `processes:` entry in the app sandbox | Its own data directory; enable persistence if the app needs it. |
 | SQLite, uploads, local files | The sandbox filesystem | Files created by normal setup. |
 | AWS SDKs or AWS secret loaders | `aws-role` + `aws-profile` | A named profile with renewable role credentials ([AWS role access](../catalog/aws-role/README.md)). |
@@ -61,10 +62,12 @@ explicitly; never fall back to a paid tier because free provisioning failed.
 
 A dependency that runs fine inside the app's VM (Redis, Temporal's dev server)
 can be a recipe `processes:` entry with a health check and its data in the
-sandbox. Shared host servers (`sbx-admin server up`) exist for Postgres and
-ClickHouse only; create one only when it was chosen and no compatible connection
-exists, and apply its network before creating sandboxes. A repository that uses
-only hosted services needs neither.
+sandbox. Shared host servers (`sbx servers up`, or `sbx-admin server up` on
+the host) are the built-in Postgres and ClickHouse, and the server of each
+connection package that declares one (`server:` in its `package.yaml`, such as
+`temporal-server` and `langfuse-server`). Create one only when it was chosen and
+no compatible connection exists, and apply its network before creating
+sandboxes. A repository that uses only hosted services needs none.
 
 ## Credentials that are just variables
 

@@ -324,15 +324,70 @@ Replacing a service's package or connection requires deleting its resource first
 
 ### Managed shared servers
 
-The host can run shared Postgres and ClickHouse servers as Docker services on a
-private network outside the sandbox VMs:
+The host can run shared servers as Docker services on a private network
+outside the sandbox VMs: Postgres, ClickHouse, and the server of every
+connection package that says how to run it (`server:` in its `package.yaml`;
+of the shipped ones, Temporal's development server and Langfuse with the
+stores it needs). Each is saved as a
+connection of its own name. On the **Services** page, a package this host can
+run offers **Run it on this server** beside **Connect one you run**; from a
+workstation or an agent:
 
 ```sh
-sbx-admin server up dev-pg --kind postgres
+sbx servers                                           # each, its state and address; what can run
+sbx servers up dev-pg --package postgres-server       # waits until it runs and its connection is saved
+sbx servers up temporal --package temporal-server
+sbx servers up langfuse --package langfuse-server
+sbx servers rm temporal                               # stops it, removes its connection, deletes its data
+```
+
+`up` answers once the server is recorded and follows it until it is `ready`
+or `failed` (pulling images takes minutes; `--no-wait` returns at once, and
+the same command starts a stopped or failed one again). A package's server
+makes its own secrets; `--secrets-stdin` gives `NAME=VALUE` lines for the
+ones to set instead, for a new server only. `rm` is refused while a
+repository uses the connection, and `--keep-data` keeps the data and the
+server's record on the host. Removing the connection alone is refused for a
+managed server (409): the server would keep running with nothing showing it.
+
+A package's server is contained: each of its services has the memory and
+CPU limit its package gives it, all its volumes are on one disk of fixed
+size made for it (its package's `storage_gb`, or `--storage-gb`; reserved in
+full when the server is made, so `up` refuses when the host lacks the room
+plus 2 GiB), and its logs are bounded. A server that fills its disk fails by
+itself and shows as such; the host, its sandboxes and the other servers keep
+their space. The managed Postgres has the same kind of disk; the managed
+ClickHouse keeps its data in a Docker volume without a size.
+
+A managed server is reachable from this host and its sandboxes only. To open
+one's web UI (Langfuse on port 3000, Temporal's on 8233), forward the port
+over SSH: `ssh -L 3000:ADDRESS:3000 root@HOST`, with the address `sbx servers`
+shows. Langfuse's sign-in is `admin@langfuse.internal` with the password
+given as `ADMIN_PASSWORD` when the server was made (`printf
+'ADMIN_PASSWORD=...\n' | sbx servers up langfuse --package langfuse-server
+--secrets-stdin`); one sbx made itself is never shown.
+
+On the host, `sbx-admin server` does the same and more:
+
+```sh
+sbx-admin server up dev-pg --kind postgres            # or --package PACKAGE
 sbx-admin server up dev-ch --kind clickhouse
 sbx-admin network apply      # before creating sandboxes that use the network
 sbx-admin server ls
+sbx-admin server down dev-ch --delete-data
 ```
+
+Every container sbx starts on the host (managed servers and every service of
+a package's server, the TLS proxy, Infisical, Embed's services) keeps at most
+five log files of 50 MiB: Docker
+keeps a container's log forever otherwise, and a service that fails on every
+write fills the disk with its error output. Docker fixes a container's log
+options when it creates it, so one made by a release before this limit gets it
+when it is made again: the TLS proxy on the upgrade, a managed server when you
+run its `sbx-admin server up NAME --kind KIND` again (the server restarts; its
+data stays), Infisical on `systemctl restart sbx-infisical` or the next boot.
+`docker inspect -f '{{.HostConfig.LogConfig}}' CONTAINER` shows what a
+container has.
 
 Sandboxes of trusted repos reach two kinds of private range: the operator's
 `network.internal_cidrs` (`install.sh --internal`, `sbx-admin config set
@@ -1456,6 +1511,8 @@ building or has no room), with `Retry-After` when waiting helps.
 | `GET /api/endpoints` | admin | `sbx endpoints`: `{"endpoints": [{"name", "address", "kind": "managed-server" or "internal", "server", "server_kind", "target", "repos", "state": "on" or "applying" or "failed", "message", "used_by"}], "candidates": [{"server", "kind", "address", "target"}], "domain", "needed", "applying", "failure"}`. `repos`: who may use it (an internal host's grants; the repositories attached to a managed server); `used_by`: the repositories whose sandboxes hold its certificate, for which `DELETE` is refused; candidates are the managed servers without an endpoint; `needed` says an enabled runtime's sandboxes don't reach this host's private network; `applying` that a change is not applied yet, `failure` why the last one failed ([endpoints](#endpoints)). |
 | `POST /api/endpoints/NAME/repos`, `DELETE /api/endpoints/NAME/repos/OWNER/REPO` | admin | `sbx endpoints grant \| revoke`: body `{"repo": "OWNER/REPO"}`; one repository's grant of an internal host's endpoint, under the endpoints' lock; answers the endpoint. A revoke makes the endpoint's CA anew ([what it cuts](#endpoints)); 404 for a repository without a grant, 400 for a managed server's endpoint. |
 | `POST /api/endpoints`, `PUT /api/endpoints/NAME`, `DELETE /api/endpoints/NAME` | admin | `sbx endpoints add \| rm`: `POST` body `{"server": "NAME"}` (optionally with `"name"`) or `{"name": "NAME", "target": "HOST:PORT", "repos": ["OWNER/REPO"]}`; 202 with the endpoint, `applying`. 400 for an invalid name, target or repository, 409 for a name or target taken or no domain. `PUT` `{"repos": [...]}` replaces an internal host's repositories, as one change (the web app's list; 400 for a managed server's: attach the server instead). `DELETE` is 409 naming the repositories while their sandboxes on a provider runtime use it. |
+| `GET /api/servers` | admin | `sbx servers`: `{"servers": [{"name", "kind": "postgres" or "clickhouse" or "package", "package", "status": "preparing" or "checking" or "ready" or "failed" or "stopped", "error", "address", "port", "used_by"}], "packages": [{"name", "title"}]}`: the [managed servers](#managed-shared-servers) and the connection packages whose server this host can run. Never a secret. |
+| `POST /api/servers`, `DELETE /api/servers/NAME` | admin | `sbx servers up \| rm`: `POST` body `{"name": "NAME", "package": "PACKAGE"}` (optionally `"storage_gb"`, the size of a new server's disk, `"secrets": {"NAME": "VALUE"}` for a new package server); 202 with the server, `preparing`, and it runs behind the answer: follow `GET` until `ready` or `failed` (`error` says why). The same name and package starts a stopped or failed one again. 400 for what it refuses (the name, a package that runs no server, a name taken). `DELETE` stops it, removes its connection and deletes its data and record (`?keep_data=true` keeps both); 409 while a repository uses the connection, 404 for no such server. |
 | `POST /api/sandbox/endpoint-certs` | a sandbox (`Bearer NAME:CREDENTIAL`, the credential its forwarder's configuration holds) | The forwarder's renewal: new certificates and keys for the endpoints the sandbox's repository may use now; 401 for a wrong credential, 404 for a sandbox that is gone, 403 when it may use none. Not cached. |
 | `POST /api/repo-onboarding/connect` | admin | `sbx repo connect`: body `{"repo": "OWNER/NAME"}`; serves and trusts the repository without a recipe (GitHub must find it: public, or the App installed). |
 | `GET /api/github/repositories` | admin | The repositories the GitHub App can see: `{"repositories": [{"repo", "description", "private", "branch", "pushed_at"}]}`, the last pushed first (`pushed_at` `""` for one never pushed); empty without an App. 502 when GitHub refuses or can't be reached. |
@@ -1501,6 +1558,7 @@ server's work goes on, and the command it names follows it.
 | `sbx down` | the server's answer (a paused sandbox's resume and `.sbx/cleanup` come first) | 2700 |
 | `sbx runtimes add \| set \| remove \| default`, `sbx setup runtime add` | the host to apply the change and sbx-control to restart | 600 |
 | `sbx endpoints add \| rm` | the host to apply it | 300 |
+| `sbx servers up` (unless `--no-wait`) | the server to run and its connection to be saved | 1800 |
 | `sbx extensions set \| disconnect --wait` | the templates the change rebuilds | 3600 |
 | `sbx template build --wait`, `sbx template status --wait` | the repository's template build | 1800 |
 | `sbx setup address` | HTTPS at the new address | 900 |

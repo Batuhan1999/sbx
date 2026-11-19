@@ -914,6 +914,61 @@ def endpoints(*found, applying=False, failure="", candidates=()):
             "applying": applying, "failure": failure}
 
 
+def managed(status, **more):
+    return {"name": "temporal", "kind": "package", "package": "temporal-server", "status": status, "error": "",
+            "address": "172.29.50.12", "port": 7233, "used_by": [], **more}
+
+
+class ServerCliTests(Cli):
+    """sbx servers: the servers this host runs, over the HTTP API; up waits until one is ready."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(self.cli.time, "sleep"))
+
+    def polls(self, *answers):
+        found = [{"servers": list(a), "packages": [{"name": "temporal-server", "title": "Temporal server"}]}
+                 for a in answers]
+        self.routes[("GET", "/api/servers")] = lambda q, body: found.pop(0) if len(found) > 1 else found[0]
+
+    def test_ls_shows_each_and_what_can_run_when_there_is_none(self):
+        self.polls([managed("ready", used_by=["owner/app:temporal"])])
+        code, out, err = self.run_cli("servers")
+        self.assertEqual(code, 0, err)
+        self.assertIn("temporal             ready      temporal-server      172.29.50.12:7233; used by owner/app:temporal", out)
+        self.polls([])
+        code, out, err = self.run_cli("servers", "ls")
+        self.assertIn("sbx servers up NAME --package PACKAGE runs one of: temporal-server", out)
+
+    def test_up_waits_until_the_server_is_ready(self):
+        self.routes[("POST", "/api/servers")] = lambda q, body: (202, managed("preparing"))
+        self.polls([managed("preparing")], [managed("ready")])
+        code, out, err = self.run_cli("servers", "up", "temporal", "--package", "temporal-server")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "temporal: ready at 172.29.50.12:7233, saved as the connection temporal\n")
+        self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3],
+                         {"name": "temporal", "package": "temporal-server"})
+
+    def test_up_exits_non_zero_with_why_the_server_failed(self):
+        self.routes[("POST", "/api/servers")] = lambda q, body: (202, managed("preparing"))
+        self.polls([managed("failed", error="docker compose up failed (exit 1)")])
+        code, out, err = self.run_cli("servers", "up", "temporal", "--package", "temporal-server")
+        self.assertEqual(code, "the server temporal failed: docker compose up failed (exit 1)")   # sys.exit's text
+
+    def test_secrets_come_on_stdin_and_rm_deletes_the_data_unless_kept(self):
+        self.routes[("POST", "/api/servers")] = lambda q, body: (202, managed("preparing"))
+        code, out, err = self.run_cli("servers", "up", "temporal", "--package", "temporal-server", "--secrets-stdin",
+                                      "--no-wait", "--json", stdin="APP_TOKEN=kept=from-before\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.control.calls[-1][3]["secrets"], {"APP_TOKEN": "kept=from-before"})
+        self.routes[("DELETE", "/api/servers/temporal")] = lambda q, body: {"name": "temporal", "stopped": True,
+                                                                            "data_deleted": "keep_data" not in q}
+        code, out, err = self.run_cli("servers", "rm", "temporal")
+        self.assertEqual(out, "temporal: stopped, its connection removed, its data deleted\n")
+        code, out, err = self.run_cli("servers", "rm", "temporal", "--keep-data", "--json")
+        self.assertEqual(json.loads(out)["data_deleted"], False)
+
+
 class EndpointCliTests(Cli):
     """sbx endpoints: list, add and rm over the HTTP API, waiting until the server applied the change."""
 

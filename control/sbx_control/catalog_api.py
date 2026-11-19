@@ -19,7 +19,8 @@ router = APIRouter()
 @router.get("/api/catalog")
 def api_catalog(kind: str | None = None, email: str = Depends(api_user)):
     used = attachments.used_by()
-    return {"packages": [p.as_dict(sorted(used.get(p.name, ()))) for p in catalog.listing(kind)],
+    return {"packages": [{**p.as_dict(sorted(used.get(p.name, ()))), "server": hosted_services.runs(p)}
+                         for p in catalog.listing(kind)],
             "problems": catalog.problems()}
 
 
@@ -43,8 +44,12 @@ class ConnectionIn(BaseModel):
 
 @router.post("/api/catalog/connections")
 async def api_connection_save(body: ConnectionIn, email: str = Depends(admin_user)):
+    key = body.key or "main"
+    if hosted_services.exists(key):
+        # A managed server's name stays its own, failed or stopped too: its connection is the one it saves.
+        raise HTTPException(409, f"{key} is a server this host runs; choose another name")
     try:
-        return await run_in_threadpool(connections.save, body.key or "main", body.package, body.inputs, by=email)
+        return await run_in_threadpool(connections.save, key, body.package, body.inputs, by=email)
     except PackageError as error:
         raise HTTPException(400, str(error))
 
@@ -60,6 +65,10 @@ async def api_connection_check(key: str, email: str = Depends(admin_user)):
 
 @router.delete("/api/catalog/connections/{key}")
 def api_connection_remove(key: str, email: str = Depends(admin_user)):
+    if hosted_services.exists(key):
+        # Its connection alone would leave the server running with nothing showing it.
+        raise HTTPException(409, f"{key} is a managed server: remove the server (DELETE /api/servers/{key}, "
+                                 f"sbx servers rm {key}), which removes its connection")
     try:
         if not connections.remove(key):
             raise HTTPException(404, f"no connection {key}")
