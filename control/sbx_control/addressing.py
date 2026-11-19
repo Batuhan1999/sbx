@@ -154,8 +154,13 @@ def control_origin(request_origin: str) -> str:
 
 
 def on_our_hosts(url) -> bool:
+    """Whether a parsed https URL names a host under the domain as a browser
+    reads it: a plain host (and port), without user info, a backslash (which
+    a browser takes for a slash, so https://evil.example\\.<domain> is
+    evil.example) or anything else a host name does not hold."""
     current = domain()
-    return bool(current) and url.scheme == "https" and (url.hostname or "").endswith(f".{current}")
+    return (bool(current) and url.scheme == "https" and (url.hostname or "").endswith(f".{current}")
+            and re.fullmatch(r"[a-z0-9.-]+(?::\d+)?", url.netloc.lower()) is not None)
 
 
 def service_hosts() -> set:

@@ -459,6 +459,26 @@ class SetupTests(Server):
                                              "Origin": "https://203.0.113.10"})
         self.assertEqual(response.json(), {"next": "/"})
 
+    def test_sign_in_rejects_a_destination_a_browser_reads_as_another_site(self):
+        """A backslash ends the host for a browser, and user info hides it: neither is one of our hosts."""
+        self.choose_ip()
+        self.create_admin()
+        self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
+        headers = {"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
+                   "Origin": "https://app.sbx.example.com"}
+        for destination, kept in (("https://evil.example%5C.sbx.example.com/", False),
+                                  ("https://evil.example%5C@demo.sbx.example.com/", False),
+                                  ("https://evil.example@demo.sbx.example.com/", False),
+                                  ("https://demo.sbx.example.com:8443/path?x=1", True),
+                                  ("https://demo.sbx.example.com/", True)):
+            self.client.get("/logout")
+            self.client.get(f"/login?next={destination}")
+            response = self.client.post("/login", headers=headers,
+                                        content="email=operator%40example.com&password=test-only-password-123")
+            self.assertEqual(response.status_code, 200, response.text)
+            expected = destination.replace("%5C", "\\") if kept else "/"
+            self.assertEqual(response.json(), {"next": expected}, destination)
+
     def test_domain_is_not_ready_until_certificate_exists(self):
         self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
         self.assertFalse(self.setup.address_ready())
