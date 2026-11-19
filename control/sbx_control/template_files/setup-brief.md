@@ -49,7 +49,10 @@ Catalog packages on this server: {services}
 
 ## 1. Check access
 
-Run `sbx repo status`.
+If `sbx` is not installed on this machine, install it from the server:
+`curl -fsSL {control}/install | sh` (macOS). It ends with `sbx login`, which
+opens the owner's browser: they are signed in there already, so it is one
+click. Then run `sbx repo status`.
 
 Check: `trust` is `trusted`. If it is empty (not served yet) and you are an
 admin, go on: step 6's `sbx recipe apply` serves and trusts it. Otherwise stop

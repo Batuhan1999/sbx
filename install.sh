@@ -19,7 +19,7 @@
 # default where Embed is off; such a host needs about 2 GiB of memory and
 # 10 GiB of disk, and a domain (E2B's sandboxes call this server back at
 # login.D). A host that can run neither installs with no runtime enabled
-# (SBX_RUNTIMES empty): add one in the setup wizard or Settings → Sandbox
+# (SBX_RUNTIMES empty): add one on the setup page's Sandboxes step or Settings → Sandbox
 # runtimes, or with sbx-admin runtime add e2b-cloud. An upgrade keeps the
 # runtimes the installation enables (SBX_RUNTIMES); a key given again
 # replaces E2B Cloud's or enables it. Later: sbx-admin runtime add, remove,
@@ -257,7 +257,7 @@ cloud=""
 { [ -n "$cloud_key" ] || enables e2b-cloud; } && cloud=1
 if [ -n "$check" ]; then check_report && exit 0; exit 1; fi
 # Neither: sbx installs with no runtime enabled; an admin adds a provider's
-# in the setup wizard (it needs a domain: its sandboxes call this server back).
+# on the setup page (it needs a domain: its sandboxes call this server back).
 none=""
 if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
   none=1
@@ -476,7 +476,7 @@ if [ -z "$skip_templates" ]; then
 fi
 
 [ -z "$none" ] || echo "
-No sandbox runtime yet: add a sandbox runtime in the setup wizard (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
+No sandbox runtime yet: add one on the setup page's Sandboxes step (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
 # While the first-run setup is open on a server with no address yet: IP
 # access with a trusted certificate (Let's Encrypt over port 80), so the
 # onboarding link below opens without a browser warning; without it, the
