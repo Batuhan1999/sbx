@@ -207,6 +207,24 @@ class CliTests(Cli):
                 self.assertEqual(code, said)
         self.assertFalse(any(c[0] == "POST" for c in self.control.calls))
 
+    def test_a_name_stays_one_path_segment_whatever_it_holds(self):
+        for argv, method, path in (
+                (("sandbox", "info", "try/detail"), "GET", "/api/sandboxes/try%2Fdetail"),
+                (("down", "try?x=1"), "DELETE", "/api/sandboxes/try%3Fx%3D1"),
+                (("urls", "a b"), "GET", "/api/sandboxes/a%20b"),
+                (("env", "rm", "TOKEN?mine=true", "--repo", "owner/app"), "DELETE",
+                 "/api/repos/owner/app/env/TOKEN%3Fmine%3Dtrue"),
+                (("env", "ls", "--repo", "owner/app?x"), "GET", "/api/repos/owner/app%3Fx/env"),
+                (("env", "rm", "A/B", "--installation"), "DELETE", "/api/secrets/A%2FB"),
+                (("catalog", "show", "pg/files"), "GET", "/api/catalog/pg%2Ffiles"),
+                (("detach", "db/x", "--repo", "owner/app"), "DELETE", "/api/repos/owner/app/attachments/db%2Fx")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual(code, "sbx-control: no route")
+                self.assertEqual(self.control.calls[-1][:2], (method, path))
+        removed = next(c for c in self.control.calls if c[1].endswith("/env/TOKEN%3Fmine%3Dtrue"))
+        self.assertEqual(removed[2], {"mine": ["false"], "restart": ["true"]})   # env rm's own query alone
+
     def test_exec_sends_stdin_and_exits_with_the_scripts_code(self):
         self.routes[("POST", "/api/sandboxes/try/exec")] = lambda q, body: {
             "exit_code": 3, "stdout": f"ran {len(body['script'])}\n", "stderr": "warn\n"}

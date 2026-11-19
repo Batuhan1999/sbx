@@ -158,6 +158,15 @@ def fetch(path, body=None, timeout=30, refused=None):
         sys.exit(f"cannot reach {CONTROL}: {getattr(error, 'reason', None) or error}")
 
 
+def seg(value, safe=""):
+    """A name as one segment of an API path, whatever it holds (a repo, OWNER/NAME, keeps its slash: safe="/")."""
+    return urllib.parse.quote(str(value), safe=safe)
+
+
+def repo_api(repo):
+    return f"/api/repos/{seg(repo, '/')}"
+
+
 def note(text):
     print(text, file=sys.stderr)
 
@@ -569,7 +578,7 @@ def cause(name):
     """Why the sandbox's last operation failed, as its newest failure event
     says (the command, its exit code, the end of its output); "" when none."""
     try:
-        events = request("GET", f"/api/sandboxes/{name}/detail").get("events") or []
+        events = request("GET", f"/api/sandboxes/{seg(name)}/detail").get("events") or []
     except (Refused, OSError):
         return ""
     return next((e["detail"] for e in events if e["kind"].endswith(" failed") and e["detail"]), "")
@@ -585,7 +594,7 @@ def wait_for(name, timeout):
             f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n{why + chr(10) if why else ''}"
             f"fix it, then `sbx sandbox prepare {name}`; `sbx logs {name}` follows the app"
             if failed(info) else not record.get("active"))
-    return follow(lambda: api("GET", f"/api/sandboxes/{name}?wait=30", timeout=90), verdict, timeout, interval=0,
+    return follow(lambda: api("GET", f"/api/sandboxes/{seg(name)}?wait=30", timeout=90), verdict, timeout, interval=0,
                   late=lambda info: f"{name} is still {((info.get('lifecycle') or {}).get('phase') or 'starting').replace('_', ' ')}; "
                                     f"`sbx sandbox info {name} --wait` follows it")
 
@@ -675,7 +684,7 @@ def refresh_host(name, info):
 
 
 def open_tool(name, tool):
-    info = api("GET", f"/api/sandboxes/{name}")
+    info = api("GET", f"/api/sandboxes/{seg(name)}")
     refresh_host(name, info)
     repo = info["repo"]
     commands = {agent["command"] for agent in agents().values()}
@@ -762,7 +771,7 @@ def runtime_test(args, client):
     """sbx runtimes test KIND: the runtime's checks, as Settings and sbx-admin doctor run them; non-zero when any fails."""
     if not args.kind:
         sys.exit("sbx runtimes test KIND (sbx runtimes lists the enabled ones)")
-    found = client.api("POST", f"/api/runtimes/{urllib.parse.quote(args.kind, safe='')}/test")
+    found = client.api("POST", f"/api/runtimes/{seg(args.kind)}/test")
     if args.json:
         print(json.dumps(found))
     else:
@@ -823,7 +832,7 @@ def runtime_change(args, client):
     waits for it unless --no-wait."""
     if not args.kind:
         sys.exit(f"sbx runtimes {args.action} KIND (sbx runtimes available lists them)")
-    kind = urllib.parse.quote(args.kind, safe="")
+    kind = seg(args.kind)
     if args.action in ("add", "set"):
         runtime = next((r for r in client.api("GET", "/api/runtimes/available") if r["kind"] == args.kind), None)
         if runtime is None:
@@ -888,10 +897,10 @@ def endpoints_cmd(args):
     if args.action in ("grant", "revoke"):
         if not args.endpoint or not args.repo_name:
             sys.exit(f"sbx endpoints {args.action} NAME OWNER/REPO")
-        path = f"/api/endpoints/{urllib.parse.quote(args.endpoint, safe='')}/repos"
+        path = f"/api/endpoints/{seg(args.endpoint)}/repos"
         repo = args.repo_name.lower()
         changed = (api("POST", path, {"repo": repo}) if args.action == "grant" else
-                   api("DELETE", f"{path}/{urllib.parse.quote(repo, safe='/')}"))
+                   api("DELETE", f"{path}/{seg(repo, '/')}"))
         print(json.dumps(changed) if args.json else
               f"{changed['name']}: for {', '.join(changed['repos']) or 'no repo'}")
         return
@@ -905,7 +914,7 @@ def endpoints_cmd(args):
         if not args.endpoint:
             sys.exit("sbx endpoints rm NAME (sbx endpoints lists them)")
         name = args.endpoint
-        added = api("DELETE", f"/api/endpoints/{urllib.parse.quote(name, safe='')}")
+        added = api("DELETE", f"/api/endpoints/{seg(name)}")
     if args.no_wait:
         print(json.dumps(added) if args.json else f"{args.action}: {name}, applying (sbx endpoints shows it)")
         return
@@ -976,7 +985,7 @@ def secrets_cmd(args):
         return
     if not args.args:
         sys.exit(f"sbx secrets {args.action} ID (sbx secrets ls lists them)")
-    path = f"/api/secret-requests/{urllib.parse.quote(args.args[0], safe='')}"
+    path = f"/api/secret-requests/{seg(args.args[0])}"
     if args.action == "status":
         found = client.api("GET", path)
         if args.wait:
@@ -1022,7 +1031,7 @@ def secrets_request(args, client):
     note(f"{said}: {found['url']}")
     if not args.json:
         print(found["url"])
-    path = f"/api/secret-requests/{urllib.parse.quote(found['id'], safe='')}"
+    path = f"/api/secret-requests/{seg(found['id'])}"
     found = wait_secrets(client, path, found, args.timeout)
     print(json.dumps(found) if args.json else secrets_summary(found))
 
@@ -1119,7 +1128,7 @@ def extensions_cmd(args):
         return
     if not args.kind:
         sys.exit(f"sbx extensions {args.action} KIND (sbx extensions lists them)")
-    kind = urllib.parse.quote(args.kind, safe="")
+    kind = seg(args.kind)
     if args.action == "set":
         current = next((c for c in api("GET", "/api/connections")["connections"] if c["kind"] == args.kind), None)
         if current is None:
@@ -1358,11 +1367,11 @@ def ls(args):
 
 
 def urls_cmd(args):
-    print_urls(api("GET", f"/api/sandboxes/{args.name}"), args.name)
+    print_urls(api("GET", f"/api/sandboxes/{seg(args.name)}"), args.name)
 
 
 def logs(args):
-    paths = api("GET", f"/api/sandboxes/{args.name}").get("logs") or []
+    paths = api("GET", f"/api/sandboxes/{seg(args.name)}").get("logs") or []
     if not paths:
         sys.exit("the app names no logs (logs: in its .sbx/sbx.yaml)")
     os.execvp("ssh", ["ssh", *ssh_target(args.name), f"tail -n 100 -F {' '.join(paths)}"])
@@ -1372,7 +1381,7 @@ def push(args):
     checkout = find_repo() or sys.exit("run this inside your checkout")
     branch = args.branch or current_branch(checkout)
     target = ssh_target(args.name)
-    repo = api("GET", f"/api/sandboxes/{args.name}")["repo"]
+    repo = api("GET", f"/api/sandboxes/{seg(args.name)}")["repo"]
     subprocess.run(["git", "-C", checkout, "push", "-q", "--force", f"{target[-1]}:{repo}",
                     f"{branch}:refs/heads/{branch}"],
                    env={**os.environ, "GIT_SSH_COMMAND": shlex.join(["ssh", *target[:-1]])}, check=True)
@@ -1388,7 +1397,7 @@ def down(args):
     delete, so it is a warning, not the exit status (--json has it all)."""
     # The server answers once its cleanup ran: a paused sandbox's resume (a
     # provider's can take up to 25 minutes) and the hook's 5 come first.
-    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS,
+    result = api("DELETE", f"/api/sandboxes/{seg(args.name)}", timeout=DOWN_TIMEOUT_SECONDS,
                  late=f"no answer from sbx-control (none within {DOWN_TIMEOUT_SECONDS // 60} minutes, or the "
                       f"connection closed before it), so whether "
                       f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
@@ -1408,7 +1417,7 @@ def down(args):
 
 def sandbox_cmd(args):
     """The operations agents use; each prints the sandbox's JSON."""
-    path = f"/api/sandboxes/{args.name}"
+    path = f"/api/sandboxes/{seg(args.name)}"
     if args.action == "exec":
         script = sys.stdin.read()
         r = api("POST", f"{path}/exec", {"script": script, "timeout": args.timeout}, timeout=args.timeout + 60)
@@ -1546,12 +1555,12 @@ def default_folder(explicit):
 def recipe_cmd(args):
     repo = this_repo(args.repo)
     if args.action == "rm":
-        r = api("DELETE", f"/api/repos/{repo}/recipe")
+        r = api("DELETE", f"{repo_api(repo)}/recipe")
         print(f"{repo}: the recipe installed with sbx recipe apply is removed; "
               + ("the default branch's .sbx/ applies now" if r["recipe"] == "imported" else "it needs a recipe now"))
         return
     if args.action == "pr" and args.status:
-        found = api("GET", f"/api/repos/{repo}/setup-pr")
+        found = api("GET", f"{repo_api(repo)}/setup-pr")
         pr, last = found["pull_request"], found["record"] or {}
         if args.json:
             print(json.dumps(found))
@@ -1565,7 +1574,7 @@ def recipe_cmd(args):
         return
     files, executable = recipe_files(default_folder(args.dir))
     if args.action == "apply":
-        r = api("PUT", f"/api/repos/{repo}/recipe", {"files": files, "executable": executable})
+        r = api("PUT", f"{repo_api(repo)}/recipe", {"files": files, "executable": executable})
         print(f"{repo}: {r['files']} recipe file(s) installed on the server"
               + ("; it has a template of its own: sbx template build" if r["prebuilt"] else ""))
         return
@@ -1578,7 +1587,7 @@ def recipe_cmd(args):
         print("Publish this proposal? [y/N] ", end="", file=out, flush=True)
         if input().strip().lower() not in ("y", "yes"):
             return
-    r = api("POST", f"/api/repos/{repo}/setup-pr", {"files": files, "executable": executable, "title": args.title})
+    r = api("POST", f"{repo_api(repo)}/setup-pr", {"files": files, "executable": executable, "title": args.title})
     print(json.dumps(r) if args.json else recipe_pr_line(r))
 
 
@@ -1605,7 +1614,7 @@ def scaffold(checkout, repo, prebuild):
     server names the files it needs to read."""
     body = {"paths": checkout_paths(checkout), "files": {}, "prebuild": prebuild}
     while True:
-        r = api("POST", f"/api/repos/{repo}/scaffold", body)
+        r = api("POST", f"{repo_api(repo)}/scaffold", body)
         if "read" not in r:
             break
         if all(path in body["files"] for path in r["read"]):
@@ -1627,7 +1636,7 @@ def scaffold(checkout, repo, prebuild):
 def repo_cmd(args):
     repo = this_repo(args.repo)
     if args.action == "status":
-        found = api("GET", f"/api/repos/{repo}")
+        found = api("GET", f"{repo_api(repo)}")
         if args.json:
             print(json.dumps(found))
             return
@@ -1638,15 +1647,15 @@ def repo_cmd(args):
             print(f"{key:<16} {', '.join(value) if isinstance(value, list) else value}")
         return
     if args.action == "brief":
-        print(api("GET", f"/api/repos/{repo}/setup-brief", raw=True))
+        print(api("GET", f"{repo_api(repo)}/setup-brief", raw=True))
         return
     me = api("GET", "/api/me")
-    status = api("GET", f"/api/repos/{repo}")
+    status = api("GET", f"{repo_api(repo)}")
     if not status["trust"]:
         if not me["admin"]:
             sys.exit(f"{CONTROL} doesn't serve {repo}; ask an admin to run `sbx repo connect --repo {repo}`")
         api("POST", "/api/repo-onboarding/connect", {"repo": repo})
-        status = api("GET", f"/api/repos/{repo}")
+        status = api("GET", f"{repo_api(repo)}")
     print(f"{repo} on {CONTROL}: {status['trust']}, GitHub access: {status.get('github', '-')}")
     if status["trust"] == "trusted" and status.get("github") != "app" and status.get("github_app_install"):
         print(f"  for clones and pushes without keys, install the GitHub App on it: {status['github_app_install']}")
@@ -1671,18 +1680,18 @@ def repo_cmd(args):
         for name in wanted:
             value = getpass.getpass(f"  {name}: ")
             if value:
-                api("PUT", f"/api/repos/{repo}/env/{name}", {"value": value, "secret": True, "mine": not me["admin"]})
+                api("PUT", f"{repo_api(repo)}/env/{seg(name)}", {"value": value, "secret": True, "mine": not me["admin"]})
     if args.agent:
         print(f"starting {args.agent} with the setup brief; it writes .sbx/, tries it in a sandbox "
               "and verifies the application")
-        run_agent(args.agent, api("GET", f"/api/repos/{repo}/setup-brief", raw=True), checkout)
+        run_agent(args.agent, api("GET", f"{repo_api(repo)}/setup-brief", raw=True), checkout)
     print("Next: give your agent the setup brief (sbx repo brief prints it), or sbx recipe apply, then sbx up check-a"
           + ("; it has a template of its own: sbx template build" if args.prebuild or status.get("prebuilt") else ""))
 
 
 def template_cmd(args):
     repo = this_repo(args.repo)
-    path = f"/api/repos/{repo}/template"
+    path = f"{repo_api(repo)}/template"
     if args.action == "rm":
         r = api("DELETE", path)
         print(f"{repo}: deleted {', '.join(r['deleted']) or 'no template'}"
@@ -1725,7 +1734,7 @@ def installation_env(args):
         return
     if args.action == "rm":
         for name in args.args:
-            print(f"removed {name}; {applied(api('DELETE', f'/api/secrets/{name}'))}")
+            print(f"removed {name}; {applied(api('DELETE', f'/api/secrets/{seg(name)}'))}")
         return
     if args.action != "set" or not args.args:
         sys.exit("sbx env ls|set NAME [VALUE]|rm NAME --installation")
@@ -1734,14 +1743,14 @@ def installation_env(args):
         sys.stdin.read().rstrip("\n") if not sys.stdin.isatty() else getpass.getpass(f"{name} for this installation (hidden): "))
     if not value:
         sys.exit("no value; nothing set")
-    print(f"set {name} (secret) for this installation; {applied(api('PUT', f'/api/secrets/{name}', {'value': value}))}")
+    print(f"set {name} (secret) for this installation; {applied(api('PUT', f'/api/secrets/{seg(name)}', {'value': value}))}")
 
 
 def env_cmd(args):
     if args.installation:
         return installation_env(args)
     repo = this_repo(args.repo)
-    base = f"/api/repos/{repo}/env"
+    base = f"{repo_api(repo)}/env"
     audiences = api("GET", "/api/me")["audiences"]
     if args.action == "ls":
         view = api("GET", base)
@@ -1759,7 +1768,7 @@ def env_cmd(args):
         return
     if args.action == "rm":
         for name in args.args:
-            r = api("DELETE", f"{base}/{name}?mine={'true' if args.mine else 'false'}"
+            r = api("DELETE", f"{base}/{seg(name)}?mine={'true' if args.mine else 'false'}"
                               f"&restart={'false' if args.no_restart else 'true'}")
             print(f"removed {name}; {applied(r)}")
         return
@@ -1786,7 +1795,7 @@ def env_cmd(args):
     if not value:
         sys.exit("no value; nothing set")
     secret = False if args.plain else True if args.secret else None
-    r = api("PUT", f"{base}/{name}", {"value": value, "secret": secret, "audience": args.audience,
+    r = api("PUT", f"{base}/{seg(name)}", {"value": value, "secret": secret, "audience": args.audience,
                                       "agent": not args.hide_from_agents, "mine": args.mine,
                                       "restart": not args.no_restart})
     print(f"set {name}{' (secret)' if r['secret'] else ''} for {audiences.get(args.audience, args.audience)}"
@@ -1806,7 +1815,7 @@ def catalog_cmd(args):
         return
     if action == "show":
         name = args.name or sys.exit("sbx catalog show NAME")
-        e = api("GET", f"/api/catalog/{name}")
+        e = api("GET", f"/api/catalog/{seg(name)}")
         print(f"{e['title']} ({e['kind']}, {e['source']})\n{e['description']}")
         for n, i in e["inputs"].items():
             about = i.get("help") or i.get("description") or ""
@@ -1819,13 +1828,13 @@ def catalog_cmd(args):
             print(f"  sets {var}: {value}")
         for slot, r in e["requires"].items():
             # The saved connections of that kind (listed to admins): what connections: {slot: NAME} names.
-            saved = [c["key"] for c in api("GET", f"/api/catalog/{r['kind']}").get("connections") or []]
+            saved = [c["key"] for c in api("GET", f"/api/catalog/{seg(r['kind'])}").get("connections") or []]
             print(f"  requires {slot}: a {r['kind']} connection ({', '.join(f'{k} -> {v}' for k, v in r['expose'].items())})"
                   + (f"; saved: {', '.join(saved)}" if saved else ""))
         for c in e.get("connections") or []:
             print(f"  saved connection {c['key']}")
         if args.files:
-            for path, text in api("GET", f"/api/catalog/{name}/files")["files"].items():
+            for path, text in api("GET", f"/api/catalog/{seg(name)}/files")["files"].items():
                 print(f"\n--- {path}\n{text}")
         return
     if action == "new":
@@ -1838,7 +1847,7 @@ def catalog_cmd(args):
         folder = pathlib.Path(name)
         if folder.exists():
             sys.exit(f"{folder} exists")
-        for path, text in api("GET", f"/api/catalog/{args.from_}/files")["files"].items():
+        for path, text in api("GET", f"/api/catalog/{seg(args.from_)}/files")["files"].items():
             (folder / path).parent.mkdir(parents=True, exist_ok=True)
             (folder / path).write_text(text.replace(args.from_, name))
             if path.endswith(".sh"):
@@ -1851,14 +1860,14 @@ def catalog_cmd(args):
             sys.exit(f"{folder}: no package.yaml")
         files = {str(p.relative_to(folder)): p.read_text() for p in sorted(folder.rglob("*"))
                  if p.is_file() and "__pycache__" not in p.parts}
-        r = api("PUT", f"/api/catalog/{folder.resolve().name}", {"files": files, "message": args.message or ""})
+        r = api("PUT", f"/api/catalog/{seg(folder.resolve().name)}", {"files": files, "message": args.message or ""})
         print(f"pushed {r['name']} ({r['kind']}); now: sbx catalog test {r['name']}")
         return
     if action == "test":
         name = args.name or sys.exit("sbx catalog test NAME [--input k=v ...] [--connection slot=key]")
         inputs = dict(key_values(args.input, "k=v", "--input"))
         chosen = dict(key_values(args.connection, "slot=key", "--connection"))
-        r = api("POST", f"/api/catalog/{name}/test", {"inputs": inputs, "connections": chosen})
+        r = api("POST", f"/api/catalog/{seg(name)}/test", {"inputs": inputs, "connections": chosen})
         for s in r["steps"]:
             print(f"  {'ok ' if s['ok'] else 'NO '} {s['step']}: {s['detail']}")
         for k, v in (r.get("outputs") or {}).items():
@@ -1889,7 +1898,7 @@ def attach_cmd(args):
             if value:
                 inputs[name] = value
     chosen = dict(key_values(args.connection, "slot=key", "--connection"))
-    r = api("POST", f"/api/repos/{repo}/attachments", {"package": args.package, "key": args.key or "", "inputs": inputs,
+    r = api("POST", f"{repo_api(repo)}/attachments", {"package": args.package, "key": args.key or "", "inputs": inputs,
                                                       "connections": chosen})
     att = r.get("attachment") or {}
     print(f"{att.get('key', args.package)}: {att.get('state', '?')}" + (f" ({att['problem']})" if att.get("problem") else ""))
@@ -1897,7 +1906,7 @@ def attach_cmd(args):
 
 def detach_cmd(args):
     repo = this_repo(args.repo)
-    r = api("DELETE", f"/api/repos/{repo}/attachments/{args.key}")
+    r = api("DELETE", f"{repo_api(repo)}/attachments/{seg(args.key)}")
     print(f"{args.key}: {'disabled (declared in .sbx/sbx.yaml; remove it there)' if r.get('disabled') else 'removed'}")
 
 
