@@ -168,7 +168,11 @@ env:
 
 - `.sbx/setup` installs or reconciles dependencies and runs the normal
   migrations and development seeds. It runs on create and on every prepare, so
-  it must be executable and safe to repeat.
+  it must be executable and safe to repeat. sbx runs the recipe's scripts from
+  its own copy (`/run/sbx/app`), not from the checkout, which has no `.sbx/`
+  until the recipe is committed: start them with `cd "$SBX_WORKDIR"` (the
+  checkout) rather than a path relative to the script, and keep `processes:`
+  to commands that don't call files under `.sbx/`.
 - `processes:` holds the repository's ordinary start commands. Bind web servers
   to `0.0.0.0`. Use `.sbx/start` only when a script is simpler; it starts its
   servers detached and returns.

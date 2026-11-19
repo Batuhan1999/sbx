@@ -147,6 +147,30 @@ class CliTests(Cli):
         self.assertIn("sbx-try ssh-ed25519 HOSTKEY", (self.home / ".ssh/sbx/known_hosts").read_text())
         self.assertEqual((self.home / ".ssh/config").read_text(), "Host mine\n  User me\n")
 
+    def test_up_waits_while_the_template_builds_then_creates(self):
+        """A new server builds its first templates for minutes: sbx up waits (503, Retry-After) and says how
+        far they are, instead of telling the user or their agent to try again later."""
+        answers = iter([(503, {"detail": "the default template is building; try again in a few minutes"})] * 2
+                       + [{**SANDBOX, "host_key": "ssh-ed25519 HOSTKEY", "readiness": "app_ready"}])
+        self.routes[("POST", "/api/sandboxes")] = lambda q, body: next(answers)
+        self.routes[("GET", "/api/templates")] = lambda q, body: {"runtimes": {"boat": [
+            {"key": "sbx-base", "phase": "current"}, {"key": "default", "phase": "building", "step": 3, "steps": 12}]}}
+        self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: SANDBOX
+        with patch.object(self.cli.time, "sleep"):
+            code, out, err = self.run_cli("up", "try", "--repo", "owner/app", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len([c for c in self.control.calls if c[0] == "POST"]), 3)
+        self.assertIn("waiting for the templates: default building step 3/12", err)
+
+    def test_up_gives_up_on_a_template_after_its_timeout(self):
+        self.routes[("POST", "/api/sandboxes")] = lambda q, body: (503, {"detail": "the default template is building; try again in a few minutes"})
+        self.routes[("GET", "/api/templates")] = lambda q, body: {"runtimes": {}}
+        clock = iter(range(0, 10_000, 30))
+        with patch.object(self.cli.time, "sleep"), patch.object(self.cli.time, "time", side_effect=lambda: next(clock)):
+            code, out, err = self.run_cli("up", "try", "--repo", "owner/app", "--timeout", "100")
+        self.assertNotEqual(code, 0)
+        self.assertIn("template is building", str(code) + err)   # the refusal, as the exit's message
+
     def test_a_failed_operation_exits_with_its_error(self):
         self.routes[("POST", "/api/sandboxes/try/prepare")] = lambda q, body: {"status": "starting"}
         self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: {

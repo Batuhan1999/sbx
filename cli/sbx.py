@@ -654,6 +654,37 @@ def print_urls(info, name):
 """)
 
 
+def template_progress():
+    """One line on the templates still building (GET /api/templates), or ""."""
+    try:
+        found = Client(CONTROL).request("GET", "/api/templates", None, False, 30)
+    except (Refused, OSError, http.client.HTTPException):
+        return ""
+    building = [t for ts in found.get("runtimes", {}).values() for t in ts if t.get("phase") != "current"]
+    return "; ".join(f"{t['key']} {t.get('phase')}" + (f" step {t['step']}/{t['steps']}" if t.get("steps") else "")
+                     for t in building)
+
+
+def create_when_built(body, started, timeout):
+    """POST /api/sandboxes, waiting while the template it starts from is still building (503 with
+    Retry-After, the first time on a new server): progress every heartbeat, until timeout."""
+    deadline = started + timeout
+    said = 0.0
+    while True:
+        try:
+            return Client(CONTROL).request("POST", "/api/sandboxes", body, False, 600)
+        except Refused as refused:
+            if refused.status != 503 or "template" not in str(refused) or time.time() >= deadline:
+                sys.exit(str(refused))
+        except (OSError, http.client.HTTPException):
+            return api("POST", "/api/sandboxes", body)   # api() says why the server could not be reached
+        if time.time() - said >= HEARTBEAT_SECONDS:
+            progress = template_progress()
+            note(f"[{time.time() - started:4.1f}s] waiting for the templates{': ' + progress if progress else ''}")
+            said = time.time()
+        time.sleep(min(20, max(1, deadline - time.time())))
+
+
 def up(args):
     started = time.time()
     repo, branch = args.repo, args.branch
@@ -668,7 +699,7 @@ def up(args):
     body = {"name": args.name, "branch": branch, "public_keys": keys, "repo": repo}
     if args.runtime:
         body["runtime"] = args.runtime
-    info = api("POST", "/api/sandboxes", body)
+    info = create_when_built(body, started, args.timeout)
     if write_host(args.name, info) and keys:
         hand_credentials(args.name)
     note(f"[{time.time() - started:4.1f}s] sbx-{args.name} is on {info.get('branch') or branch or 'the default branch'}")
