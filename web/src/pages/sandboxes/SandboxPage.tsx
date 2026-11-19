@@ -166,7 +166,7 @@ function Services({ s }: { s: SandboxDetail }) {
           <span className="grow" /><StateBadge tone={SERVICE_TONE[svc.status] ?? 'idle'} label={svc.status} />
         </div>
         {Object.keys(svc.outputs).length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {Object.entries(svc.outputs).map(([k, v]) => <span key={k} className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11.5px] text-muted">{k}={v}</span>)}
+          {Object.entries(svc.outputs).map(([k, v]) => <span key={k} className="min-w-0 break-all rounded bg-sunken px-1.5 py-0.5 font-mono text-[11.5px] text-muted">{k}={v}</span>)}
         </div>}
       </li>)}
     </ul>
