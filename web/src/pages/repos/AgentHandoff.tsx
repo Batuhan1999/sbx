@@ -86,13 +86,13 @@ export function AgentHandoff({ repo, configured }: { repo: string; configured: b
         <h2 id="handoff-title" className="font-semibold">{configured ? 'Hand the remaining work to your coding agent' : 'Give this to your coding agent'}</h2>
         <ol className="mt-4 space-y-3 text-[13px]">
           <li>
-            <p className="mb-1.5"><span className="mr-1.5 font-medium">1.</span>Paste the setup prompt into any coding agent working in a checkout of <span className="font-medium">{repo}</span>:</p>
+            <p className="mb-1.5"><span className="mr-1.5 font-medium">1.</span>Paste this prompt into a coding agent in a checkout of <span className="font-medium">{repo}</span>:</p>
             <CopyPromptButton repo={repo} />
           </li>
           <li>
-            <p className="mb-1.5"><span className="mr-1.5 font-medium">2.</span>Or, with the sbx CLI, run in the checkout:</p>
+            <p className="mb-1.5"><span className="mr-1.5 font-medium">2.</span>Or run in the checkout:</p>
             <AgentSetupCommands agents={agents} className="max-w-lg bg-panel" />
-            <p className="mt-1.5 text-[12px] text-muted">No CLI yet? <Link to="/app/cli" className="text-accent hover:underline">Install it</Link>.</p>
+            <p className="mt-1.5 text-[12px] text-muted">No sbx CLI yet? <Link to="/app/cli" className="text-accent hover:underline">Install it</Link>.</p>
           </li>
         </ol>
       </div>

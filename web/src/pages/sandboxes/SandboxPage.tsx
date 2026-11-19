@@ -190,7 +190,7 @@ function Logs({ s }: { s: SandboxDetail }) {
   const status = sandboxStatus(s)
   const inspect = useAction(() => api.sandboxes.inspect(s.name).then(setData))
   const allowed = s.actions.logs
-  return <Panel title="Logs" description={data ? `Last ${data.lines} lines of each log the recipe names. Known secret values are masked.` : 'The app logs the recipe names, read from the sandbox on request.'}
+  return <Panel title="Logs" description={data ? `Last ${data.lines} lines of each. Known secret values are masked.` : 'The app logs the recipe names.'}
     actions={allowed && <Button size="sm" busy={inspect.isPending} onClick={() => inspect.mutate()}><FileText />{data ? 'Reload' : 'Load logs'}</Button>}>
     {!data && !inspect.error && <p className="text-[13px] text-muted">
       {status.key === 'paused' ? 'Loading logs resumes this paused sandbox.' : allowed ? 'Not loaded.' : 'No logs to read yet.'}

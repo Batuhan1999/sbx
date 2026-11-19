@@ -23,7 +23,7 @@ describe('agent commands come from the server', () => {
     stubApi({ 'GET /api/me': AMP_ONLY })
     renderApp(<><CliPage /><AgentHandoff repo="usememos/memos" configured={false} /></>)
     expect(await screen.findAllByText('sbx repo connect --agent amp')).toHaveLength(2)
-    expect(screen.getByText(/No CLI yet/)).toBeTruthy()
+    expect(screen.getByText(/No sbx CLI yet/)).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/claude|Claude Code/)
   })
 })

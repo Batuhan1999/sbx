@@ -33,7 +33,7 @@ function EnvPage({ repo, env }: { repo: string; env: EnvView }) {
   const shown = env.variables
   return <div className="space-y-4">
     {env.store_error && <p role="alert" className="rounded-lg border border-warn/30 bg-warn-soft px-4 py-3 text-[13px] text-warn">
-      Saved values could not be read just now, so some may show as missing below. Try again in a moment. ({env.store_error})
+      Saved values could not be read, so some may show as missing. Try again shortly. ({env.store_error})
     </p>}
     {env.missing.length > 0 && <Panel title={`${plural(env.missing.length, 'value')} missing`}>
       <MissingValues repo={repo} names={env.missing} admin={env.admin} bare />
