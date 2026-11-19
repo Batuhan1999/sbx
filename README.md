@@ -34,8 +34,30 @@ server, and two hosted ones for a server without KVM: E2B Cloud and
    commands) in a checkout of that repository. The agent writes the `.sbx/`
    recipe, starts one sandbox and gives you its preview link.
 
-A coding agent can do step 1 for you, and the whole setup without a browser:
-point it at the [installation guide](docs/agent-install.md).
+### With your coding agent
+
+Copy this into Claude Code, Codex, Amp or any coding agent that can run shell
+commands, in a checkout of your repository, and fill in the server:
+
+```text
+Set up sbx (https://github.com/Batuhan1999/sbx) for me and connect this repository.
+
+Server: <ssh user@host of an Ubuntu 24.04 machine, sudo without a password>
+
+Follow docs/agent-install.md from sbx's latest release, step by step:
+1. Check the server (install.sh --check) and install sbx with its normal
+   installer; don't change sbx's code.
+2. Hand me the onboarding link the installer prints last, privately, and wait
+   while I do the setup page in my browser (domain, sandboxes, account, GitHub).
+3. Then connect this repository with the server's setup brief: write the .sbx/
+   recipe, start one sandbox and give me its preview link.
+Use only the sbx CLI/API and the documented sbx-admin host commands. Never ask
+me for a key or password in the chat: I type those into sbx's own pages.
+Report what worked and what you could not verify.
+```
+
+The agent can also do the whole setup without a browser; the
+[installation guide](docs/agent-install.md) has that path.
 
 What you and your agent read along the way, if you want the details:
 
