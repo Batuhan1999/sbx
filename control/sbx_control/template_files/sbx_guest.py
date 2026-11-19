@@ -366,7 +366,7 @@ def restart_listener(timeout=60):
         handle = None
         try:   # a pidfd, and sshd's binary behind it: a pid reused by another process is left alone
             handle = os.pidfd_open(old) if old > 1 else None
-            if handle is not None and str((PROC / str(old) / "exe").resolve()) not in ("/usr/sbin/sshd", "/usr/sbin/sshd (deleted)"):
+            if handle is not None and executable(old) not in ("/usr/sbin/sshd", "/usr/sbin/sshd (deleted)"):
                 os.close(handle)
                 handle = None
         except OSError:
@@ -386,6 +386,11 @@ def restart_listener(timeout=60):
         raise GuestError("workspace SSH listener did not start again")
 
 
+def executable(pid):
+    """The binary the process runs, as /proc names it: with " (deleted)" once the file was replaced."""
+    return str((PROC / str(pid) / "exe").resolve())
+
+
 def exited(pid):
     """Whether the process is gone, or a zombie (no exe, no sockets)."""
     try:
@@ -397,7 +402,7 @@ def exited(pid):
 
 def listener_alive(timeout=10):
     try:
-        return str((PROC / str(listener_pid(timeout=timeout)) / "exe").resolve()) == "/usr/sbin/sshd"
+        return executable(listener_pid(timeout=timeout)) == "/usr/sbin/sshd"
     except (OSError, ValueError, subprocess.SubprocessError, GuestError):
         return False
 
@@ -427,7 +432,7 @@ def settled_listener(deadline, unwatched):
         try:
             pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
             if (not restarted and deadline > time.monotonic()
-                    and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
+                    and executable(pid) == "/usr/sbin/sshd (deleted)"):
                 # sshd started before its binary was replaced (an upgrade, a disk
                 # restored under a running VM): no session yet, so start it again
                 # from the binary there now.
@@ -436,12 +441,12 @@ def settled_listener(deadline, unwatched):
                 # there meanwhile, which is left running.
                 pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
                 if (deadline > time.monotonic()
-                        and str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd (deleted)"):
+                        and executable(pid) == "/usr/sbin/sshd (deleted)"):
                     restarted = True   # one attempt, counted once it begins
                     restart_listener(timeout=deadline - time.monotonic())
                     pid = listener_pid(timeout=max(0.1, min(10, deadline - time.monotonic())))
             handle = os.pidfd_open(pid)
-            if str((PROC / str(pid) / "exe").resolve()) == "/usr/sbin/sshd":
+            if executable(pid) == "/usr/sbin/sshd":
                 return pid, handle
             refusal = GuestError("workspace SSH listener identity changed")
         except SessionOpen:
