@@ -275,7 +275,8 @@ class WorkspaceTests(Server):
         self.assertEqual(addressing.vite_allowed_hosts(), '.e2b.sandboxes.internal')
         self.settings.update('domain', {**self.settings.current().domain.model_dump(), 'name': 'sbx.example.com'}, by='test')
         self.assertEqual(addressing.urls('litmus-app', app)['web'], 'https://litmus-app.sbx.example.com')
-        self.assertEqual(addressing.vite_allowed_hosts(), '.sbx.example.com')
+        # With a domain too: nginx sends the runtime's own host as Host, which is what Vite checks.
+        self.assertEqual(addressing.vite_allowed_hosts(), '.e2b.sandboxes.internal')
 
     def test_ip_preview_gate_enforces_owner_strips_control_credentials_and_resumes(self):
         from urllib.parse import urlsplit
