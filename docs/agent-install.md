@@ -19,7 +19,7 @@ nothing depends on a variable or a `cd` from an earlier block.
 **Placeholders.** `HOST` (what you pass to `ssh`, with sudo that asks no
 password), `IP` (the server's public IP, step 1), `D` (the domain), `E` (the
 email for certificate notices), `owner@example.com` (the owner, the first
-admin), `KIND` (a runtime: `embed`, `e2b-cloud` or `boat`), `PLAN` (its plan).
+admin), `KIND` (a runtime: `embed`, `e2b-cloud`, `boat` or `beam`), `PLAN` (its plan).
 In step 8, `dev-pg`, `temporal`, `10.0.0.5:7233`, `10.0.0.0/24` and
 `owner/app` are examples.
 
@@ -76,6 +76,7 @@ runtimes this host can run:
   embed      no: no /dev/kvm: use bare metal or a VM with nested virtualization enabled
   e2b-cloud  yes: needs an E2B API key and a domain pointing here
   boat       yes: needs a Boat API key (a paid plan: the trial saves no templates) and a domain pointing here
+  beam       yes: needs a Beam API token (no pause: a sandbox is deleted at its timeout) and a domain pointing here
 ```
 
 - **os.** Only Ubuntu 24.04. On anything else, stop and ask for one.
@@ -124,6 +125,14 @@ answers. Ask nothing that `--check` already answered.
      shows where) and keeps it ready for the key page; it never goes into the
      chat. Untrusted public repositories can't be served while Boat is
      enabled (it has no per-sandbox egress rules).
+
+     Beam ([how-to](howto/beam.md)) is a third provider, with two
+     differences to tell the owner first: it has no pause (a sandbox runs
+     until its timeout and is then deleted with its files), and the
+     addresses Beam itself gives a sandbox's ports are public. sbx's Beam
+     runtime has not yet run against a live account: after adding the
+     token, run the how-to's [check](howto/beam.md#check-it-with-a-real-token)
+     and report what fails. It takes no `--plan`.
 2. **The address.** A provider runtime and [endpoints](reference.md#endpoints)
    need a domain; Embed alone also works on the IP (a trusted IP certificate
    on port 80, previews on ports 21000–21255). For a domain ask for:
@@ -259,7 +268,7 @@ sbx secrets request --wait --link-file ~/.sbx-install/setup-link \
   connector:amp "Amp orb provider token"
 ```
 
-Targets: `runtime:KIND` (`e2b-cloud`, `boat`; one not enabled yet is enabled
+Targets: `runtime:KIND` (`e2b-cloud`, `boat`, `beam`; one not enabled yet is enabled
 on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
 `repo:OWNER/NAME:VAR` (a connected repository only, step 9; `sbx secrets request --help` lists them). Send the
 owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
@@ -274,7 +283,7 @@ browser): the owner writes the key into a file only they and you can read,
 or `(umask 077; read -rs k; printf '%s\n' "$k" > ~/.sbx-install/e2b-key)`
 anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 `python3 ~/.sbx-install/sbx.py setup runtime add KIND --link-file ~/.sbx-install/setup-link --plan PLAN --secret E2B_CLOUD_API_KEY < ~/.sbx-install/e2b-key`
-(`BOAT_API_KEY` for Boat), and delete the file.
+(`BOAT_API_KEY` for Boat; `BEAM_API_KEY` for Beam, without `--plan`), and delete the file.
 
 ## 7. Coding agents, then finish: the first template build
 

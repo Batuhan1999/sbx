@@ -176,6 +176,17 @@ servers and internal hosts through endpoints (`sbx_control/endpoints/`;
    the free trial"). sbx now refuses a build on the trial before it starts a
    builder and says so in the status, the check and the trial preset.
 
+## Phase 6: Beam
+
+**Beam is a fourth built-in backend** (`runtime/beam/`, kind `beam`) over
+Beam's Gateway HTTP API, with no SDK. It is the first runtime without a
+pause: `Capabilities.pause` says so, a pause is refused with the reason and
+a sandbox's timeout deletes it. Beam keeps no labels and names no image, so
+a sandbox's metadata is a file in it and the templates' image ids are a
+file on this server. It was written from Beam's documentation and SDK
+source and has not run against a live account
+([acceptance steps](howto/beam.md#check-it-with-a-real-token)).
+
 ## Out of phase 1
 
 The E2B Cloud backend (phase 2), adding runtimes from the web app and their

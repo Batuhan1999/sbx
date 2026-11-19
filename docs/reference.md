@@ -552,7 +552,7 @@ preparation.
 | create | `POST /api/sandboxes` (`sbx up`) | Allocate the VM, provision services, prepare the checkout; returns when SSH works. Setup and start continue in the background unless `start_app=false`. |
 | prepare | `POST /api/sandboxes/NAME/prepare` | Refresh the recipe and env, rerun setup and start; source edits are kept. |
 | restart | `POST /api/sandboxes/NAME/restart` (`sbx sandbox restart`) | Restart the app; files and service state are kept. |
-| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
+| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)). Beam has no pause: the request is refused with that reason at once and the sandbox keeps running ([Beam](#beam-beam)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
 | delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Run the recipe's [`.sbx/cleanup`](#cleanup-before-delete), then remove the VM and its owned resources. Answers `{deleted, cleanup}`. |
 | env_update | (on a variable change) | Rewrite the env files; restart the app when a value changed, unless the change asked for no restart. |
 
@@ -745,7 +745,7 @@ listener or firewall rule.
 A runtime is where sandboxes run: E2B Embed on this server, or a provider's
 service. An installation runs the runtimes it enables, and each sandbox runs
 on exactly one of them, chosen when it is created and kept until it is
-deleted. Three are built in, `embed`, `e2b-cloud` and `boat` (below); other runtimes
+deleted. Four are built in, `embed`, `e2b-cloud`, `boat` and `beam` (below); other runtimes
 are installed as packages ([runtime backends](extensions.md#runtime-backends)).
 
 A fresh install enables Embed where the server can run it (`/dev/kvm`,
@@ -956,6 +956,58 @@ How sbx runs on it:
 - No per-sandbox egress rules (`egress_rules` false): untrusted public repos
   are refused while Boat is enabled. No route to this host's network
   (`private_networks` false): managed servers through [endpoints](#endpoints).
+
+### Beam (`beam`)
+
+[Beam](https://docs.beam.cloud/v2/sandbox/overview)'s hosted sandboxes,
+through Beam's Gateway HTTP API (`https://app.beam.cloud/api/v1/gateway`;
+no SDK). Like E2B Cloud and Boat, nothing of them runs here. **sbx's Beam
+runtime has not yet run against a live Beam account**: it follows Beam's
+documentation, its published API description and its SDK's source; the
+[how-to](howto/beam.md#check-it-with-a-real-token) has the steps that check
+it with a real token.
+
+| `runtime.env` key | Meaning |
+| --- | --- |
+| `BEAM_API_KEY` | An API token of the Beam workspace (a secret). Required. |
+| `BEAM_API_URL` | Beam's gateway; default `https://app.beam.cloud/api/v1/gateway`. Changing it needs the token typed again. |
+| `BEAM_MAX_TIMEOUT` | Seconds a sandbox runs before Beam deletes it; default 86400. The keeper renews it while the sandbox is used. |
+| `BEAM_MAX_CPU`, `BEAM_MAX_MEMORY_MB` | Per sandbox; default 8 vCPUs, 16384 MiB (Beam's Shared CPU tier). |
+| `BEAM_MAX_SANDBOXES` | Running at once; default 10. Beam publishes no number: this is your own cap. |
+
+Beam has no plans to choose from (it bills usage), so there are no presets
+and `sbx runtimes add beam` takes no `--plan`.
+
+- **No pause.** Beam runs a sandbox or deletes it (`capabilities.pause` is
+  false). A pause is refused at once with the reason, and a sandbox whose
+  timeout passes is deleted with its files, where other runtimes pause it.
+  `sbx-admin runtime verify beam` skips its pause and resume steps and says so.
+- **Previews** go to the host Beam answers when sbx exposes the port
+  (`https://<id>-<port>.app.beam.cloud`), on the port's first request.
+  **That address is public**: Beam asks no token for it, so sbx's gate
+  protects sbx's own addresses only. sbx never shows Beam's address, but the
+  app sees it as its Host. Raw port addresses (`<port>-<sandbox id>.D`) do
+  not fit a host name for Beam's ids; named previews work.
+- **Templates** are Beam images. Beam names and lists none, so sbx keeps
+  each template's image id and size in `/var/lib/sbx/runtime-beam/templates.json`;
+  one missing there is built again. A build replays the template's steps as
+  root in a builder sandbox (from the parent template's image, or from the
+  registry image Beam's image service imports), saves its filesystem as an
+  image and deletes the builder. A template's start command is a script
+  that sbx runs in every new sandbox (a Beam container has no init).
+  Deleting a template forgets its image; Beam's API deletes none.
+- **Snapshots** save a sandbox's filesystem as an image (not its processes).
+- **Sandboxes** carry no labels at Beam: sbx writes each one's metadata to
+  `/etc/sbx/beam-meta.json` in the sandbox and reads it back after a
+  restart. Containers of the workspace without that file are never listed
+  or touched. A sandbox has its template's CPU and memory; Beam sets no
+  disk size.
+- **Commands** run as `user` (root until the image has that account), with
+  their env passed beside the command, never in its text.
+- No per-sandbox egress rules (Beam has an allow list, not deny rules:
+  `egress_rules` false), so untrusted public repos are refused while Beam is
+  enabled. No route to this host's network (`private_networks` false):
+  managed servers through [endpoints](#endpoints).
 
 ### Enabling runtimes
 

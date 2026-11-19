@@ -169,8 +169,8 @@ The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
 runs commands and writes files in them, builds their templates, and is the
 last hop of a preview. Like the secret store, it is an installation's choice,
 not an extension. An installation enables one or more runtimes, and each
-sandbox runs on exactly one of them, chosen when it is created. Three are
-built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
+sandbox runs on exactly one of them, chosen when it is created. Four are
+built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes), Boat and Beam.
 
 - `control/sbx_control/runtime/base.py` is the interface: `Backend`, the
   class a runtime subclasses, the `Handle` protocol, plain results (`Info`, whose `state` is `running` or
@@ -211,7 +211,7 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   `test_runtime.py` fails if any module outside `runtime/e2b/`,
   `runtime/embed/` and `runtime/e2b_cloud/` imports `e2b`, or any module
   outside `runtime/` imports a backend package (so only `runtime/boat/`
-  imports `boat_sdk`).
+  imports `boat_sdk`; `runtime/beam/` imports no SDK).
 - Properties a backend declares instead of the core knowing it by name:
   where its sandboxes' preview token goes (`upstream_token_at =
   TokenPlace("header", name)`, a request header, or `TokenPlace("cookie",
@@ -251,6 +251,26 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   `refused`). `tests/fake_boat.py` is a fake Boat API that stands in for the
   SDK's HTTP client, so `test_boat.py` runs the real SDK's requests and
   models.
+- `control/sbx_control/runtime/beam/` is Beam, over Beam's Gateway HTTP API
+  with the standard library (`api.py`: both of Beam's error layers as
+  `BeamError`, reads retried, a starting sandbox waited for; no SDK, which
+  would bring gRPC and read `BEAM_TOKEN` from the process environment):
+  a sandbox is a container from a stub; its metadata is a file in the
+  sandbox, since Beam keeps no labels (`META_FILE`, read back once after a
+  restart); commands started detached and polled, env passed beside the
+  command, files uploaded in chunks and moved into place (`sandbox.py`);
+  templates and snapshots as images, named in
+  `<state>/runtime-beam/templates.json` because Beam names and lists none
+  (`build.py`: a `TemplateSpec` replayed as root in a builder sandbox, a
+  registry image imported by Beam's image service, the start command a
+  script `create` runs); the timeout as Beam's TTL; a port's host as
+  exposing it answered, with no token (`upstream_token_at` None: Beam's URLs
+  are public). It has no pause (`capabilities.pause` False: `core.pause`
+  refuses at once, `runtime verify` skips those steps). Nothing in it has
+  run against a live account; `tests/fake_beam.py` is a fake of Beam's API
+  behind the backend's real requests (`test_beam.py`), and
+  [the how-to](howto/beam.md#check-it-with-a-real-token) has the owner's
+  acceptance steps.
 - `control/sbx_control/runtime/fake/` is an in-memory backend for the test
   suite: `test_runtimes.py` runs an installation with Embed (mocked) and it
   side by side, and `sbx-admin runtime verify` passes against it.
@@ -363,7 +383,8 @@ are where nginx sends a preview. It also names what it reads from
 enable seals) and what it can do (`capabilities`): `private_networks` (its
 sandboxes reach this host's private ranges) for `network.internal_cidrs` and
 managed servers (without it, only through endpoints), `egress_rules` (it applies each sandbox's `deny_out`) for
-`access.public_repos`, `snapshots` for Amp's project caches. Settings a
+`access.public_repos`, `snapshots` for Amp's project caches, `pause` (true unless the provider
+only runs or deletes a sandbox: Beam) for pause and resume. Settings a
 runtime can't enforce are refused by the capability's name and not offered
 on the settings page (`reach.py`).
 
@@ -406,7 +427,7 @@ my-provider = "my_package:MyProvider"
 ```
 
 The built-in ones (`embed`: `sbx_control.runtime.embed:Embed`, `e2b-cloud`:
-`sbx_control.runtime.e2b_cloud:Cloud`) are registered the same way in
+`sbx_control.runtime.e2b_cloud:Cloud`, `boat`, `beam`) are registered the same way in
 `runtime/__init__.py` (`BUILTIN`). A backend over the E2B SDK builds on
 `runtime/e2b/` (`Compute`) rather than calling the SDK itself. A kind that `SBX_RUNTIMES` enables but no
 package provides fails at start with the kinds that exist.
