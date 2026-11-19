@@ -672,17 +672,23 @@ def create_when_built(body, started, timeout):
     said = 0.0
     while True:
         try:
-            return Client(CONTROL).request("POST", "/api/sandboxes", body, False, 600)
+            return Client(CONTROL).request("POST", "/api/sandboxes", body, False, max(30, deadline - time.time()))
         except Refused as refused:
             if refused.status != 503 or "template" not in str(refused) or time.time() >= deadline:
                 sys.exit(str(refused))
-        except (OSError, http.client.HTTPException):
-            return api("POST", "/api/sandboxes", body)   # api() says why the server could not be reached
+            last = refused
+        except urllib.error.URLError:
+            return api("POST", "/api/sandboxes", body)   # never delivered: api() retries it or says why
+        except (OSError, http.client.HTTPException) as error:
+            # sent, but no answer: the sandbox may exist, so don't create it again
+            sys.exit(f"no answer to creating {body['name']} ({error}); see sbx ls before running sbx up again")
         if time.time() - said >= HEARTBEAT_SECONDS:
             progress = template_progress()
             note(f"[{time.time() - started:4.1f}s] waiting for the templates{': ' + progress if progress else ''}")
             said = time.time()
         time.sleep(min(20, max(1, deadline - time.time())))
+        if time.time() >= deadline:
+            sys.exit(str(last))
 
 
 def up(args):
@@ -704,7 +710,7 @@ def up(args):
         hand_credentials(args.name)
     note(f"[{time.time() - started:4.1f}s] sbx-{args.name} is on {info.get('branch') or branch or 'the default branch'}")
     if not args.no_wait:
-        info = wait_for(args.name, args.timeout)
+        info = wait_for(args.name, max(1, started + args.timeout - time.time()))
         note(f"[{time.time() - started:4.1f}s] {outcome(info)}")
     if args.json:
         print(json.dumps({**info, "ssh_host": f"sbx-{args.name}"}))
@@ -1289,7 +1295,8 @@ def templates_verdict(found):
 def templates_cmd(args):
     """sbx templates (admins; the setup link while the setup is open): every template sandboxes start from,
     per runtime, and where its build stands; with --wait, followed until all are built."""
-    link = args.link_file or (not CONTROL and os.environ.get("SBX_SETUP_LINK"))
+    signed_in = CONTROL and keychain_get(API_TOKEN_SERVICE)
+    link = args.link_file or (not signed_in and os.environ.get("SBX_SETUP_LINK"))
     client = setup_client(args) if link else Client(CONTROL)
     fetch = lambda: client.request("GET", "/api/templates", timeout=60)   # noqa: E731
     if args.wait:

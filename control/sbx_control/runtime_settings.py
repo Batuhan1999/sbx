@@ -318,7 +318,7 @@ def _account_plan(backend, values: dict, current: dict, *, adding: bool) -> str 
     given = str((values or {}).get(secret) or "").strip() if secret else ""
     if not backend.presets or not given:   # only a key given here: the stored one goes nowhere new
         return None
-    merged = {**current, **{k: v for k, v in (values or {}).items() if v}}
+    merged = {**current, **{k: v for k, v in (values or {}).items() if v is not None}}   # "" resets, as in _changes
     plain = {k: secret_store.unseal(v) if secret_store.is_reference(v) else v for k, v in merged.items() if v}
     try:
         backend.configure(plain)

@@ -42,6 +42,11 @@ During the first-run setup, paste it in the setup page's **Sandboxes**
 step: pick E2B Cloud and choose **Check key** ([the setup](setup.md#sandboxes)).
 sbx checks the key with E2B, stores it and adds E2B Cloud.
 
+On a server that runs sandboxes itself (Embed), that step has Embed chosen
+already: choose **Also add a provider for more room**, pick E2B Cloud and
+choose **Add E2B Cloud**. Embed stays the default; to start new sandboxes on
+E2B Cloud, choose **Make default** next to it under **Settings**.
+
 Later, an agent may ask for the key on a **keys page**: it sends you a link
 to your server (`https://app.<domain>/keys/…`). Sign in, paste the key into
 its field and choose **Save keys**; the page shows when the server has

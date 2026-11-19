@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query'
+import { ApiError } from './client'
 import { api } from './endpoints'
 import type { HostRequestStatus, Sandbox, SandboxScope } from './types'
 import { isBusy } from '@/lib/status'
@@ -133,11 +134,13 @@ export const useSetup = () => useQuery({
   queryKey: keys.setup, queryFn: api.setup.state, retry: false,
   refetchInterval: q => (q.state.data?.complete ? false : 4_000),
 })
-/** The templates' builds; polled while there are none yet or one is still to build (not after a refusal: not an admin yet). */
+/** The templates' builds; polled while there are none yet or one is still to build. Not after a refusal (not an
+ * admin yet); after a failure (sbx-control restarting), on for a few minutes. */
 export const useTemplateProgress = (enabled = true) => useQuery({
   queryKey: keys.templates, queryFn: api.templates, enabled, retry: false,
   refetchInterval: q => {
-    if (q.state.error) return false
+    const error = q.state.error
+    if (error) return error instanceof ApiError && (error.status === 401 || error.status === 403) || q.state.errorUpdateCount > 60 ? false : 5_000
     const all = Object.values(q.state.data?.runtimes ?? {}).flat()
     return !all.length || all.some(t => t.phase === 'building' || t.phase === 'stale') ? 5_000 : false
   },

@@ -450,6 +450,16 @@ class SetupInferTests(Installation):
         self.assertTrue(setup.complete())
         self.assertEqual(self.infer(), 0)
 
+    def test_an_open_setup_page_is_left_for_the_owner_to_finish(self):
+        from sbx_control import settings, setup, users
+        setup.mint_token()   # the onboarding link the owner has open
+        settings.update('domain', {'address': '203.0.113.10'}, by='test')
+        settings.update('access', {'admins': ['operator@example.com']}, by='test')
+        users.set_password('operator@example.com', 'test-only-password', by='test')
+        self.assertEqual(self.infer(), 3)
+        self.assertFalse(setup.complete())
+        self.assertTrue(setup.current_token())
+
 
 class ImportTests(unittest.TestCase):
     def test_sbx_admin_imports_without_deprecation_warnings_from_its_dependencies(self):

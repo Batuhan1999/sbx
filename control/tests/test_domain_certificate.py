@@ -290,7 +290,7 @@ class DelegationFromTheParentZone(unittest.TestCase):
         from sbx_control.connections import domain
 
         class Done:
-            def __init__(self, stdout): self.stdout = stdout
+            def __init__(self, stdout, returncode=0): self.stdout, self.returncode = stdout, returncode
 
         referral = "_acme-challenge.sbx.example.com.\t60\tIN\tNS\tsbx.example.com.\n"
         with patch.object(domain, "_dig_short", side_effect=lambda kind, name: ["ns1.example.net"] if name == "example.com" else []), \
@@ -299,6 +299,21 @@ class DelegationFromTheParentZone(unittest.TestCase):
             self.assertEqual(domain._ns("_acme-challenge.sbx.example.com"), ["sbx.example.com."])
         self.assertIn("@ns1.example.net", run.call_args.args[0])
         self.assertIn("+norecurse", run.call_args.args[0])
+        recursive.assert_not_called()
+
+    def test_a_parent_nameserver_that_does_not_answer_is_skipped(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from sbx_control.connections import domain
+        referral = "_acme-challenge.sbx.example.com.\t60\tIN\tNS\tsbx.example.com.\n"
+        answers = [SimpleNamespace(stdout=";; no servers could be reached\n", returncode=9),
+                   SimpleNamespace(stdout=referral, returncode=0)]
+        with patch.object(domain, "_dig_short", side_effect=lambda kind, name: ["ns1.example.net", "ns2.example.net"]
+                          if name == "example.com" else []), \
+                patch.object(domain.subprocess, "run", side_effect=answers) as run, \
+                patch.object(domain, "_dig", return_value=[]) as recursive:
+            self.assertEqual(domain._ns("_acme-challenge.sbx.example.com"), ["sbx.example.com."])
+        self.assertIn("@ns2.example.net", run.call_args.args[0])
         recursive.assert_not_called()
 
     def test_without_a_parent_zone_it_asks_the_resolver(self):

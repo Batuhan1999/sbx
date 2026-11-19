@@ -8,11 +8,17 @@ import { cn } from '@/lib/utils'
  * to build or builds are held back; quiet: nothing once every template is ready either. */
 export function TemplateProgressLine({ className, quiet }: { className?: string; quiet?: boolean }) {
   const progress = useTemplateProgress()
-  const all = Object.values(progress.data?.runtimes ?? {}).flat().filter(t => t.phase !== 'unplanned')
-  if (!all.length || progress.data?.blocked) return null
+  const listed = Object.values(progress.data?.runtimes ?? {}).flat()
+  const all = listed.filter(t => t.phase !== 'unplanned')
+  const unplanned = listed.find(t => t.phase === 'unplanned')
+  if (!listed.length || progress.data?.blocked) return null
   const ready = all.filter(t => t.phase === 'current').length
   const stuck = all.find(t => t.phase === 'stuck')
   const box = cn('flex items-start gap-2.5 rounded-lg border border-line bg-panel px-3 py-2 text-[13px]', className)
+  if (unplanned && !stuck) return <div role="status" className={cn(box, 'border-bad/25 bg-bad-soft')}>
+    <AlertCircle className="mt-0.5 size-4 shrink-0 text-bad" />
+    <span className="min-w-0 break-words"><span className="font-medium">Template {unplanned.key} can’t be built:</span> its recipe can’t be read.</span>
+  </div>
   if (stuck) return <div role="status" className={cn(box, 'border-bad/25 bg-bad-soft')}>
     <AlertCircle className="mt-0.5 size-4 shrink-0 text-bad" />
     <span className="min-w-0 break-words"><span className="font-medium">Template {stuck.key} failed to build.</span>{stuck.error && <DetailText className="block text-muted" text={stuck.error} />}</span>

@@ -33,8 +33,9 @@ Boat's [pricing](https://docs.boat.dev/pricing.md) on 2026-11-17:
 | `500` | 16 vCPUs, 32 GB, 251 GB disk | 1,000 |
 | `2000` | 16 vCPUs, 32 GB, 251 GB disk | 2,000 |
 
-sbx reads your plan from Boat when the key is saved and sets these
-limits for you; nothing to choose.
+On the setup page and with the CLI, sbx reads your plan from Boat when the
+key is saved and sets these limits for you; nothing to choose. When you add
+Boat later under **Settings**, choose your plan there.
 
 **A trial key is refused at the key step.** The trial saves no snapshots,
 and sbx's templates are saved snapshots, so a server on the trial could

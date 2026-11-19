@@ -183,17 +183,18 @@ def _ns(name: str) -> list[str]:
     """name's NS records as its parent zone publishes them. Asked of the parent's own nameservers, not
     recursively: a resolver follows the delegation to this server and fails (SERVFAIL) while port 53 is
     closed, which would read as "no NS record" when the record is there and the port is what to fix."""
-    parent = _parent_nameservers(name)
-    if not parent:
-        return _dig("NS", name)
-    try:
-        out = subprocess.run(["dig", f"@{parent[0]}", "+norecurse", "+time=4", "+tries=1", "+noall", "+answer",
-                              "+authority", "NS", name], capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
-        return _dig("NS", name)
-    return sorted({line.split()[-1] for line in out.splitlines()
-                   if line.split()[:1] and line.split()[0].rstrip(".").lower() == name.rstrip(".").lower()
-                   and ("\tNS\t" in line or " NS " in line)})
+    for server in _parent_nameservers(name):   # the next one when one doesn't answer
+        try:
+            done = subprocess.run(["dig", f"@{server}", "+norecurse", "+time=4", "+tries=1", "+noall", "+answer",
+                                   "+authority", "NS", name], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode != 0:
+            continue
+        return sorted({line.split()[-1] for line in done.stdout.splitlines()
+                       if line.split()[:1] and line.split()[0].rstrip(".").lower() == name.rstrip(".").lower()
+                       and ("\tNS\t" in line or " NS " in line)})
+    return _dig("NS", name)
 
 
 def _parent_nameservers(name: str) -> list[str]:

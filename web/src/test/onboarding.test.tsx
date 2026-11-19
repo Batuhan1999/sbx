@@ -155,7 +155,8 @@ describe('server setup', () => {
 
   it('creates the account and finishes from the button under the form', async () => {
     const user = userEvent.setup()
-    const ready = state(['address', 'runtime'], {}, READY)   // no agents step: the account follows the sandboxes
+    // no agents step: the account follows the sandboxes; the page is at the server's domain already
+    const ready = state(['address', 'runtime'], {}, { ...READY, domain: location.hostname })
     const calls = stubApi({
       'GET /api/setup': ready,
       'GET /api/templates': TEMPLATES,
@@ -187,6 +188,14 @@ describe('server setup', () => {
 })
 
 describe('the account waits for the certificate', () => {
+  it('holds the form until the page is at the domain, even with the certificate ready', async () => {
+    stubApi({ 'GET /api/setup': state(['address', 'runtime'], {}, READY), 'GET /api/templates': TEMPLATES })
+    renderApp(<SetupPage />)
+    expect(await screen.findByText('Moving to sbx.example.com…')).toBeTruthy()
+    expect((screen.getByLabelText('Email') as HTMLInputElement).matches(':disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Create account and finish' })).toBeNull()
+  })
+
   it('holds the form until the certificate is ready, and retries one that failed', async () => {
     const user = userEvent.setup()
     stubApi({ 'GET /api/setup': state(['address', 'runtime'], {}, SAVED), 'GET /api/templates': TEMPLATES })

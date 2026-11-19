@@ -266,7 +266,8 @@ path.write_text(path.read_text().replace(before, after))
 
     def test_a_dropped_port_53_fails_before_certbot_and_says_why(self):
         self.env.update(SBX_TEST_DOMAIN="sbx.example.com", SBX_TEST_PROBE_FAIL="1")
-        self.assertNotEqual(self.run_service().returncode, 0)
+        self.assertEqual(self.run_service().returncode, 75)   # an issuance failure, not a broken install
+        self.assertFalse((self.bin / "sbx-tls-renew.new").exists())   # swapped in whole
         self.assertEqual(self.certbot_runs(), [])
         error = (self.root / "tls/certificate-error").read_text()
         self.assertIn("allow TCP and UDP port 53", error)

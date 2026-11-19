@@ -112,7 +112,8 @@ UNIT
   systemctl daemon-reload
   systemctl enable -q --now sbx-tls-renew.timer
   systemctl reset-failed sbx-tls-renew.service 2>/dev/null || true
-  systemctl start sbx-tls-renew.service
+  # 75: this run's issuance failed (its error file says why), apart from any other failure.
+  systemctl start sbx-tls-renew.service || exit 75
 }
 
 ip_cert=bootstrap
@@ -418,7 +419,10 @@ account="--register-unsafely-without-email"
 # Why the last issuance failed, for the setup (/api/setup access.certificate_error):
 # the port 53 probe's finding or certbot's last lines; gone once it works.
 error="$dir/certificate-error"
-cat > /usr/local/sbin/sbx-tls-renew <<RENEW
+# Written whole beside the working one, then swapped in: a step failing on
+# the way leaves the renewal that worked.
+renew=/usr/local/sbin/sbx-tls-renew.new
+cat > $renew <<RENEW
 #!/bin/sh
 set -eu
 cd $current
@@ -435,7 +439,7 @@ case "$dns" in
     # Before asking Let's Encrypt for a certificate (none yet, or due within
     # 30 days): whether a public resolver reaches the responder at all. A
     # dropped port 53 then says so in seconds instead of a certbot timeout.
-    cat >> /usr/local/sbin/sbx-tls-renew <<RENEW
+    cat >> $renew <<RENEW
 live=$dir/letsencrypt/live/$domain/fullchain.pem
 if [ ! -f \$live ] || ! openssl x509 -in \$live -noout -checkend 2592000 >/dev/null 2>&1; then
   if ! venv/bin/python -m sbx_control.acme_dns probe > $error.new 2>&1; then
@@ -468,7 +472,7 @@ RENEW
   *) echo "acme: $dns is not supported (delegated, route53, cloudflare, none)"; exit 1 ;;
 esac
 [ -n "${issue:-}" ] || issue="docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds"
-cat >> /usr/local/sbin/sbx-tls-renew <<RENEW
+cat >> $renew <<RENEW
 if ! $issue \\
   --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos $account -n \\
   > $dir/certbot.log 2>&1; then
@@ -482,4 +486,5 @@ ln -sfn ../live/$domain/privkey.pem $serving/privkey.pem
 /usr/local/sbin/sbx-tls-nginx
 [ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
 RENEW
+chmod 0755 $renew && mv -f $renew /usr/local/sbin/sbx-tls-renew
 install_renewal_timer

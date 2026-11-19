@@ -51,8 +51,9 @@ def infer_complete() -> bool:
     """sbx-admin setup-infer (host-install.sh on every deploy, and
     install-report.sh): an installation that is configured counts as set
     up (the admin account, which needs a way to sign in, is the setup's last
-    step). Returns whether it marked anything."""
-    if complete() or not configured():
+    step), unless a setup is open (its token works): the owner finishes it.
+    Returns whether it marked anything."""
+    if complete() or not configured() or current_token():
         return False
     mark_complete("infer")
     return True

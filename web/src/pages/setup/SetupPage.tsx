@@ -32,20 +32,23 @@ const isStep = (x: string | null): x is Step => STEPS.some(s => s.step === x)
 /** Whether a key, token or password is typed and not saved yet: a reload now would lose it. */
 const typing = () => [...document.querySelectorAll<HTMLInputElement>('main input')].some(i => i.type !== 'checkbox' && i.type !== 'radio' && i.name !== 'domain' && !!i.value)
 
-/** Once the certificate is ready, carry on at the server's own address (with the setup token and the step):
- * one link, start to end. */
 /** Origins that answered over HTTPS from this browser: the certificate is on the file system a moment before
- * nginx serves it, so the page moves only once its new address really answers (no certificate error). */
+ * nginx serves it, so the page moves only once its new address really answers (no certificate error). An
+ * answer tells the page (onAnswer) to try the move again; no answer is asked again a few seconds later. */
 const answering = new Set<string>()
 const asking = new Set<string>()
-function askOrigin(origin: string) {
+const listeners = new Set<() => void>()
+function onAnswer(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } }
+function askOrigin(origin: string, tries = 40) {
   if (asking.has(origin) || answering.has(origin)) return
   asking.add(origin)
   fetch(`${origin}/dist/version`, { mode: 'no-cors', cache: 'no-store' })
-    .then(() => { answering.add(origin) }, () => {})
-    .finally(() => asking.delete(origin))
+    .then(() => { answering.add(origin); asking.delete(origin); listeners.forEach(l => l()) },
+      () => { asking.delete(origin); if (tries > 1) setTimeout(() => askOrigin(origin, tries - 1), 3_000) })
 }
 
+/** Once the certificate is ready, carry on at the server's own address (with the setup token and the step):
+ * one link, start to end. */
 function moveToOwnAddress(s: SetupState, step: Step) {
   if (s.complete || !s.access.certificate_ready || !s.link) return false
   const target = new URL(s.link)
@@ -79,7 +82,9 @@ export default function SetupPage() {
   // The step shown stays until the owner leaves it: a check that passes shows its result, not the next step.
   useEffect(() => { if (s && !step) setStep(first) }, [s, step, first])
   // The move waits while something is typed; it happens at the next step, or the next poll with nothing typed.
-  useEffect(() => { if (s && (current === 'address' || !typing())) moveToOwnAddress(s, current) }, [s, current])
+  const [answers, setAnswers] = useState(0)
+  useEffect(() => onAnswer(() => setAnswers(n => n + 1)), [])
+  useEffect(() => { if (s && (current === 'address' || !typing())) moveToOwnAddress(s, current) }, [s, current, answers])
   // A runtime added anywhere (this page, the CLI, an agent): the lists and the builds follow.
   useEffect(() => {
     if (!runtimeDone) return
@@ -359,10 +364,10 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
   })
   const finish = async () => { setBusy(true); setError(null); try { await complete() } catch (e) { setError(e) } finally { setBusy(false) } }
   const create = !signedIn && !existing
-  // The account is created at the server's own address, so the owner signs in where they stay: until the
-  // certificate is ready the form waits (nothing typed is lost when the page moves there).
+  // The account is created at the server's own address, so the owner signs in where they stay (the session
+  // cookie is the domain's): the form waits until the page is there, nothing typed is lost on the way.
   const domain = s.access.mode === 'domain' ? s.access.domain : ''
-  const waiting = create && !!domain && !s.access.certificate_ready
+  const waiting = create && !!domain && (!s.access.certificate_ready || location.hostname !== domain)
   const certificateError = waiting ? s.access.certificate_error : ''
   const [retrying, setRetrying] = useState(false)
   const retry = async () => {
@@ -390,7 +395,7 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
     <ErrorState error={error} />
     <Nav onBack={onBack}>
       {certificateError ? <Button busy={retrying} onClick={retry}>Try again</Button>
-        : waiting ? <Spinner label={`Waiting for the certificate for ${domain}, usually under a minute`} />
+        : waiting ? <Spinner label={s.access.certificate_ready ? `Moving to ${domain}…` : `Waiting for the certificate for ${domain}, usually under a minute`} />
         : create ? <SubmitButton form={form} formId="setup-account">Create account and finish<ArrowRight /></SubmitButton>
         : signedIn ? <Button variant="primary" busy={busy} onClick={finish}>Finish setup<ArrowRight /></Button>
         : <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in<ArrowRight /></AnchorButton>}
