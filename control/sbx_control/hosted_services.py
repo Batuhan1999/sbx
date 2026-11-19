@@ -88,10 +88,17 @@ def docker(*args, input=None, check=True):
 
 
 @contextlib.contextmanager
-def _lock():
+def _lock(name: str | None = None, *, wait: bool = True):
+    """The lock over every server's record (no name), or one server's while
+    it starts, so a slow start blocks only that server. Take the shared lock
+    before a server's, never the other way round."""
     paths.state_dir().mkdir(parents=True, exist_ok=True)
-    with (paths.state_dir() / "managed-servers.lock").open("w") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
+    held_path = paths.state_dir() / (f"managed-server-{name}.lock" if name else "managed-servers.lock")
+    with held_path.open("w") as held:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError(f"the server {name} is starting; wait until it is ready or failed") from None
         yield
 
 
@@ -215,7 +222,7 @@ def record(name: str) -> dict | None:
 
 def execute(name, database, stream):
     """Stream operator SQL into a managed server without exporting its credentials."""
-    with _lock():
+    with _lock(), _lock(name, wait=False):
         found = _record(name)
         if not found:
             raise ValueError("no managed server with this name; use the provider's own tools for other connections")
@@ -282,22 +289,24 @@ def up(name, kind=None, *, package=None, data_root=None, storage_gb=None, preset
     in (kind, or their connection package) or the one a connection package
     declares (package). presets: values for secrets the package would
     otherwise make, for a new server only."""
-    with _lock():
-        server, values, details = _begin(name, kind, package, data_root, storage_gb, presets)
-        return _finish(server, values, details)
+    with contextlib.ExitStack() as stack:
+        with _lock():
+            stack.enter_context(_lock(name, wait=False))
+            server, values, details = _begin(name, kind, package, data_root, storage_gb, presets)
+        return _finish(server, values, details)   # the slow half holds only this server's lock
 
 
 def begin(name, kind=None, *, package=None, storage_gb=None, presets=None) -> dict:
     """The quick half of up, for a caller that answers before the server runs
     (the API): everything that can refuse, and the server's record. finish()
     is the rest."""
-    with _lock():
+    with _lock(), _lock(name, wait=False):
         _begin(name, kind, package, None, storage_gb, presets)
     return record(name)
 
 
 def finish(name) -> dict:
-    with _lock():
+    with _lock(name):
         found = _record(name)
         if not found:
             raise ValueError("no managed server with this name")
@@ -532,7 +541,7 @@ def _create_container(server: Server, values: dict):
 
 
 def check(name):
-    with _lock():
+    with _lock(), _lock(name, wait=False):
         found = _record(name)
         if not found or found[0].kind != "postgres":
             raise ValueError("choose a managed PostgreSQL 18 server")
@@ -568,7 +577,7 @@ def down(name, *, delete_data=False):
     """Stop the managed server and remove its connection (refused while a
     repo uses it); with delete_data its data and its record too, so nothing
     of it is left on the host."""
-    with _lock():
+    with _lock(), _lock(name, wait=False):
         found = _record(name)
         if not found:
             raise ValueError("no managed server with this name")

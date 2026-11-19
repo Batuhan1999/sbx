@@ -325,7 +325,8 @@ SERVER_KEYS = {"compose", "service", "port", "storage_gb", "secrets", "inputs"}
 # on the managed servers' private network only, and keeps its data in volumes
 # of its own, which go with it.
 SERVICE_REFUSED = ("ports", "network_mode", "privileged", "container_name", "cap_add", "devices", "pid", "ipc",
-                   "extra_hosts", "networks")
+                   "extra_hosts", "networks", "build", "env_file", "extends", "volumes_from", "security_opt",
+                   "userns_mode", "uts", "cgroup_parent", "sysctls", "group_add", "runtime", "device_cgroup_rules")
 PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 
 

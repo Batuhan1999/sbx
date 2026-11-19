@@ -500,6 +500,16 @@ class ManagedServerTests(Server):
             conn.execute("insert into managed_servers (name, kind, config) values (?, ?, ?)",
                          (name, kind, self.secret_store.seal(values, key=f"managed-server/{name}")))
 
+    def test_a_starting_server_blocks_only_itself(self):
+        self.record("slow", "clickhouse", {"address": "172.29.50.10", "password": "fixture"})
+        self.record("other", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})
+        with self.hosted._lock("slow"):   # its slow half, as finish() holds it
+            with self.assertRaisesRegex(ValueError, "slow is starting"):
+                self.hosted.down("slow")
+            with self.hosted._lock(), self.hosted._lock("other", wait=False):
+                pass   # the shared lock and another server's are free
+            self.assertEqual([s["name"] for s in self.hosted.records()], ["other", "slow"])
+
     def test_postgres_from_before_its_cow_storage_is_never_reused(self):
         self.record("old-pg", "postgres", {"address": "172.29.50.10", "password": "fixture"})
         with patch.object(self.hosted, "docker") as docker:
