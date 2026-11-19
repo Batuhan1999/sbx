@@ -514,6 +514,15 @@ class ManagedServerTests(Server):
             with self.assertRaises(self.secret_store.StoreError):
                 self.hosted.records()
 
+    def test_a_server_name_is_checked_before_its_lock_is_made(self):
+        for name in ("team/app", "../x"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "server names use"):
+                self.hosted.begin(name, package="temporal-server")
+
+    def test_a_looser_log_limit_counts_as_none(self):
+        loose = {"HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "1g", "max-file": "100"}}}}
+        self.assertFalse(self.hosted._log_limited(loose))
+
     def test_a_starting_server_blocks_only_itself(self):
         self.record("slow", "clickhouse", {"address": "172.29.50.10", "password": "fixture"})
         self.record("other", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})
@@ -589,7 +598,7 @@ class ManagedServerTests(Server):
         kinds = [c[0] for c in calls]
         self.assertLess(calls.index(("rm", "-f", server.container)), kinds.index("run"))
         self.assertNotIn(("volume", "rm", server.volume), calls)
-        limited = {**labels, "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "50m"}}}}
+        limited = {**labels, "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "50m", "max-file": "5"}}}}
         calls = self.bring_up(server, limited)
         self.assertNotIn("rm", [c[0] for c in calls])
         self.assertNotIn("run", [c[0] for c in calls])

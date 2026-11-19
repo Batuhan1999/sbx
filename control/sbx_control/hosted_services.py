@@ -92,6 +92,8 @@ def _lock(name: str | None = None, *, wait: bool = True):
     """The lock over every server's record (no name), or one server's while
     it starts, so a slow start blocks only that server. Take the shared lock
     before a server's, never the other way round."""
+    if name is not None and (not NAME_RE.fullmatch(name) or len(name) > 40):
+        raise ValueError("server names use at most 40 lowercase letters, numbers, hyphens or underscores")
     paths.state_dir().mkdir(parents=True, exist_ok=True)
     held_path = paths.state_dir() / (f"managed-server-{name}.lock" if name else "managed-servers.lock")
     with held_path.open("w") as held:
@@ -502,8 +504,11 @@ def _matches(server: Server, details: dict, values: dict) -> bool:
 
 
 def _log_limited(details: dict) -> bool:
-    """Whether the container was created with a size limit on its log."""
-    return bool(((details.get("HostConfig") or {}).get("LogConfig") or {}).get("Config", {}).get("max-size"))
+    """Whether the container was created with LOG_LIMIT on its log."""
+    log = (details.get("HostConfig") or {}).get("LogConfig") or {}
+    config = log.get("Config") or {}
+    return (log.get("Type") == "json-file" and config.get("max-size") == "50m"
+            and config.get("max-file") == "5")
 
 
 def _container_size(cpus: int = 4, memory_mb: int = 4096) -> tuple[int, int]:
