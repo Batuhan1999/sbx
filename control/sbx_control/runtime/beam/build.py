@@ -15,6 +15,8 @@ new sandbox."""
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import json
 import os
 import posixpath
@@ -43,10 +45,20 @@ def image_uri(image: str) -> str:
 
 class Templates:
     """name -> {"image", "cpu", "memory_mb", "start"}: this installation's
-    templates and snapshots on Beam, in one JSON file (0600), written whole."""
+    templates and snapshots on Beam, in one JSON file (0600), written whole.
+    A change holds the file's lock, so a build in another thread or process
+    (sbx-admin jobs run) never loses one."""
+    _threads = threading.Lock()
 
     def __init__(self, path):
-        self.path, self._lock = path, threading.Lock()
+        self.path = path
+
+    @contextlib.contextmanager
+    def _changing(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._threads, open(self.path.with_name(self.path.name + ".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
     def all(self) -> dict:
         try:
@@ -60,18 +72,17 @@ class Templates:
         return found if isinstance(found, dict) and found.get("image") else None
 
     def _write(self, found: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         fresh = self.path.with_name(self.path.name + ".new")
         with open(os.open(fresh, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as file:
             json.dump(found, file, indent=1, sort_keys=True)
         os.replace(fresh, self.path)
 
     def put(self, name: str, entry: dict) -> None:
-        with self._lock:
+        with self._changing():
             self._write({**self.all(), name: entry})
 
     def drop(self, name: str) -> bool:
-        with self._lock:
+        with self._changing():
             found = self.all()
             if found.pop(name, None) is None:
                 return False
