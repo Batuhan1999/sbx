@@ -678,7 +678,7 @@ def create_when_built(body, started, timeout):
                 sys.exit(str(refused))
             last = refused
         except urllib.error.URLError:
-            return api("POST", "/api/sandboxes", body)   # never delivered: api() retries it or says why
+            return api("POST", "/api/sandboxes", body, timeout=max(30, deadline - time.time()))   # never delivered
         except (OSError, http.client.HTTPException) as error:
             # sent, but no answer: the sandbox may exist, so don't create it again
             sys.exit(f"no answer to creating {body['name']} ({error}); see sbx ls before running sbx up again")

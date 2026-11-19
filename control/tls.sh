@@ -112,8 +112,11 @@ UNIT
   systemctl daemon-reload
   systemctl enable -q --now sbx-tls-renew.timer
   systemctl reset-failed sbx-tls-renew.service 2>/dev/null || true
-  # 75: this run's issuance failed (its error file says why), apart from any other failure.
-  systemctl start sbx-tls-renew.service || exit 75
+  # 75: this run's issuance failed (it left its error file: a failure after issuance, nginx's, leaves none).
+  if ! systemctl start sbx-tls-renew.service; then
+    [ -s $dir/certificate-error ] || [ -s $dir/ip-certificate-error ] && exit 75
+    exit 1
+  fi
 }
 
 ip_cert=bootstrap
