@@ -396,6 +396,19 @@ class LifecycleTests(Installation):
         record = self.lifecycle.get("no-room")
         self.assertEqual((record["status"], record["sandbox_id"]), ("failed", None))
 
+    def test_a_create_refused_for_an_untrusted_repo_s_services_takes_no_preview_ports(self):
+        from sbx_control import ip_previews
+        recipe = self.recipes.App("owner/repo", Path("/unused"), {"previews": {"": 3000},
+                                                                  "services": {"db": {"uses": "postgres"}}})
+        with self.creating(recipe, FakeVM()) as create, \
+                patch.object(ip_previews, "address", return_value="203.0.113.10"), \
+                patch.object(ip_previews, "port_range", return_value=(22000, 22009)):
+            with self.assertRaisesRegex(self.core.SandboxError, "only repos this installation trusts"):
+                self.core.create("fixture", "untrusted-services", "owner@example.test", "main", "", "owner/repo",
+                                 template="fixture-template")
+            self.assertIsNone(ip_previews.route(22000))
+        create.assert_not_called()
+
     def test_webhook_reports_creation_failure_without_a_runtime(self):
         from fastapi import HTTPException
         from sbx_control import github_api as previews, github_app

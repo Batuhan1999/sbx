@@ -380,15 +380,15 @@ def _create_reserved(name: str, slug: str, owner: str, branch: str, public_keys:
     """Create after ``reserve_capacity`` has serialized the last-slot check."""
     if find(name):
         raise SandboxError(f"sbx-{name} already exists")
+    trusted = bool(a.repo) and settings.trust(a.repo) == "trusted"
+    if a.spec.get("services") and not trusted:   # refused before its preview ports are taken
+        raise SandboxError(f"{a.repo} declares services in .sbx/sbx.yaml; only repos this installation trusts get them")
     ip_previews.activate(slug)
     try:
         env = sbx_env(name, slug, a, owner, branch, (metadata or {}).get("template", ""))
     except Exception:
         ip_previews.remove(slug)
         raise
-    trusted = bool(a.repo) and settings.trust(a.repo) == "trusted"
-    if a.spec.get("services") and not trusted:
-        raise SandboxError(f"{a.repo} declares services in .sbx/sbx.yaml; only repos this installation trusts get them")
     result = None
     try:
         if not trusted:
