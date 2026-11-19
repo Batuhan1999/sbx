@@ -27,11 +27,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
   </D.Root>
 }
 
-export function Drawer({ open, onOpenChange, children, label }: { open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; label: string }) {
+/** onCloseAutoFocus: where focus goes once it has closed (it has no trigger of its own for Radix to return to). */
+export function Drawer({ open, onOpenChange, children, label, onCloseAutoFocus }: {
+  open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode; label: string; onCloseAutoFocus?: (event: Event) => void
+}) {
   return <D.Root open={open} onOpenChange={onOpenChange}>
     <D.Portal>
       <D.Overlay className="overlay fixed inset-0 z-40 bg-black/40" />
-      <D.Content className="drawer fixed inset-y-0 left-0 z-50 flex w-[272px] max-w-[85vw] flex-col border-r border-line bg-panel outline-none">
+      <D.Content onCloseAutoFocus={onCloseAutoFocus} className="drawer fixed inset-y-0 left-0 z-50 flex w-[272px] max-w-[85vw] flex-col border-r border-line bg-panel outline-none">
         <D.Title className="sr-only">{label}</D.Title>
         <D.Description className="sr-only">{label}</D.Description>
         {children}

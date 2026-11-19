@@ -1,5 +1,5 @@
 import { Blocks, Boxes, Database, FolderGit2, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useMe } from '@/api/queries'
 import { ErrorState } from '@/components/states'
@@ -98,15 +98,26 @@ export function Shell() {
   const me = useMe()
   const location = useLocation()
   useGoShortcuts()
-  useEffect(() => { document.getElementById('main')?.focus({ preventScroll: true }) }, [location.pathname])
+  const focusMain = () => document.getElementById('main')?.focus({ preventScroll: true })
+  useEffect(focusMain, [location.pathname])
+  // The drawer has no Radix trigger, so closing it left focus on <body>: it goes back to the button that
+  // opened it, or to the page when a link in it was followed (the drawer still held focus as the route changed).
+  const menu = useRef<HTMLButtonElement>(null)
+  const followed = useRef(false)
+  const afterDrawer = (event: Event) => {
+    event.preventDefault()
+    if (followed.current) focusMain()
+    else menu.current?.focus()
+    followed.current = false
+  }
   return <div className="min-h-dvh lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
     <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-panel focus:px-3 focus:py-2 focus:shadow">Skip to content</a>
     <aside className="sticky top-0 hidden h-dvh border-r border-line bg-panel lg:block"><Sidebar /></aside>
     <header className="sticky top-0 z-30 flex h-12 items-center gap-2 border-b border-line bg-panel/90 px-3 backdrop-blur lg:hidden">
-      <button onClick={() => setOpen(true)} className="grid size-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-ink" aria-label="Open navigation"><Menu className="size-[18px]" /></button>
+      <button ref={menu} onClick={() => setOpen(true)} className="grid size-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-ink" aria-label="Open navigation"><Menu className="size-[18px]" /></button>
       <Brand />
     </header>
-    <Drawer open={open} onOpenChange={setOpen} label="Navigation"><Sidebar onNavigate={() => setOpen(false)} /></Drawer>
+    <Drawer open={open} onOpenChange={setOpen} label="Navigation" onCloseAutoFocus={afterDrawer}><Sidebar onNavigate={() => { followed.current = true; setOpen(false) }} /></Drawer>
     <main id="main" tabIndex={-1} className="min-w-0 outline-none">
       <div className="mx-auto w-full max-w-[1180px] px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
         {me.error && !me.data ? <ErrorState error={me.error} retry={() => me.refetch()} /> : <Outlet />}
