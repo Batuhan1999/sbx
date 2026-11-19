@@ -4,7 +4,8 @@ title: ClickHouse database
 logo: logo.svg
 description: >
   A database per sandbox on your ClickHouse server, with its own user. The
-  database and its user are named sbx_ and the sandbox's name. Each starts with
+  database and its user are named sbx_, the start of the sandbox's name and a
+  random id. Each starts with
   the empty tables of a development database, or with native clones of that
   database's local MergeTree tables.
 requires:

@@ -4,8 +4,9 @@ title: Postgres clone
 logo: logo.svg
 description: >
   A database per sandbox, copied from a template database, with its own login
-  that owns it. The database and its login are named sbx_ and the sandbox's
-  name. Whether the copy is copy-on-write depends on the server and its storage;
+  that owns it. The database and its login are named sbx_, the start of the
+  sandbox's name and a random id. Whether the copy is copy-on-write depends on
+  the server and its storage;
   this package does not turn it on. Sandboxes reach the database on the
   connected server's host.
 requires:

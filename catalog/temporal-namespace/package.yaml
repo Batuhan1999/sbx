@@ -3,8 +3,9 @@ name: temporal-namespace
 title: Temporal namespace
 logo: logo.svg
 description: >
-  A namespace per sandbox on your Temporal server. Each namespace is named sbx-
-  and the sandbox's name, and made with the temporal CLI on this host.
+  A namespace per sandbox on your Temporal server. Each namespace is named sbx-,
+  the start of the sandbox's name and a random id, and made with the temporal
+  CLI on this host.
 requires:
   server:
     kind: temporal-server
