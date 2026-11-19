@@ -24,31 +24,38 @@ def collect() -> list:
     before their VM existed."""
     infos = [i for i in core.sandboxes() if (i.metadata or {}).get("sbx")]
     rows = sandboxes.rows()
-    out = []
-    for info in infos:
-        name = info.metadata["sbx"]
-        row = rows.pop(name, None) or {}
-        item = sandboxes.describe(info)
-        item.update(vm=core.runtime_state(info), created_at=row.get("created_at") or getattr(info, "started_at", None),
-                    updated_at=(item["lifecycle"] or {}).get("updated_at") or row.get("updated_at"),
-                    slug=core.slug_of(info), template=info.metadata.get("template", ""),
-                    end_at=getattr(info, "end_at", None),
-                    origin=origin(info))
-        out.append(item)
-    for name, row in rows.items():
-        current = lifecycle.get(name)
-        status = lifecycle.status(current)
-        if status in ("creating", "failed"):
-            meta = row["metadata"]
-            out.append({"name": name, "owner": row["owner"], "branch": row["branch"], "status": status,
-                        "runtime": row.get("runtime") or runtime.default(),
-                        "error": current["error"], "urls": {}, "ports": [], "app": "", "vm": "", "sandbox_id": "",
-                        "audience": core.audience(meta), "shared": core.shared(meta),
-                        "actions": lifecycle.actions(current, status),
-                        "created_at": row["created_at"], "updated_at": current["updated_at"],
-                        "slug": row.get("slug") or name, "template": "", "logs": [],
-                        "origin": origin(SimpleNamespace(metadata={**meta, "sbx": name}))})
+    out = [_listed(info, rows.pop(info.metadata["sbx"], None) or {}) for info in infos]
+    out += [item for name, row in rows.items() if (item := _unlisted(name, row))]
     return out
+
+
+def _listed(info, row: dict) -> dict:
+    """A sandbox the runtime lists; row is its registration ({} without one)."""
+    item = sandboxes.describe(info)
+    item.update(vm=core.runtime_state(info), created_at=row.get("created_at") or getattr(info, "started_at", None),
+                updated_at=(item["lifecycle"] or {}).get("updated_at") or row.get("updated_at"),
+                slug=core.slug_of(info), template=info.metadata.get("template", ""),
+                end_at=getattr(info, "end_at", None),
+                origin=origin(info))
+    return item
+
+
+def _unlisted(name: str, row: dict) -> dict | None:
+    """A registered sandbox the runtime does not list: shown while it is
+    being created or after it failed before its VM existed, else None."""
+    current = lifecycle.get(name)
+    status = lifecycle.status(current)
+    if status not in ("creating", "failed"):
+        return None
+    meta = row["metadata"]
+    return {"name": name, "owner": row["owner"], "branch": row["branch"], "status": status,
+            "runtime": row.get("runtime") or runtime.default(),
+            "error": current["error"], "urls": {}, "ports": [], "app": "", "vm": "", "sandbox_id": "",
+            "audience": core.audience(meta), "shared": core.shared(meta),
+            "actions": lifecycle.actions(current, status),
+            "created_at": row["created_at"], "updated_at": current["updated_at"],
+            "slug": row.get("slug") or name, "template": "", "logs": [],
+            "origin": origin(SimpleNamespace(metadata={**meta, "sbx": name}))}
 
 
 def visible(item: dict, email: str, scope: str) -> bool:
@@ -60,7 +67,12 @@ def visible(item: dict, email: str, scope: str) -> bool:
 
 
 def find_item(name: str):
-    return next((i for i in collect() if i["name"] == name), None)
+    """collect()'s item for one sandbox, without describing the others."""
+    info = next((i for i in core.sandboxes({"sbx": name}) if (i.metadata or {}).get("sbx") == name), None)
+    row = sandboxes.row(name)
+    if info:
+        return _listed(info, row or {})
+    return _unlisted(name, row) if row else None
 
 
 def snapshot_usage(sandbox_id: str) -> dict:

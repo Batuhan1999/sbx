@@ -88,6 +88,14 @@ def rows() -> dict:
     return found
 
 
+def row(name: str) -> dict | None:
+    """rows()'s entry for one sandbox."""
+    with db() as conn:
+        conn.row_factory = sqlite3.Row
+        found = conn.execute("select * from sandboxes where name = ?", (name,)).fetchone()
+    return {**dict(found), "metadata": json.loads(found["metadata"] or "{}")} if found else None
+
+
 def slug_taken(slug: str, name: str = "") -> bool:
     """Whether another sandbox than name has the slug."""
     with db() as conn:

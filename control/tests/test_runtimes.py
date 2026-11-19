@@ -412,6 +412,29 @@ class Api(TwoRuntimes, Server):
         self.assertEqual(sandboxes.describe(info)["runtime"], "fake")
         self.assertEqual(sandboxes.describe(dataclasses.replace(info, runtime=""))["runtime"], "fake")   # of()
 
+    def test_a_sandbox_s_detail_describes_that_sandbox_only(self):
+        """The sandbox page polls it: its cost must not grow with the other sandboxes."""
+        from sbx_control import lifecycle, sandboxes, views
+        self.repo_admin()
+        me = "operator@example.com"
+        for name, kind in (("one", "embed"), ("two", "fake"), ("three", "fake")):
+            sandboxes.register(name, me, "main", name, kind=kind)
+            self.runtime.create("tpl", timeout=600, kind=kind, metadata={"sbx": name, "owner": me, "slug": name})
+        sandboxes.register("early", me, "main", "early", kind="fake")     # no VM yet
+        lifecycle.begin("early", "create").advance("allocating")
+        sandboxes.register("gone", me, "main", "gone", kind="fake")       # neither a VM nor an operation
+        everything = {item["name"]: item for item in views.collect()}
+        self.assertEqual(sorted(everything), ["early", "one", "three", "two"])
+        with patch.object(sandboxes, "describe", wraps=sandboxes.describe) as describe:
+            found = {name: views.find_item(name) for name in ("one", "two", "three", "early", "gone", "nobody")}
+        self.assertEqual([call.args[0].metadata["sbx"] for call in describe.call_args_list], ["one", "two", "three"])
+        self.assertEqual(found, {**everything, "gone": None, "nobody": None})
+        detail = self.client.get("/api/sandboxes/two/detail")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual((detail.json()["name"], detail.json()["runtime"]), ("two", "fake"))
+        self.assertEqual(self.client.get("/api/sandboxes/early/detail").json()["status"], "creating")
+        self.assertEqual(self.client.get("/api/sandboxes/gone/detail").status_code, 404)
+
     def settings_add(self, repo):
         from sbx_control import settings
         settings.add_repo(repo, by="test")
