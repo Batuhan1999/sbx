@@ -26,7 +26,7 @@ function columns(showRepo: boolean): ColumnDef<Sandbox>[] {
       header: ({ column }) => <SortHeader column={column}>Sandbox</SortHeader>,
       cell: ({ row: { original: s } }) => <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-1.5">
-          <Link to={`/app/sandboxes/${encodeURIComponent(s.name)}`} className="truncate font-medium after:absolute after:inset-0 hover:underline">{s.name}</Link>
+          <Link to={`/app/sandboxes/${encodeURIComponent(s.name)}`} className="min-w-0 break-all font-medium after:absolute after:inset-0 hover:underline sm:truncate">{s.name}</Link>
           <RuntimeLabel kind={s.runtime} />
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-muted"><GitBranch className="size-3 shrink-0" /><span className="truncate">{s.branch || 'default branch'}</span></div>
@@ -63,7 +63,7 @@ function columns(showRepo: boolean): ColumnDef<Sandbox>[] {
         const preview = mainPreview(s)
         return <div className="flex flex-col items-end gap-0.5 text-[12.5px] text-muted">
           <span title={s.created_at ?? undefined}>{ago(s.created_at)}</span>
-          {preview && sandboxStatus(s).key !== 'failed' && <a href={preview} target="_blank" rel="noreferrer" className="relative z-10 inline-flex items-center gap-0.5 text-ink hover:underline md:hidden" title={preview}>{host(preview)}<ArrowUpRight className="size-3" /></a>}
+          {preview && sandboxStatus(s).key !== 'failed' && <a href={preview} target="_blank" rel="noreferrer" className="relative z-10 inline-flex items-center gap-0.5 whitespace-nowrap text-ink hover:underline md:hidden" title={preview} aria-label={`Open preview ${host(preview)}`}>Preview<ArrowUpRight className="size-3" /></a>}
         </div>
       },
     },
