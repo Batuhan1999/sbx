@@ -70,7 +70,7 @@ when the checkout has a `.sbx/` and the recipe is not the operator's.
 | `secrets` | Names of values the app needs that only the owner can supply (API keys, account tokens); listed as missing until set. See [environment](#environment-and-secrets). |
 | `resources` | The size of every sandbox of the repository: `cpu`, `memory_mb`, `disk_mb` (defaults 2, 4096, 8192), with or without `template:` (see [sandbox size](#sandbox-size)), and `swap_mb` (256–65536). |
 | `build_resources` | Replaces `resources`' `cpu`, `memory_mb` and `disk_mb` when present; it is the same size, not a separate build budget. |
-| `lifecycle` | `{resume: preserve}` (default) keeps processes across pause; `{resume: restart}` restarts the app after resume, for apps whose connections go stale. Boat restarts the app on every resume either way. |
+| `lifecycle` | `{resume: preserve}` (default) keeps processes across pause; `{resume: restart}` restarts the app after resume, for apps whose connections go stale. Boat and Lizard restart the app on every resume either way. |
 | `template` | Present and non-empty: build a prebuilt template for this repository (see [templates](#templates)). Absent: start from the default template and clone. |
 | `workdir` | Where the checkout is; default `/home/user/<repository-name>`. |
 
@@ -552,7 +552,7 @@ preparation.
 | create | `POST /api/sandboxes` (`sbx up`) | Allocate the VM, provision services, prepare the checkout; returns when SSH works. Setup and start continue in the background unless `start_app=false`. |
 | prepare | `POST /api/sandboxes/NAME/prepare` | Refresh the recipe and env, rerun setup and start; source edits are kept. |
 | restart | `POST /api/sandboxes/NAME/restart` (`sbx sandbox restart`) | Restart the app; files and service state are kept. |
-| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
+| pause / resume | `POST /api/sandboxes/NAME/pause`, `/resume` | Keep VM state and resources; see `lifecycle.resume`. On Boat a pause keeps the disk, and every resume restarts the app ([Boat](#boat-boat)); on Lizard a pause keeps the files, and every resume restarts the app too ([Lizard](#lizard-lizard)). A pause the runtime refuses (`node is busy`: it is still saving the sandbox's parent, or its disk cannot hold the sandbox's whole memory plus 1 GB) is tried again for 20 seconds; then the sandbox stays running at its checkpoint and the request answers 503 with the likely cause. |
 | delete | `DELETE /api/sandboxes/NAME` (`sbx down`) | Run the recipe's [`.sbx/cleanup`](#cleanup-before-delete), then remove the VM and its owned resources. Answers `{deleted, cleanup}`. |
 | env_update | (on a variable change) | Rewrite the env files; restart the app when a value changed, unless the change asked for no restart. |
 
@@ -745,7 +745,7 @@ listener or firewall rule.
 A runtime is where sandboxes run: E2B Embed on this server, or a provider's
 service. An installation runs the runtimes it enables, and each sandbox runs
 on exactly one of them, chosen when it is created and kept until it is
-deleted. Three are built in, `embed`, `e2b-cloud` and `boat` (below); other runtimes
+deleted. Four are built in, `embed`, `e2b-cloud`, `boat` and `lizard` (below); other runtimes
 are installed as packages ([runtime backends](extensions.md#runtime-backends)).
 
 A fresh install enables Embed where the server can run it (`/dev/kvm`,
@@ -955,6 +955,84 @@ How sbx runs on it:
   per sandbox.
 - No per-sandbox egress rules (`egress_rules` false): untrusted public repos
   are refused while Boat is enabled. No route to this host's network
+  (`private_networks` false): managed servers through [endpoints](#endpoints).
+
+### Lizard (`lizard`)
+
+[Lizard](https://lizard.build)'s hosted sandboxes (Firecracker microVMs),
+through Lizard's HTTP API as its SDK
+([lizard-sdk](https://github.com/lizard-build/lizard-sdk)) calls it: plain
+HTTPS, no package. Like E2B Cloud and Boat, nothing of them runs here, so the
+installation needs a domain. The backend was written from Lizard's SDK and
+documentation and has not run against a live account yet: run `sbx-admin
+runtime verify lizard` after adding it.
+
+| Key | What it is |
+| --- | --- |
+| `LIZARD_API_KEY` | An API key from lizard.build (`liz_...`, a secret), sent as `X-API-Key`. Required. |
+| `LIZARD_PROJECT` | The Lizard project sandboxes and templates belong to: its ID, slug or name. Needed when the key sees more than one. |
+| `LIZARD_REGION` | Where sandboxes run and previews are served from; default `us-east-1`. One region per installation. |
+| `LIZARD_API_URL` | Lizard's API; default `https://lizard.build`. Changing it needs the key typed again. |
+| `LIZARD_PREVIEW_DOMAIN` | Where Lizard serves exposed ports; default `sandbox.<region>.onlizard.com`. |
+| `LIZARD_BASE_TEMPLATE` | The Lizard template sbx's base template is built on; default `base`. |
+| `LIZARD_MAX_TIMEOUT` | Seconds an unused sandbox runs before sbx pauses it; default 2147400 (Lizard's longest lifetime). The keeper renews it while the sandbox is used. |
+| `LIZARD_MAX_CPU`, `LIZARD_MAX_MEMORY_MB`, `LIZARD_MAX_DISK_MB` | The size of every sandbox; default 2 vCPUs, 4096 MiB, 20480 MiB (Lizard's Small). |
+| `LIZARD_MAX_SANDBOXES` | Running at once; default 20 (Pro's 40 vCPUs as Small sandboxes). |
+
+The web app offers Lizard's plans as presets, from Lizard's
+[limits](https://lizard.build/docs/platform/limits/) as read on 2026-11-19:
+`trial` (one Small sandbox, deleted after an hour), `pro` (40 vCPUs running
+at once), `pro-5x` (220) and `pro-20x` (1,200). Lizard counts running vCPUs,
+so a preset's sandboxes at once is its vCPUs over the size's.
+
+What differs from Embed:
+
+- **One size per installation.** Lizard has sizes, not vCPU and memory
+  options (Mini 1 vCPU / 2 GB / 10 GB disk, Small 2 / 4 / 20, Medium 4 / 8 /
+  40, Large 8 / 16 / 80, Big 16 / 32 / 120), and a sandbox from a snapshot
+  runs at the size the snapshot was taken at. The base template is built at
+  the smallest size that holds `LIZARD_MAX_CPU`, `LIZARD_MAX_MEMORY_MB` and
+  `LIZARD_MAX_DISK_MB`, and every sandbox runs at it, whatever its recipe's
+  `resources` say below that. A recipe that asks for more is refused,
+  naming those keys; after raising them, rebuild the base template
+  (`sbx-admin jobs run template@lizard:base`), then the repositories'.
+- **Templates are snapshots.** Lizard has no template upload and imports
+  no image (`image_import` false), so a template is built by replaying its
+  steps in a builder sandbox (from the parent template's snapshot, or
+  Lizard's own `base` template for sbx's base template, whatever system
+  image the steps name) and saving a snapshot under the template's name.
+  The base system is Lizard's, which the build log names; sbx's steps need
+  `apt-get` there. Snapshots are found by name in the project; a build
+  deletes the older ones of its name. A Dockerfile's `RUN`, `ENV`,
+  `WORKDIR`, `USER` and `ARG` are replayed; `COPY` and `ADD` are refused.
+- **A pause keeps the files only, and sbx treats every resume as a cold
+  boot.** Processes end with a pause; after a resume sbx re-ships `/run/sbx`
+  and restarts the app, whatever `lifecycle.resume` says. The template's
+  start command is a script (`/etc/sbx/start.sh`) the backend runs after
+  every boot.
+- **The idle pause is sbx's own.** A Lizard lifetime ends in the sandbox's
+  deletion and is not an idle timer, so sandboxes are created without one
+  (`timeoutMs` 0) and sbx-control pauses a sandbox that was not used for its
+  timeout, on the keeper's round. While sbx-control is down, running Lizard
+  sandboxes keep running, and are billed. After a restart an unused
+  sandbox's clock starts again (two hours at most). Only checks and template
+  builders get a Lizard lifetime, which deletes them.
+- **Commands** go through Lizard's exec, which takes the user and the env in
+  the request (a value is never in the command text) and waits 600 seconds
+  at most: a longer command runs detached in the sandbox and is polled.
+  Commands run as `user` unless they name another.
+- **Previews** go to `https://<sandbox-id>-<port>.sandbox.<region>.onlizard.com`.
+  A port is published on its first preview request and answers only with
+  the sandbox's access token, which nginx sends as the
+  `X-Lizard-Access-Token` header for Lizard's sandboxes only; Lizard strips
+  it before the app. The app must listen on `0.0.0.0`: Lizard has no relay
+  for a loopback-only app. Port 49983 is Lizard's own. The desktop is sbx's
+  noVNC, published like any port.
+- A long-paused sandbox's age is counted from when sbx-control first saw it
+  paused (Lizard does not say when it paused), so `paused_days` starts
+  again after a restart of sbx-control.
+- No per-sandbox egress rules (`egress_rules` false): untrusted public repos
+  are refused while Lizard is enabled. No route to this host's network
   (`private_networks` false): managed servers through [endpoints](#endpoints).
 
 ### Enabling runtimes

@@ -19,7 +19,7 @@ nothing depends on a variable or a `cd` from an earlier block.
 **Placeholders.** `HOST` (what you pass to `ssh`, with sudo that asks no
 password), `IP` (the server's public IP, step 1), `D` (the domain), `E` (the
 email for certificate notices), `owner@example.com` (the owner, the first
-admin), `KIND` (a runtime: `embed`, `e2b-cloud` or `boat`), `PLAN` (its plan).
+admin), `KIND` (a runtime: `embed`, `e2b-cloud`, `boat` or `lizard`), `PLAN` (its plan).
 In step 8, `dev-pg`, `temporal`, `10.0.0.5:7233`, `10.0.0.0/24` and
 `owner/app` are examples.
 
@@ -76,6 +76,7 @@ runtimes this host can run:
   embed      no: no /dev/kvm: use bare metal or a VM with nested virtualization enabled
   e2b-cloud  yes: needs an E2B API key and a domain pointing here
   boat       yes: needs a Boat API key (a paid plan: the trial saves no templates) and a domain pointing here
+  lizard     yes: needs a Lizard API key (a paid plan: the trial deletes sandboxes after an hour) and a domain pointing here
 ```
 
 - **os.** Only Ubuntu 24.04. On anything else, stop and ask for one.
@@ -111,19 +112,19 @@ answers. Ask nothing that `--check` already answered.
      takes 4 GiB unless its recipe asks for more, and 12 GiB stays for the
      host. Ask about a provider only if the repositories need more room.
    - `embed: no`: say why (the line from `--check`) and ask which provider
-     and plan. Several can be enabled; both run the same recipes.
+     and plan. Several can be enabled; all run the same recipes.
 
-     | | E2B Cloud ([how-to](howto/e2b.md)) | Boat ([how-to](howto/boat.md)) |
-     |---|---|---|
-     | New sandbox ready | about 1–2 s | about 5–6 s |
-     | Pause and resume | keeps memory: processes continue | keeps the disk; sbx restarts the app on every resume, and after 10 minutes paused a resume is a cold boot |
-     | Plans | Hobby: 1 h before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 at once. Pro: 24 h, 20 GiB disk, 100 at once | `20`: up to 8 vCPUs, 16 GiB, 100 at once; `100` and up: 16 vCPUs, 32 GiB. The trial saves no snapshots, which sbx's templates are: `20` or above |
-     | Price | per second while a sandbox runs | per second while a sandbox runs (4 vCPUs, 8 GiB: about $0.04 an hour) |
+     | | E2B Cloud ([how-to](howto/e2b.md)) | Boat ([how-to](howto/boat.md)) | Lizard ([how-to](howto/lizard.md)) |
+     |---|---|---|---|
+     | New sandbox ready | about 1–2 s | about 5–6 s | not measured by sbx yet |
+     | Pause and resume | keeps memory: processes continue | keeps the disk; sbx restarts the app on every resume, and after 10 minutes paused a resume is a cold boot | keeps the files; sbx restarts the app on every resume |
+     | Plans | Hobby: 1 h before an idle sandbox pauses, 8 vCPUs, 8 GiB, 10 at once. Pro: 24 h, 20 GiB disk, 100 at once | `20`: up to 8 vCPUs, 16 GiB, 100 at once; `100` and up: 16 vCPUs, 32 GiB. The trial saves no snapshots, which sbx's templates are: `20` or above | `pro`: 40 vCPUs running at once; every sandbox of the installation has one size (Small, 2 vCPUs and 4 GiB, unless set larger). The trial deletes every sandbox after an hour: `pro` or above |
+     | Price | per second while a sandbox runs | per second while a sandbox runs (4 vCPUs, 8 GiB: about $0.04 an hour) | per second while a sandbox runs (2 vCPUs, 4 GiB: about $0.016 an hour), plus the disk of paused sandboxes and templates |
 
      The owner creates the API key in the provider's dashboard (the how-to
      shows where) and keeps it ready for the key page; it never goes into the
-     chat. Untrusted public repositories can't be served while Boat is
-     enabled (it has no per-sandbox egress rules).
+     chat. Untrusted public repositories can't be served while Boat or
+     Lizard is enabled (they have no per-sandbox egress rules).
 2. **The address.** A provider runtime and [endpoints](reference.md#endpoints)
    need a domain; Embed alone also works on the IP (a trusted IP certificate
    on port 80, previews on ports 21000–21255). For a domain ask for:
@@ -259,7 +260,7 @@ sbx secrets request --wait --link-file ~/.sbx-install/setup-link \
   connector:amp "Amp orb provider token"
 ```
 
-Targets: `runtime:KIND` (`e2b-cloud`, `boat`; one not enabled yet is enabled
+Targets: `runtime:KIND` (`e2b-cloud`, `boat`, `lizard`; one not enabled yet is enabled
 on its first plan), `dns:cloudflare`, `connector:KIND` (`amp`, `claude`),
 `repo:OWNER/NAME:VAR` (a connected repository only, step 9; `sbx secrets request --help` lists them). Send the
 owner the URL it prints. Then `sbx setup status` shows the runtime `done`; set
@@ -274,7 +275,7 @@ browser): the owner writes the key into a file only they and you can read,
 or `(umask 077; read -rs k; printf '%s\n' "$k" > ~/.sbx-install/e2b-key)`
 anywhere. Check it with `wc -c <` (never print it), hand it to sbx with
 `python3 ~/.sbx-install/sbx.py setup runtime add KIND --link-file ~/.sbx-install/setup-link --plan PLAN --secret E2B_CLOUD_API_KEY < ~/.sbx-install/e2b-key`
-(`BOAT_API_KEY` for Boat), and delete the file.
+(`BOAT_API_KEY` for Boat, `LIZARD_API_KEY` for Lizard), and delete the file.
 
 ## 7. Coding agents, then finish: the first template build
 
@@ -324,7 +325,7 @@ sudo sbx-admin network apply                                            # Embed:
 EOF
 ```
 
-On Embed, sandboxes reach these directly. On E2B Cloud or Boat they reach them
+On Embed, sandboxes reach these directly. On E2B Cloud, Boat or Lizard they reach them
 only through an [endpoint](reference.md#endpoints): the service at
 `<name>.D:443`, behind TLS with a client certificate per sandbox. **Ask the
 owner before you add one**, naming the service and its address, and before
@@ -419,8 +420,8 @@ A recipe that passes on one runtime can fail on another.
       data and schema.
 - [ ] Restart A (`sbx sandbox restart check-a`), then pause and resume it
       (`sbx sandbox pause|resume check-a`, or `POST /api/sandboxes/check-a/pause` and `/resume`):
-      its working data is still there. (On Boat sbx restarts the app on every
-      resume, and a pause longer than 10 minutes makes it a cold boot: pause
+      its working data is still there. (On Boat and Lizard sbx restarts the app on every
+      resume; on Boat a pause longer than 10 minutes makes it a cold boot: pause
       that long once to check the app starts again from the recipe.)
 - [ ] On a provider runtime with an endpoint: a real query from a sandbox
       reaches the shared server through it.

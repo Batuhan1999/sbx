@@ -169,8 +169,9 @@ The runtime is the compute under sbx: it makes, lists, pauses and deletes VMs,
 runs commands and writes files in them, builds their templates, and is the
 last hop of a preview. Like the secret store, it is an installation's choice,
 not an extension. An installation enables one or more runtimes, and each
-sandbox runs on exactly one of them, chosen when it is created. Three are
-built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
+sandbox runs on exactly one of them, chosen when it is created. Four are
+built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes), Boat and
+Lizard.
 
 - `control/sbx_control/runtime/base.py` is the interface: `Backend`, the
   class a runtime subclasses, the `Handle` protocol, plain results (`Info`, whose `state` is `running` or
@@ -211,7 +212,7 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   `test_runtime.py` fails if any module outside `runtime/e2b/`,
   `runtime/embed/` and `runtime/e2b_cloud/` imports `e2b`, or any module
   outside `runtime/` imports a backend package (so only `runtime/boat/`
-  imports `boat_sdk`).
+  imports `boat_sdk`; `runtime/lizard/` imports no SDK).
 - Properties a backend declares instead of the core knowing it by name:
   where its sandboxes' preview token goes (`upstream_token_at =
   TokenPlace("header", name)`, a request header, or `TokenPlace("cookie",
@@ -251,6 +252,21 @@ built in: E2B Embed on the host, E2B Cloud (E2B's hosted sandboxes) and Boat.
   `refused`). `tests/fake_boat.py` is a fake Boat API that stands in for the
   SDK's HTTP client, so `test_boat.py` runs the real SDK's requests and
   models.
+- `control/sbx_control/runtime/lizard/` is Lizard, over its HTTP API with the
+  standard library (`errors.Api.call`; no package): `Lizard` with `Backend`'s
+  no-op host part, its keys (`LIZARD_*`), one project and one region, its
+  sizes as limits (every sandbox of the installation runs at the limits'
+  size, since Lizard sizes a sandbox by its snapshot), commands through
+  Lizard's exec (user and env in the request; ones past 600 seconds
+  detached in the sandbox and polled), files (base64; past 4 MiB in parts),
+  templates as snapshots found by name (`build_template` replays a
+  `TemplateSpec` on Lizard's base template; the start command is a script
+  the backend runs after every boot), the pause at sbx's timeout (Lizard's
+  own lifetime deletes, so `sandboxes()` pauses what is past its deadline),
+  a port published on its first preview request and the sandbox's token as
+  a header (`upstream_token`), and Lizard's refusals as sbx's (`refused`).
+  `tests/fake_lizard.py` is a fake of Lizard's API that stands in for the
+  backend's requests (`Lizard.transport`).
 - `control/sbx_control/runtime/fake/` is an in-memory backend for the test
   suite: `test_runtimes.py` runs an installation with Embed (mocked) and it
   side by side, and `sbx-admin runtime verify` passes against it.
@@ -406,7 +422,7 @@ my-provider = "my_package:MyProvider"
 ```
 
 The built-in ones (`embed`: `sbx_control.runtime.embed:Embed`, `e2b-cloud`:
-`sbx_control.runtime.e2b_cloud:Cloud`) are registered the same way in
+`sbx_control.runtime.e2b_cloud:Cloud`, `boat`, `lizard`) are registered the same way in
 `runtime/__init__.py` (`BUILTIN`). A backend over the E2B SDK builds on
 `runtime/e2b/` (`Compute`) rather than calling the SDK itself. A kind that `SBX_RUNTIMES` enables but no
 package provides fails at start with the kinds that exist.

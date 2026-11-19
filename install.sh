@@ -160,7 +160,8 @@ check_report() {
   small=""
   [ "$mem_mib" -ge 1800 ] || small="2 GiB of memory at least, this has $mem_mib MiB"
   [ -n "$small" ] || [ "$disk_gib" -ge 10 ] || small="10 GiB of free disk at least, this has $disk_gib GiB"
-  for provider in "e2b-cloud:an E2B API key" "boat:a Boat API key (a paid plan: the trial saves no templates)"; do
+  for provider in "e2b-cloud:an E2B API key" "boat:a Boat API key (a paid plan: the trial saves no templates)" \
+      "lizard:a Lizard API key (a paid plan: the trial deletes sandboxes after an hour)"; do
     if enables "${provider%%:*}"; then printf '  %-10s yes: enabled\n' "${provider%%:*}"
     elif [ -n "$small" ]; then printf '  %-10s no: %s\n' "${provider%%:*}" "$small"
     else printf '  %-10s yes: needs %s and a domain pointing here\n' "${provider%%:*}" "${provider#*:}"
@@ -174,7 +175,7 @@ check_report() {
   elif [ "$installed" = unknown ]; then echo "verdict:    installed; install.sh upgrades it (with sudo, --check names its runtimes)"
   elif [ -n "$installed" ]; then echo "verdict:    installed with $installed; install.sh upgrades it"
   elif [ -z "$unfit" ]; then echo "verdict:    embed (a provider runtime can be added too)"
-  else echo "verdict:    a provider runtime (e2b-cloud or boat): it needs the owner's API key and a domain"
+  else echo "verdict:    a provider runtime (e2b-cloud, boat or lizard): it needs the owner's API key and a domain"
   fi
   return "$verdict"
 }
