@@ -35,6 +35,20 @@ class IpPreviewTests(Installation):
         self.assertNotEqual(first, self.ip.origin('first', 4000))
         self.assertEqual(first, self.ip.origin('first', 3000))
 
+    def test_an_assigned_origin_is_read_without_the_write_lock(self):
+        """Every listing asks for each sandbox's origins: they don't wait for (or hold up) a writer."""
+        from sbx_control import state
+        first = self.ip.origin('first', 3000)
+        self.ip.origin('gone', 3000)
+        self.ip.remove('gone')
+        with state.db() as writer:
+            writer.execute('begin immediate')
+            try:
+                self.assertEqual(self.ip.origin('first', 3000), first)
+                self.assertEqual(self.ip.origin('gone', 3000), '')
+            finally:
+                writer.execute('rollback')
+
     def test_deletion_revokes_only_owned_routes(self):
         first = self.ip.origin('first', 3000)
         second = self.ip.origin('second', 3000)

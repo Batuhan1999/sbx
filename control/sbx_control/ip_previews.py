@@ -75,6 +75,16 @@ def origin(slug, app_port):
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,99}', slug) or isinstance(app_port, bool) or not 1 <= app_port <= 65535:
         raise ValueError('Invalid sandbox preview')
     with state.db() as conn:
+        # A route that exists is only read (every listing asks for each sandbox's): one statement, no write
+        # lock. A new one is assigned under the lock, after looking again.
+        retired, port = conn.execute(
+            'select (select 1 from ip_preview_retired where slug = ?), '
+            '(select public_port from ip_preview_routes where slug = ? and app_port = ?)',
+            (slug, slug, app_port)).fetchone()
+        if retired:
+            return ''
+        if port is not None:
+            return f'https://{host(value)}:{port}'
         conn.execute('begin immediate')
         if conn.execute('select 1 from ip_preview_retired where slug = ?', (slug,)).fetchone():
             conn.execute('commit')
