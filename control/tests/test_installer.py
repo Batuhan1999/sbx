@@ -261,6 +261,35 @@ class UpgradeFailureTests(unittest.TestCase):
                     self.assertEqual(marker.exists(), rolls_back)
 
 
+class StagedReleaseTests(unittest.TestCase):
+    """Each run stages a release of its own. One that never became the active
+    release must not stay: host.py's prune keeps the three newest, so two
+    leftovers of refused upgrades would cost the release rollback.sh goes back to."""
+
+    def leave(self, *, active, status=1):
+        text = INSTALL.read_text()
+        trap = text[text.index('unstage() {'):text.index('trap unstage EXIT') + len('trap unstage EXIT\n')]
+        with tempfile.TemporaryDirectory(prefix='sbx-install-staged-') as directory:
+            home = Path(directory)
+            for name in ('before', 'staged'):
+                (home / 'releases' / name / 'venv').mkdir(parents=True)
+            if active:
+                (home / 'current').symlink_to(home / 'releases' / active)
+            script = (f'set -eu\nrelease={shlex.quote(str(home / "releases/staged"))}\n'
+                      + trap.replace('/opt/sbx-control', str(home)) + f'exit {status}\n')
+            result = subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, status, result.stderr)
+            return sorted(p.name for p in (home / 'releases').iterdir())
+
+    def test_a_run_that_ends_before_its_release_is_active_removes_it(self):
+        self.assertEqual(self.leave(active='before'), ['before'])   # an upgrade refused, failed or rolled back
+        self.assertEqual(self.leave(active=''), ['before'])         # a first install that failed
+
+    def test_the_active_release_stays_whatever_fails_after_the_switch(self):
+        self.assertEqual(self.leave(active='staged'), ['before', 'staged'])
+        self.assertEqual(self.leave(active='staged', status=0), ['before', 'staged'])
+
+
 # Stand-ins for the Docker step: curl (get.docker.com: fails, or hands over an
 # installer that fails or puts docker on PATH) and docker (with or without Compose).
 DOCKER_TOOLS = {

@@ -310,6 +310,12 @@ if [ -f "$src/VERSION" ]; then version=$(cat "$src/VERSION")
 else version=$(git -c safe.directory="$src" -C "$src" describe --tags --always 2>/dev/null || echo local)
 fi
 release=/opt/sbx-control/releases/$(date -u +%Y%m%d-%H%M%S)-$version
+# A release this run stages and never activates (a refusal, a failure before
+# the switch, a rollback) goes again. Left there it is newer than the release
+# that runs: two of them push that one out of the three the next upgrade's
+# prune keeps (host.py), and its rollback.sh would go back to a deleted release.
+unstage() { [ /opt/sbx-control/current -ef "$release" ] || rm -rf "$release"; }
+trap unstage EXIT
 sh "$src/control/release.sh" "$release" "$version" >/dev/null
 sh "$release/host-install.sh" --prepare > /tmp/sbx-install.log 2>&1 || { tail -30 /tmp/sbx-install.log; die "see /tmp/sbx-install.log"; }
 # The new release's own commands, before it is the active one.
