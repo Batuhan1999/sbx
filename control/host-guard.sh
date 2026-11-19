@@ -13,7 +13,11 @@
 # Runs at boot and whenever install.sh recreates the runtime.
 set -eu
 eval "$(venv/bin/python -m sbx_control.settings shell)"
-iface=$(ip route show default | awk '{print $5; exit}')
+# The interface is the word after dev, wherever it stands: a route without a
+# gateway (default dev wg0 scope link) has it third, not fifth.
+iface=$(ip route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+[ -n "$iface" ] || [ "$public_ports" = all ] ||
+  echo "sbx-host-guard: no IPv4 default route names an interface: the public interface is not filtered" >&2
 for t in iptables ip6tables; do
   # Ours, from an earlier run.
   for chain in OUTPUT INPUT; do

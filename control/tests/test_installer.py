@@ -261,6 +261,50 @@ class UpgradeFailureTests(unittest.TestCase):
                     self.assertEqual(marker.exists(), rolls_back)
 
 
+GUARD = Path(__file__).parents[1] / 'host-guard.sh'
+GUARD_PYTHON = '''
+import os, sys
+if sys.argv[1:] == ['-m', 'sbx_control.settings', 'shell']:
+    print("public_ports='22 443'")
+'''
+GUARD_TOOLS = {
+    'ip': 'import os; print(os.environ["SBX_TEST_ROUTE"])\n',
+    'iptables': 'import os, sys; open(os.environ["SBX_TEST_LOG"], "a").write(" ".join(sys.argv[1:]) + "\\n")\n',
+}
+
+
+class HostGuardTests(unittest.TestCase):
+    """host-guard.sh with stand-ins for ip and iptables: the public filter
+    goes on the default route's interface, however ip prints that route."""
+
+    def rules(self, route):
+        with tempfile.TemporaryDirectory(prefix='sbx-host-guard-') as directory:
+            root = Path(directory)
+            executable(root / 'venv/bin/python', GUARD_PYTHON)
+            for name, body in {**GUARD_TOOLS, 'ip6tables': GUARD_TOOLS['iptables']}.items():
+                executable(root / 'bin' / name, body)
+            result = subprocess.run(['sh', str(GUARD)], cwd=root, capture_output=True, text=True, timeout=20,
+                                    env={**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                                         'SBX_TEST_ROUTE': route, 'SBX_TEST_LOG': str(root / 'log')})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return (root / 'log').read_text(), result.stderr
+
+    def test_the_filter_goes_on_the_default_routes_interface(self):
+        for route, interface in (('default via 10.0.0.1 dev eth0 proto dhcp src 10.0.0.5 metric 100', 'eth0'),
+                                 ('default dev wg0 scope link', 'wg0'),   # no gateway: the interface comes third
+                                 ('default \n\tnexthop via 10.0.0.1 dev bond0 weight 1', 'bond0')):
+            with self.subTest(route=route):
+                rules, said = self.rules(route)
+                self.assertEqual(rules.count(f'-w -I INPUT -i {interface} -j SBX-PUBLIC'), 2)   # IPv4 and IPv6
+                self.assertIn('-w -A SBX-PUBLIC -p tcp --dport 443 -j RETURN', rules)
+                self.assertEqual(said, '')
+
+    def test_a_host_without_a_default_route_says_that_nothing_is_filtered(self):
+        rules, said = self.rules('')
+        self.assertNotIn('-I INPUT', rules)
+        self.assertIn('the public interface is not filtered', said)
+
+
 class StagedReleaseTests(unittest.TestCase):
     """Each run stages a release of its own. One that never became the active
     release must not stay: host.py's prune keeps the three newest, so two
