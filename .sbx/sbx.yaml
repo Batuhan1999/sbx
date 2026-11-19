@@ -1,0 +1,9 @@
+# sbx developing sbx: the control service serving the built web app, with its
+# own state under ~/.sbx-dev and Boat as its sandbox runtime (BOAT_API_KEY).
+previews:
+  "": 8080
+secrets: [BOAT_API_KEY]
+processes:
+  control: cd control && SBX_ETC=$HOME/.sbx-dev/etc SBX_STATE_DIR=$HOME/.sbx-dev/state SBX_RUN_DIR=$HOME/.sbx-dev/run SBX_SYSTEMD_DIR=$HOME/.sbx-dev/systemd exec $HOME/.sbx-dev/venv/bin/uvicorn sbx_control.app:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'
+health:
+  - http://127.0.0.1:8080/app/setup
