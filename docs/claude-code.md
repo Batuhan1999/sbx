@@ -17,9 +17,9 @@ described in [extensions](extensions.md#agent-connectors).
   environments** admin page, which needs cloud sessions enabled. Check
   [Anthropic's availability notes](https://code.claude.com/docs/en/self-hosted-environments#availability-and-limitations)
   for the current plans and exclusions.
-- The repository is onboarded in sbx and passes the
-  [acceptance checklist](agent-install.md#acceptance-checklist). Sessions run
-  only on trusted repositories with a recipe.
+- The repository is onboarded in sbx: its recipe starts a healthy sandbox
+  (`sbx up`; [connect a repository](howto/setup.md#connect-a-repository)).
+  Sessions run only on trusted repositories with a recipe.
 - Sessions count against each developer's own Claude Code usage, and the
   conversation still goes to Anthropic; the checkout, services and files stay
   on the server.

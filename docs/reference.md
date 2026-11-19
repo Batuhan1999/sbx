@@ -1,7 +1,8 @@
 # Reference
 
 The recipe format, environment and secrets, services, the sandbox lifecycle,
-templates, previews and limits. For onboarding steps see the
+templates, previews and limits. For onboarding see the
+[first-run setup](howto/setup.md) and the
 [installation guide](agent-install.md); for the per-sandbox data rule and how to
 verify it, the [acceptance checklist](agent-install.md#acceptance-checklist).
 
@@ -752,7 +753,7 @@ A fresh install enables Embed where the server can run it (`/dev/kvm`,
 16 GiB of memory, 24 for the default budget, and 60 GiB of free disk), and
 E2B Cloud when `E2B_CLOUD_API_KEY` is in `install.sh`'s environment. A
 server that can run neither installs with no runtime enabled
-(`SBX_RUNTIMES=''`): add one in the first-run wizard's "Sandbox runtime"
+(`SBX_RUNTIMES=''`): add one in the setup page's **Sandboxes**
 step, in Settings → Sandbox runtimes, or with `sbx-admin runtime add
 e2b-cloud` ([no runtime yet](#no-runtime-yet)). An upgrade keeps the
 runtimes the installation enables. `sh install.sh --check` prints a host's facts and
@@ -1007,7 +1008,7 @@ Each then does what `runtime apply` does.
 ### From the web app
 
 Admins add, change and remove runtimes and choose the default in Settings →
-Sandbox runtimes, and the first-run wizard adds the first one. A runtime on
+Sandbox runtimes, and the setup page's **Sandboxes** step adds the first one. A runtime on
 this server (Embed) is `install.sh`'s: the web app shows its host facts and
 says so, with no edit or remove. sbx-control checks each change, then queues
 it for the root side; it never edits `runtime.env` itself:
@@ -1115,10 +1116,10 @@ sbx runtimes test e2b-cloud [--json]  # its checks: ok / NO with the detail, fix
 
 ### The first-run setup without a browser
 
-On a fresh server (one without `/dev/kvm` installs with no runtime, and the
-setup can't finish without one, so `sbx login` can't sign in yet), an agent
-takes every step of the wizard with `sbx setup`, as the holder of the
-onboarding link install.sh printed as its last line. The link is a credential: it goes in
+The setup page ([the owner's guide](howto/setup.md)) is the usual way. For
+automation, an agent takes every step of it with `sbx setup` instead, as the
+holder of the onboarding link install.sh printed as its last line
+([without a browser](agent-install.md#without-a-browser-automation)). The link is a credential: it goes in
 `SBX_SETUP_LINK` or a file named by `--link-file`, never on the command line,
 and stdin is left to the secrets (one line per secret, in the order asked).
 `--insecure` accepts the self-signed certificate the server answers with
@@ -1128,9 +1129,9 @@ before it has its own.
 export SBX_SETUP_LINK="$(cat link-file)"       # https://SERVER/app/setup#t=TOKEN
 sbx setup status [--json]                      # each step, done or to do
 sbx setup address --domain sbx.example.com     # or: --ip; waits for HTTPS
-sbx setup admin ops@example.com < password-file
 sbx setup runtime available
-sbx setup runtime add e2b-cloud --plan hobby --secret E2B_CLOUD_API_KEY < key-file
+sbx setup runtime add e2b-cloud --secret E2B_CLOUD_API_KEY < key-file
+sbx templates --wait                           # optional: the builds started with the runtime
 sbx setup admin ops@example.com < password-file   # the account, last
 sbx login                                      # once the admin exists: the browser signs them in
 sbx setup finish                               # as the admin sbx login signed in: no password
@@ -1143,12 +1144,13 @@ finished; `--new` replaces it, and the old one stops working.
 
 `address --domain` (`PUT /api/connections/domain` with `{"values": {"name",
 "address", "acme"}}`) waits until the certificate works. Its default
-certificate mode, `delegated`, the only one the setup page offers, needs the
+certificate mode, `delegated`, the only one the setup page offers (it asks
+for the domain alone), needs the
 records `D A IP`, `*.D A IP` and `_acme-challenge.D NS D.`, inbound TCP and
 UDP 53, and no credential. `--dns cloudflare` or `--dns route53` are the
 fallbacks where port 53 can't open; they take the DNS provider's credentials
 with `--secret` (`cloudflare_api_token`, ...) or from a key page
-(`dns:cloudflare`). `--email` is optional: the Let's Encrypt account's
+(`dns:cloudflare`); the setup page then shows the domain done. `--email` is optional: the Let's Encrypt account's
 contact (Let's Encrypt sends no expiry emails); without one the account is
 registered without an email. Saving the domain is refused (400, `{"message",
 "checks": [{"name", "ok", "detail", "fix", "help_url"}]}`) while a record is
@@ -1167,7 +1169,7 @@ then runs live (as in `sbx-admin doctor`), and the certificate is asked for
 again.
 
 `runtime add` takes the flags of `sbx runtimes add` and waits through the restart; `admin` makes the first admin's own
-account (their email and password, as the wizard's admin step does; password
+account (their email and password, as the setup page's **Account** step does; password
 sign-in). Once that account exists, the desktop CLI's installer
 (`/install`) and `sbx login` work while the setup is still open, and `finish`
 without `--admin` finishes as that signed-in admin (`POST /api/setup/complete`
@@ -1184,8 +1186,8 @@ following it (`GET /api/runtimes/change`), `GET /api/connections` and `PUT
 /api/setup/admin` and `POST /api/setup/complete`. Once the setup is finished
 they are an admin's.
 
-Choosing coding agents is optional: every template has every agent's layer
-whatever is chosen, and the setup finishes without it. `sbx setup agents`
+Coding agents are not a step of the setup page: every template has every
+agent's layer, and the setup finishes without choosing any. `sbx setup agents`
 (`PUT /api/setup/agents` with `{"agents": ["amp", ...]}`; `[]` for none)
 records which agents' connections to suggest: the extensions that set
 `choosable`, which `GET /api/setup` lists under `agents` (its step is
@@ -1208,10 +1210,10 @@ on a server without `/dev/kvm` and without a provider's key). sbx-control
 runs: `GET /api/runtimes` answers `{"default": "", "runtimes": []}`, creating
 a sandbox is refused with "no sandbox runtime is set up: add one in Settings →
 Sandbox runtimes", the template scheduler, the keeper and the gate have
-nothing to do, and `sbx-admin doctor` reports it. The first-run wizard's
-"Sandbox runtime" step lists the runtimes this server can run (Embed as
-"Can't run here: needs /dev/kvm ..." when it can't) and finishing the setup
-needs one; `sbx-admin setup-infer` does not count such an installation as
+nothing to do, and `sbx-admin doctor` reports it. The setup page's
+**Sandboxes** step shows Embed as chosen where this server runs it, and
+otherwise offers the hosted runtimes this server can reach, each with its API
+key; finishing the setup needs one; `sbx-admin setup-infer` does not count such an installation as
 set up. `sbx-admin runtime remove` still refuses to remove the last runtime.
 
 A new sandbox's runtime is, in order: the one the request names
@@ -1251,8 +1253,8 @@ again on the other one.
   runtime.
 - `GET /api/repos/OWNER/NAME` carries `runtime`, the repository's setting, or
   `null` for the installation's default.
-- `GET /api/setup/checks`, the first-run wizard's, names the runtime each
-  check is about (`runtime`, `null` for the server's own). The wizard and
+- `GET /api/setup/checks`, the setup page's, names the runtime each
+  check is about (`runtime`, `null` for the server's own). The setup page and
   `GET /api/runtimes` take the setup link's token.
 - A check about something the owner sets up outside sbx (DNS records, the
   Cloudflare token, a provider's API key or plan, the GitHub App, the Amp

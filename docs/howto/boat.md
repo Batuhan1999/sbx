@@ -11,9 +11,10 @@ labels below.
 1. Sign in at [boat.dev/dashboard](https://boat.dev/dashboard).
 2. Open **API keys** and create a key with the scope **`full-sandbox`**. It
    starts with `boat_`. Copy it once.
-3. Never paste it into a chat or onto a command line. Paste it on the keys
-   page your agent sends you ([below](#add-it-to-sbx)). sbx checks it with
-   Boat and keeps it in its secret store.
+3. Never paste it into a chat or onto a command line. Paste it in the
+   setup page's **Sandboxes** step, or later in sbx's own pages
+   ([below](#add-it-to-sbx)). sbx checks it with Boat and keeps it in its
+   secret store.
 
 If the key has an expiry, sbx warns 14 days before it, when Boat lets the key
 look itself up; otherwise note the expiry yourself. Create a new key then and
@@ -45,11 +46,14 @@ the key again. Plan on `20` or above. The
 
 ## Add it to sbx
 
-Your agent usually asks for the key on a **keys page**: it sends you a link
+During the first-run setup, paste it in the setup page's **Sandboxes**
+step: pick Boat and choose **Check key** ([the setup](setup.md#sandboxes)).
+sbx checks the key with Boat, stores it and adds Boat.
+
+Later, an agent may ask for the key on a **keys page**: it sends you a link
 to your server (`https://app.<domain>/keys/…`). Sign in, paste the key into
-its field and choose **Save keys**. sbx checks the key with Boat, stores it and
-adds Boat; the page shows when the server has applied it. Each **How do
-I get this?** link leads back here.
+its field and choose **Save keys**; the page shows when the server has
+applied it. Each **How do I get this?** link leads back here.
 
 ![The keys page asking for a Boat API key and an Amp provider token](images/keys-page.png)
 
@@ -57,7 +61,7 @@ Other ways, with the key read from a file or stdin, never typed on a
 command line:
 
 - The web app: **Settings → Sandbox runtimes**, add Boat, paste the key and
-  choose the plan. The first-run wizard offers the same.
+  choose the plan.
 - The `sbx` CLI, as an admin:
   `sbx runtimes add boat --secret BOAT_API_KEY < key-file` (the plan comes
   from the key; `--plan` sets another).

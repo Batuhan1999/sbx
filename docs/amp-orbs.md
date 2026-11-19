@@ -34,8 +34,8 @@ plug in is described in [extensions](extensions.md#agent-connectors).
 
 ## Set it up
 
-1. Onboard the repository in sbx first and pass the
-   [acceptance checklist](agent-install.md#acceptance-checklist). Amp uses the
+1. Onboard the repository in sbx first, until its recipe starts a healthy
+   sandbox ([connect a repository](howto/setup.md#connect-a-repository)). Amp uses the
    same recipe, services and variables; there is no separate Amp configuration
    for them.
 2. In Amp **Settings → Orbs**, add a self-hosted provider (step by step, and
