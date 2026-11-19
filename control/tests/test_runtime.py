@@ -30,7 +30,7 @@ class Boundary(unittest.TestCase):
         backends = [f"sbx_control.runtime.{p.name}" for p in runtime.iterdir() if (p / "__init__.py").exists()]
         self.assertEqual(sorted(backends), ["sbx_control.runtime.boat", "sbx_control.runtime.e2b",
                                             "sbx_control.runtime.e2b_cloud", "sbx_control.runtime.embed",
-                                            "sbx_control.runtime.fake"])
+                                            "sbx_control.runtime.fake", "sbx_control.runtime.lizard"])
         found = []
         for path in PACKAGE.rglob("*.py"):
             if runtime in path.parents:

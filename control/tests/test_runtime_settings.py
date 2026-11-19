@@ -101,7 +101,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn(KEY, response.text)
         found = {r["kind"]: r for r in response.json()}
-        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "fake"})
+        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "lizard", "fake"})
         embed, cloud, fake = found["embed"], found["e2b-cloud"], found["fake"]
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
@@ -115,6 +115,11 @@ class Web(TwoRuntimes, Server):
         self.assertEqual([p["name"] for p in boat["presets"]], ["trial", "20", "100", "500", "2000"])
         self.assertIn("templates need the first payment", boat["presets"][0]["note"])
         self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
+        lizard = found["lizard"]   # added the same way: a form from its declared settings
+        self.assertEqual((lizard["enabled"], lizard["can_run"], lizard["title"]), (False, True, "Lizard"))
+        self.assertEqual([p["name"] for p in lizard["presets"]], ["trial", "pro", "pro-5x", "pro-20x"])
+        self.assertEqual([s["key"] for s in lizard["settings"]][:3],
+                         ["LIZARD_API_KEY", "LIZARD_PROJECT", "LIZARD_REGION"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
         self.assertEqual((fake["sandboxes"], fake["remove_blocker"]), ([], None))
@@ -154,6 +159,32 @@ class Web(TwoRuntimes, Server):
         self.assertIn("E2B Cloud (e2b-cloud) is enabled", status["message"])
         self.assertNotIn(KEY, json.dumps(status))
         self.assertEqual(self.runtime.limits("e2b-cloud").timeout_seconds, 86400)
+
+    def test_lizard_is_added_through_the_same_api_with_its_plan_and_project(self):
+        from sbx_control import setup
+        from sbx_control.connections.base import Check
+        from sbx_control.runtime.lizard import Lizard
+        self.enterContext(patch.object(Lizard, "test", return_value=[Check("Lizard API", True, "answers")]))
+        self.enterContext(patch.object(Lizard, "sandboxes", side_effect=lambda *_: []))
+        response = self.call("POST", "/api/runtimes", {"kind": "lizard", "plan": "pro", "values": {
+            "LIZARD_API_KEY": KEY, "LIZARD_PROJECT": "sbx-sandboxes", "LIZARD_REGION": "eu-west-lim-a"}})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertNotIn(KEY, self.request_file.read_text())
+        with patch.object(setup, "templates_blocked", return_value=""):
+            code, said = self.apply()
+        self.assertEqual(code, 0, said)
+        text = self.file.read_text()
+        self.assertIn("SBX_RUNTIMES=embed,fake,lizard", text)
+        self.assertNotIn(KEY, text)
+        self.assertIn("LIZARD_PROJECT=sbx-sandboxes", text)
+        self.assertIn("LIZARD_MAX_SANDBOXES=20", text)   # the plan's
+        self.builds.assert_called_once_with("lizard")
+        self.assertIn("Lizard (lizard) is enabled", self.call("GET", "/api/runtimes/change").json()["message"])
+        self.assertEqual(self.runtime.get("lizard").ingress, "https://sbx-ingress.sandbox.eu-west-lim-a.onlizard.com")
+        refused = self.call("PUT", "/api/runtimes/lizard", {"values": {"LIZARD_REGION": "not a region"}})
+        self.assertEqual(refused.status_code, 400, refused.text)   # the backend's own check, before anything is queued
+        self.assertIn("is not a Lizard region", refused.json()["detail"])
+        self.assertIn("LIZARD_REGION=eu-west-lim-a", self.file.read_text())
 
     def test_a_change_keeps_a_secret_left_empty_and_replaces_one_typed(self):
         self.assertEqual(self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {

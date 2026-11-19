@@ -38,7 +38,7 @@ __all__ = ["FAILED", "PAUSED", "RUNNING", "Backend", "Busy", "Capabilities", "Co
 
 GROUP = "sbx.runtimes"
 BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud",
-           "boat": "sbx_control.runtime.boat:Boat"}
+           "boat": "sbx_control.runtime.boat:Boat", "lizard": "sbx_control.runtime.lizard:Lizard"}
 DEFAULT_KEY = "SBX_RUNTIME_DEFAULT"
 CONFIG_KEYS = (ENABLED_KEY, DEFAULT_KEY)
 # The kind of everything recorded before an installation ran several

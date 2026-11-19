@@ -209,7 +209,8 @@ def describe(target: Target) -> dict:
         field = next((f for f in connector.status().fields if f.name == target.key), None)
         return {"what": f"{connector.title}'s {field.label if field else target.key}", "title": connector.title,
                 "help_url": connector.help_url, "hint": field.help if field else ""}
-    topic = next((topic for prefix, topic in (("E2B_", "e2b"), ("BOAT_", "boat"), ("CLOUDFLARE_", "cloudflare"),
+    topic = next((topic for prefix, topic in (("E2B_", "e2b"), ("BOAT_", "boat"), ("LIZARD_", "lizard"),
+                                              ("CLOUDFLARE_", "cloudflare"),
                                               ("GITHUB_", "github"), ("AMP_", "amp"))
                   if target.key.upper().startswith(prefix)), "")
     return {"what": f"{target.key} for {target.name}'s sandboxes", "title": target.name,
