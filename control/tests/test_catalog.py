@@ -500,6 +500,20 @@ class ManagedServerTests(Server):
             conn.execute("insert into managed_servers (name, kind, config) values (?, ?, ?)",
                          (name, kind, self.secret_store.seal(values, key=f"managed-server/{name}")))
 
+    def test_a_server_removed_while_it_is_listed_is_left_out(self):
+        self.record("gone", "clickhouse", {"address": "172.29.50.10", "password": "fixture"})
+
+        def unseal(reference):   # the row is deleted after it was read, before its values are unsealed
+            with self.state.db() as conn:
+                conn.execute("delete from managed_servers where name = 'gone'")
+            raise self.secret_store.StoreError("no such payload")
+        with patch.object(self.secret_store, "unseal", unseal):
+            self.assertEqual(self.hosted.records(), [])
+        self.record("kept", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})
+        with patch.object(self.secret_store, "unseal", side_effect=self.secret_store.StoreError("broken")):
+            with self.assertRaises(self.secret_store.StoreError):
+                self.hosted.records()
+
     def test_a_starting_server_blocks_only_itself(self):
         self.record("slow", "clickhouse", {"address": "172.29.50.10", "password": "fixture"})
         self.record("other", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})

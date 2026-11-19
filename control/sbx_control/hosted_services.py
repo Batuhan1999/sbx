@@ -208,7 +208,12 @@ def exists(name: str) -> bool:
 def record(name: str) -> dict | None:
     """A managed server as its listings show it (never a secret), or None
     when there is none (one removed while it was listed)."""
-    found = _record(name)
+    try:
+        found = _record(name)
+    except Exception:
+        if exists(name):
+            raise
+        return None   # removed between reading its row and unsealing its values
     if not found:
         return None
     server, values, status = found
