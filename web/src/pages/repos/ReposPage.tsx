@@ -25,7 +25,7 @@ export default function ReposPage() {
     <ReadyDialog />
     <PageHeader title="Repositories"
       actions={admin && <LinkButton variant="primary" to="/app/repos/new"><Plus />Connect repository</LinkButton>} />
-    {repos.error ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
+    {repos.error && !setupOpen ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
       : repos.isPending && !setupOpen ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
       : list.length === 0 ? <div className="space-y-4">
         {admin && <TemplateProgressLine quiet />}
