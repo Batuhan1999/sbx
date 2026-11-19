@@ -174,9 +174,15 @@ def _dig(kind: str, name: str) -> list[str]:
     try:  # a delegation shows in the authority section until the child answers itself
         out = subprocess.run(["dig", f"@{PUBLIC_RESOLVER}", "+time=4", "+tries=1", "+noall", "+answer", "+authority", kind, name],
                              capture_output=True, text=True, timeout=10).stdout
-        return sorted({line.split()[-1] for line in out.splitlines() if f"\t{kind}\t" in line or f" {kind} " in line})
+        return sorted({fields[-1] for fields in map(str.split, out.splitlines()) if _is_record(fields, kind)})
     except (OSError, subprocess.SubprocessError):
         return []
+
+
+def _is_record(fields: list[str], kind: str) -> bool:
+    """Whether a dig answer line, split into its fields (name, TTL, class, type, value; dig separates them
+    with tabs and spaces alike), is a kind record."""
+    return len(fields) >= 5 and fields[3] == kind and not fields[0].startswith(";")
 
 
 def _ns(name: str) -> list[str]:
@@ -191,9 +197,8 @@ def _ns(name: str) -> list[str]:
             continue
         if done.returncode != 0:
             continue
-        return sorted({line.split()[-1] for line in done.stdout.splitlines()
-                       if line.split()[:1] and line.split()[0].rstrip(".").lower() == name.rstrip(".").lower()
-                       and ("\tNS\t" in line or " NS " in line)})
+        return sorted({fields[-1] for fields in map(str.split, done.stdout.splitlines())
+                       if _is_record(fields, "NS") and fields[0].rstrip(".").lower() == name.rstrip(".").lower()})
     return _dig("NS", name)
 
 

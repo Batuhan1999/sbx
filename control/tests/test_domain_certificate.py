@@ -316,6 +316,18 @@ class DelegationFromTheParentZone(unittest.TestCase):
         self.assertIn("@ns2.example.net", run.call_args.args[0])
         recursive.assert_not_called()
 
+    def test_dig_s_own_output_with_spaces_and_tabs_is_read(self):
+        # dig prints "name<TAB>TTL<TAB>IN NS<TAB>value": a space before the type, a tab after it.
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from sbx_control.connections import domain
+        line = "_acme-challenge.sbx.example.com. 300 IN NS\tsbx.example.com.\n"
+        with patch.object(domain, "_dig_short", side_effect=lambda kind, name: ["ns1.example.net"] if name == "example.com" else []), \
+                patch.object(domain.subprocess, "run", return_value=SimpleNamespace(stdout=line, returncode=0)):
+            self.assertEqual(domain._ns("_acme-challenge.sbx.example.com"), ["sbx.example.com."])
+        with patch.object(domain.subprocess, "run", return_value=SimpleNamespace(stdout="sbx.example.com.\t60 IN A 203.0.113.10\n")):
+            self.assertEqual(domain._dig("A", "sbx.example.com"), ["203.0.113.10"])
+
     def test_without_a_parent_zone_it_asks_the_resolver(self):
         from unittest.mock import patch
         from sbx_control.connections import domain
