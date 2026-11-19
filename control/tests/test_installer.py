@@ -261,6 +261,75 @@ class UpgradeFailureTests(unittest.TestCase):
                     self.assertEqual(marker.exists(), rolls_back)
 
 
+# Stand-ins for the Docker step: curl (get.docker.com: fails, or hands over an
+# installer that fails or puts docker on PATH) and docker (with or without Compose).
+DOCKER_TOOLS = {
+    'apt-get': '',
+    'systemctl': '',
+    'curl': '''
+import os, sys
+if os.environ['SBX_TEST_DOWNLOAD'] != 'ok':
+    sys.exit(22)
+bin = os.path.dirname(os.path.abspath(__file__))
+with open(sys.argv[sys.argv.index('-o') + 1], 'w') as script:
+    script.write('[ "$SBX_TEST_INSTALLER" = ok ] || { echo "E: no installation candidate"; exit 1; }\\n'
+                 f'ln -s {bin}/docker.made {bin}/docker\\n')
+''',
+    'docker.made': '''
+import os, sys
+sys.exit(0 if sys.argv[1:] != ['compose', 'version'] or os.environ['SBX_TEST_COMPOSE'] == 'ok' else 1)
+''',
+}
+
+
+class InstallDockerTests(unittest.TestCase):
+    """install.sh's Docker step, cut from the script, with stand-ins on a PATH
+    of its own: a failure there stops the install and says what failed,
+    before anything of sbx is on the host."""
+
+    def docker_step(self, *, installed=False, download='ok', installer='ok', compose='ok'):
+        text = INSTALL.read_text()
+        step = text[text.index('say "Packages and Docker"'):text.index('say "sbx-control release"')]
+        with tempfile.TemporaryDirectory(prefix='sbx-install-docker-') as directory:
+            bin = Path(directory) / 'bin'
+            for name, body in DOCKER_TOOLS.items():
+                executable(bin / name, body)
+            for tool in ('sh', 'mktemp', 'rm', 'tail', 'ln'):
+                (bin / tool).symlink_to(shutil.which(tool))
+            if installed:
+                (bin / 'docker').symlink_to(bin / 'docker.made')
+            script = ("set -eu\nsay() { printf '\\n==> %s\\n' \"$*\"; }\ndie() { printf '\\nFAILED: %s\\n' \"$*\" >&2; exit 1; }\n"
+                      + step.replace('/tmp/', directory + '/') + 'echo "docker step done"\n')
+            result = subprocess.run([shutil.which('sh'), '-c', script], capture_output=True, text=True, timeout=10,
+                                    env={'PATH': str(bin), 'TMPDIR': directory, 'SBX_TEST_DOWNLOAD': download,
+                                         'SBX_TEST_INSTALLER': installer, 'SBX_TEST_COMPOSE': compose})
+            return result, (bin / 'docker').exists()
+
+    def test_docker_is_installed_where_it_is_missing(self):
+        result, installed = self.docker_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(installed)
+        self.assertIn('docker step done', result.stdout)
+
+    def test_a_failed_download_or_installer_stops_the_install_and_says_so(self):
+        for options, said in (({'download': 'fails'}, "FAILED: could not download Docker's installer"),
+                              ({'installer': 'fails'}, "FAILED: Docker's installer failed")):
+            with self.subTest(**options):
+                result, installed = self.docker_step(**options)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse(installed)
+                self.assertIn(said, result.stderr)
+                self.assertNotIn('docker step done', result.stdout)
+        self.assertIn('E: no installation candidate', result.stdout)   # the installer's own last words
+
+    def test_a_docker_without_the_compose_plugin_is_refused_before_anything_is_installed(self):
+        result, _ = self.docker_step(installed=True, compose='missing', download='fails')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('FAILED: Docker has no Compose plugin', result.stderr)
+        result, _ = self.docker_step(installed=True, download='fails')   # there already: nothing is downloaded
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 # Stand-ins for what --check asks the system: ss (one listener, from
 # SBX_TEST_LISTENER "port:process"), curl (the public IP), systemd-detect-virt, nproc.
 CHECK_TOOLS = {

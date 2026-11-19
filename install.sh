@@ -288,8 +288,18 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update -qq
 apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl git iptables rsync e2fsprogs iproute2 \
   python3-venv jq openssl xfsprogs >/dev/null
-command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh >/dev/null 2>&1
-systemctl enable --now docker >/dev/null 2>&1
+if ! command -v docker >/dev/null; then
+  # Downloaded, then run: piped, a download that fails hands sh an empty
+  # script, which succeeds.
+  get_docker=$(mktemp)
+  curl -fsSL https://get.docker.com -o "$get_docker" || { rm -f "$get_docker"; die "could not download Docker's installer from https://get.docker.com"; }
+  sh "$get_docker" > /tmp/sbx-docker-install.log 2>&1 || { rm -f "$get_docker"; tail -30 /tmp/sbx-docker-install.log; die "Docker's installer failed; see /tmp/sbx-docker-install.log"; }
+  rm -f "$get_docker"
+fi
+systemctl enable --now docker >/dev/null 2>&1 || die "Docker did not start: systemctl status docker"
+# Embed's services and the secret store are Compose projects; Ubuntu's own
+# docker.io package comes without the plugin.
+docker compose version >/dev/null 2>&1 || die "Docker has no Compose plugin (docker compose): install it (apt-get install docker-compose-v2, or docker-compose-plugin from Docker's repository), then run this again"
 
 say "sbx-control release"
 # A new directory per install (sbx_control/host.py: the layout); the running
