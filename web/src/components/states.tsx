@@ -19,12 +19,24 @@ export function EmptyState({ icon: Icon, title, children, action, className }: {
 
 const TECHNICAL = /:\/\/|Error\(|Exception|Traceback|Caused by|ConnectionPool|Max retries|errno|host=/i
 
+/** Where a message's detail starts: its first ": ", "; " or " (". A plain aside in parentheses belongs to the
+ * sentence ("the sandbox runtime (E2B Embed) failed: …" is cut after "failed", not after "runtime"). */
+function detailStart(t: string): number {
+  const marks = /: |; | \(/g
+  for (let m = marks.exec(t); m; m = marks.exec(t)) {
+    const close = m[0] === ' (' ? t.indexOf(')', m.index) : -1
+    if (close < 0 || TECHNICAL.test(t.slice(m.index, close + 1))) return m.index
+    marks.lastIndex = close + 1
+  }
+  return -1
+}
+
 /** A message, and its technical part (addresses, exception text) apart: what is wrong reads first, the rest is
  * behind Details. A message without technical detail comes back whole, with no detail. */
 export function splitDetail(text: string): { head: string; detail: string } {
   const t = (text ?? '').trim()
   if (!TECHNICAL.test(t) && t.length <= 160) return { head: t, detail: '' }
-  const cut = t.search(/: |; | \(/)
+  const cut = detailStart(t)
   if (cut <= 0 || TECHNICAL.test(t.slice(0, cut))) return { head: t.length > 160 ? `${t.slice(0, 120).trim()}…` : t, detail: t }
   return { head: t.slice(0, cut), detail: t.slice(cut).replace(/^[:;]\s*|^\s*/, '') }
 }

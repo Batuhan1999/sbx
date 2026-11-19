@@ -67,4 +67,14 @@ describe('technical detail', () => {
     render(<ErrorState error={new Error('Boat did not answer: HTTPSConnectionPool(host=127.0.0.1): refused')} />)
     expect(screen.getByText('Details')).toBeTruthy()
   })
+
+  it('keeps a plain aside in parentheses in the sentence it belongs to', () => {
+    // What sbx-control answers when the runtime is down (app.unexpected): the head once read "the sandbox runtime".
+    const down = splitDetail('the sandbox runtime (E2B Embed) failed: ConnectError: Request failed: error sending request for url (http://127.0.0.1:49999/v2/sandboxes)')
+    expect(down.head).toBe('the sandbox runtime (E2B Embed) failed')
+    expect(down.detail).toMatch(/^ConnectError: Request failed/)
+    // A technical parenthesis still starts the detail.
+    expect(splitDetail('Could not reach the store (http://10.0.0.5:8200 refused the connection)').head).toBe('Could not reach the store')
+    expect(splitDetail('Nothing answered (see http://127.0.0.1:1').head).toBe('Nothing answered')
+  })
 })
