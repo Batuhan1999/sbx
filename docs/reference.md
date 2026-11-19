@@ -314,7 +314,9 @@ provision packages:
 | `openrouter-key` | `key`*, `hash`, `base_url`, `anthropic_base_url` | `OPENROUTER_API_KEY` |
 | `aws-profile` | `profile`, `region` | `AWS_PROFILE`, `AWS_REGION`, `AWS_DEFAULT_REGION` |
 
-`sbx attach PACKAGE` adds an attachment from the CLI; `sbx detach KEY` removes
+`sbx attach PACKAGE [INPUT=VALUE ...]` adds an attachment from the CLI; a secret
+input is asked for hidden at a terminal, or read from stdin with
+`--secret INPUT` (one line each), never the command line. `sbx detach KEY` removes
 it. Resources are created before `.sbx/setup` runs. Each attachment gets a
 stable resource ID recorded before creation, so retries keep the same resource.
 Deleting a sandbox deletes the resources it owns and keeps the shared servers.

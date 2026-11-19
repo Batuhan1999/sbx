@@ -1897,6 +1897,13 @@ def attach_cmd(args):
         if not sep:
             sys.exit(f"{pair}: expected name=value")
         inputs[name] = value
+    for name in args.secret or []:   # one line of stdin each, in order: never argv
+        if not (spec["inputs"].get(name) or {}).get("secret"):
+            sys.exit(f"{name} is no secret input of {args.package}; sbx catalog show {args.package} lists them")
+        value = _read_secret(f"{name} for {args.package}")
+        if not value:
+            sys.exit(f"no value for {name} on stdin")
+        inputs[name] = value
     if sys.stdin.isatty():
         for name, v in spec["inputs"].items():
             if name in inputs or not (v["required"] or v["secret"]):
@@ -2148,9 +2155,12 @@ def parser():
     p.add_argument("--message", help="push: a note for the history")
     p.add_argument("--what", help="brief: the service to write a package for")
     p.add_argument("--agent", metavar="COMMAND", help="brief: start this agent CLI (claude, codex, ...) with it")
-    p = command("attach", attach_cmd, "plug a package into the repo's sandboxes; secret inputs are asked for (hidden)")
+    p = command("attach", attach_cmd, "plug a package into the repo's sandboxes; secret inputs are asked for "
+                "(hidden) at a terminal, or read from stdin with --secret")
     p.add_argument("package")
     p.add_argument("pairs", nargs="*", metavar="name=value")
+    p.add_argument("--secret", action="append", metavar="NAME",
+                   help="a secret input, its value read from stdin (one line each, in order), never argv")
     p.add_argument("--key")
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--connection", action="append", help="slot=key: the saved connection a required slot uses")

@@ -103,7 +103,9 @@ one saved connection of the slot's kind, leave `connections:` out. A wrong
 name stops the launch with an error that names the ones the server has.
 
 A package input that is a secret goes to the server, never into the file:
-`sbx attach PACKAGE --key db` asks for it hidden. If `sbx attach` reports
+`sbx attach PACKAGE --key db --secret INPUT` reads it from stdin (one line per
+`--secret`, never the command line); at a terminal `sbx attach PACKAGE --key db`
+asks for it hidden. If `sbx attach` reports
 `needs_connection`, an admin adds that connection in the web app first.
 
 Start each sandbox empty and let the repository's own migrations and seeds

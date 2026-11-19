@@ -549,6 +549,25 @@ class CliTests(Cli):
         visible.assert_called_once()
         self.assertEqual((self.control.calls[-1][3]["value"], self.control.calls[-1][3]["secret"]), ("shown", False))
 
+    def test_attach_reads_a_secret_input_from_stdin_not_argv(self):
+        package = {"name": "neon-branch", "kind": "provision", "title": "Neon branch", "used_by": [], "inputs": {
+            "api_key": {"required": True, "secret": True}, "project": {"required": True, "secret": False}}}
+        self.routes[("GET", "/api/catalog")] = lambda q, body: {"packages": [package], "problems": []}
+        self.routes[("POST", "/api/repos/owner/app/attachments")] = lambda q, body: {
+            "attachment": {"key": body["key"], "state": "ready", "problem": ""}}
+        code, out, err = self.run_cli("attach", "neon-branch", "project=p1", "--secret", "api_key", "--key", "db",
+                                      "--repo", "owner/app", stdin="napi_test-only-value\n")
+        self.assertEqual((code, out), (0, "db: ready\n"), err)
+        self.assertEqual(self.control.calls[-1][3], {"package": "neon-branch", "key": "db", "connections": {},
+                                                     "inputs": {"project": "p1", "api_key": "napi_test-only-value"}})
+        self.assertNotIn("napi_test-only-value", out + err)
+        sent = len(self.control.calls)
+        code, _, _ = self.run_cli("attach", "neon-branch", "--secret", "api_key", "--repo", "owner/app")
+        self.assertEqual(code, "no value for api_key on stdin")
+        code, _, _ = self.run_cli("attach", "neon-branch", "--secret", "project", "--repo", "owner/app", stdin="p1\n")
+        self.assertIn("project is no secret input of neon-branch", code)
+        self.assertFalse(any(c[0] == "POST" for c in self.control.calls[sent:]))   # nothing sent
+
     def test_env_set_succeeds_when_delivery_waits_for_the_runtime(self):
         self.routes[("PUT", "/api/repos/owner/app/env/TOKEN")] = lambda q, body: {
             "secret": True, "running": 0, "paused": 0, "pending": True, "detail": "the sandbox runtime did not answer"}
