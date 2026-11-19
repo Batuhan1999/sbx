@@ -57,27 +57,33 @@ async def github_webhook(request: Request):
     if not repo or settings.trust(repo) != "trusted":
         return {"ignored": "not a trusted repo"}
     if event == "push":
-        default = f"refs/heads/{recipes.default_branch(repo, repository.get('default_branch'))}"
-        touched = {path for c in payload.get("commits") or [] for key in ("added", "modified", "removed")
-                   for path in c.get(key) or []}
-        if payload.get("ref") != default:
-            return {"ignored": "not the default branch"}
-        if any(p.startswith(".sbx/") for p in touched):
-            try:
-                from . import runtimes
-                if template_builds.start(repo, runtimes.of_repo(repo)):   # the other runtimes' on the next round
-                    return {"template": "building"}
-            except template_builds.NoRoom as error:  # the scheduler builds it once there is room
-                return {"template": f"not now: {error}"}
-            template_builds.mark_moved(repo)  # the running build may predate this push
-            return {"template": f"already building; again at {template_builds.NIGHTLY_REBUILD_HOUR:02}:00"}
-        if recipes.load(repo).prebuilt:
-            template_builds.mark_moved(repo)
-            return {"template": f"rebuilt at {template_builds.NIGHTLY_REBUILD_HOUR:02}:00"}
-        return {"ignored": "no .sbx/"}
+        # Off the event loop: it may ask git for the default branch and asks the runtime for room.
+        return await run_in_threadpool(on_push, repo, payload)
     if event == "pull_request":
         return await on_pull_request(repo, payload)
     return {"ignored": event}
+
+
+def on_push(repo: str, payload: dict) -> dict:
+    repository = payload.get("repository") or {}
+    default = f"refs/heads/{recipes.default_branch(repo, repository.get('default_branch'))}"
+    touched = {path for c in payload.get("commits") or [] for key in ("added", "modified", "removed")
+               for path in c.get(key) or []}
+    if payload.get("ref") != default:
+        return {"ignored": "not the default branch"}
+    if any(p.startswith(".sbx/") for p in touched):
+        try:
+            from . import runtimes
+            if template_builds.start(repo, runtimes.of_repo(repo)):   # the other runtimes' on the next round
+                return {"template": "building"}
+        except template_builds.NoRoom as error:  # the scheduler builds it once there is room
+            return {"template": f"not now: {error}"}
+        template_builds.mark_moved(repo)  # the running build may predate this push
+        return {"template": f"already building; again at {template_builds.NIGHTLY_REBUILD_HOUR:02}:00"}
+    if recipes.load(repo).prebuilt:
+        template_builds.mark_moved(repo)
+        return {"template": f"rebuilt at {template_builds.NIGHTLY_REBUILD_HOUR:02}:00"}
+    return {"ignored": "no .sbx/"}
 
 
 def preview_name(pr: int, repo: str | None) -> str:
@@ -178,7 +184,8 @@ async def on_pull_request(repo: str, payload: dict) -> dict:
             return {"preview": "queued"}
         threading.Thread(target=comment_when_up, args=(repo, number), daemon=True).start()
         return {"preview": "starting"}
-    if not wanted and payload["action"] in ("unlabeled", "closed") and core.find(preview_name(number, repo)):
+    if not wanted and payload["action"] in ("unlabeled", "closed") \
+            and await run_in_threadpool(core.find, preview_name(number, repo)):   # asks the runtime
         await run_in_threadpool(delete, number, repo)
         return {"preview": "deleted"}
     return {"ignored": "pull_request"}

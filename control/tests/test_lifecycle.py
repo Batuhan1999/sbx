@@ -370,6 +370,38 @@ class LifecycleTests(Installation):
         self.assertIn("Preview failed", comment.call_args.args[2])
         self.assertNotIn("secret detail", comment.call_args.args[2])
 
+    def test_the_webhook_asks_the_runtime_and_starts_builds_off_the_event_loop(self):
+        """The one event loop serves every request: a runtime slow to list must not stop them all."""
+        import asyncio
+        from sbx_control import github_api, github_app, template_builds
+        on_loop = []
+
+        def off_loop(result):
+            def called(*_args, **_kwargs):
+                try:
+                    asyncio.get_running_loop()
+                    on_loop.append(True)
+                except RuntimeError:
+                    on_loop.append(False)
+                return result
+            return called
+
+        repository = {"full_name": "owner/repo", "default_branch": "main"}
+        closed = {"action": "closed", "number": 42, "repository": repository,
+                  "pull_request": {"state": "closed", "labels": [], "head": {"ref": "feature", "repo": repository}}}
+        pushed = {"ref": "refs/heads/main", "repository": repository, "commits": [{"modified": [".sbx/sbx.yaml"]}]}
+        with patch.object(github_app, "verify", return_value=True), \
+                patch.object(self.core.settings, "trust", return_value="trusted"), \
+                patch.object(github_api.setup_pr, "note"), \
+                patch.object(github_api, "preview_name", return_value="pr-42"), \
+                patch.object(self.core, "find", side_effect=off_loop(None)), \
+                patch.object(template_builds, "start", side_effect=off_loop(True)):
+            pull = self.client.post("/github/webhook", json=closed, headers={"x-github-event": "pull_request"})
+            push = self.client.post("/github/webhook", json=pushed, headers={"x-github-event": "push"})
+        self.assertEqual((pull.status_code, pull.json()), (200, {"ignored": "pull_request"}))
+        self.assertEqual((push.status_code, push.json()), (200, {"template": "building"}))
+        self.assertEqual(on_loop, [False, False])
+
     def test_failed_port_probe_never_reclaims_routes(self):
         from sbx_control import ip_previews, routing
         with patch.object(self.core.runtime, "connect", side_effect=RuntimeError("unavailable")), \
