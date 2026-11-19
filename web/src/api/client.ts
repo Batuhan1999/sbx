@@ -21,11 +21,21 @@ function messageOf(detail: unknown): string {
   return ''
 }
 
+/** A 401 as the API words it for the CLI and for agents, said for someone in a browser. Any other 401 (a wrong
+ * password, a refused key) keeps the server's own cause. */
+const SIGNED_OUT: Record<string, string> = {
+  '': 'You are not signed in.',
+  Unauthorized: 'You are not signed in.',
+  'sign in: sbx login': 'You are not signed in.',
+  "the setup token from the install's link, or sign in": 'The setup link is missing or no longer valid.',
+}
+
 export function describeError(error: unknown): { message: string; checks: Check[]; status?: number } {
   if (error instanceof ApiError) {
     const d = error.detail as { checks?: Check[] } | null
     const checks = Array.isArray(d?.checks) ? d!.checks.filter(c => !c.ok) : []
-    const message = error.status === 403 && !messageOf(error.detail) ? 'You do not have access to this.'
+    const message = error.status === 401 && messageOf(error.detail) in SIGNED_OUT ? SIGNED_OUT[messageOf(error.detail)]
+      : error.status === 403 && !messageOf(error.detail) ? 'You do not have access to this.'
       : error.status >= 500 && !messageOf(error.detail) ? 'The server failed. Try again.'
       : error.message
     return { message, checks, status: error.status }

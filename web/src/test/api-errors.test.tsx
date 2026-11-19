@@ -38,6 +38,19 @@ describe('describeError', () => {
     expect(describeError(new ApiError(502, null)).message).toMatch(/server failed/)
     expect(describeError(new TypeError('Failed to fetch')).message).toMatch(/Could not reach the server/)
   })
+
+  it('never sends a browser user to the CLI for a sign-in', () => {
+    expect(describeError(new ApiError(401, 'sign in: sbx login')).message).toBe('You are not signed in.')
+    expect(describeError(new ApiError(401, null)).message).toBe('You are not signed in.')
+    expect(describeError(new ApiError(401, 'Unauthorized')).message).toBe('You are not signed in.')
+    expect(describeError(new ApiError(401, "the setup token from the install's link, or sign in")).message).toBe('The setup link is missing or no longer valid.')
+    expect(errorText(new ApiError(401, 'sign in: sbx login'))).not.toMatch(/sbx login|token/)
+  })
+
+  it('keeps the cause of a 401 that is not about being signed out', () => {
+    expect(describeError(new ApiError(401, 'The email or password is incorrect.')).message).toBe('The email or password is incorrect.')
+    expect(describeError(new ApiError(400, 'sign in: sbx login')).message).toBe('sign in: sbx login')
+  })
 })
 
 describe('ErrorState', () => {
