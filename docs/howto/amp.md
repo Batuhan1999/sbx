@@ -36,18 +36,12 @@ either way, under the provider in Settings → Orbs.
 
 ## Give the token to sbx
 
-Choose **Amp** in the first-run setup's **Coding agents** step, so the first
-template build already contains it and adding the token later rebuilds
-nothing:
-
-![The setup's Coding agents step with Amp chosen](images/setup-agents.png)
-
-Then paste the token in one of these places:
+Every sandbox template already contains Amp, so adding the token rebuilds
+nothing. Paste it in one of these places, after the first-run setup:
 
 - **The keys page** your agent sends you (`https://app.<domain>/keys/…`),
   next to any other keys it needs. Amp stays on and its provider starts.
-- **Extensions** in the web app: **Add key** on Amp's row (**Set up** when
-  the setup did not choose Amp), paste the provider token and choose
+- **Extensions** in the web app: **Add key** (or **Set up**) on Amp's row, paste the provider token and choose
   **Test and save**. Saving turns Amp on; **Disconnect** in its row's menu
   turns it off.
 

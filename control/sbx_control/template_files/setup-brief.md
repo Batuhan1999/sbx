@@ -3,9 +3,9 @@
 You are in a checkout of `{repo}`, and the `sbx` CLI is signed in to
 {control}. Your job: write the repository's `.sbx/` recipe so that
 `sbx up NAME` starts the application its owner actually uses, with
-development data of its own, and prove that with two sandboxes. Appended
-after the last step: worked examples (how real recipes were made), the service
-selection guide, the acceptance checklist and the resource guide.
+development data of its own, then start one sandbox and give the owner its
+preview link. Appended after the last step: worked examples (how real recipes
+were made), the service selection guide and the resource guide.
 
 ## How to work
 
@@ -49,7 +49,10 @@ Catalog packages on this server: {services}
 
 ## 1. Check access
 
-Run `sbx repo status`.
+If `sbx` is not installed on this machine, install it from the server:
+`curl -fsSL {control}/install | sh` (macOS). It ends with `sbx login`, which
+opens the owner's browser: they are signed in there already, so it is one
+click. Then run `sbx repo status`.
 
 Check: `trust` is `trusted`. If it is empty (not served yet) and you are an
 admin, go on: step 6's `sbx recipe apply` serves and trusts it. Otherwise stop
@@ -165,7 +168,11 @@ env:
 
 - `.sbx/setup` installs or reconciles dependencies and runs the normal
   migrations and development seeds. It runs on create and on every prepare, so
-  it must be executable and safe to repeat.
+  it must be executable and safe to repeat. sbx runs the recipe's scripts from
+  its own copy (`/run/sbx/app`), not from the checkout, which has no `.sbx/`
+  until the recipe is committed: start them with `cd "$SBX_WORKDIR"` (the
+  checkout) rather than a path relative to the script, and keep `processes:`
+  to commands that don't call files under `.sbx/`.
 - `processes:` holds the repository's ordinary start commands. Bind web servers
   to `0.0.0.0`. Use `.sbx/start` only when a script is simpler; it starts its
   servers detached and returns.
@@ -247,44 +254,30 @@ request yet" means run it again shortly. Tell the owner a reason as printed:
 an admin fixes the App's access, and the next healthy launch
 (`sbx sandbox prepare check-a`) opens the pull request.
 
-Check: open the preview link and do one thing the app exists for, such as
-signing in and creating a record. A home page that answers 200 is not enough.
-Where possible, script the action (`ssh sbx-check-a '...'`, or a request to the
-preview with `Authorization: Bearer TOKEN`, an sbx API token) so you can run it
-again in step 8, and keep its output. A request that signs in with the sbx
-token loses its `Authorization` header at the gateway, so the app's own Bearer
-token can't ride along: sign in through the app and send its session cookie,
-or call the app inside the sandbox (`curl http://127.0.0.1:PORT/...` over ssh
-or exec).
+Check: `sbx up` returned with the preview links, which means the recipe's
+health check passed. Open the preview link once yourself to see the app's
+page, not an error. The owner judges the app from there.
 
-## 8. Prove independence
-
-Work through the acceptance checklist appended below with `check-a` and a
-second sandbox, `check-b` (`sbx up check-b`). Reuse the action you scripted
-in step 7 on both, and keep the output of every check. The checklist deletes
-`check-a`; keep `check-b` (and `check-b-KIND` on each further runtime) for the
-hand-over.
-
-## 9. Hand over
+## 8. Hand over
 
 Run `sbx repo status` once more (an admin may also run `sbx recipe pr
 --status`): the pull request must carry the recipe you verified
 (`recipe_pr` without "the recipe changed since").
 
-Tell the owner, with evidence: the recipe's pull request link (or that the
-default branch has the recipe already, or, if sbx could not open it, the
-reason it printed and who fixes it), `check-b`'s
-preview links, what you verified and what you did not (optional providers left unconfigured, for example), the
-optional variables the app reads that the recipe leaves out, and the
-everyday commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`,
-`sbx down NAME` (`sbx down check-b` once they are done with it). A value the
-recipe generates, such as an admin password from `${random:32}`, is per
-sandbox; give the command that reads it, not the value:
+Tell the owner: `check-a`'s preview link, to open and judge the app; the
+recipe's pull request link (or that the default branch has the recipe
+already, or, if sbx could not open it, the reason it printed, and that the
+files in `.sbx/` are theirs to commit); what you verified and what you did
+not (optional providers left unconfigured, for example); the optional
+variables the app reads that the recipe leaves out; and the everyday
+commands: `sbx up NAME`, `sbx logs NAME`, `sbx env ls`, `sbx down NAME`
+(`sbx down check-a` once they are done with it). A value the recipe
+generates, such as an admin password from `${random:32}`, is per sandbox;
+give the command that reads it, not the value:
 `echo '. /run/sbx/app-env; printenv NAME' | sbx sandbox exec SANDBOX`. When
 a pull request is open, ask the owner to review and merge it: until then the
 recipe lives only on this server. PR previews and a prebuilt template come
 later, and only when asked.
 
-Done means every item of the acceptance checklist below is checked and
-reported, and the hand-over names the recipe's pull request link (or that
-the default branch has the recipe already).
+Done means `check-a` is up and healthy, the owner has its preview link, and
+the hand-over names the recipe's pull request link (or why there is none).

@@ -62,6 +62,8 @@ class Domain(Section):
     login_host: ClassVar[str] = "app"  # sbx-control's host under the domain; every other name is a sandbox
     name: str = ""                     # "" until set: the installation answers on its address only
     address: str = ""                  # the IP chosen during setup; keeps bootstrap access during DNS setup
+    # Optional: the Let's Encrypt account's contact. It no longer sends expiry
+    # emails, so "" registers the account without one.
     acme_email: str = ""
     # How the wildcard certificate's DNS-01 challenge is answered: delegated
     # (one NS record hands _acme-challenge.<name> to this host, which answers
@@ -86,6 +88,14 @@ class Domain(Section):
     @classmethod
     def _address(cls, value: str) -> str:
         return str(ipaddress.ip_address(value)) if value else ""
+
+    @field_validator("acme_email")
+    @classmethod
+    def _acme_email(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[^@\s'\"\\;$`]+@[a-z0-9.-]+\.[a-z]{2,}", value, re.IGNORECASE):
+            raise ValueError("enter an email such as ops@example.com for the certificate, or none")
+        return value
 
     @field_validator("name")
     @classmethod

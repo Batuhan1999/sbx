@@ -434,10 +434,12 @@ class CatalogTests(Server):
         self.assertIn("fixture-server", brief)
         self.assertNotIn("fixture-private-api-key", brief)
         # The canonical guides follow the steps, read from the docs themselves.
-        for heading in ("# Service selection", "# Acceptance checklist", "# Resource guide"):
+        for heading in ("# Service selection", "# Resource guide"):
             self.assertIn(f"\n{heading}\n", brief)
-        self.assertIn("Delete A (`sbx down check-a`)", brief)
-        self.assertNotIn("Record what you verified", brief.split("# Acceptance checklist")[0])
+        # One sandbox and its preview link for the owner: the acceptance checklist is for changes to sbx itself.
+        self.assertNotIn("# Acceptance checklist", brief)
+        self.assertNotIn("check-b", brief)
+        self.assertIn("give the owner its\npreview link", brief)
 
     def test_a_release_ships_the_docs_the_setup_brief_carries(self):
         import subprocess
@@ -474,7 +476,7 @@ class CatalogTests(Server):
             guides = repos.guides()
         self.assertEqual([g.splitlines()[0] for g in guides],
                          ["# Examples", f"# How this recipe was made: Alpha ({repos.SOURCE}/examples/alpha)",
-                          "# Service selection", "# Acceptance checklist", "# Resource guide"])
+                          "# Service selection", "# Resource guide"])
         # The agent reading the brief has no sbx source: relative links go to GitHub, anchors and URLs stay.
         self.assertEqual(guides[1].split("\n\n", 1)[1],
                          f"It chose postgres-clone ([recipe]({repos.SOURCE}/examples/alpha/.sbx), "

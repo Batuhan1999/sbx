@@ -32,7 +32,13 @@ REQUEST_HOURS = 24
 
 class Refused(SandboxError):
     """The runtime asked for can't run the sandbox, or is no runtime here;
-    the message says why (the API answers 400)."""
+    the message says why (the API answers 400). checks: the provider's
+    checks that failed ({name, ok, detail, fix, help_url, field}; field: the
+    setting the web app shows it next to), when a check refused it."""
+
+    def __init__(self, message: str = "", checks=()):
+        super().__init__(message)
+        self.checks = list(checks)
 
 
 class Conflict(Refused):
@@ -191,10 +197,7 @@ def test(kind: str) -> list:
         found.append(Check("Base template", False, f"its last build failed: {(row or {}).get('error') or '?'}",
                            f"build it again: sbx-admin jobs run template@{kind}:{templates.BASE}", runtime=kind))
     else:
-        from . import setup
-        blocked = build != "building" and setup.templates_blocked()
         found.append(Check("Base template", True, "building" if build == "building" else
-                           f"not built yet; {blocked}" if blocked else
                            "not built yet; the scheduler builds it within minutes", runtime=kind))
     if build == "built" and all(c.ok for c in found):
         found.append(reachability.check(kind))

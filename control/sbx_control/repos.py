@@ -83,7 +83,7 @@ MADE = "How this recipe was made"
 def guides() -> list:
     """The canonical docs the setup brief carries after its steps: the
     worked examples (their index, and each one's MADE section, where it has
-    one), service selection, the acceptance checklist, the resource guide;
+    one), service selection, the resource guide;
     their relative links point into the sbx repository on GitHub."""
     docs, examples = paths.shipped("docs"), paths.shipped("examples")
     parts = []
@@ -97,11 +97,7 @@ def guides() -> list:
             folder = f"examples/{readme.parent.name}"
             parts.append(f"# {MADE}: {title[1].strip() if title else readme.parent.name} "
                          f"({SOURCE}/{folder})\n\n{linked(made, folder)}")
-    checklist = section((docs / "agent-install.md").read_text(), "Acceptance checklist")
-    if not checklist:
-        raise LookupError("docs/agent-install.md has no Acceptance checklist section")
     return [*parts, linked((docs / "service-selection.md").read_text().strip(), "docs"),
-            f"# Acceptance checklist\n\n{linked(checklist, 'docs')}",
             linked(RESOURCE_GUIDE.read_text().strip(), "control/sbx_control/template_files")]
 
 

@@ -112,7 +112,11 @@ UNIT
   systemctl daemon-reload
   systemctl enable -q --now sbx-tls-renew.timer
   systemctl reset-failed sbx-tls-renew.service 2>/dev/null || true
-  systemctl start sbx-tls-renew.service
+  # 75: this run's issuance failed (it left its error file: a failure after issuance, nginx's, leaves none).
+  if ! systemctl start sbx-tls-renew.service; then
+    [ -s $dir/certificate-error ] || [ -s $dir/ip-certificate-error ] && exit 75
+    exit 1
+  fi
 }
 
 ip_cert=bootstrap
@@ -257,6 +261,29 @@ location @login { return 302 https://$login/login?next=https://\$host\$request_u
 $page_locations
 NGINX
 
+# What nginx serves for the domain: its own certificate once issued; until
+# then the IP's (or a self-signed one), so a certificate that is still pending
+# (a closed port 53, records spreading) never leaves the server without HTTPS.
+serving="$dir/letsencrypt/sbx-serving"
+install -d "$serving"
+point_serving() {
+  ln -sfn "../$1/fullchain.pem" "$serving/fullchain.pem"
+  ln -sfn "../$1/privkey.pem" "$serving/privkey.pem"
+}
+if [ -f "$dir/letsencrypt/live/$domain/fullchain.pem" ]; then
+  point_serving "live/$domain"
+elif [ "$ip_cert" != bootstrap ]; then
+  point_serving "live/$ip_cert"
+else
+  if [ ! -f "$dir/letsencrypt/live/bootstrap/fullchain.pem" ]; then
+    install -d "$dir/letsencrypt/live/bootstrap"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=sbx-setup" \
+      -keyout "$dir/letsencrypt/live/bootstrap/privkey.pem" -out "$dir/letsencrypt/live/bootstrap/fullchain.pem" 2>/dev/null
+  fi
+  point_serving live/bootstrap
+fi
+cert=/etc/letsencrypt/sbx-serving
+
 cat > "$dir/nginx/default.conf" <<NGINX
 proxy_cache_path /var/cache/nginx/gate keys_zone=gate:2m max_size=20m inactive=5m;
 map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
@@ -371,6 +398,9 @@ server {
 NGINX
 done
 
+# Serve now, on whatever certificate is there, before asking for the domain's.
+/usr/local/sbin/sbx-tls-nginx
+
 # The certificate: DNS-01 through the configured provider, or, with none, a
 # self-signed one for a first test (browsers warn, the sbx CLI refuses it).
 if [ "$dns" = none ]; then
@@ -381,29 +411,52 @@ if [ "$dns" = none ]; then
       -addext "subjectAltName=DNS:$domain,DNS:*.$domain" \
       -keyout "$live/privkey.pem" -out "$live/fullchain.pem" 2>/dev/null
   fi
+  point_serving "live/$domain"
   /usr/local/sbin/sbx-tls-nginx
   exit 0
 fi
+# The Let's Encrypt account: with an email only when one is given (Let's
+# Encrypt sends no expiry emails any more).
+account="--register-unsafely-without-email"
+[ -z "$email" ] || account="-m $email"
+# Why the last issuance failed, for the setup (/api/setup access.certificate_error):
+# the port 53 probe's finding or certbot's last lines; gone once it works.
+error="$dir/certificate-error"
+# Written whole beside the working one, then swapped in: a step failing on
+# the way leaves the renewal that worked.
+renew=/usr/local/sbin/sbx-tls-renew.new
+cat > $renew <<RENEW
+#!/bin/sh
+set -eu
+cd $current
+RENEW
 envfile=""
 case "$dns" in
   delegated)
     # This host answers the challenge itself (sbx_control/acme_dns.py, on 53):
     # certbot runs here, in the venv, with the hooks that set and clear the token.
     [ -x venv/bin/certbot ] || venv/bin/pip install -q certbot >/dev/null
-    cat > /usr/local/sbin/sbx-tls-renew <<RENEW
-#!/bin/sh
-set -eu
-cd $current
-venv/bin/certbot certonly --manual --preferred-challenges dns \\
-  --manual-auth-hook 'venv/bin/python -m sbx_control.acme_dns set "\$CERTBOT_VALIDATION"' \\
-  --manual-cleanup-hook 'venv/bin/python -m sbx_control.acme_dns clear' \\
-  --config-dir $dir/letsencrypt --work-dir $dir/certbot-work --logs-dir $dir/certbot-logs \\
-  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos -m $email -n
-/usr/local/sbin/sbx-tls-nginx
-[ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
+    # The firewall opens 53 for the responder (settings.opened_ports) before
+    # the probe and certbot need it; the responder runs already (host._tls).
+    systemctl restart sbx-host-guard
+    # Before asking Let's Encrypt for a certificate (none yet, or due within
+    # 30 days): whether a public resolver reaches the responder at all. A
+    # dropped port 53 then says so in seconds instead of a certbot timeout.
+    cat >> $renew <<RENEW
+live=$dir/letsencrypt/live/$domain/fullchain.pem
+if [ ! -f \$live ] || ! openssl x509 -in \$live -noout -checkend 2592000 >/dev/null 2>&1; then
+  if ! venv/bin/python -m sbx_control.acme_dns probe > $error.new 2>&1; then
+    mv $error.new $error
+    cat $error >&2
+    exit 1
+  fi
+  rm -f $error.new
+fi
 RENEW
-    chmod 0755 /usr/local/sbin/sbx-tls-renew
-    delegated=1 ;;
+    issue="venv/bin/certbot certonly --manual --preferred-challenges dns \\
+  --manual-auth-hook 'venv/bin/python -m sbx_control.acme_dns set \"\$CERTBOT_VALIDATION\"' \\
+  --manual-cleanup-hook 'venv/bin/python -m sbx_control.acme_dns clear' \\
+  --config-dir $dir/letsencrypt --work-dir $dir/certbot-work --logs-dir $dir/certbot-logs" ;;
   route53)
     # The instance role on EC2; elsewhere (bare metal) an access key from the
     # platform secrets, for an IAM user that may change the zone's
@@ -421,12 +474,20 @@ RENEW
     plugin="--dns-cloudflare"; creds="--dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini" ;;
   *) echo "acme: $dns is not supported (delegated, route53, cloudflare, none)"; exit 1 ;;
 esac
-[ -n "${delegated:-}" ] || cat > /usr/local/sbin/sbx-tls-renew <<RENEW
-#!/bin/sh
-set -eu
-docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds \\
-  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos -m $email -n
+[ -n "${issue:-}" ] || issue="docker run --rm --network host $envfile -v $dir/letsencrypt:/etc/letsencrypt certbot/dns-$dns certonly $plugin $creds"
+cat >> $renew <<RENEW
+if ! $issue \\
+  --cert-name $domain -d $domain -d '*.$domain' --expand --keep-until-expiring --agree-tos $account -n \\
+  > $dir/certbot.log 2>&1; then
+  tail -n 12 $dir/certbot.log > $error
+  cat $error >&2
+  exit 1
+fi
+rm -f $error
+ln -sfn ../live/$domain/fullchain.pem $serving/fullchain.pem
+ln -sfn ../live/$domain/privkey.pem $serving/privkey.pem
 /usr/local/sbin/sbx-tls-nginx
 [ ! -x /usr/local/sbin/sbx-ip-tls-renew ] || /usr/local/sbin/sbx-ip-tls-renew
 RENEW
+chmod 0755 $renew && mv -f $renew /usr/local/sbin/sbx-tls-renew
 install_renewal_timer

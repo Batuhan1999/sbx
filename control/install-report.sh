@@ -1,8 +1,10 @@
 #!/bin/sh
-# install.sh's last step, from the installed release: the one-time setup link
-# while the first-run setup is open, else the server's address and what to do
-# next. An installation whose settings are complete counts as set up
-# (sbx-admin setup-infer: exit 0 set up, 3 still open).
+# install.sh's last step, from the installed release: while the first-run
+# setup is open, its last line is the onboarding link (a one-time token in
+# the fragment), after a line that says when the browser will warn; else the
+# server's address and what to do next, never a link. An installation whose
+# settings are complete counts as set up (sbx-admin setup-infer: exit 0 set
+# up, 3 still open).
 #   SBX_PASSWORD=... install-report.sh   ("EMAIL: PASSWORD" lines install.sh generated, shown once)
 #   SBX_ROLLBACK=... install-report.sh   (an upgrade's rollback script, host-install.sh)
 set -eu
@@ -23,12 +25,24 @@ sbx-admin setup-infer >/dev/null || status=$?
 case "$status" in
   0) ;;
   3)
-    say "Done: finish the setup in your browser"
-    echo "    $(sbx-admin setup-link)"
-    echo "  Accept the temporary certificate, then choose IP access or a domain for trusted HTTPS."
-    echo "  IP verification needs inbound TCP 80. Set your admin login, then connect your first repo."
-    echo "  Lost the one-time link? sudo sbx-admin setup-link"
+    # The onboarding link: the current one-time token while it works (a rerun
+    # keeps the page the owner has open), else a new one; its
+    # last line is the link, on this terminal only.
+    found=$(cd "$here" && venv/bin/python -m sbx_control.setup onboarding) || die "could not make the onboarding link (above)"
+    link="" trusted="" domain=""
+    eval "$found"
+    [ -n "$link" ] || die "could not make the onboarding link"
+    say "Installed: the rest of the setup is in your browser"
+    echo "  Set your domain and the sandbox runtime, then create your admin account."
     password
+    echo "  Lost the link? sudo sbx-admin setup-link"
+    echo
+    if [ -z "$trusted" ] && [ -n "$domain" ]; then
+      echo "Your browser will warn once: the certificate is self-signed until $domain's certificate is issued."
+    elif [ -z "$trusted" ]; then
+      echo "Your browser will warn once: the certificate is self-signed until the domain is set."
+    fi
+    echo "==> Open the onboarding: $link"
     exit 0 ;;
   *) die "could not read installation setup state" ;;
 esac

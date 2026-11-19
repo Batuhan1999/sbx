@@ -63,7 +63,7 @@ class Installation(unittest.TestCase):
     settings and what a test leaves in the tables named in RESET."""
     SETTINGS: dict = {}
     RUNTIME_ENV = RUNTIME   # /etc/sbx/runtime.env as install.sh writes it
-    SET_UP = False          # the first-run setup is complete (templates may build: setup.templates_blocked)
+    SET_UP = False          # the first-run setup is complete
     RESET = ("settings", "config", "config_history", "repos", "sealed", "store_values", "template_builds",
              "repo_setup_prs", "sandbox_lifecycle_events", "sandbox_lifecycle", "sandboxes", "attachments",
              "sandbox_services", "secrets", "sandbox_random", "env_pending", "package_versions", "package_current",
@@ -107,6 +107,13 @@ class Installation(unittest.TestCase):
         # Every base template build serves Amp's desktop tools; no test reads them from Amp's registry.
         from sbx_control.connectors.amp import registry
         self.enterContext(patch.object(registry, "extract", return_value=amp_tools()))
+        # No test asks public DNS: a domain's records are empty unless a test says otherwise, and a
+        # port 53 probe hears nothing back (domain._dig, acme_dns._txt: the lookups).
+        from sbx_control import acme_dns
+        from sbx_control.connections import domain
+        self.enterContext(patch.object(domain, "_dig", return_value=[]))
+        self.enterContext(patch.object(domain, "_dig_short", return_value=[]))
+        self.enterContext(patch.object(acme_dns, "_txt", return_value=[]))
         self.addCleanup(_builds_settled)   # after the patch: cleanups run last first, so builds settle before it goes
         with state.db() as conn:
             present = state.tables(conn)
@@ -142,6 +149,9 @@ class Server(Installation):
         from sbx_control import app, setup
         from sbx_control.connections import Check
         self.app = app
+        # sbx-control started afresh for this test's installation: the session cookie's domain is read
+        # on the first request (auth.Sessions), and an earlier test's domain must not carry over.
+        app.app.middleware_stack = None
         self.token = setup.mint_token()
         self.headers = {"Authorization": f"Setup {self.token}"}
         self.client = TestClient(app.app, base_url="https://203.0.113.10")

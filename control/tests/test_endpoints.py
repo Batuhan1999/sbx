@@ -756,7 +756,7 @@ class RouteTests(Setup, Installation):
         from sbx_control import core, recipes, routing
         listening = ("LISTEN 0 64 127.0.0.1:17400 0.0.0.0:*\nLISTEN 0 64 127.0.0.1:17401 0.0.0.0:*\n"
                      "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\nLISTEN 0 511 0.0.0.0:17799 0.0.0.0:*\n"
-                     "LISTEN 0 511 0.0.0.0:17800 0.0.0.0:*\n")
+                     "LISTEN 0 511 0.0.0.0:17800 0.0.0.0:*\nLISTEN 0 4096 *:4369 *:*\n")   # epmd, too
         app = recipes.App("owner/app", Path("/nonexistent"), {})
         vm = SimpleNamespace(commands=SimpleNamespace(run=lambda c, **kw: SimpleNamespace(stdout=listening)))
         with patch.object(routing.runtime, "connect", return_value=vm), \

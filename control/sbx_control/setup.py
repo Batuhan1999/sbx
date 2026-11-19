@@ -1,12 +1,13 @@
-"""First-run control-plane setup: an address, admin access, a sandbox
-runtime (added here when install.sh enabled none), the coding agents, and
-live runtime checks. Repository and provider connections follow after the
-server is ready.
+"""First-run control-plane setup: an address, a sandbox runtime (added here
+when install.sh enabled none), the admin account last, and live runtime
+checks. Repository and provider connections follow after the server is
+ready.
 
-No template builds until the setup is complete (templates_blocked), so the
-first build starts from the finished settings. The coding agents' layers are
-in every template whether chosen or not (Amp's in the base); the choice
-decides which keys the setup asks for."""
+Templates build as soon as there is a runtime and an address, during the
+setup too: every template has every coding agent's layer (Amp's in the
+base), so choosing coding agents (choose_agents) is optional: it records
+which agents' connections to suggest, and nothing waits for it. The setup's
+reachability check needs a built base template."""
 from __future__ import annotations
 
 import hashlib
@@ -15,13 +16,14 @@ import ipaddress
 import pathlib
 import secrets
 import sqlite3
+import sys
 
 from . import paths, runtime, settings, users, vault
 from .state import Setting
 
 COMPLETE = Setting("setup_complete")
 TOKEN_HASH = Setting("setup_token_hash")
-# The coding agents chosen in the setup: a list of extension kinds ([]: none); unset: not chosen yet.
+# The coding agents chosen (optional): a list of extension kinds ([]: none); unset: not chosen.
 AGENTS = Setting("setup_agents", encoded=True)
 
 
@@ -47,11 +49,11 @@ def configured() -> bool:
 
 def infer_complete() -> bool:
     """sbx-admin setup-infer (host-install.sh on every deploy, and
-    install-report.sh): an installation that is configured and has its
-    coding agents chosen counts as set up. Without that choice the setup
-    stays open (a redeploy mid-wizard never skips the agents step). Returns
-    whether it marked anything."""
-    if complete() or not configured() or AGENTS.get() is None:
+    install-report.sh): an installation that is configured counts as set
+    up (the admin account, which needs a way to sign in, is the setup's last
+    step), unless a setup is open (its token works): the owner finishes it.
+    Returns whether it marked anything."""
+    if complete() or not configured() or current_token():
         return False
     mark_complete("infer")
     return True
@@ -64,15 +66,15 @@ def offered_agents() -> list:
 
 
 def agents_chosen() -> bool:
-    """Whether the coding-agent choice is made: in the setup, or the setup is
-    complete (an installation set up before the step existed chose by what
-    it enabled since)."""
+    """Whether coding agents were chosen (optional): in the setup, or the
+    setup is complete (they are enabled under Extensions since)."""
     return complete() or AGENTS.get() is not None
 
 
 def choose_agents(kinds, by: str) -> list:
-    """Record the coding agents (kinds of offered_agents) for the first
-    template build; each one's own key may come later (Connector.choose)."""
+    """Record the coding agents (kinds of offered_agents) whose connections
+    to suggest; each one's own key may come later (Connector.choose). Every
+    template has every agent's layer whatever is chosen."""
     offered = {c.kind: c for c in offered_agents()}
     kinds = sorted({k.strip().lower() for k in kinds if k.strip()})
     unknown = [k for k in kinds if k not in offered]
@@ -82,18 +84,6 @@ def choose_agents(kinds, by: str) -> list:
         connector.choose(kind in kinds, by=by)
     AGENTS.set(kinds)
     return kinds
-
-
-def templates_blocked() -> str:
-    """Why no template may build yet ("" once they may): until the setup is
-    complete, which needs the coding-agent choice, whose layers every
-    template includes. The scheduler, a runtime just added and install.sh's
-    builds wait for it."""
-    if complete():
-        return ""
-    if not agents_chosen():
-        return "templates build once the coding agents are chosen and the setup is finished"
-    return "templates build once the setup is finished"
 
 
 def mark_complete(by: str):
@@ -127,6 +117,16 @@ def mint_token() -> str:
     return token
 
 
+def current_token() -> str:
+    """The token in the file while it still works, else "" (`sbx-admin
+    setup-link` prints its link again rather than replacing it)."""
+    try:
+        token = token_file().read_text().strip()
+    except OSError:
+        return ""
+    return token if token_ok(token) else ""
+
+
 def revoke_token():
     TOKEN_HASH.delete()
     token_file().unlink(missing_ok=True)
@@ -140,15 +140,120 @@ def token_ok(token: str) -> bool:
 
 
 def link(token: str | None = None, address: str = "") -> str:
-    """Where the operator finishes the setup: the domain's sign-in host once
-    the certificate is there, else the public address (self-signed)."""
+    """Where the operator finishes the setup, the web app's setup page: the
+    domain's sign-in host once the certificate is there, else the address
+    (its trusted IP certificate once issued, else self-signed). The token
+    goes in the fragment, which the browser keeps to itself."""
     from .connections import domain
     s = settings.current()
     host = f"{s.domain.login_host}.{s.domain.name}" if s.domain.name and domain.certificate_ready() else (
         s.domain.address or ip_address(address) or domain.public_ip())
     if ":" in host:
         host = f"[{host}]"
-    return f"https://{host}/setup" + (f"#t={token}" if token else "")
+    return f"https://{host}/app/setup" + (f"#t={token}" if token else "")
+
+
+def onboarding() -> dict:
+    """install.sh's last line while the setup is open (install-report.sh):
+    the onboarding link with the current one-time token while it works (a
+    rerun keeps the page the owner has open), else a new one, and whether the browser trusts the certificate it opens on.
+    Shown on the installer's terminal only, never written to a file."""
+    from .connections import domain
+    if complete():
+        raise RuntimeError("the setup is complete")
+    return {"link": link(current_token() or mint_token()), "trusted": domain.certificate_ready(),
+            "domain": settings.current().domain.name}
+
+
+# install.sh waits this long for the IP certificate before it prints the link.
+IP_CERTIFICATE_SECONDS = 300
+
+
+def _public(address: str) -> bool:
+    """An address Let's Encrypt can reach: a global one, not a private or documentation range."""
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+def _port_free(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
+
+
+def first_certificate(timeout: float = IP_CERTIFICATE_SECONDS, *, sleep=None, clock=None) -> tuple[bool, str]:
+    """install.sh, before it prints the onboarding link of a server with no
+    address yet: IP access with its trusted certificate, as the setup's
+    "IP access" choice makes it (the address in the settings; tls.sh has
+    Certbot validate it over HTTP on port 80), so the first visit opens
+    without a browser warning. Only with a public IP and port 80 free on
+    this host; the provider's firewall shows only in Certbot's answer. Waits
+    for the host's tls effect up to timeout seconds. Returns (trusted, what
+    happened). Without the certificate, setup keeps the address step open
+    with Certbot's error and its retry; a domain can still be chosen there."""
+    import time
+    from . import host_requests
+    from .connections import domain
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    s = settings.current()
+    if complete():
+        return domain.certificate_ready(), "the setup is complete"
+    if s.domain.name:
+        return domain.certificate_ready(), f"the domain {s.domain.name} gets its own certificate"
+    if s.domain.address:   # chosen before: its renewal (the sbx-tls-renew timer) keeps trying
+        if domain.certificate_ready():
+            return True, f"trusted certificate for {s.domain.address}"
+        return False, f"no trusted certificate for {s.domain.address} yet: {_last_line(domain.ip_certificate_error())}"
+    address = domain.public_ip()
+    if not _public(address):
+        return False, "this server has no public IP address (none seen from outside)"
+    if not _port_free(80):
+        return False, "port 80 is in use on this server; the IP certificate needs it"
+    settings.update("domain", {**s.domain.model_dump(), "address": address}, by="install.sh")
+    deadline = clock() + timeout
+    while host_requests.requested("tls") or host_requests.applying("tls"):
+        if clock() > deadline:
+            return False, f"no certificate for {address} within {int(timeout)} s; the renewal keeps trying"
+        sleep(2)
+    if domain.certificate_ready():
+        return True, f"trusted certificate for {address} (Let's Encrypt)"
+    return False, f"no trusted certificate for {address}: {_last_line(domain.ip_certificate_error())}"
+
+
+def _last_line(error: str) -> str:
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    return lines[-1] if lines else "inbound TCP port 80 must reach this server, in any cloud firewall too"
+
+
+def main(argv=None) -> int:
+    """python -m sbx_control.setup onboarding | first-certificate (install.sh, as root)."""
+    import argparse
+    import shlex
+    parser = argparse.ArgumentParser(prog="python -m sbx_control.setup")
+    parser.add_argument("command", choices=["onboarding", "first-certificate"])
+    parser.add_argument("--timeout", type=int, default=IP_CERTIFICATE_SECONDS)
+    a = parser.parse_args(argv)
+    if a.command == "first-certificate":
+        if complete():   # an upgrade of a server that is set up: nothing to say
+            return 0
+        trusted, said = first_certificate(a.timeout)
+        print(f"{'ok' if trusted else 'self-signed for now'}: {said}")
+        return 0
+    try:
+        found = onboarding()
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 3
+    print(f"link={shlex.quote(found['link'])}\ntrusted={'1' if found['trusted'] else ''}\n"
+          f"domain={shlex.quote(found['domain'])}")
+    return 0
 
 
 def host_facts() -> dict:
@@ -184,27 +289,33 @@ def address_ready() -> bool:
 
 
 def readiness() -> dict:
+    """The setup's checks. The reachability check starts a sandbox from the
+    base template, so a base not built yet (its address or runtime just
+    chosen) starts building now rather than on the scheduler's next round."""
+    from . import template_scheduler
     from .connections import runtime as runtime_connection
+    template_scheduler.kick()
     checks = [*runtime.readiness(host_facts()), *runtime_connection.Runtime().test()]
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 
-# What finishing says while a step is not done, in the steps' order.
-NEEDED = {"address": "Choose the server address and configure admin access first.",
-          "sign_in": "Choose the server address and configure admin access first.",
+# What finishing says while a step is not done, in the setup page's order:
+# the admin account last (creating it is what finishes the setup there).
+NEEDED = {"address": "Choose the server address first.",
           "runtime": "Add a sandbox runtime first: sandboxes need one to run on.",
-          "agents": "Choose the coding agents first (none is a choice): every template is built with them."}
+          "sign_in": "Create the admin account first."}
 
 
 def missing(found: dict) -> str:
-    """Why state() can't finish yet by its steps ("" when every one is done)."""
-    return next((NEEDED[step["step"]] for step in found["steps"] if not step["done"]), "")
+    """Why state() can't finish yet ("" when every required step is done): the first not done, in NEEDED's
+    order (choosing coding agents is optional)."""
+    undone = {step["step"] for step in found["steps"] if not step["done"]}
+    return next((message for step, message in NEEDED.items() if step in undone), "")
 
 
 def state(email: str | None, address: str = "") -> dict:
     from . import connections
     from .connections import domain as domain_connection, sign_in as sign_in_connection
-    from .connections.domain import ip_certificate_error
     s = settings.current()
     domain = connections.get("domain").status()
     sign_in = connections.get("sign_in").status()
@@ -214,9 +325,9 @@ def state(email: str | None, address: str = "") -> dict:
               "optional": False, "summary": sign_in.summary},
              {"step": "runtime", "done": bool(kinds), "optional": False,
               "summary": ", ".join(runtime.title(k) for k in kinds) if kinds else runtime.NO_RUNTIME},
-             {"step": "agents", "done": agents_chosen(), "optional": False, "summary": _agents_summary()}]
+             {"step": "agents", "done": agents_chosen(), "optional": True, "summary": _agents_summary()}]
     signed_in = bool(email) and email != "anonymous"
-    can_complete = all(step["done"] for step in steps) and (signed_in or s.sign_in.method == "none")
+    can_complete = all(step["done"] or step["optional"] for step in steps) and (signed_in or s.sign_in.method == "none")
     server_address = s.domain.address or ip_address(address) or domain_connection.public_ip()
     return {"complete": complete(), "steps": steps, "signed_in": signed_in, "email": email,
             "open_access": s.sign_in.method == "none",
@@ -225,17 +336,27 @@ def state(email: str | None, address: str = "") -> dict:
                        "url": s.base_url, "certificate": s.domain.acme,
                        "certificate_email": s.domain.acme_email, "certificate_ready": address_ready(),
                        "needs_ports": list(s.domain.needs_ports()),
-                       "certificate_error": ip_certificate_error() if s.domain.address and not s.domain.name else ""},
+                       "certificate_error": _certificate_error(s.domain)},
             "link": link(address=server_address),
             "admins": list(s.access.admins), "version": version(),
             "agents": [{"kind": c.kind, "title": c.title, "chosen": c.kind in (AGENTS.get() or [])}
                        for c in offered_agents()]}
 
 
+def _certificate_error(d) -> str:
+    """Why the address's certificate is not there yet, from its last failed
+    issuance ("" when none failed, or once it is there): the IP's, or the
+    domain's (the port 53 probe's finding or Let's Encrypt's error)."""
+    from .connections.domain import certificate_error, ip_certificate_error
+    if d.name:
+        return "" if d.acme == "none" or address_ready() else certificate_error()
+    return ip_certificate_error() if d.address else ""
+
+
 def _agents_summary() -> str:
     chosen = AGENTS.get()
     if chosen is None:
-        return "as enabled under Extensions" if complete() else "not chosen yet"
+        return "as enabled under Extensions" if complete() else "optional: none chosen"
     titles = {c.kind: c.title for c in offered_agents()}
     return ", ".join(titles.get(k, k) for k in chosen) or "none"
 
@@ -251,3 +372,7 @@ def version() -> str:
         return (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
     except OSError:
         return "dev"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

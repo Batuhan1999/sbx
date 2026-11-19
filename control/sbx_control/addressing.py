@@ -142,9 +142,13 @@ def preview_pattern(suffix: str, path: str = "") -> str:
 
 
 def vite_allowed_hosts(kind: str | None = None) -> str:
-    """Vite rejects unknown Host headers; a leading dot allows subdomains.
-    Without a domain, the internal host of the sandbox's runtime (kind)."""
-    return host_suffix() or f".{runtime.internal_suffix(kind)}"
+    """Vite rejects unknown Host headers (it takes one value; a leading dot
+    allows subdomains). nginx sends every preview to the runtime with the
+    runtime's own host as Host (upstream(); the browser's is in
+    X-Forwarded-Host), so that is the host Vite sees, with a domain or not:
+    the internal host of the sandbox's runtime (kind)."""
+    suffix = runtime.internal_suffix(kind)
+    return f".{suffix}" if suffix else host_suffix()
 
 
 def control_origin(request_origin: str) -> str:

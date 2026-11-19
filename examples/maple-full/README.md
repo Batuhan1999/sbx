@@ -110,9 +110,11 @@ reveal the Docker and native-build needs; the dev script and manifests did.
   origin, keeping tokens server-side.
 - A `.ts` Vite config outside the package loaded as CommonJS and rejected an
   ESM-only plugin; `.mts` fixes it ([Vite](https://vite.dev/guide/troubleshooting.html#this-package-is-esm-only)).
-- Vite rejects unknown `Host` headers. sbx injects
-  `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`; a config that sets
-  `server.allowedHosts` itself, as this one does, lists the preview suffix too.
+- Vite rejects unknown `Host` headers. A preview reaches the app with the
+  runtime's own host as `Host` (the browser's is in `X-Forwarded-Host`), and
+  sbx injects that host's suffix as `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`;
+  a config that sets `server.allowedHosts` itself, as this one does, lists
+  that suffix too (`.e2b.sandboxes.internal` here; `.on.boat.dev` on Boat).
 - Two Electric sources collided on the default replication slot; the package
   uses temporary, randomly named slots
   ([Electric](https://electric.ax/docs/sync/api/config#electric-temporary-replication-slot-use-random-name)).

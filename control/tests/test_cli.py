@@ -147,6 +147,30 @@ class CliTests(Cli):
         self.assertIn("sbx-try ssh-ed25519 HOSTKEY", (self.home / ".ssh/sbx/known_hosts").read_text())
         self.assertEqual((self.home / ".ssh/config").read_text(), "Host mine\n  User me\n")
 
+    def test_up_waits_while_the_template_builds_then_creates(self):
+        """A new server builds its first templates for minutes: sbx up waits (503, Retry-After) and says how
+        far they are, instead of telling the user or their agent to try again later."""
+        answers = iter([(503, {"detail": "the default template is building; try again in a few minutes"})] * 2
+                       + [{**SANDBOX, "host_key": "ssh-ed25519 HOSTKEY", "readiness": "app_ready"}])
+        self.routes[("POST", "/api/sandboxes")] = lambda q, body: next(answers)
+        self.routes[("GET", "/api/templates")] = lambda q, body: {"runtimes": {"boat": [
+            {"key": "sbx-base", "phase": "current"}, {"key": "default", "phase": "building", "step": 3, "steps": 12}]}}
+        self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: SANDBOX
+        with patch.object(self.cli.time, "sleep"):
+            code, out, err = self.run_cli("up", "try", "--repo", "owner/app", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len([c for c in self.control.calls if c[0] == "POST"]), 3)
+        self.assertIn("waiting for the templates: default building step 3/12", err)
+
+    def test_up_gives_up_on_a_template_after_its_timeout(self):
+        self.routes[("POST", "/api/sandboxes")] = lambda q, body: (503, {"detail": "the default template is building; try again in a few minutes"})
+        self.routes[("GET", "/api/templates")] = lambda q, body: {"runtimes": {}}
+        clock = iter(range(0, 10_000, 30))
+        with patch.object(self.cli.time, "sleep"), patch.object(self.cli.time, "time", side_effect=lambda: next(clock)):
+            code, out, err = self.run_cli("up", "try", "--repo", "owner/app", "--timeout", "100")
+        self.assertNotEqual(code, 0)
+        self.assertIn("template is building", str(code) + err)   # the refusal, as the exit's message
+
     def test_a_failed_operation_exits_with_its_error(self):
         self.routes[("POST", "/api/sandboxes/try/prepare")] = lambda q, body: {"status": "starting"}
         self.routes[("GET", "/api/sandboxes/try")] = lambda q, body: {
@@ -741,6 +765,16 @@ class RuntimeCliTests(Cli):
         self.assertEqual(self.control.calls[-2][3] if self.control.calls[-2][0] == "PUT" else
                          next(c[3] for c in self.control.calls if c[0] == "PUT"), {"kind": "e2b-cloud"})
 
+    def test_a_key_the_provider_s_plan_refuses_exits_non_zero_with_why(self):
+        why = ("Boat's free trial saves no snapshots: make the first payment in Boat's dashboard (Billing), then save "
+               "the key again.")
+        self.routes[("POST", "/api/runtimes")] = lambda q, body: (400, {"detail": {"message": why, "checks": [
+            {"name": "Boat plan", "ok": False, "detail": why, "fix": "", "help_url": "", "field": "BOAT_API_KEY"}]}})
+        code, out, err = self.run_cli("runtimes", "add", "e2b-cloud", "--secret", "E2B_CLOUD_API_KEY",
+                                      stdin=CLOUD_KEY + "\n")
+        self.assertEqual(code, f"sbx-control: {why}")   # the check that says the same is not repeated
+        self.assertNotIn(CLOUD_KEY, out + err)
+
     def test_test_prints_each_check_and_fails_when_one_does(self):
         checks = [{"name": "E2B Cloud API", "ok": True, "detail": "answers; 3 template names", "fix": "", "runtime": "e2b-cloud"},
                   {"name": "Base template", "ok": False, "detail": "its last build failed: boom",
@@ -780,7 +814,7 @@ class RuntimeCliTests(Cli):
             "status": {"state": "connected", "summary": "0 running"}}]}
         self.assertIn("E2B Cloud (Pro plan): 0 running", self.run_cli("runtimes")[1])
 
-    def test_add_without_a_plan_is_on_hobby_and_set_without_one_sends_only_what_it_names(self):
+    def test_add_without_a_plan_leaves_it_to_the_server_and_set_without_one_sends_only_what_it_names(self):
         self.routes[("POST", "/api/runtimes")] = lambda q, body: (202, change("queued"))
         self.routes[("PUT", "/api/runtimes/e2b-cloud")] = lambda q, body: (202, change("queued", "change"))
         self.polls(change("done", message="ok"))
@@ -788,7 +822,7 @@ class RuntimeCliTests(Cli):
                                       stdin=CLOUD_KEY + "\n")
         self.assertEqual(code, 0, err)
         self.assertEqual(next(c for c in self.control.calls if c[0] == "POST")[3],
-                         {"kind": "e2b-cloud", "plan": "hobby", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})
+                         {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": CLOUD_KEY}})   # the account's plan
         code, out, err = self.run_cli("runtimes", "set", "e2b-cloud", "--set", "E2B_CLOUD_MAX_CPU=16")
         self.assertEqual(code, 0, err)
         self.assertEqual(next(c for c in self.control.calls if c[0] == "PUT")[3],
@@ -962,6 +996,15 @@ class SetupCliTests(Cli):
         self.assertEqual(code, "sbx-control: Check the DNS records and certificate settings below.; "
                                f"*.sbx.example.com resolves: no address (how to: {page}); delegation: no NS record yet")
 
+    def test_a_domain_needs_no_email_and_its_failed_certificate_ends_the_wait(self):
+        self.routes[("PUT", "/api/connections/domain")] = lambda q, body: {}
+        error = "port 53: no public resolver (1.1.1.1, 8.8.8.8) reached this server on port 53 within 5 s"
+        self.state["access"]["certificate_error"] = error
+        code, out, err = self.run_cli("setup", "address", "--domain", "sbx.example.com", "--insecure")
+        self.assertIn(f"the certificate failed: {error}", str(code))
+        sent = next(c[3] for c in self.control.calls if c[:2] == ("PUT", "/api/connections/domain"))
+        self.assertEqual((sent["values"]["acme"], sent["values"]["acme_email"]), ("delegated", ""))
+
     def test_a_domain_for_a_first_test_takes_a_self_signed_certificate(self):
         self.routes[("PUT", "/api/connections/domain")] = lambda q, body: (self.done("address"), {})[1]
         code, out, err = self.run_cli("setup", "address", "--domain", "203-0-113-7.sslip.io", "--dns", "none", "--insecure")
@@ -1013,7 +1056,7 @@ class SetupCliTests(Cli):
         with patch.object(self.cli, "keychain_get", return_value=None):   # not signed in: the setup link
             self.assertEqual(finish()[4], "Setup one-time-token")
 
-    def test_the_coding_agents_are_chosen_before_finishing(self):
+    def test_the_coding_agents_may_be_chosen_optionally(self):
         self.state["agents"] = [{"kind": "claude", "title": "Claude Code", "chosen": False},
                                 {"kind": "amp", "title": "Amp", "chosen": False}]
         code, out, err = self.run_cli("setup", "agents")
@@ -1048,7 +1091,7 @@ def templates(phase, boat_phase=None, error=None):
     def row(at):
         return {"key": "default", "phase": at, "status": "failed" if at == "stuck" else "built",
                 "template": "default-0123abcd", "error": error if at == "stuck" else None}
-    return {"blocked": "", "runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
+    return {"runtimes": {"embed": [{**row("current"), "key": "sbx-base"}, row(phase)],
                                         "boat": [row(boat_phase or phase)]}}
 
 
@@ -1115,6 +1158,32 @@ class ExtensionCliTests(Cli):
         code, out, err = self.run_cli("templates")
         self.assertEqual(code, 0, err)
         self.assertIn("embed      default                          stuck      default-0123abcd  (apt-get failed)", out)
+
+    def test_templates_wait_says_each_step_and_exits_when_all_are_built(self):
+        building = templates("building", "current")
+        building["runtimes"]["embed"][1].update(step=3, steps=12, step_name="RUN apt-get install -y jq", eta_s=240)
+        later = templates("building", "current")
+        later["runtimes"]["embed"][1].update(step=9, steps=12, step_name="RUN make", eta_s=30)
+        self.polls((503, b"restarting"), building, building, later, templates("current"))
+        code, out, err = self.run_cli("templates", "--wait")
+        self.assertEqual(code, 0, err)
+        self.assertIn("templates: 2 of 3 built; building default on embed: step 3 of 12 (RUN apt-get install -y jq), "
+                      "about 4 min left", err)
+        self.assertEqual(err.count("step 3 of 12"), 1)   # a line only when the progress changes
+        self.assertIn("step 9 of 12 (RUN make), under a minute left", err)
+        self.assertIn("embed      default                          current", out)
+
+    def test_templates_wait_exits_non_zero_on_a_failure_a_blocked_setup_or_the_timeout(self):
+        # sys.exit with a message: exit status 1, the message on stderr.
+        self.polls(templates("building"), templates("stuck", error="apt-get failed"))
+        code, _, _ = self.run_cli("templates", "--wait")
+        self.assertEqual(code, "the default template failed on embed: apt-get failed")
+        self.polls({**templates("stale"), "blocked": "templates build once the setup is finished"})
+        code, _, _ = self.run_cli("templates", "--wait")
+        self.assertEqual(code, "no template builds yet: templates build once the setup is finished")
+        self.polls(templates("building"))
+        code, _, _ = self.run_cli("templates", "--wait", "--timeout", "0")
+        self.assertRegex(code, r"^the templates are not all built after 0 s \(templates: 1 of 3 built")
 
 
 def key_request(state="pending", done=(), **over):
@@ -1251,6 +1320,72 @@ class SecretsCliTests(Cli):
             with self.subTest(base), self.assertRaises(self.cli.Refused):
                 self.cli.Client(base).request("GET", "/api/me")
         self.assertEqual(len(self.control.calls), before)
+
+
+class WaitCliTests(Cli):
+    """Every wait has an overall --timeout, notes its progress at least every 30 s and exits non-zero
+    when the time runs out."""
+    # Each command that waits, with the --timeout it takes, and its default (None: from the request or
+    # DOWN_TIMEOUT_SECONDS).
+    WAITS = ((["login"], 300), (["up", "a"], 1800), (["sandbox", "info", "a", "--wait"], 1800),
+             (["runtimes", "add", "boat"], 600), (["setup", "runtime", "add", "boat"], 600),
+             (["setup", "address", "--ip"], 900), (["endpoints", "add"], 300),
+             (["extensions", "set", "amp", "--wait"], 3600), (["template", "build", "--wait"], 1800),
+             (["secrets", "status", "x", "--wait"], None), (["down", "a"], None))
+
+    def test_every_wait_takes_a_timeout_in_seconds_with_a_default(self):
+        for argv, default in self.WAITS:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.cli.parser().parse_args(argv).timeout, default)
+                self.assertEqual(self.cli.parser().parse_args([*argv, "--timeout", "7"]).timeout, 7)
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    self.cli.parser().parse_args([*argv, "--timeout", "0"])
+
+    def clock(self):
+        """A fake clock that only the CLI's own sleeps move."""
+        now = [0.0]
+        self.enterContext(patch.object(self.cli.time, "monotonic", side_effect=lambda: now[0]))
+        self.enterContext(patch.object(self.cli.time, "sleep",
+                                       side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)))
+
+    def test_a_wait_notes_its_progress_and_exits_non_zero_when_its_timeout_runs_out(self):
+        self.clock()
+        self.routes[("POST", "/api/repos/owner/app/template")] = lambda q, body: {"status": "building"}
+        self.routes[("GET", "/api/repos/owner/app/template")] = lambda q, body: {"status": "building"}
+        code, out, err = self.run_cli("template", "build", "--repo", "owner/app", "--wait", "--timeout", "100")
+        self.assertIn("still building", str(code))
+        self.assertIn("gave up after 100 s", str(code))
+        self.assertEqual(out, "")
+        notes = [line for line in err.splitlines() if "of up to 100 s" in line]
+        self.assertEqual(len(notes), 3)   # at 25, 50 and 75 s: never 30 s without one; at 100 it gives up
+        self.assertIn("still waiting (25 s of up to 100 s)", notes[0])
+
+    def test_progress_that_does_not_change_is_noted_again_with_the_time(self):
+        self.clock()
+        self.routes[("GET", "/api/endpoints")] = lambda q, body: {
+            "endpoints": [{"name": "pg", "state": "applying"}], "candidates": []}
+        self.routes[("POST", "/api/endpoints")] = lambda q, body: {"name": "pg"}
+        code, _, err = self.run_cli("endpoints", "add", "--server", "pg", "--timeout", "60")
+        self.assertIn("still applying after 60 s", str(code))
+        self.assertIn("(gave up after 60 s; --timeout sets how long to wait)", str(code))
+        self.assertEqual(err.count("applying on the server"), 3)   # once as it changed, then at 26 and 52 s
+        self.assertIn("applying on the server (26 s of up to 60 s)", err)
+
+    def test_the_browser_sign_in_gives_up_at_its_timeout(self):
+        with patch.object(self.cli.webbrowser, "open"):
+            code, out, err = self.run_cli("login", "--timeout", "1")
+        self.assertIn("the browser sign-in did not finish (gave up after 1 s", str(code))
+
+    def test_a_delete_says_it_is_still_waiting_for_the_server(self):
+        def slow(q, body):
+            threading.Event().wait(0.3)
+            return {"deleted": "a", "cleanup": None}
+        self.routes[("DELETE", "/api/sandboxes/a")] = slow
+        with patch.object(self.cli, "HEARTBEAT_SECONDS", 0.1):
+            code, out, err = self.run_cli("down", "a", "--timeout", "30")
+        self.assertEqual(code, 0, err)
+        self.assertIn("deleting sbx-a: waiting for the server (0 s of up to 30 s)", err)
+        self.assertIn("sbx-a deleted", out)
 
 
 class CliApiTests(Server):

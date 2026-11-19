@@ -138,8 +138,8 @@ class Web(TwoRuntimes, Server):
         busy = self.call("PUT", "/api/runtimes/default", {"kind": "fake"})
         self.assertEqual(busy.status_code, 409)                         # one change at a time
         from sbx_control import setup
-        with patch.object(setup, "templates_blocked", return_value=""):   # set up: an added runtime builds now
-            code, said = self.apply()
+        self.assertFalse(setup.complete())
+        code, said = self.apply()   # the setup is not finished: an added runtime builds all the same
         self.assertEqual(code, 0, said)
         self.assertFalse(self.request_file.exists())
         text = self.file.read_text()
@@ -266,6 +266,90 @@ class Web(TwoRuntimes, Server):
         response = self.call("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}})
         self.assertEqual(response.status_code, 409)
         self.assertIn("connect a domain first", response.json()["detail"])
+
+    def test_the_setup_page_runs_every_step_before_the_account_with_the_setup_token_alone(self):
+        """Domain → sandboxes → coding agents → the account last (which finishes): no session until then."""
+        from sbx_control import settings, vault
+        from sbx_control.connectors.amp import orbs
+        self.assertFalse(settings.current().admins)
+        self.assertFalse(self.client.cookies)
+        steps = [("GET", "/api/setup", None), ("GET", "/api/runtimes/available", None),
+                 ("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}}),
+                 ("GET", "/api/runtimes/change", None), ("GET", "/api/connections", None),
+                 ("PUT", "/api/setup/agents", {"agents": ["amp"]}), ("GET", "/api/templates", None)]
+        for method, url, body in steps:
+            with self.subTest(url=url):
+                response = self.call(method, url, body)
+                self.assertIn(response.status_code, (200, 202), response.text)
+                self.assertEqual(self.client.request(method, url, json=body).status_code, 401)   # not without it
+        self.assertEqual(self.apply()[0], 0)
+        self.assertIn("e2b-cloud", self.runtime.enabled())
+        with patch("sbx_control.connectors.amp.active", return_value=False), patch.object(orbs, "runtime"):
+            token = "aop_live_disposable_test_only"
+            put = self.call("PUT", "/api/connections/amp", {"values": {"provider_token": token, "enabled": "true"}})
+            self.assertEqual(put.status_code, 200, put.text)
+            self.assertNotIn(token, put.text)
+            self.assertEqual(vault.get(orbs.TOKEN), token)
+        self.assertIn("runtimes", self.call("GET", "/api/templates").json())   # the setup token reads the builds
+        self.assertFalse(self.client.cookies)                                 # still nobody signed in
+        with patch("sbx_control.setup.address_ready", return_value=True):
+            self.create_admin()                                              # the account, last
+            # It finishes as that admin (the browser by its new session; here by their password).
+            done = self.call("POST", "/api/setup/complete", {"email": "operator@example.com",
+                                                             "password": "test-only-password-123"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
+        # Set up: admins only; the token is spent.
+        from fastapi.testclient import TestClient
+        with TestClient(self.app.app, base_url="https://203.0.113.10") as fresh:
+            for method, url, body in steps[1:] + [("PUT", "/api/connections/amp", {"values": {}}),
+                                                  ("POST", "/api/setup/admin", {"email": "x@example.com",
+                                                                                "password": "test-only-password-9"})]:
+                with self.subTest(after=url):
+                    self.assertEqual(fresh.request(method, url, headers=self.headers, json=body).status_code, 401)
+
+    def test_boat_key_sets_the_plan_from_boat_and_a_trial_key_is_refused(self):
+        from fake_boat import FakeBoat
+        from sbx_control.runtime.boat import Boat
+        fake = FakeBoat()
+        self.enterContext(patch.object(Boat, "test", return_value=self.checks))
+        original = Boat.api
+
+        def api(backend):
+            backend.transport = fake
+            return original(backend)
+        self.enterContext(patch.object(Boat, "api", autospec=True, side_effect=api))
+        fake.plan = "trial"
+        refused = self.call("POST", "/api/runtimes", {"kind": "boat", "values": {"BOAT_API_KEY": "boat_test-only"}})
+        self.assertEqual(refused.status_code, 400, refused.text)
+        detail = refused.json()["detail"]
+        self.assertIn("make the first payment in Boat's dashboard (Billing), then save the key again", detail["message"])
+        self.assertEqual([(c["name"], c["ok"], c["field"]) for c in detail["checks"]],
+                         [("Boat plan", False, "BOAT_API_KEY")])
+        self.assertNotIn("boat_test-only", refused.text)
+        self.assertFalse(self.request_file.exists())                         # nothing queued
+        self.assertEqual(self.store, {})                                     # nor its key kept
+        self.assertNotIn("boat", self.runtime.enabled())
+        for plan_key, preset, cpu in (("box_20", "20", "8"), ("box_100", "100", "16")):
+            with self.subTest(plan=plan_key):
+                fake.plan = plan_key
+                added = self.call("POST", "/api/runtimes", {"kind": "boat", "values": {
+                    "BOAT_API_KEY": "boat_test-only"}})
+                self.assertEqual(added.status_code, 202, added.text)
+                queued = json.loads(self.request_file.read_text())
+                self.assertEqual(queued["values"]["BOAT_MAX_CPU"], cpu)     # the plan's limits, from Boat's answer
+                self.request_file.unlink()
+                (self.root / "state/runtime-change.json").unlink(missing_ok=True)
+        # A plan given wins over Boat's.
+        added = self.call("POST", "/api/runtimes", {"kind": "boat", "plan": "500", "values": {
+            "BOAT_API_KEY": "boat_test-only"}})
+        self.assertEqual(added.status_code, 202, added.text)
+        self.assertEqual(json.loads(self.request_file.read_text())["values"]["BOAT_MAX_SANDBOXES"], "1000")
+        # On the server (sbx-admin runtime add, and the queue's apply): a trial key is refused there too.
+        from sbx_control import runtime_settings, runtimes
+        fake.plan = "trial"
+        with self.assertRaisesRegex(runtimes.Refused, "then save the key again"):
+            runtime_settings.add("boat", {"BOAT_API_KEY": "boat_test-only"})
 
     def test_admins_only_once_set_up(self):
         from sbx_control import settings

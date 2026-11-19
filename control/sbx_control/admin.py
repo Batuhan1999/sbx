@@ -10,7 +10,8 @@
   sbx-admin restore FILE --key KEY   on a freshly installed host
   sbx-admin doctor                   every connection: its state and live checks
   sbx-admin catalog ls|connections|install DIR   the packages; the saved connections; an operator's package
-  sbx-admin setup-link               the one-time link that opens the first-run setup (a new token each time)
+  sbx-admin setup-link [--new]       the link that opens the first-run setup: the same one each call until
+                                     the setup finishes; --new replaces it (the old link stops working)
   sbx-admin setup-reset [--sign-in]  back to 'being set up' (keeps the domain and connections; --sign-in clears the sign-in and admins)
   sbx-admin jobs [run ID]            what runs on its own (timers, the keeper, builds), and start one now
   sbx-admin token create EMAIL --label L   an API token for EMAIL, printed once (Linux, CI: no sbx login)
@@ -384,7 +385,7 @@ def main(argv: list) -> int:
     catalog_cmd = sub.add_parser("catalog")
     catalog_cmd.add_argument("what", choices=["ls", "connections", "install"])
     catalog_cmd.add_argument("directory", nargs="?", type=pathlib.Path)
-    sub.add_parser("setup-link")
+    sub.add_parser("setup-link").add_argument("--new", action="store_true")
     sub.add_parser("setup-infer")
     sub.add_parser("setup-reset").add_argument("--sign-in", action="store_true")
     jobs = sub.add_parser("jobs"); jobs.add_argument("verb", nargs="?", choices=["run"]); jobs.add_argument("id", nargs="?")
@@ -581,7 +582,7 @@ def main(argv: list) -> int:
         if setup.complete():
             print("the setup is complete; connections are managed in Settings (or sbx-admin connect)")
             return 0
-        print(setup.link(setup.mint_token()))
+        print(setup.link(("" if a.new else setup.current_token()) or setup.mint_token()))
         return 0
     if a.cmd == "catalog":
         from . import catalog

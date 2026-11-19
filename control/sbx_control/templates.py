@@ -321,22 +321,34 @@ class BuildFailed(Exception):
     """A template build the runtime refused, its message masked."""
 
 
-def build_logger(key: str, hidden, kind: str | None = None):
+def build_logger(key: str, hidden, kind: str | None = None, on_step=None):
+    """The runtime's on_log for a build: each line kept (BUILD_LOGS) and
+    printed, masked; on_step(step, steps, name) when a line starts a step
+    (runtime.build_step)."""
     lines = BUILD_LOGS[(kind or runtime.default(), key)] = collections.deque(maxlen=300)
 
     def log(entry):
         if getattr(entry, "level", "info") == "debug":
             return
-        line = f"{time.strftime('%H:%M:%S', time.gmtime())}  {mask(str(getattr(entry, 'message', entry)), hidden)}"
+        message = mask(str(getattr(entry, "message", entry)), hidden)
+        line = f"{time.strftime('%H:%M:%S', time.gmtime())}  {message}"
         lines.append(line)
         print(line, flush=True)
+        step = runtime.build_step(message) if on_step is not None else None
+        if step:
+            try:
+                on_step(*step)
+            except Exception as error:   # progress is a nicety: the build goes on
+                print(f"template build {key}: progress: {error!r}", flush=True)
     return log
 
 
-def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = None, base: str | None = None):
+def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = None, base: str | None = None,
+          on_step=None):
     """Build the plan as p.name on the runtime of kind (None: the default);
     a repo's needs its mirror (git_dir). base: the name the base template was
-    built under (its build row), which it starts from; default: the name planned now."""
+    built under (its build row), which it starts from; default: the name planned now.
+    on_step(step, steps, name): each step the runtime's builder starts (build_logger)."""
     BUILD_LOGS.pop((kind or runtime.default(), p.key), None)
     served = []
     try:
@@ -361,7 +373,7 @@ def build(p: Plan, git_dir: pathlib.Path | None = None, *, kind: str | None = No
         try:
             return runtime.build_template(t, alias=runtime.template_name(p.name, kind), cpu=p.size["cpu"],
                                           memory_mb=p.size["memory_mb"], disk_mb=p.size["disk_mb"],
-                                          on_log=build_logger(p.key, hidden, kind), kind=kind)
+                                          on_log=build_logger(p.key, hidden, kind, on_step), kind=kind)
         except Exception as error:
             # The runtime's error repeats the command that failed.
             raise BuildFailed(mask(str(error), hidden)) from None

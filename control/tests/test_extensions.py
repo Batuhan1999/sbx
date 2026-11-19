@@ -1,6 +1,7 @@
 """The extension interfaces: the connector registry, what contributions do to
 a template's plan (fingerprint, name, staleness) and to a sandbox's runtime.
 The connectors' host units are in test_host.py."""
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -218,6 +219,23 @@ class ExtensionTests(Installation):
         self.assertEqual(template_builds.state(templates.BASE)["status"], "built")
         with patch.object(templates, "bundle_origin", side_effect=ValueError("no origin")):
             self.assertEqual(template_builds.no_address(templates.DEFAULT), "")   # the default serves nothing itself
+
+    def test_a_build_that_serves_files_waits_for_the_domain_s_certificate(self):
+        # Its builders verify the certificate: one fetched before it's issued fails, and the base would stay stuck.
+        from sbx_control import settings, template_builds, templates
+        from sbx_control.connections import domain
+        settings.update('domain', {'name': 'sbx.example.com'}, by='test')
+        with patch.object(templates, "bundle_origin", return_value="https://app.sbx.example.com"), \
+                patch.dict(os.environ, {"SBX_TEMPLATE_BUNDLE_ORIGIN": ""}):
+            with patch.object(domain, "certificate_ready", return_value=False):
+                self.assertIn("certificate is not issued yet", template_builds.no_address(templates.BASE))
+                with self.assertRaises(template_builds.NoAddress):
+                    template_builds.build_now(templates.BASE)
+            with patch.object(domain, "certificate_ready", return_value=True):
+                self.assertEqual(template_builds.no_address(templates.BASE), "")
+        with patch.dict(os.environ, {"SBX_TEMPLATE_BUNDLE_ORIGIN": "https://bundles.internal"}), \
+                patch.object(domain, "certificate_ready", return_value=False):
+            self.assertEqual(template_builds.no_address(templates.BASE), "")   # an origin of its own: not held
 
     def test_connecting_or_enabling_amp_changes_no_template(self):
         from sbx_control import settings, template_builds, templates

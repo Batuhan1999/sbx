@@ -106,9 +106,12 @@ class ReachabilityTests(Installation):
         fake.readiness.return_value = []
         fake.disk.return_value = None
         self.sandbox.commands.run.return_value = SimpleNamespace(stdout="6 000\n", stderr="", exit_code=0)
-        with patch.dict(runtime._backends, {"embed": fake}):
+        from sbx_control import template_scheduler
+        with patch.dict(runtime._backends, {"embed": fake}), \
+                patch.object(template_scheduler, "kick") as kick:
             names = [c.name for c in connections.get("runtime").test()]
             ready = setup.readiness()
+            kick.assert_called_once()   # a base not built yet starts building now
             fake.test.return_value = [Check("Embed API", False, "down")]
             down = [c.name for c in connections.get("runtime").test()]
         self.assertEqual(names, ["Embed API", self.reachability.NAME])
@@ -126,6 +129,19 @@ class SetupGateTests(Server):
         for path in ("/dist/version/x", "/dist/versions", "/dist/sbx.tgz.sha256/x", "/install/x", "/api/sandboxes"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 503)
+
+    def test_a_template_build_downloads_what_it_is_served_while_setup_is_incomplete(self):
+        """Templates build during the setup: the base's build fetches Amp's tools from /bundles."""
+        import tempfile
+        from pathlib import Path
+        from sbx_control import setup, templates
+        self.assertFalse(setup.complete())
+        bundles = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(templates, "bundles", return_value=bundles))
+        token, _ = templates.serve_bytes(b"artifact")
+        self.assertEqual(self.client.get("/bundles", headers={templates.TOKEN_HEADER: token}).content, b"artifact")
+        self.assertEqual(self.client.get("/bundles").status_code, 404)        # its one-time token is the key
+        self.assertEqual(self.client.get(f"/bundles/{token}").status_code, 503)
 
     def test_the_cli_installer_and_sbx_login_answer_while_setup_is_incomplete(self):
         """So an agent signs the CLI in as the admin once the account exists and finishes the setup itself."""

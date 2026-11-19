@@ -19,7 +19,7 @@
 # default where Embed is off; such a host needs about 2 GiB of memory and
 # 10 GiB of disk, and a domain (E2B's sandboxes call this server back at
 # login.D). A host that can run neither installs with no runtime enabled
-# (SBX_RUNTIMES empty): add one in the setup wizard or Settings → Sandbox
+# (SBX_RUNTIMES empty): add one on the setup page's Sandboxes step or Settings → Sandbox
 # runtimes, or with sbx-admin runtime add e2b-cloud. An upgrade keeps the
 # runtimes the installation enables (SBX_RUNTIMES); a key given again
 # replaces E2B Cloud's or enables it. Later: sbx-admin runtime add, remove,
@@ -27,7 +27,8 @@
 #
 # Options:
 #   --domain D        previews at <name>.D, sbx-control at app.D (optional)
-#   --email E         for Let's Encrypt when configuring a domain
+#   --email E         the first admin unless --admin names one; also the Let's
+#                     Encrypt account's contact (optional: it sends no expiry emails)
 #   --dns P           how the wildcard certificate is issued: delegated (the
 #                     default: one NS record hands _acme-challenge.D to this
 #                     host, which answers itself; no credential), route53 (an
@@ -83,10 +84,17 @@
 # nested virtualization enabled. With --domain D: A records for D and *.D pointing
 # here, and for --dns delegated also the record `_acme-challenge.D NS D.` and
 # inbound UDP and TCP port 53 (this host answers the certificate's DNS
-# challenge). Without a domain: inbound TCP port 80 for the IP certificate.
+# challenge). Without a domain: inbound TCP port 80 for the IP certificate,
+# which the installer gets (on a public IP, while the setup is open and has
+# no address yet) before it prints the onboarding link.
 # The public interface accepts only SSH, HTTPS and what the certificate needs
 # (network.public_ports: sbx-admin config get network); open the same in a
 # cloud firewall.
+#
+# While the first-run setup is open, the last line is the onboarding link,
+# `==> Open the onboarding: https://ADDRESS/app/setup#t=TOKEN` (a one-time
+# token: keep it out of shared logs); the line before it says when the
+# browser will warn. An installation that is set up prints its address instead.
 set -eu
 
 domain="" email="" dns="" sign_in="" repos="" public_repos="" admin="" hugepages="" internal="" skip_templates="" check=""
@@ -249,7 +257,7 @@ cloud=""
 { [ -n "$cloud_key" ] || enables e2b-cloud; } && cloud=1
 if [ -n "$check" ]; then check_report && exit 0; exit 1; fi
 # Neither: sbx installs with no runtime enabled; an admin adds a provider's
-# in the setup wizard (it needs a domain: its sandboxes call this server back).
+# on the setup page (it needs a domain: its sandboxes call this server back).
 none=""
 if [ -z "$embed" ] && [ -z "$cloud" ] && [ -z "$installed" ]; then
   none=1
@@ -468,5 +476,16 @@ if [ -z "$skip_templates" ]; then
 fi
 
 [ -z "$none" ] || echo "
-No sandbox runtime yet: add a sandbox runtime in the setup wizard (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
+No sandbox runtime yet: add one on the setup page's Sandboxes step (or sbx-admin runtime add e2b-cloud, the API key on stdin)."
+# While the first-run setup is open on a server with no address yet: IP
+# access with a trusted certificate (Let's Encrypt over port 80), so the
+# onboarding link below opens without a browser warning; without it, the
+# self-signed one until the setup chooses an address (setup.first_certificate).
+setup_open=0
+sbx-admin setup-infer >/dev/null || setup_open=$?
+if [ "$setup_open" = 3 ]; then
+  say "HTTPS for the first visit"
+  (cd /opt/sbx-control/current && venv/bin/python -m sbx_control.setup first-certificate) ||
+    echo "self-signed for now: could not get the IP certificate (above)"
+fi
 SBX_PASSWORD=$password SBX_ROLLBACK=${rollback:-} sh /opt/sbx-control/current/install-report.sh

@@ -8,7 +8,7 @@ import time
 
 from ... import howto
 from ..hosted import hosted_status
-from .plans import API_KEY, KEY_WARN_DAYS, KIND, TRIAL_NOTE
+from .plans import API_KEY, KEY_WARN_DAYS, KIND, TRIAL_NOTE, preset_of
 
 
 class Account:
@@ -38,6 +38,10 @@ class Account:
         except Exception:   # a scoped key may not list keys: no expiry warning then
             pass
         return facts
+
+    def account_plan(self):
+        """The preset Boat's own plan key for the account names (plans.preset_of), asked now."""
+        return preset_of(self.plan(fresh=True))
 
     def _expiry_warning(self, facts: dict) -> str:
         when = facts.get("key_expires_at")

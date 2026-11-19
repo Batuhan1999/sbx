@@ -111,11 +111,12 @@ class Client:
             except (ValueError, AttributeError):
                 pass
             if isinstance(detail, dict):   # {message, checks}: what failed, each check that did, and how to fix it
-                detail = "; ".join([detail.get("message") or "refused", *(check_line(c)
-                                                                          for c in detail.get("checks") or [] if not c.get("ok"))])
+                message = detail.get("message") or "refused"
+                detail = "; ".join([message, *(check_line(c) for c in detail.get("checks") or []
+                                               if not c.get("ok") and c.get("detail") != message)])
             if error.code == 401:
-                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints a "
-                              "new one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
+                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints the "
+                              "current one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
     def api(self, method, path, body=None, raw=False, timeout=600, late=None):
@@ -148,16 +149,56 @@ def note(text):
 
 
 RETRIED = (502, 503, 504)   # sbx-control restarting behind nginx
+HEARTBEAT_SECONDS = 25   # how often at least a wait says it is still waiting (well within 30 s)
+
+
+def seconds(text):
+    """A --timeout: a whole number of seconds, at least 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text}: a whole number of seconds, at least 1")
+    return value
+
+
+def waited(elapsed, timeout):
+    return f"{int(elapsed)} s of up to {int(timeout)} s"
+
+
+def gave_up(message, timeout):
+    """A wait's exit once its --timeout ran out: what is still pending, then the limit that ended it."""
+    return f"{message} (gave up after {int(timeout)} s; --timeout sets how long to wait)"
+
+
+@contextlib.contextmanager
+def ticking(what, timeout):
+    """While one long call waits for its answer: '<what> (N s of up to T s)' on stderr every
+    HEARTBEAT_SECONDS, from a thread that stops with the call."""
+    import threading
+    stop, started = threading.Event(), time.monotonic()
+
+    def tick():
+        while not stop.wait(HEARTBEAT_SECONDS):
+            note(f"{what} ({waited(time.monotonic() - started, timeout)})")
+    threading.Thread(target=tick, daemon=True).start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def follow(fetch, verdict, timeout, *, interval=2.0, first=None, retry_statuses=(), late="still waiting"):
     """What fetch() answers, followed until verdict(found) -> (progress, done)
     says it is done: then that answer. Progress (text or None) is noted when
-    it changes; done is True, False, or why it failed (a text: it exits with
+    it changes, and again with the time waited whenever HEARTBEAT_SECONDS pass
+    without a note; done is True, False, or why it failed (a text: it exits with
     it). first: an answer in hand already. A fetch refused with one of retry_statuses, or a dropped
     connection while there are any, is tried again; any other refusal exits.
-    Past timeout: exits with late (or late(found))."""
-    deadline, said = time.monotonic() + timeout, None
+    Past timeout: exits non-zero with late (or late(found)) and the limit."""
+    started = time.monotonic()
+    deadline, said, noted = started + timeout, None, started
     found, fetching = first, first is None
     while True:
         if fetching:   # the first fetch too is tried again as the later ones are
@@ -174,22 +215,26 @@ def follow(fetch, verdict, timeout, *, interval=2.0, first=None, retry_statuses=
             progress, done = verdict(found)
             if progress and progress != said:
                 note(progress)
-                said = progress
+                said, noted = progress, time.monotonic()
             if isinstance(done, str):
                 sys.exit(done)
             if done:
                 return found
-        if time.monotonic() > deadline:
-            sys.exit(late(found) if callable(late) and found is not None else late if isinstance(late, str)
-                     else "still waiting")
+        now = time.monotonic()
+        if now >= deadline:
+            sys.exit(gave_up(late(found) if callable(late) and found is not None else late if isinstance(late, str)
+                             else "still waiting", timeout))
+        if now - noted >= HEARTBEAT_SECONDS:
+            note(f"{(said or 'still waiting').strip()} ({waited(now - started, timeout)})")
+            noted = now
         if interval:
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
 
-def login_control():
+def login_control(timeout=300):
     """Browser sign-in: sbx-control hands a loopback listener a one-time
     code, which is exchanged here, with the verifier only this process
-    knows, for the API token."""
+    knows, for the API token. Waits up to timeout seconds for the browser."""
     state, verifier = secrets.token_urlsafe(16), secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     received = {}
@@ -215,13 +260,17 @@ def login_control():
     url = f"{CONTROL}/cli/login?{urllib.parse.urlencode(query)}"
     print(f"Opening {url}")
     webbrowser.open(url)
-    deadline = time.time() + 300
-    while "code" not in received and time.time() < deadline:
+    started = time.monotonic()
+    deadline, noted = started + timeout, started
+    while "code" not in received and time.monotonic() < deadline:
         server.timeout = 1
         server.handle_request()
+        if time.monotonic() - noted >= HEARTBEAT_SECONDS and "code" not in received:
+            noted = time.monotonic()
+            note(f"waiting for the sign-in in your browser ({waited(noted - started, timeout)})")
     server.server_close()
     if "code" not in received:
-        sys.exit("sign-in timed out")
+        sys.exit(gave_up("the browser sign-in did not finish", timeout))
     exchange = urllib.request.Request(f"{CONTROL}/cli/token", method="POST",
                                       data=json.dumps({"code": received["code"], "verifier": verifier}).encode(),
                                       headers={"Content-Type": "application/json"})
@@ -256,7 +305,7 @@ def agent_login(kind, agent):
 
 def login(args):
     if args.agent is None:
-        login_control()
+        login_control(getattr(args, "timeout", 300))
         return
     found = agents()
     agent = found.get(args.agent) or sys.exit(f"no agent {args.agent} on this server: {', '.join(found) or 'none'}")
@@ -447,12 +496,15 @@ def bridge_ready(host, url, token):
     (a sign-in, 403) or whose VM failed (sbx's failed page, a 502) exits with
     what to do. Anything else is websocat's to meet. host: the sandbox, as
     ssh's %h names it."""
-    deadline, said = time.monotonic() + SSH_REACH_SECONDS, False
+    deadline, said, noted = time.monotonic() + SSH_REACH_SECONDS, False, SSH_REACH_SECONDS
     late = f"{host}: still not ready after {SSH_REACH_SECONDS}s; `sbx sandbox info NAME --wait` follows it"
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:   # no probe after the budget, and none outlasting it
             sys.exit(late)
+        if said and noted - remaining >= HEARTBEAT_SECONDS:   # the clock read above: no other
+            noted = remaining
+            note(f"{host}: still waiting for the sandbox ({waited(SSH_REACH_SECONDS - remaining, SSH_REACH_SECONDS)})")
         try:
             status, retry, page = bridge_status(url, token, timeout=remaining)
         except (OSError, http.client.HTTPException) as error:
@@ -473,7 +525,7 @@ def bridge_ready(host, url, token):
             sys.exit(late)
         if not said:
             note(f"{host}: waiting for the sandbox to be ready ...")
-            said = True
+            said, noted = True, remaining
         retry = (retry or "").strip()
         # Delay-seconds only: an HTTP date, a negative or any other value waits 2 s.
         # Leading zeros dropped and capped by length first: int() of thousands of digits raises.
@@ -577,7 +629,8 @@ def wait_for(name, timeout):
             f"{name} failed:\n{info.get('error') or '(no error recorded)'}\n{why + chr(10) if why else ''}"
             f"fix it, then `sbx sandbox prepare {name}`; `sbx logs {name}` follows the app"
             if failed(info) else not record.get("active"))
-    return follow(lambda: api("GET", f"/api/sandboxes/{name}?wait=30", timeout=90), verdict, timeout, interval=0,
+    # The server holds each poll up to 20 s, so the wait notes its progress within 30 s.
+    return follow(lambda: api("GET", f"/api/sandboxes/{name}?wait=20", timeout=90), verdict, timeout, interval=0,
                   late=lambda info: f"{name} is still {((info.get('lifecycle') or {}).get('phase') or 'starting').replace('_', ' ')}; "
                                     f"`sbx sandbox info {name} --wait` follows it")
 
@@ -601,6 +654,43 @@ def print_urls(info, name):
 """)
 
 
+def template_progress():
+    """One line on the templates still building (GET /api/templates), or ""."""
+    try:
+        found = Client(CONTROL).request("GET", "/api/templates", None, False, 30)
+    except (Refused, OSError, http.client.HTTPException):
+        return ""
+    building = [t for ts in found.get("runtimes", {}).values() for t in ts if t.get("phase") != "current"]
+    return "; ".join(f"{t['key']} {t.get('phase')}" + (f" step {t['step']}/{t['steps']}" if t.get("steps") else "")
+                     for t in building)
+
+
+def create_when_built(body, started, timeout):
+    """POST /api/sandboxes, waiting while the template it starts from is still building (503 with
+    Retry-After, the first time on a new server): progress every heartbeat, until timeout."""
+    deadline = started + timeout
+    said = 0.0
+    while True:
+        try:
+            return Client(CONTROL).request("POST", "/api/sandboxes", body, False, max(30, deadline - time.time()))
+        except Refused as refused:
+            if refused.status != 503 or "template" not in str(refused) or time.time() >= deadline:
+                sys.exit(str(refused))
+            last = refused
+        except urllib.error.URLError:
+            return api("POST", "/api/sandboxes", body, timeout=max(30, deadline - time.time()))   # never delivered
+        except (OSError, http.client.HTTPException) as error:
+            # sent, but no answer: the sandbox may exist, so don't create it again
+            sys.exit(f"no answer to creating {body['name']} ({error}); see sbx ls before running sbx up again")
+        if time.time() - said >= HEARTBEAT_SECONDS:
+            progress = template_progress()
+            note(f"[{time.time() - started:4.1f}s] waiting for the templates{': ' + progress if progress else ''}")
+            said = time.time()
+        time.sleep(min(20, max(1, deadline - time.time())))
+        if time.time() >= deadline:
+            sys.exit(str(last))
+
+
 def up(args):
     started = time.time()
     repo, branch = args.repo, args.branch
@@ -615,12 +705,12 @@ def up(args):
     body = {"name": args.name, "branch": branch, "public_keys": keys, "repo": repo}
     if args.runtime:
         body["runtime"] = args.runtime
-    info = api("POST", "/api/sandboxes", body)
+    info = create_when_built(body, started, args.timeout)
     if write_host(args.name, info) and keys:
         hand_credentials(args.name)
     note(f"[{time.time() - started:4.1f}s] sbx-{args.name} is on {info.get('branch') or branch or 'the default branch'}")
     if not args.no_wait:
-        info = wait_for(args.name, args.timeout)
+        info = wait_for(args.name, max(1, started + args.timeout - time.time()))
         note(f"[{time.time() - started:4.1f}s] {outcome(info)}")
     if args.json:
         print(json.dumps({**info, "ssh_host": f"sbx-{args.name}"}))
@@ -774,11 +864,11 @@ def _read_secret(prompt):
 
 
 def _runtime_body(args, runtime, adding):
-    """What a change sends: --plan (the first plan when adding without one; the server resolves its limits),
+    """What a change sends: --plan (without one, adding takes the plan the provider says the key's account
+    is on, else the runtime's default limits; the server resolves its limits),
     each --set, and each --secret read from stdin (one line each, in order; hidden at a terminal): a secret
     never on the command line."""
     settings = {s["key"]: s for s in runtime.get("settings") or []}
-    presets = runtime.get("presets") or []
     values = {}
     for pair in args.set or []:
         key, sep, value = pair.partition("=")
@@ -795,8 +885,7 @@ def _runtime_body(args, runtime, adding):
         if not value:
             sys.exit(f"no value for {key} on stdin")
         values[key] = value
-    plan = args.plan or (presets[0]["name"] if adding and presets else None)
-    return {"plan": plan, "values": values} if plan else {"values": values}
+    return {"plan": args.plan, "values": values} if args.plan else {"values": values}
 
 
 def runtime_change(args, client):
@@ -1169,17 +1258,60 @@ def wait_rebuilds(report, timeout, interval=10):
                   late=f"the templates are still rebuilding after {timeout} s: sbx templates shows them")
 
 
+def _minutes(seconds) -> str:
+    return "under a minute" if seconds < 60 else f"about {round(seconds / 60)} min"
+
+
+def template_step(kind, t) -> str:
+    """A building template's progress in words: "sbx-base on embed: step 3 of 12 (RUN ...), about 4 min left"."""
+    line = f"{t['key']} on {kind}"
+    if t.get("steps"):
+        line += f": step {t.get('step') or 0} of {t['steps']}" + (f" ({t['step_name']})" if t.get("step_name") else "")
+    if t.get("eta_s") is not None:
+        line += f", {_minutes(t['eta_s'])} left"
+    return line
+
+
+def templates_verdict(found):
+    """follow()'s verdict on GET /api/templates: (progress, done): done once every template is built as
+    planned now; why it failed (a text) when one failed, can't be planned, or none may build yet."""
+    if found.get("blocked"):
+        return None, f"no template builds yet: {found['blocked']}"
+    rows = [(kind, t) for kind, listed in found["runtimes"].items() for t in listed]
+    for kind, t in rows:
+        if t["phase"] == "stuck":
+            return None, f"the {t['key']} template failed on {kind}: {(t.get('error') or 'sbx templates shows it')[-300:]}"
+        if t["phase"] == "unplanned":
+            return None, f"the {t['key']} template on {kind} can't be planned: sbx templates shows it"
+    left = [(kind, t) for kind, t in rows if t["phase"] != "current"]
+    if not left:
+        return None, True
+    building = [template_step(kind, t) for kind, t in left if t["phase"] == "building"]
+    progress = f"templates: {len(rows) - len(left)} of {len(rows)} built" + (f"; building {'; '.join(building)}"
+                                                                             if building else "; waiting to build")
+    return progress, False
+
+
 def templates_cmd(args):
-    """sbx templates (admins): every template sandboxes start from, per runtime, and where its build stands."""
-    found = api("GET", "/api/templates")
+    """sbx templates (admins; the setup link while the setup is open): every template sandboxes start from,
+    per runtime, and where its build stands; with --wait, followed until all are built."""
+    signed_in = CONTROL and keychain_get(API_TOKEN_SERVICE)
+    link = args.link_file or (not signed_in and os.environ.get("SBX_SETUP_LINK"))
+    client = setup_client(args) if link else Client(CONTROL)
+    fetch = lambda: client.request("GET", "/api/templates", timeout=60)   # noqa: E731
+    if args.wait:
+        found = follow(fetch, templates_verdict, args.timeout, interval=5, retry_statuses=RETRIED,
+                       late=lambda found: f"the templates are not all built after {args.timeout} s "
+                                          f"({templates_verdict(found)[0] or 'sbx templates shows them'})")
+    else:
+        found = client.api("GET", "/api/templates")
     if args.json:
         print(json.dumps(found))
         return
-    if found.get("blocked"):
-        print(f"none builds yet: {found['blocked']}")
     for kind, listed in found["runtimes"].items():
         for t in listed:
-            print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}"
+            step = f"  step {t.get('step') or 0}/{t['steps']}" if t["phase"] == "building" and t.get("steps") else ""
+            print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}{step}"
                   + (f"  ({t['error'][-200:]})" if t.get("error") else ""))
 
 
@@ -1209,13 +1341,13 @@ def setup_client(args):
     credential, and stdin is the secrets'), signed in with its token."""
     link = _setup_link(args)
     if not link:
-        sys.exit("the setup link install.sh printed (or sbx-admin setup-link): in SBX_SETUP_LINK, or a file named "
+        sys.exit("the onboarding link install.sh printed last (or sbx-admin setup-link): in SBX_SETUP_LINK, or a file named "
                  "by --link-file; never on the command line")
     url = urllib.parse.urlsplit(link)
     token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
     # http only to this machine itself (a tunnel): the token never crosses a network in plain text.
     if not tls_or_loopback(link) or not url.netloc or not token:
-        sys.exit("that is not a setup link: https://HOST/setup#t=TOKEN")
+        sys.exit("that is not a setup link: https://HOST/app/setup#t=TOKEN")
     context = None
     if args.insecure:
         import ssl
@@ -1250,12 +1382,12 @@ def setup_status(args, client):
             print(f"{'done' if found['done'] else 'todo':<5} {names[step]:<8} {found['summary']}")
     print(f"server address: {state['host'].get('address') or 'unknown'}; link: {state.get('link', '')}")
     print("ready to finish: sbx setup finish" if state.get("can_complete") else
-          "next: sbx setup address | admin | runtime add | agents, then sbx setup finish")
+          "next: sbx setup address | runtime add | admin, then sbx setup finish")
 
 
 def setup_agents(args, client):
-    """The coding agents every template is built with (none is a choice); no
-    template builds before this is chosen and the setup is finished."""
+    """Optional: the coding agents whose connections to suggest (none is a
+    choice); every template has every agent whatever is chosen."""
     if not args.kinds:
         state = client.api("GET", "/api/setup")
         if args.json:
@@ -1270,8 +1402,8 @@ def setup_agents(args, client):
     if args.json:
         print(json.dumps(state))
         return
-    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'}; every template is built "
-          "with them once the setup is finished (their own keys may come later)")
+    print(f"coding agents: {_steps(state).get('agents', {}).get('summary') or 'none'} (optional; connect each "
+          "one later under Extensions)")
 
 
 def setup_address(args, client):
@@ -1298,12 +1430,15 @@ def setup_address(args, client):
         if _steps(state).get("address", {}).get("done"):
             return None, True
         error = state["access"].get("certificate_error")
+        if error and args.domain:   # saving the domain cleared the last one: this attempt failed, and nothing retries soon
+            return None, f"the certificate failed: {error}\nfix it, then run the same command again (it retries)"
         return f"waiting for the certificate{': ' + error if error else ''}", False
     state = follow(lambda: client.api("GET", "/api/setup"), verdict, args.timeout, interval=5,
                    late=lambda state: f"HTTPS is not ready after {args.timeout} s "
                                       f"({state['access'].get('certificate_error') or 'no certificate yet'}); "
                                       "sbx setup status")
-    print(f"address ready: {state['access']['url']}" + (f"; the setup link is now {state['link']}" if args.domain else ""))
+    print(f"address ready: {state['access']['url']}" + (
+        f"; the setup page is now at {state['link']} (the link's token still works)" if args.domain else ""))
 
 
 def setup_runtime(args, client):
@@ -1318,7 +1453,7 @@ def setup_admin(args, client):
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
     client.api("POST", "/api/setup/admin", {"email": args.email, "password": password})
-    print(f"{args.email} has an account and is an admin; next: sbx login as them, sbx setup runtime add | agents, then sbx setup "
+    print(f"{args.email} has an account and is an admin; next: sbx login as them, then sbx setup "
           f"finish (or sbx setup finish --admin {args.email}, their password on stdin again)")
 
 
@@ -1335,7 +1470,7 @@ def setup_finish(args, client):
     if args.json:
         print(json.dumps(state))
         return
-    print(f"set up: {state['access']['url']}; the setup link no longer works, and the templates build now "
+    print(f"set up: {state['access']['url']}; the setup link no longer works. Templates build on their own "
           "(about 10 minutes the first time; sbx templates). Next, if not signed in yet: sbx login")
 
 
@@ -1380,10 +1515,12 @@ def down(args):
     delete, so it is a warning, not the exit status (--json has it all)."""
     # The server answers once its cleanup ran: a paused sandbox's resume (a
     # provider's can take up to 25 minutes) and the hook's 5 come first.
-    result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=DOWN_TIMEOUT_SECONDS,
-                 late=f"no answer from sbx-control (none within {DOWN_TIMEOUT_SECONDS // 60} minutes, or the "
-                      f"connection closed before it), so whether "
-                      f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
+    timeout = getattr(args, "timeout", None) or DOWN_TIMEOUT_SECONDS
+    with ticking(f"deleting sbx-{args.name}: waiting for the server", timeout):
+        result = api("DELETE", f"/api/sandboxes/{args.name}", timeout=timeout,
+                     late=f"no answer from sbx-control (none within {int(timeout)} s, or the "
+                          f"connection closed before it), so whether "
+                          f"sbx-{args.name} was deleted is unknown: check `sbx ls`") or {}
     forget_host(args.name)
     if args.json:
         print(json.dumps(result))
@@ -1915,13 +2052,14 @@ def detach_cmd(args):
 def change_flags(p):
     """The flags of a runtime change (sbx runtimes add | set | remove | default, sbx setup runtime add)."""
     p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom; add "
-                   "without one is on the first plan (hobby)")
+                   "without one takes the plan the provider says the key's account is on (Boat), else the "
+                   "runtime's default limits (E2B Cloud: hobby). A Boat trial key is refused")
     p.add_argument("--set", action="append", metavar="KEY=VALUE",
                    help="add, set: a setting, in its unit (seconds, MiB); repeatable; a plan fixes its own limits")
     p.add_argument("--secret", action="append", metavar="KEY",
                    help="add, set: a secret setting, its value read from stdin (one line each), never argv")
     p.add_argument("--no-wait", action="store_true", help="return once the change is queued")
-    p.add_argument("--timeout", type=int, default=600, help="seconds to wait for the change (default 600)")
+    p.add_argument("--timeout", type=seconds, default=600, help="seconds to wait for the change (default 600)")
     p.add_argument("--json", action="store_true", help="as the API answers (a change: its outcome)")
 
 
@@ -1939,6 +2077,8 @@ def parser():
     p = command("login", login, "sign in to sbx-control; with AGENT (claude, codex, ...): store your own login "
                 "for that agent on this Mac")
     p.add_argument("agent", nargs="?")
+    p.add_argument("--timeout", type=seconds, default=300,
+                   help="seconds to wait for the sign-in in the browser (default 300)")
     p = command("up", up, "a sandbox of the repo you are in, on your branch if GitHub has it; waits until it is ready")
     p.add_argument("name")
     p.add_argument("--repo", help=repo_help)
@@ -1946,7 +2086,7 @@ def parser():
     p.add_argument("--open", metavar="TOOL", help=f"then open this tool in it: {tools_help}")
     p.add_argument("--json", action="store_true", help="print the sandbox as the API returns it")
     p.add_argument("--no-wait", action="store_true", help="return once SSH works")
-    p.add_argument("--timeout", type=int, default=1800, help="seconds to wait for it (default 1800)")
+    p.add_argument("--timeout", type=seconds, default=1800, help="seconds to wait for it (default 1800)")
     p.add_argument("--runtime", metavar="KIND", help="the sandbox runtime it runs on (sbx runtimes lists them; "
                    "default: the repo's, else the server's)")
     p = command("runtimes", runtimes_cmd, "the sandbox runtimes the server runs sandboxes on; admins add, change "
@@ -1970,7 +2110,7 @@ def parser():
     p.add_argument("--name", help="add: the endpoint's name, a host name label (default for --server: its name)")
     p.add_argument("--target", metavar="HOST:PORT", help="add: an internal host within network.internal_cidrs")
     p.add_argument("--no-wait", action="store_true", help="add, rm: return once recorded")
-    p.add_argument("--timeout", type=int, default=300, help="seconds to wait for the server to apply it (default 300)")
+    p.add_argument("--timeout", type=seconds, default=300, help="seconds to wait for the server to apply it (default 300)")
     p.add_argument("--json", action="store_true", help="as the API answers")
     p = command("extensions", extensions_cmd, "admins: the extensions (GitHub, coding agents) as the Extensions "
                 "page shows them; set or disconnect one, and how many templates that rebuilds")
@@ -1983,11 +2123,19 @@ def parser():
                    help="set: a secret field, its value read from stdin (one line each), never argv")
     p.add_argument("--wait", action="store_true",
                    help="set, disconnect: wait until the templates the change rebuilds are built; non-zero when one fails")
-    p.add_argument("--timeout", type=int, default=3600, help="seconds to wait for the rebuilds (default 3600)")
+    p.add_argument("--timeout", type=seconds, default=3600, help="seconds to wait for the rebuilds (default 3600)")
     p.add_argument("--json", action="store_true", help="as the API answers (with --wait: and the templates then)")
-    p = command("templates", templates_cmd, "admins: every template sandboxes start from, per runtime, and "
-                "where its build stands")
-    p.add_argument("--json", action="store_true", help="as the API answers")
+    p = command("templates", templates_cmd, "admins (or the setup link while the setup is open): every template "
+                "sandboxes start from, per runtime, and where its build stands")
+    p.add_argument("--wait", action="store_true", help="follow the builds, a line each time their progress changes "
+                   "(step k of n), until every template is built; non-zero when one fails or none may build yet")
+    p.add_argument("--timeout", type=int, default=1800, help="seconds --wait waits in all (default 1800); non-zero "
+                   "past it")
+    p.add_argument("--json", action="store_true", help="as the API answers (with --wait: once all are built)")
+    p.add_argument("--link-file", metavar="FILE", help="during the setup: a file holding the setup link (else "
+                   "SBX_SETUP_LINK when not signed in)")
+    p.add_argument("--insecure", action="store_true", help="with the setup link: accept the server's self-signed "
+                   "certificate")
 
     p = command("secrets", secrets_cmd, "ask the owner for keys: a page on the server they sign in to, where each "
                 "key goes straight to where it is used; and follow the request (admins)",
@@ -2005,7 +2153,8 @@ def parser():
     p.add_argument("args", nargs="*", metavar="ARG")
     p.add_argument("--wait", action="store_true", help="request, status: until every key is in; non-zero when the "
                    "request expires or is cancelled")
-    p.add_argument("--timeout", type=int, help="seconds to wait (default: until the request expires)")
+    p.add_argument("--timeout", type=seconds, help="with --wait: seconds to wait (default: until the request expires, "
+                   "and 10 minutes more for the server to apply runtime keys)")
     p.add_argument("--expires", default="24h", help="request: how long the page works (5m .. 7d; default 24h)")
     p.add_argument("--note", help="request: a line for the owner on the page")
     p.add_argument("--help-url", action="append", metavar="TARGET=URL",
@@ -2014,8 +2163,8 @@ def parser():
     p.add_argument("--link-file", metavar="FILE", help="the first-run setup link's file (else SBX_SETUP_LINK)")
     p.add_argument("--insecure", action="store_true", help="with the setup link: accept a self-signed certificate")
 
-    p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the link install.sh "
-                "printed (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")
+    p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the onboarding link "
+                "install.sh printed last (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")
     steps = p.add_subparsers(dest="step", required=True, metavar="STEP")
     link = argparse.ArgumentParser(add_help=False)
     link.add_argument("--link-file", metavar="FILE", help="a file holding the setup link (else SBX_SETUP_LINK)")
@@ -2027,22 +2176,23 @@ def parser():
                          "until HTTPS works")
     s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
     s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at app.D")
-    s.add_argument("--email", help="for the certificate's expiry notices (with --domain)")
+    s.add_argument("--email", help="optional: a contact for the Let's Encrypt account (with --domain); it sends no expiry emails")
     s.add_argument("--dns", default="delegated", choices=["delegated", "cloudflare", "route53", "none"],
-                   help="how the wildcard certificate is issued (default delegated); none: self-signed, for a first "
-                        "test (browsers warn, and only sbx setup takes it, with --insecure)")
+                   help="how the wildcard certificate is issued (default delegated: this server answers on port 53); "
+                        "cloudflare, route53: a DNS API token, when port 53 can't open; none: self-signed, for a "
+                        "first test (browsers warn, and only sbx setup takes it, with --insecure)")
     s.add_argument("--secret", action="append", metavar="KEY",
                    help="the DNS provider's credential (cloudflare_api_token, aws_access_key_id, ...) on stdin")
     s.add_argument("--no-wait", action="store_true")
-    s.add_argument("--timeout", type=int, default=900)
+    s.add_argument("--timeout", type=seconds, default=900, help="seconds to wait for HTTPS (default 900)")
     s = steps.add_parser("runtime", parents=[link], help="what can run here, and add the first sandbox runtime")
     s.add_argument("action", choices=["available", "add"])
     s.add_argument("kind", nargs="?")
     change_flags(s)
     s = steps.add_parser("admin", parents=[link], help="the first admin's own account: the email, their password on stdin")
     s.add_argument("email")
-    s = steps.add_parser("agents", parents=[link], help="the coding agents every template is built with: KIND ... "
-                         "or none (no template builds before this); without one, what is offered")
+    s = steps.add_parser("agents", parents=[link], help="optional: the coding agents whose connections to "
+                         "suggest: KIND ... or none (every template has every agent); without one, what is offered")
     s.add_argument("kinds", nargs="*", metavar="KIND")
     s.add_argument("--json", action="store_true")
     s = steps.add_parser("finish", parents=[link], help="finish: as the admin sbx login signed in, or with the "
@@ -2053,6 +2203,8 @@ def parser():
                 ".sbx/cleanup")
     p.add_argument("name")
     p.add_argument("--json", action="store_true", help="the server's answer, with what .sbx/cleanup did")
+    p.add_argument("--timeout", type=seconds, help=f"seconds to wait for the server's answer (default "
+                   f"{DOWN_TIMEOUT_SECONDS}: a paused sandbox's resume and its cleanup come first)")
     p = command("ls", ls, "your sandboxes")
     p.add_argument("--json", action="store_true")
     p = command("urls", urls_cmd, "a sandbox's preview links, and ports servers listen on")
@@ -2073,7 +2225,7 @@ def parser():
     p.add_argument("name")
     p.add_argument("--wait", action="store_true", help="info: until its operation finishes")
     p.add_argument("--no-app", action="store_true", help="resume: without starting the app")
-    p.add_argument("--timeout", type=int, default=1800, help="seconds to wait (exec: to run; default 1800)")
+    p.add_argument("--timeout", type=seconds, default=1800, help="seconds to wait (exec: to run; default 1800)")
     p = command("ssh-config", ssh_config_cmd, "make sandboxes reachable as sbx-NAME from ssh and editors "
                 "(an Include in ~/.ssh/config)")
     p.add_argument("--apps", action="store_true", help="also copy the hosts for Claude Desktop and the Codex app, "
@@ -2106,7 +2258,8 @@ def parser():
     p.add_argument("action", choices=["build", "status", "rm"])
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--wait", action="store_true", help="until the build finishes")
-    p.add_argument("--timeout", type=int, default=1800)
+    p.add_argument("--timeout", type=seconds, default=1800, help="with --wait: seconds to wait for the build "
+                   "(default 1800)")
     p = command("env", env_cmd, "the repo's env on the server: what its sandboxes get, where each value comes "
                 "from; a change reaches running sandboxes within seconds",
                 epilog="sbx env ls                 every variable, its value (not secrets') and source\n"

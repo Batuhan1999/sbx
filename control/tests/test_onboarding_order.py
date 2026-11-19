@@ -1,14 +1,19 @@
-"""The onboarding order: no template builds before the setup is finished with
-the coding agents chosen, so the first build already has their layers; a
-later change to an extension says what it rebuilds."""
+"""The onboarding order: templates build as soon as there is a runtime and
+an address, during the setup too (every template has every coding agent's
+layer whether chosen or not, and the setup's reachability check needs a
+built base); choosing coding agents is optional; a later change to an
+extension says what it rebuilds."""
 import io
+import os
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from support import Server
 
+from sbx_control import reachability
 
-class TemplateGate(Server):
+
+class TemplatesDuringTheSetup(Server):
     def setUp(self):
         super().setUp()
         from sbx_control import setup, template_builds, template_scheduler, templates
@@ -18,53 +23,62 @@ class TemplateGate(Server):
         from sbx_control import extensions
         return extensions.get("amp")
 
-    def test_nothing_builds_until_the_setup_is_finished_with_the_agents_chosen(self):
+    def test_templates_build_before_the_setup_is_finished(self):
+        """The setup's reachability check starts a sandbox from the base template, so nothing may wait
+        for the setup to finish: the scheduler, a runtime just added and install.sh's builds all start."""
         self.choose_ip()
         self.create_admin()
-        self.assertIn("coding agents", self.setup.templates_blocked())
-        # sbx templates says why while the setup is open (not the setup gate's 503).
-        self.assertIn("coding agents", self.client.get("/api/templates", headers=self.headers).json()["blocked"])
+        self.assertFalse(self.setup.complete())
+        self.assertNotIn("blocked", self.client.get("/api/templates", headers=self.headers).json())
         with patch.object(self.scheduler, "_build_quietly") as build, \
-                patch.object(self.scheduler, "start_detached") as detached, \
+                patch.object(self.scheduler, "start_detached", return_value=("unit", True)) as detached, \
                 patch.object(self.builds, "build_now") as build_now:
-            self.scheduler.build_stale()                       # the scheduler's round
-            out = io.StringIO()
-            with redirect_stdout(out):
+            self.scheduler.build_stale(kinds=["embed"])          # the scheduler's round
+            with redirect_stdout(io.StringIO()):
                 self.scheduler.start_template_builds("embed")   # a runtime just added
-            self.assertIn("not yet", out.getvalue())
-            err = io.StringIO()
-            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 self.assertEqual(self.builds.main(["base", "--if-stale"]), 0)   # install.sh's
-            self.assertIn("NOT YET", err.getvalue())
-            build.assert_not_called()
-            detached.assert_not_called()
-            build_now.assert_not_called()
-        state = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertFalse(state["can_complete"])
-        refused = self.client.post("/api/setup/complete", headers=self.headers)
-        self.assertEqual(refused.status_code, 400)
-        self.assertIn("coding agents", refused.text)
-
-        chosen = self.choose_agents("amp")
-        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
-        self.assertEqual(self.setup.templates_blocked(), "templates build once the setup is finished")
-        self.kick.assert_not_called()
-        done = self.client.post("/api/setup/complete", headers=self.headers)
-        self.assertEqual(done.status_code, 200, done.text)
-        self.assertEqual(self.setup.templates_blocked(), "")
-        self.kick.assert_called_once()                         # the first templates start now
-        with patch.object(self.scheduler, "_build_quietly") as build:
-            self.scheduler.build_stale(kinds=["embed"])
+        # No coding agents chosen: finishing does not wait for them.
+        self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["can_complete"])
         self.assertEqual([c.args for c in build.call_args_list],
                          [(self.templates.BASE, "embed"), (self.templates.DEFAULT, "embed")])
+        detached.assert_called_once_with("embed")
+        build_now.assert_called_once_with(self.templates.BASE, None)
 
-    def test_a_round_now_only_once_templates_may_build(self):
+    def test_a_runtime_added_during_the_setup_starts_the_base_template(self):
+        from sbx_control import runtime_changes
+        self.choose_ip()
+        self.create_admin()
+        with patch.object(self.scheduler, "start_detached", return_value=("unit", True)) as detached, \
+                patch.object(runtime_changes, "perform", return_value="E2B Embed (embed) is enabled"), \
+                patch.object(runtime_changes.settings, "request_effects"), redirect_stdout(io.StringIO()) as said:
+            runtime_changes.commit("add", "embed", {})
+        self.assertFalse(self.setup.complete())
+        detached.assert_called_once_with("embed")
+        self.assertIn(f"building {self.templates.BASE}", said.getvalue())
+
+    def test_the_setup_finishes_while_the_base_template_is_building(self):
+        """The deadlock this replaces: finishing waited for a base template that built only after finishing."""
+        from sbx_control import template_builds
+        self.choose_ip()
+        self.create_admin()
+        self.choose_agents("amp")
+        template_builds._transition(self.templates.BASE, "building", started_at=template_builds._utc(),
+                                    pid=os.getpid())
+        reach = reachability.check("embed")                    # what the setup's checks run once the runtime answers
+        self.assertTrue(reach.ok, reach)
+        self.assertIn("not checked yet: the base template is still building", reach.detail)
+        self.assertTrue(self.client.get("/api/setup/checks", headers=self.headers).json()["ok"])
+        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertTrue(done.json()["complete"])
+        self.kick.assert_called()                              # what is still stale builds now
+
+    def test_a_round_now_whether_or_not_the_setup_is_finished(self):
         import threading
         ran = threading.Event()
-        with patch.object(self.scheduler, "build_stale", side_effect=lambda: ran.set()) as round_:
-            self.assertFalse(self.real_kick())
-            round_.assert_not_called()
-            self.setup.mark_complete("test")
+        with patch.object(self.scheduler, "build_stale", side_effect=lambda: ran.set()):
+            self.assertFalse(self.setup.complete())
             self.assertTrue(self.real_kick())
             self.assertTrue(ran.wait(5))
 
@@ -91,17 +105,18 @@ class TemplateGate(Server):
         unknown = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["nope"]})
         self.assertEqual(unknown.status_code, 400)
         self.assertIn("claude, amp", unknown.text)
-        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": False,
+        chosen = self.choose_agents("amp")
+        self.assertEqual({a["kind"]: a["chosen"] for a in chosen["agents"]}, {"claude": False, "amp": True})
+        self.assertEqual(self.choose_agents()["steps"][-1], {"step": "agents", "done": True, "optional": True,
                                                              "summary": "none"})
         self.assertEqual(self.client.post("/api/setup/complete", headers=self.headers).status_code, 200)
         late = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": ["amp"]})
         self.assertEqual(late.status_code, 409)
         self.assertIn("Extensions", late.text)
 
-    def test_an_installation_set_up_before_the_step_is_not_blocked(self):
+    def test_an_installation_set_up_before_the_step_counts_as_having_chosen(self):
         self.setup.mark_complete("test")   # no choice recorded: set up before the step existed
         self.assertTrue(self.setup.agents_chosen())
-        self.assertEqual(self.setup.templates_blocked(), "")
         self.assertEqual(self.setup.state(None)["steps"][-1]["summary"], "as enabled under Extensions")
 
     def test_turning_amp_off_later_rebuilds_nothing(self):
@@ -118,7 +133,7 @@ class TemplateGate(Server):
         self.kick.assert_not_called()
         self.assertIn("amp", [c.name for c in self.builds.plan(self.templates.BASE).contributions])
 
-    def test_a_change_before_the_setup_is_finished_builds_nothing(self):
+    def test_turning_amp_off_during_the_setup_rebuilds_nothing(self):
         self.choose_ip()
         self.create_admin()
         self.choose_agents("amp")
@@ -129,7 +144,7 @@ class TemplateGate(Server):
     def test_the_templates_and_where_their_builds_stand(self):
         self.repo_admin()
         found = self.client.get("/api/templates").json()
-        self.assertEqual(found["blocked"], "")
+        self.assertEqual(list(found), ["runtimes"])
         self.assertEqual([(t["key"], t["phase"]) for t in found["runtimes"]["embed"]],
                          [(self.templates.BASE, "stale"), (self.templates.DEFAULT, "stale")])
         self.client.get("/logout")
@@ -164,4 +179,4 @@ class FinishAsTheSignedInAdmin(Server):
         done = agent.post("/api/setup/complete", headers=admin)
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
-        self.kick.assert_called_once()
+        self.kick.assert_called()

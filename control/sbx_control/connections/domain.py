@@ -49,6 +49,8 @@ class Domain(Connection):
             facts["login"] = s.address
         elif expiry is None:
             state, summary = "attention", f"{s.name} · no certificate yet"
+            if error := certificate_error():
+                facts["certificate_error"] = error
         else:
             days = (expiry - datetime.datetime.now(datetime.timezone.utc)).days
             facts["certificate_expires"] = expiry.strftime("%Y-%m-%d")
@@ -58,7 +60,8 @@ class Domain(Connection):
         cf = vault.facts(vault.CLOUDFLARE_API_TOKEN)
         route53 = (("acme", ("route53",)),)
         fields = (Field("name", "Domain", value=s.name, kind="hostname", placeholder="sbx.example.com"),
-                  Field("acme_email", "Certificate email", value=s.acme_email, kind="email"),
+                  Field("acme_email", "Certificate email", value=s.acme_email, kind="email", optional=True,
+                        help="The Let's Encrypt account's contact; it sends no expiry emails.", advanced=True),
                   Field("acme", "Certificate verification", value=s.acme, kind="choice", options=ACME_OPTIONS),
                   Field("cloudflare_api_token", "Cloudflare API token", secret=True, set=cf.set,
                         when=(("acme", ("cloudflare",)),)),
@@ -94,11 +97,19 @@ class Domain(Connection):
                             f"valid until {expiry:%Y-%m-%d}" if expiry else "none issued",
                             "tls.sh issues it (sudo sbx-apply tls) once the records resolve",
                             help_url={"delegated": howto.DELEGATED_DNS, "cloudflare": howto.CLOUDFLARE_TOKEN}.get(mode, "")))
+        challenge = f"_acme-challenge.{name}"
+        ns = _ns(challenge) if mode != "none" else []
         if mode == "delegated":
-            ns = _ns(f"_acme-challenge.{name}")
             ok = any(x.rstrip(".") == name for x in ns)
             checks.append(Check("delegation", ok, f"NS {', '.join(ns) or 'none'}" if ns else "no NS record yet",
-                                f"an NS record: _acme-challenge.{name} NS {name}.", help_url=howto.DELEGATED_DNS))
+                                f"an NS record: {challenge} NS {name}.", help_url=howto.DELEGATED_DNS))
+        if mode != "none":
+            checks.append(_stray_records(challenge, name, mode, ns))
+        if mode == "delegated" and s.name == name and s.acme == "delegated":
+            # Only once saved: before, the responder does not answer for the
+            # name and the firewall keeps 53 closed (tls.sh probes then).
+            ok, detail, fix = acme_dns.probe()
+            checks.append(Check("port 53", ok, detail, fix, help_url=howto.DELEGATED_DNS))
         if mode == "cloudflare":
             has = bool(v.get("cloudflare_api_token")) or vault.facts(vault.CLOUDFLARE_API_TOKEN).set
             checks.append(Check("Cloudflare token", has, "set" if has else "missing", "a token that may edit the zone's DNS",
@@ -118,7 +129,7 @@ class Domain(Connection):
         except ValueError as error:
             raise Refused(str(error))
         checks = [c for c in self.test({**values, **new}) if c.name.endswith("resolves") or
-                  c.name in ("points at this host", "delegation", "Cloudflare token")]
+                  c.name in ("points at this host", "delegation", STRAY, "port 53", "Cloudflare token")]
         if not all(c.ok for c in checks):
             raise Refused("Check the DNS records and certificate settings below.", checks)
         for field, key in (("aws_access_key_id", vault.AWS_ACCESS_KEY_ID),
@@ -126,8 +137,34 @@ class Domain(Connection):
                            ("cloudflare_api_token", vault.CLOUDFLARE_API_TOKEN)):
             if values.get(field):
                 vault.put(key, values[field].strip(), by=by)
-        settings.update("domain", new, by=by)
+        before = settings.current()
+        after = settings.update("domain", new, by=by)
+        if new["acme"] != "none" and _expiry(new["name"]) is None:
+            # A new attempt: the last one's error no longer applies, and
+            # saving the same values again (Retry) asks for issuance again.
+            certificate_error_file().unlink(missing_ok=True)
+            if after.revision == before.revision:
+                settings.request_effects(settings.HostUnit.TLS)
         return self.status()
+
+
+STRAY = "other _acme-challenge records"
+
+
+def _stray_records(challenge: str, name: str, mode: str, ns: list[str]) -> Check:
+    """Records at _acme-challenge.<name> that send Let's Encrypt elsewhere: a
+    CNAME, or an NS other than the delegation to this host (delegated);
+    with a DNS API (cloudflare, route53) any NS or CNAME, since sbx writes
+    the TXT record in the zone itself."""
+    stray = [f"CNAME {target}" for target in _cname(challenge)]
+    stray += [f"NS {target}" for target in ns if mode != "delegated" or target.rstrip(".") != name]
+    if not stray:
+        return Check(STRAY, True, "none")
+    keep = (f"; keep only {challenge} NS {name}." if mode == "delegated" else
+            f": with {mode}, sbx writes the TXT record in the zone itself")
+    return Check(STRAY, False, f"{challenge} {', '.join(stray)}",
+                 f"remove {'it' if len(stray) == 1 else 'them'} at your DNS provider{keep}",
+                 help_url=howto.DELEGATED_DNS if mode == "delegated" else howto.DNS_RECORDS)
 
 
 PUBLIC_RESOLVER = "1.1.1.1"  # what the world sees, not a cloud's private zone for the same names
@@ -143,7 +180,44 @@ def _dig(kind: str, name: str) -> list[str]:
 
 
 def _ns(name: str) -> list[str]:
+    """name's NS records as its parent zone publishes them. Asked of the parent's own nameservers, not
+    recursively: a resolver follows the delegation to this server and fails (SERVFAIL) while port 53 is
+    closed, which would read as "no NS record" when the record is there and the port is what to fix."""
+    for server in _parent_nameservers(name):   # the next one when one doesn't answer
+        try:
+            done = subprocess.run(["dig", f"@{server}", "+norecurse", "+time=4", "+tries=1", "+noall", "+answer",
+                                   "+authority", "NS", name], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode != 0:
+            continue
+        return sorted({line.split()[-1] for line in done.stdout.splitlines()
+                       if line.split()[:1] and line.split()[0].rstrip(".").lower() == name.rstrip(".").lower()
+                       and ("\tNS\t" in line or " NS " in line)})
     return _dig("NS", name)
+
+
+def _parent_nameservers(name: str) -> list[str]:
+    """The nameservers of the closest zone above name, found through the public resolver."""
+    labels = name.rstrip(".").split(".")
+    for i in range(1, len(labels) - 1):
+        found = [ns for ns in _dig_short("NS", ".".join(labels[i:])) if ns]
+        if found:
+            return found
+    return []
+
+
+def _dig_short(kind: str, name: str) -> list[str]:
+    try:
+        out = subprocess.run(["dig", f"@{PUBLIC_RESOLVER}", "+time=4", "+tries=1", "+short", kind, name],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip().rstrip(".") for line in out.splitlines() if line.strip() and not line.startswith(";")]
+
+
+def _cname(name: str) -> list[str]:
+    return _dig("CNAME", name)
 
 
 def _resolve(name: str) -> list[str]:
@@ -212,5 +286,18 @@ def _ip_expiry(address: str):
 def ip_certificate_error() -> str:
     try:
         return (paths.tls() / "ip-certificate-error").read_text()[-2000:].strip()
+    except OSError:
+        return ""
+
+
+def certificate_error_file() -> pathlib.Path:
+    """Why the domain's last issuance failed (tls.sh's renewal script writes
+    it: the port 53 probe's finding or certbot's last lines)."""
+    return paths.tls() / "certificate-error"
+
+
+def certificate_error() -> str:
+    try:
+        return certificate_error_file().read_text()[-2000:].strip()
     except OSError:
         return ""

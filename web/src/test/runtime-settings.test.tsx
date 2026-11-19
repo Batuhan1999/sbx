@@ -235,85 +235,77 @@ describe('Settings → Sandbox runtimes', () => {
 
 const SETUP = (runtimeDone: boolean) => ({
   complete: false,
-  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: true, optional: false, summary: '' },
+  steps: [{ step: 'address', done: true, optional: false, summary: '' }, { step: 'sign_in', done: false, optional: false, summary: '' },
     { step: 'runtime', done: runtimeDone, optional: false, summary: '' }, { step: 'agents', done: false, optional: false, summary: '' }],
-  // The owner created their account first: the keys and choices follow it.
-  signed_in: true, email: 'ada@example.com', open_access: false, can_complete: false, host: { address: '203.0.113.7' },
+  signed_in: false, email: null, open_access: false, can_complete: false, host: { address: '203.0.113.7' },
   agents: [{ kind: 'amp', title: 'Amp', chosen: false }],
   access: { mode: 'domain', domain: 'sbx.example.com', url: 'https://sbx.example.com', certificate: 'delegated', certificate_email: '', certificate_ready: true, certificate_error: '', needs_ports: [] },
   link: 'http://localhost:3000/app/setup', admins: [], version: 'dev',
 })
+const NO_KVM = available('embed', 'E2B Embed', { host: true, can_run: false, why_not: 'needs /dev/kvm: bare metal, or a VM with nested virtualization enabled' })
 
 describe('first-run setup without a runtime', () => {
-  it('offers the runtimes this server can run, adds one and continues once it is applied', async () => {
+  it('asks for the provider key alone, adds the runtime and shows it chosen once it is applied', async () => {
     setSetupToken('one-time-token')
     let added = false
     const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('done', 'add', 'E2B Cloud (e2b-cloud) is enabled') })
     const calls = stubApi({
-      'GET /api/setup/checks': { ok: true, checks: [] },
       'GET /api/setup': () => ({ status: 200, body: SETUP(added) }),
-      'GET /api/runtimes/available': [available('embed', 'E2B Embed', { host: true, can_run: false, why_not: 'needs /dev/kvm: bare metal, or a VM with nested virtualization enabled' }), available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
+      'GET /api/runtimes/available': () => ({ status: 200, body: [NO_KVM, available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM, enabled: added, plan: added ? { name: 'hobby', title: 'Hobby' } : null })] }),
       'GET /api/runtimes/change': () => {   // applying until the host has it, then done (runtime.env names it)
         const answer = polls()
         added = (answer.body as RuntimeChange).state === 'done'
         return answer
       },
       'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
-      'GET /api/runtimes': () => ({ status: 200, body: { default: added ? 'e2b-cloud' : '', runtimes: added ? [runtime('e2b-cloud', 'E2B Cloud')] : [] } }),
+      'GET /api/templates': { blocked: '', runtimes: {} },
     })
     renderApp(<SetupPage />, '/app/setup')
     const user = userEvent.setup()
     expect(await screen.findByRole('heading', { name: 'Where will sandboxes run?' })).toBeTruthy()
-    const embed = await screen.findByRole('radio', { name: /E2B Embed/ }) as HTMLInputElement
-    expect(embed.disabled).toBe(true)
-    expect(screen.getByText('Needs /dev/kvm')).toBeTruthy()
-    expect((screen.getByRole('radio', { name: /E2B Cloud/ }) as HTMLInputElement).checked).toBe(true)
-    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('radio', { name: /Hobby/ }) as HTMLInputElement).checked).toBe(true)   // the same form as in Settings
+    expect(await screen.findByText(/it has no \/dev\/kvm/)).toBeTruthy()
+    // The key and nothing else: no plan to pick, no limits to set.
+    expect(screen.queryByRole('radio')).toBeNull()
+    expect(screen.queryByText('Hobby')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
     await user.type(screen.getByLabelText('API key'), 'test-only-key')
-    await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
-    expect(await screen.findByText('Applying…')).toBeTruthy()
-    // Applied: on to the coding agents, the new runtime listed with the server's checks.
-    expect(await screen.findByRole('heading', { name: 'Which coding agents does your team use?' }, { timeout: 10000 })).toBeTruthy()
-    await waitFor(() => expect(screen.getByRole('list', { name: 'Sandbox runtimes' }).textContent).toContain('E2B Cloud'))
+    await user.click(screen.getByRole('button', { name: 'Check key' }))
+    expect(await screen.findByText(/Checking the key and adding the runtime/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Continue/ }) as HTMLButtonElement).disabled).toBe(true)
+    // Applied: the runtime is the one chosen, with the plan the server read from the key, and the owner goes on.
+    await waitFor(() => expect(screen.getByRole('list', { name: 'Chosen' }).textContent).toContain('E2B Cloud · Hobby'), { timeout: 10000 })
+    expect(screen.queryByLabelText('API key')).toBeNull()
+    await user.click(screen.getByRole('button', { name: /Continue/ }))
+    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeTruthy()
     const post = calls.find(c => c.method === 'POST' && c.url === '/api/runtimes')!
-    expect(post.body).toMatchObject({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
+    expect(post.body).toEqual({ kind: 'e2b-cloud', values: { E2B_CLOUD_API_KEY: 'test-only-key' } })
   }, 20000)
 
   it('keeps what was typed when applying the runtime fails', async () => {
     setSetupToken('one-time-token')
     const polls = inTurn({ status: 200, body: IDLE }, { status: 200, body: change('applying', 'add') }, { status: 200, body: change('failed', 'add', 'E2B Cloud refused the key') })
     stubApi({
-      'GET /api/setup/checks': { ok: true, checks: [] },
       'GET /api/setup': SETUP(false),
       'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
       'GET /api/runtimes/change': () => polls(),
       'POST /api/runtimes': () => ({ status: 202, body: change('queued', 'add') }),
-      'GET /api/runtimes': { default: '', runtimes: [] },
     })
     renderApp(<SetupPage />, '/app/setup')
     const user = userEvent.setup()
     await user.type(await screen.findByLabelText('API key'), 'test-only-key')
-    await user.click(screen.getByRole('button', { name: 'Add E2B Cloud' }))
+    await user.click(screen.getByRole('button', { name: 'Check key' }))
     expect(await screen.findByText(/E2B Cloud refused the key/, undefined, { timeout: 10000 })).toBeTruthy()
     await waitFor(() => expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('test-only-key'))
   }, 20000)
 
-  it('says up front that a provider needs a domain, and goes back to the address step', async () => {
+  it('starts on the domain step while only the installer’s IP access is set', async () => {
     setSetupToken('one-time-token')
     stubApi({
-      'GET /api/setup/checks': { ok: true, checks: [] },
       'GET /api/setup': { ...SETUP(false), access: { ...SETUP(false).access, mode: 'ip', domain: '' } },
-      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', { ...CLOUD_FORM,
-        edit_blocker: { code: 'needs_domain', message: "E2B Cloud's sandboxes call this server back at its login address: connect a domain first (the server address step, or Settings → General)", sandboxes: [] } })],
+      'GET /api/runtimes/available': [available('e2b-cloud', 'E2B Cloud', CLOUD_FORM)],
       'GET /api/runtimes/change': IDLE,
-      'GET /api/runtimes': { default: '', runtimes: [] },
     })
     renderApp(<SetupPage />, '/app/setup')
-    const user = userEvent.setup()
-    expect((await screen.findByRole('alert')).textContent).toContain('Needs a domain first.')
-    expect(screen.queryByRole('form', { name: 'E2B Cloud settings' })).toBeNull()
-    await user.click(screen.getByRole('button', { name: 'Choose a domain' }))
     expect(await screen.findByRole('heading', { name: 'Where will this server answer?' })).toBeTruthy()
   })
 })

@@ -511,6 +511,16 @@ export type Rebuilds = { runtimes: Record<string, number>; keys: Record<string, 
 export type ConnectionChange = Connection & { rebuilds?: Rebuilds }
 /** A coding agent the setup offers; chosen ones are in every template from the first build on. */
 export type SetupAgent = { kind: string; title: string; chosen: boolean }
+/** GET /api/templates: every template sandboxes start from, per enabled runtime, and where its build stands. */
+/** step of steps: where the latest build got to (0 until the runtime names its first step, null when it never
+ * did); eta_s: seconds left by the last successful build's duration, while building (null when unknown). */
+export type TemplateBuild = {
+  key: string; phase: 'current' | 'stale' | 'building' | 'stuck' | 'unplanned' | string; status: string | null
+  template: string | null; error: string | null
+  started_at?: string | null; step?: number | null; steps?: number | null; step_name?: string | null
+  last_duration_s?: number | null; eta_s?: number | null
+}
+export type TemplateProgress = { blocked?: string; runtimes: Record<string, TemplateBuild[]> }
 export type SetupState = {
   complete: boolean
   steps: { step: 'address' | 'sign_in' | 'runtime' | 'agents'; done: boolean; optional: boolean; summary: string }[]

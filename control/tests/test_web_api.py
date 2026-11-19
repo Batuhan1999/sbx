@@ -124,6 +124,10 @@ class WebApiTests(Server):
         response = self.client.post("/api/connections/github/manifest", json={"return_to": "/app/extensions"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(json.loads(response.json()["manifest"])["setup_url"].endswith("/app/extensions"))
+        # The setup's GitHub step, after it finished: back to the repositories page.
+        response = self.client.post("/api/connections/github/manifest", json={"return_to": "/app/repos"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(json.loads(response.json()["manifest"])["setup_url"].endswith("/app/repos"))
         refused = self.client.post("/api/connections/github/manifest", json={"return_to": "https://elsewhere.example"})
         self.assertEqual(refused.status_code, 400)
 

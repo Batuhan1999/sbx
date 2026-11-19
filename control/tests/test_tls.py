@@ -68,7 +68,8 @@ class TLSServiceTests(unittest.TestCase):
         self.log = self.root / "commands.jsonl"
         self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                     "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
-                    "SBX_TEST_ROOT": str(self.root), "SBX_TEST_DOMAIN": "", "SBX_TEST_FAIL": ""}
+                    "SBX_TEST_ROOT": str(self.root), "SBX_TEST_DOMAIN": "", "SBX_TEST_FAIL": "",
+                    "SBX_TEST_EMAIL": "operator@example.com", "SBX_TEST_PROBE_FAIL": ""}
         self.script = self.root / "tls.sh"
         source = (Path(__file__).parents[1] / "tls.sh").read_text()
         for original, replacement in (("/opt/sbx-control", str(self.control)), ("/opt/sbx-tls", str(self.root / "tls")),
@@ -89,13 +90,21 @@ if sys.argv[1:3] == ['-m', 'sbx_control.tls_front']:
     from sbx_control import tls_front
     sys.stdout.write(tls_front.MAIN_CONF if sys.argv[3] == 'main-conf' else tls_front.HTTPS_LISTEN)
     raise SystemExit(0)
+if sys.argv[1:4] == ['-m', 'sbx_control.acme_dns', 'probe']:   # the port 53 probe before certbot
+    with (root / "commands.jsonl").open("a") as log:
+        log.write(json.dumps(["probe"]) + "\\n")
+    if os.environ.get("SBX_TEST_PROBE_FAIL"):
+        print("port 53: no public resolver reached this server on port 53; fix: allow TCP and UDP port 53")
+        raise SystemExit(1)
+    print("port 53: a public resolver reached this server on port 53")
+    raise SystemExit(0)
 if sys.argv[1:4] == ['-m', 'sbx_control.ip_previews', 'nginx']:
     from sbx_control.ip_previews import nginx
     print(nginx(sys.argv[4], sys.argv[5]), end='')
     raise SystemExit(0)
 domain = os.environ["SBX_TEST_DOMAIN"]
 values = {"domain": domain, "login": "app." + domain, "bootstrap_address": "203.0.113.10",
-          "email": "operator@example.com", "dns": "delegated", "services": ""}
+          "email": os.environ["SBX_TEST_EMAIL"], "dns": "delegated", "services": ""}
 for name, value in values.items():
     print(name + "=" + shlex.quote(value))
 ''')
@@ -113,6 +122,8 @@ if "certonly" in sys.argv:
     (target / "privkey.pem").write_text("test fixture key")
 ''')
         self.write_command(self.control / "venv/bin/certbot", '''
+with (root / "commands.jsonl").open("a") as log:
+    log.write(json.dumps(["certbot", *sys.argv[1:]]) + "\\n")
 name = sys.argv[sys.argv.index("--cert-name") + 1]
 target = root / "tls/letsencrypt/live" / name
 target.mkdir(parents=True, exist_ok=True)
@@ -186,7 +197,10 @@ path.write_text(path.read_text().replace(before, after))
         self.assertEqual(result.returncode, 0, result.stderr)
         config = (self.root / "tls/nginx/default.conf").read_text()
         bootstrap = (self.root / "tls/nginx/bootstrap.conf").read_text()
-        self.assertIn("/live/sbx.example.com/fullchain.pem", config)
+        # nginx serves the stable sbx-serving path; once issued it leads to the domain's certificate.
+        self.assertIn("/etc/letsencrypt/sbx-serving/fullchain.pem", config)
+        self.assertEqual(os.readlink(self.root / "tls/letsencrypt/sbx-serving/fullchain.pem"),
+                         "../live/sbx.example.com/fullchain.pem")
         # Every HTTPS server listens behind the stream front on 443, with the client's address in the PROXY protocol.
         self.assertNotIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", config)
         self.assertIn("listen 127.0.0.1:8442 ssl proxy_protocol default_server", bootstrap)
@@ -224,6 +238,47 @@ path.write_text(path.read_text().replace(before, after))
         self.assertNotIn("_preflight", config)
         self.assertIn("auth_request_set $sbx_runtime $upstream_http_x_sbx_runtime;", config)
         self.assertIn("proxy_pass $sbx_ingress;", config)
+
+    def certbot_runs(self):
+        return [c for c in self.commands() if c[0] == "certbot"]
+
+    def test_a_delegated_domain_registers_without_an_email_after_opening_port_53_and_probing_it(self):
+        self.env.update(SBX_TEST_DOMAIN="sbx.example.com", SBX_TEST_EMAIL="")
+        result = self.run_service()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [run] = self.certbot_runs()
+        self.assertIn("--register-unsafely-without-email", run)
+        self.assertNotIn("-m", run)
+        self.assertIn('venv/bin/python -m sbx_control.acme_dns set "$CERTBOT_VALIDATION"', run)
+        order = [c[:2] if c[0] == "systemctl" else c[:1] for c in self.commands()]
+        # The firewall opens 53 first, then the probe asks before Let's Encrypt does.
+        guard, probe, certbot = (order.index(["systemctl", "restart"]), order.index(["probe"]), order.index(["certbot"]))
+        self.assertLess(guard, probe)
+        self.assertLess(probe, certbot)
+        self.assertFalse((self.root / "tls/certificate-error").exists())
+
+    def test_a_given_certificate_email_is_the_accounts_contact(self):
+        self.env.update(SBX_TEST_DOMAIN="sbx.example.com")
+        self.assertEqual(self.run_service().returncode, 0)
+        [run] = self.certbot_runs()
+        self.assertEqual(run[run.index("-m") + 1], "operator@example.com")
+        self.assertNotIn("--register-unsafely-without-email", run)
+
+    def test_a_dropped_port_53_fails_before_certbot_and_says_why(self):
+        self.env.update(SBX_TEST_DOMAIN="sbx.example.com", SBX_TEST_PROBE_FAIL="1")
+        self.assertEqual(self.run_service().returncode, 75)   # an issuance failure, not a broken install
+        self.assertFalse((self.bin / "sbx-tls-renew.new").exists())   # swapped in whole
+        self.assertEqual(self.certbot_runs(), [])
+        error = (self.root / "tls/certificate-error").read_text()
+        self.assertIn("allow TCP and UDP port 53", error)
+        # Still served meanwhile: nginx starts on the certificate there is, not the domain's missing one.
+        self.assertNotEqual(os.readlink(self.root / "tls/letsencrypt/sbx-serving/fullchain.pem"),
+                            "../live/sbx.example.com/fullchain.pem")
+        self.assertTrue((self.root / "tls/letsencrypt/sbx-serving/fullchain.pem").exists())
+        self.env["SBX_TEST_PROBE_FAIL"] = ""
+        self.assertEqual(self.run_service().returncode, 0)   # Retry, once the port is open
+        self.assertFalse((self.root / "tls/certificate-error").exists())
+        self.assertFalse((self.root / "tls/certificate-error.new").exists())
 
 
 if __name__ == "__main__":

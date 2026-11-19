@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query'
+import { ApiError } from './client'
 import { api } from './endpoints'
 import type { HostRequestStatus, Sandbox, SandboxScope } from './types'
 import { isBusy } from '@/lib/status'
 
 export const keys = {
   me: ['me'] as const,
+  templates: ['templates'] as const,
   sandboxes: ['sandboxes'] as const,
   sandboxList: (scope: SandboxScope, repo: string) => ['sandboxes', 'list', scope, repo] as const,
   sandbox: (name: string) => ['sandboxes', 'detail', name] as const,
@@ -131,6 +133,17 @@ export const useConnections = (enabled = true) => useQuery({ queryKey: keys.conn
 export const useSetup = () => useQuery({
   queryKey: keys.setup, queryFn: api.setup.state, retry: false,
   refetchInterval: q => (q.state.data?.complete ? false : 4_000),
+})
+/** The templates' builds; polled while there are none yet or one is still to build. Not after a refusal (not an
+ * admin yet); after a failure (sbx-control restarting), on for a few minutes. */
+export const useTemplateProgress = (enabled = true) => useQuery({
+  queryKey: keys.templates, queryFn: api.templates, enabled, retry: false,
+  refetchInterval: q => {
+    const error = q.state.error
+    if (error) return error instanceof ApiError && (error.status === 401 || error.status === 403) || q.state.errorUpdateCount > 60 ? false : 5_000
+    const all = Object.values(q.state.data?.runtimes ?? {}).flat()
+    return !all.length || all.some(t => t.phase === 'building' || t.phase === 'stale') ? 5_000 : false
+  },
 })
 export const useSetupChecks = (enabled = true) => useQuery({ queryKey: keys.setupChecks, queryFn: api.setup.checks, enabled, retry: false, staleTime: 15_000 })
 export const useSettings = (enabled = true) => useQuery({ queryKey: keys.settings, queryFn: api.settings.get, enabled })

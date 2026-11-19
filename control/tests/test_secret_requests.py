@@ -144,7 +144,8 @@ class Keys(TwoRuntimes, Server):
         [change] = request["changes"]
         self.assertEqual((change["operation"], change["kind"]), ("add", "e2b-cloud"))
         self.assertEqual(self.store[change["values"]["E2B_CLOUD_API_KEY"]], CLOUD_KEY)
-        self.assertEqual(change["values"]["E2B_CLOUD_MAX_TIMEOUT"], "3600")   # its first plan, as sbx runtimes add
+        # No plan from E2B: its default limits (Hobby's), as sbx runtimes add without --plan.
+        self.assertNotIn("E2B_CLOUD_MAX_TIMEOUT", change["values"])
         self.assertEqual(done["request"]["runtime_changes"]["state"], "queued")
         # The DNS token: checked by Cloudflare, then in the vault as the domain step keeps it.
         self.cloudflare.assert_called_once_with(DNS_TOKEN)

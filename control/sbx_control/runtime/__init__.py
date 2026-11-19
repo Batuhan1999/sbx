@@ -28,13 +28,13 @@ from . import env_file
 from .env_file import ENABLED_KEY, listed
 from .base import (FAILED, PAUSED, RUNNING, Backend, Busy, Capabilities, CommandFailed, Failed, Handle, Info,
                    LimitRefused, Limits, LimitSpec, NoRoom, NotRunning, Preset, RuntimeLayer, SettingField,
-                   Snapshot, TemplateGone, TemplateSpec, Timeout, TokenPlace)
+                   Snapshot, TemplateGone, TemplateSpec, Timeout, TokenPlace, build_step, step_line)
 from .scoped import INSTALL_KEY, plain_name, scoped
 
 __all__ = ["FAILED", "PAUSED", "RUNNING", "Backend", "Busy", "Capabilities", "CommandFailed", "Failed", "Handle",
            "Info", "Limits", "LimitSpec", "LimitRefused", "NoRoom", "NotRunning", "Preset",
            "RuntimeLayer", "SettingField", "Snapshot", "TemplateGone", "TemplateSpec", "Timeout", "TokenPlace",
-           "INSTALL_KEY", "plain_name", "kinds", "enabled", "default", "get", "of"]
+           "build_step", "step_line", "INSTALL_KEY", "plain_name", "kinds", "enabled", "default", "get", "of"]
 
 GROUP = "sbx.runtimes"
 BUILTIN = {"embed": "sbx_control.runtime.embed:Embed", "e2b-cloud": "sbx_control.runtime.e2b_cloud:Cloud",

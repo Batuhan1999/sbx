@@ -472,8 +472,8 @@ def _scrub(text: str, value: str) -> str:
 def _queue_runtimes(found: list, *, by: str) -> tuple[str, dict]:
     """Runtime keys ([(target, value)]) as Settings → Sandbox runtimes takes
     them, one runtime at a time (runtime_settings.prepare: checked by the
-    provider, the secret sealed; a runtime not enabled is added on its first
-    plan, as `sbx runtimes add`), then every runtime that passed queued
+    provider, the secret sealed; a runtime not enabled is added on the plan its
+    key's account is on, as `sbx runtimes add`), then every runtime that passed queued
     together as one change (runtime_changes.request_batch), which the host
     applies in order before restarting sbx-control once. (the change's id
     to follow it by, or ""; {target.own: why it was refused}) ."""
@@ -490,10 +490,8 @@ def _queue_runtimes(found: list, *, by: str) -> tuple[str, dict]:
     changes = []
     for kind, pairs in by_kind.items():
         adding = kind not in runtime.enabled()
-        backend = _backend(kind)
-        plan = backend.presets[0].name if adding and backend.presets else None
-        try:
-            values = runtime_settings.prepare(kind, {t.key: v for t, v in pairs}, adding=adding, plan=plan)
+        try:   # added on the plan the provider says the key's account is on, else its default limits
+            values = runtime_settings.prepare(kind, {t.key: v for t, v in pairs}, adding=adding)
         except runtimes.Refused as error:
             for target, value in pairs:
                 errors[target.own] = _scrub(str(error), value)
