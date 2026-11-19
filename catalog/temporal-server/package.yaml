@@ -3,7 +3,8 @@ name: temporal-server
 title: Temporal server
 logo: logo.svg
 description: >
-  Connects to a Temporal server you run, reachable from sandboxes.
+  A Temporal server sandboxes reach: the development server this host runs
+  for them, or one you run.
 inputs:
   address:
     label: Frontend address
@@ -14,3 +15,10 @@ check: |
   temporal operator cluster health --address "$INPUT_ADDRESS" >/dev/null 2>&1 || { echo "no Temporal at $INPUT_ADDRESS"; exit 1; }
 host_tools:
   temporal: curl -sSf https://temporal.download/cli.sh | sh -s -- --dir /usr/local
+server:
+  compose: compose.yaml
+  service: temporal
+  port: 7233
+  storage_gb: 5
+  inputs:
+    address: "${address}:${port}"

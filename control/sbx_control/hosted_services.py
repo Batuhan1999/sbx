@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import cow_storage, paths, postgres_cow, secret_store, settings, state
+from . import cow_storage, hosted_compose, paths, postgres_cow, secret_store, settings, state
 from .catalog import NAME_RE, PackageError, attachments, connections
 
 NETWORK = "sbx-services"
@@ -30,12 +30,19 @@ CIDR = "172.29.50.0/24"
 LABEL = "dev-sandboxes.managed"   # on the containers, volumes and network it owns
 ADMIN = "sbx_admin"
 POSTGRES_MAJOR = 18
+# Docker's json-file driver keeps a container's log forever by default. A
+# server that fails on every write (ClickHouse on a full disk above all)
+# writes error output faster than anything frees space, and the disk stays
+# full until someone steps in. Five files of 50 MiB, as Embed's services have.
+LOG_LIMIT = ("--log-driver", "json-file", "--log-opt", "max-size=50m", "--log-opt", "max-file=5")
 DRIVERS = {
     "postgres": {"image": "pgvector/pgvector:pg18", "port": 5432, "path": "/var/lib/postgresql",
                  "package": "postgres-server"},
     "clickhouse": {"image": "clickhouse/clickhouse-server:26.2", "port": 8123,
                    "path": "/var/lib/clickhouse", "package": "clickhouse-server"},
 }
+BUILT_IN = {driver["package"]: kind for kind, driver in DRIVERS.items()}   # connection package -> its kind
+PACKAGE = "package"   # the kind of a server a connection package declares (hosted_compose.py)
 
 
 @dataclass(frozen=True)
@@ -136,7 +143,11 @@ def target(name: str) -> str | None:
     found = _record(name)
     if not found or not found[1].get("address"):
         return None
-    return f"{found[1]['address']}:{DRIVERS[found[0].kind]['port']}"
+    return f"{found[1]['address']}:{_port(*found[:2])}"
+
+
+def _port(server: Server, values: dict) -> int:
+    return values["port"] if server.kind == PACKAGE else DRIVERS[server.kind]["port"]
 
 
 def networks() -> list[str]:
@@ -176,13 +187,18 @@ def _old_postgres(server: Server, values: dict) -> bool:
 def records():
     with state.db() as conn:
         names = [r[0] for r in conn.execute("select name from managed_servers order by name")]
-    out = []
-    for name in names:
-        server, values, status = _record(name)
-        out.append({"name": name, "kind": server.kind, "status": status, "postgres_major": values.get("postgres_major"),
-                    "storage": values.get("storage"), "cow": values.get("cow"), "legacy": _old_postgres(server, values),
-                    "used_by": connections.users(name)})
-    return out
+    return [record(name) for name in names]
+
+
+def record(name: str) -> dict:
+    """A managed server as its listings show it (never a secret)."""
+    server, values, status = _record(name)
+    return {"name": name, "kind": server.kind,
+            "package": values.get("package") if server.kind == PACKAGE else DRIVERS[server.kind]["package"],
+            "status": status, "error": values.get("error", "") if status == "failed" else "",
+            "address": values.get("address"), "port": _port(server, values),
+            "postgres_major": values.get("postgres_major"), "storage": values.get("storage"),
+            "cow": values.get("cow"), "legacy": _old_postgres(server, values), "used_by": connections.users(name)}
 
 
 def execute(name, database, stream):
@@ -192,6 +208,8 @@ def execute(name, database, stream):
         if not found:
             raise ValueError("no managed server with this name; use the provider's own tools for other connections")
         server = found[0]
+        if server.kind == PACKAGE:
+            raise ValueError("only the Postgres and ClickHouse servers take SQL; use this server's own tools")
         if not server.owns(json.loads(docker("inspect", server.container).stdout)[0]["Config"].get("Labels")):
             raise ValueError("the container is not owned by this managed server")
         if server.kind == "postgres":
@@ -229,15 +247,79 @@ def _address(network: dict) -> str:
     return found
 
 
-def up(name, kind, *, data_root=None, storage_gb=None):
+def _package(name: str):
+    """The connection package whose server this host runs, or ValueError."""
+    from . import catalog
+    try:
+        found = catalog.get(name)
+    except PackageError as error:
+        raise ValueError(str(error)) from None
+    if not found.server:
+        raise ValueError(f"{found.title} ({name}) connects to a server somebody else runs; a package this host "
+                         "runs the server of has server: in its package.yaml")
+    return found
+
+
+def runs(package) -> bool:
+    """Whether this host can run the server a connection package is to."""
+    return package.name in BUILT_IN or bool(package.server)
+
+
+def up(name, kind=None, *, package=None, data_root=None, storage_gb=None, presets=None):
+    """Run the managed server and save its connection: one of the two built
+    in (kind, or their connection package) or the one a connection package
+    declares (package). presets: values for secrets the package would
+    otherwise make, for a new server only."""
+    with _lock():
+        server, values, details = _begin(name, kind, package, data_root, storage_gb, presets)
+        return _finish(server, values, details)
+
+
+def begin(name, kind=None, *, package=None, storage_gb=None, presets=None) -> dict:
+    """The quick half of up, for a caller that answers before the server runs
+    (the API): everything that can refuse, and the server's record. finish()
+    is the rest."""
+    with _lock():
+        _begin(name, kind, package, None, storage_gb, presets)
+    return record(name)
+
+
+def finish(name) -> dict:
+    with _lock():
+        found = _record(name)
+        if not found:
+            raise ValueError("no managed server with this name")
+        server, values, _ = found
+        return _finish(server, values, _details(server))
+
+
+def _details(server: Server) -> dict | None:
+    """docker inspect of a built-in server's container, None when it has none."""
+    if server.kind == PACKAGE:
+        return None
+    existing = docker("inspect", server.container, check=False)
+    return json.loads(existing.stdout)[0] if not existing.returncode else None
+
+
+def _begin(name, kind, package, data_root, storage_gb, presets):
     if not NAME_RE.fullmatch(name) or len(name) > 40:
         raise ValueError("server names use at most 40 lowercase letters, numbers, hyphens or underscores")
-    if kind not in DRIVERS:
-        raise ValueError("supported managed servers are postgres and clickhouse")
+    if bool(kind) == bool(package):
+        raise ValueError("give the server's kind (postgres, clickhouse) or the connection package that runs it")
+    declared = None
+    if package:
+        kind = BUILT_IN.get(package, PACKAGE)
+        declared = _package(package) if kind == PACKAGE else None
+    if kind not in DRIVERS and kind != PACKAGE:
+        raise ValueError("supported managed servers are postgres, clickhouse and the packages that run a server")
     if data_root is not None and storage_gb is not None:
         raise ValueError("--data-root and --storage-gb are alternatives")
-    if kind != "postgres" and (data_root is not None or storage_gb is not None):
-        raise ValueError("Postgres storage options do not apply to ClickHouse")
+    if data_root is not None and kind != "postgres":
+        raise ValueError("--data-root is Postgres's")
+    if storage_gb is not None and kind == "clickhouse":
+        raise ValueError("ClickHouse keeps its data in a Docker volume without a size")
+    if presets and kind != PACKAGE:
+        raise ValueError("only a package's server takes secrets")
     if settings.current().access.public_repos:
         raise ValueError("managed servers are reachable from every sandbox, so not with access.public_repos: "
                          "untrusted repos would reach them")
@@ -247,14 +329,16 @@ def up(name, kind, *, data_root=None, storage_gb=None):
         raise ValueError(f"sandboxes on {titles} can't reach this host's private network, so a managed "
                          "server here would be out of their reach until it has an endpoint, which needs a domain: "
                          "connect a domain first, or use a hosted database instead")
-    with _lock():
-        return _up(Server(name, kind), data_root, storage_gb)
-
-
-def _up(server: Server, data_root=None, storage_gb=None):
+    server = Server(name, kind)
     found = _record(server.name)
     if found and found[0].kind != server.kind:
         raise ValueError("this server name already has a different kind")
+    if found and kind == PACKAGE and found[1].get("package") != package:
+        raise ValueError(f"this server runs {found[1].get('package')}")
+    if found and presets:
+        raise ValueError("an existing server keeps the secrets it was made with")
+    if found and kind == PACKAGE and storage_gb is not None and storage_gb != found[1]["storage"].get("size_gb"):
+        raise ValueError("an existing server's disk cannot change size; remove the server and run it again")
     if found and server.kind == "postgres":
         previous = found[1]
         if _old_postgres(server, previous):
@@ -275,47 +359,98 @@ def _up(server: Server, data_root=None, storage_gb=None):
         if not docker("volume", "inspect", server.volume, check=False).returncode:
             raise ValueError("a data volume already exists without a managed record; it is unchanged")
         joins = not networks()
-        values = {"address": _address(network), "password": secrets.token_hex(32)}
+        values = {"address": _address(network)}
+        if kind == PACKAGE:
+            if hosted_compose.exists(server.name):
+                raise ValueError("containers of this server's name exist without a managed record; choose a new "
+                                 "server name")
+            unknown = sorted(set(presets or {}) - set(declared.server["secrets"]))
+            if unknown:
+                raise ValueError(f"{declared.title} has no secret {', '.join(unknown)} "
+                                 f"({', '.join(declared.server['secrets']) or 'it has none'})")
+            size = storage_gb if storage_gb is not None else declared.server["storage_gb"]
+            values.update(package=package, port=declared.server["port"],
+                          storage=cow_storage.volume_plan(server.name, size),
+                          secrets={key: (presets or {}).get(key) or secrets.token_hex(32)
+                                   for key in declared.server["secrets"]})
+        else:
+            values["password"] = secrets.token_hex(32)
         if server.kind == "postgres":
             values.update(postgres_major=POSTGRES_MAJOR,
                           storage=cow_storage.plan(server, data_root, storage_gb if storage_gb is not None else 32))
         _save(server, values, "preparing")
         if joins:
             _network_changed()
-    existing = docker("inspect", server.container, check=False)
-    details = json.loads(existing.stdout)[0] if not existing.returncode else None
+    details = _details(server)
     if details and not server.owns(details["Config"].get("Labels")):
         raise ValueError("refusing to adopt a container not owned by this server")
     if server.kind == "postgres" and details and not _matches(server, details, values):
         raise ValueError("the existing container does not match its PostgreSQL 18 storage record; it is unchanged")
-    mount_unit = cow_storage.prepare(values["storage"]) if server.kind == "postgres" else ""
-    if details is None:
-        _create_container(server, values)
-    if server.kind == "postgres":
-        cow_storage.start(server, values["storage"], mount_unit)
-    elif details:
-        docker("start", server.container)
+    return server, values, details
+
+
+def _finish(server: Server, values: dict, details: dict | None):
+    """The slow half: the server runs, answers and has its connection. A
+    failure is kept with the server (records), for whoever asked and left."""
+    try:
+        result = _run(server, values, details)
+    except Exception as error:
+        _save(server, {**values, "error": str(error)[:400]}, "failed")
+        raise
+    return result
+
+
+def _run(server: Server, values: dict, details: dict | None):
     address = values["address"]
-    inputs = connection_inputs(server.kind, address, values["password"])
     deadline = time.monotonic() + 120
-    if server.kind == "postgres":
-        _status(server.name, "checking")
-        while docker("exec", server.container, "pg_isready", "-U", ADMIN, "-d", "postgres", check=False).returncode:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Postgres did not become ready; retry the same command or inspect its service journal")
-            time.sleep(2)
-        values = _check(server)
+    if server.kind == PACKAGE:
+        from . import catalog
+        declared = _package(values["package"])
+        made = {key: values["secrets"].get(key) or secrets.token_hex(32) for key in declared.server["secrets"]}
+        if made != values["secrets"] or values.get("port") != declared.server["port"]:   # the package changed
+            values = {**values, "secrets": made, "port": declared.server["port"]}
+            _save(server, values)
+        volumes = cow_storage.volume_prepare(server.name, values["storage"], declared.server["volumes"])
+        hosted_compose.up(server.name, declared, values, NETWORK, LABEL, volumes)
+        package, inputs = values["package"], catalog.render_server_inputs(declared, address, values["secrets"])
+    else:
+        mount_unit = cow_storage.prepare(values["storage"]) if server.kind == "postgres" else ""
+        if details and not _log_limited(details):
+            # Made before LOG_LIMIT: a container's log options are fixed when it is
+            # created, so it is made again around the same data.
+            if server.kind == "postgres" and (cow_storage.UNITS / server.unit).exists():
+                cow_storage.run("systemctl", "stop", server.unit)
+            docker("rm", "-f", server.container)
+            details = None
+        if details is None:
+            _create_container(server, values)
+        if server.kind == "postgres":
+            cow_storage.start(server, values["storage"], mount_unit)
+        elif details:
+            docker("start", server.container)
+        package, inputs = DRIVERS[server.kind]["package"], connection_inputs(server.kind, address, values["password"])
+        if server.kind == "postgres":
+            _status(server.name, "checking")
+            while docker("exec", server.container, "pg_isready", "-U", ADMIN, "-d", "postgres", check=False).returncode:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Postgres did not become ready; retry the same command or inspect its service "
+                                       "journal")
+                time.sleep(2)
+            values = _check(server)
     while True:  # the server may answer before it accepts its admin
         try:
-            connections.save(server.name, DRIVERS[server.kind]["package"], inputs, by="sbx-admin server up")
+            connections.save(server.name, package, inputs, by="sbx-admin server up")
             break
-        except PackageError:
+        except PackageError as error:
             if time.monotonic() >= deadline:
-                raise RuntimeError("the server did not pass its connection check; retry the same command") from None
+                raise RuntimeError(f"the server did not pass its connection check ({error}); "
+                                   "retry the same command") from None
             time.sleep(2)
+    if values.get("error"):
+        _save(server, {k: v for k, v in values.items() if k != "error"})
     _status(server.name, "ready")
-    return {"name": server.name, "kind": server.kind, "status": "ready", "container": server.container,
-            "address": address, "port": DRIVERS[server.kind]["port"], "public_ports": [],
+    return {"name": server.name, "kind": server.kind, "package": package, "status": "ready",
+            "container": server.container, "address": address, "port": _port(server, values), "public_ports": [],
             "storage": values.get("storage"), "cow": values.get("cow"),
             "next": "sbx-admin network apply (once, before sandboxes use a new private network)"}
 
@@ -334,6 +469,11 @@ def _matches(server: Server, details: dict, values: dict) -> bool:
     return details["Config"]["Image"] == server.image and any(
         m.get("Source") == values["storage"]["path"] and m.get("Destination") == server.data_path
         for m in details.get("Mounts", []))
+
+
+def _log_limited(details: dict) -> bool:
+    """Whether the container was created with a size limit on its log."""
+    return bool(((details.get("HostConfig") or {}).get("LogConfig") or {}).get("Config", {}).get("max-size"))
 
 
 def _container_size(cpus: int = 4, memory_mb: int = 4096) -> tuple[int, int]:
@@ -371,7 +511,7 @@ def _create_container(server: Server, values: dict):
     cpus, memory_mb = _container_size()
     docker(*run, "--name", server.container, "--label", f"{LABEL}={server.name}",
            "--network", NETWORK, "--ip", values["address"], "--memory", f"{memory_mb}m", "--cpus", str(cpus),
-           "--mount", mount, "--env-file", "/dev/stdin", *extra, server.image, *command,
+           *LOG_LIMIT, "--mount", mount, "--env-file", "/dev/stdin", *extra, server.image, *command,
            input="".join(f"{k}={v}\n" for k, v in env.items()))
 
 
@@ -409,6 +549,9 @@ def _check(server: Server) -> dict:
 
 
 def down(name, *, delete_data=False):
+    """Stop the managed server and remove its connection (refused while a
+    repo uses it); with delete_data its data and its record too, so nothing
+    of it is left on the host."""
     with _lock():
         found = _record(name)
         if not found:
@@ -425,14 +568,19 @@ def down(name, *, delete_data=False):
             if not volume.returncode and not server.owns(json.loads(volume.stdout)):
                 raise ValueError("refusing to remove a data volume not owned by this server")
         connections.remove(name)
-        if server.kind == "postgres" and (cow_storage.UNITS / server.unit).exists():
-            cow_storage.run("systemctl", "disable", "--now", server.unit)
-        if not inspected.returncode:
-            docker("rm", "-f", server.container)
+        if server.kind == PACKAGE:
+            hosted_compose.down(name, values, delete_data=delete_data)
+            if delete_data:
+                cow_storage.volume_remove(values["storage"])
+        else:
+            if server.kind == "postgres" and (cow_storage.UNITS / server.unit).exists():
+                cow_storage.run("systemctl", "disable", "--now", server.unit)
+            if not inspected.returncode:
+                docker("rm", "-f", server.container)
         if delete_data:
             if server.kind == "postgres":
                 cow_storage.remove(server, values["storage"])
-            elif not volume.returncode:
+            elif server.kind == "clickhouse" and not volume.returncode:
                 docker("volume", "rm", server.volume)
             from . import endpoints
             endpoints.forget_server(name)

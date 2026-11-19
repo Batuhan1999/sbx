@@ -2,9 +2,20 @@
 # On 127.0.0.1 only; forward over SSH for direct administration. Bootstrap in
 # /etc/sbx/infisical.env (root only); data in the named volumes.
 name: sbx-infisical
+
+# Docker's json-file driver keeps a container's log forever by default, and a
+# service that fails on every write (on a full disk, say) fills the disk with
+# its error output. Five files of 50 MiB a service, as Embed's services have.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   backend:
     image: infisical/infisical:v0.167.4
+    logging: *logging
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
@@ -16,10 +27,12 @@ services:
     ports: ["127.0.0.1:${INFISICAL_PORT:-8190}:8080"]
   redis:
     image: redis:7.4.6
+    logging: *logging
     restart: unless-stopped
     volumes: [redis:/data]
   db:
     image: postgres:16-alpine
+    logging: *logging
     restart: unless-stopped
     env_file: ${INFISICAL_ENV:-/etc/sbx/infisical.env}
     volumes: [db:/var/lib/postgresql/data]

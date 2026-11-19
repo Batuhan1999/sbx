@@ -35,7 +35,8 @@ product mode.
 | ClickHouse | `clickhouse-server` + `clickhouse-database` | Empty schemas, or clones of supported local MergeTree tables. |
 | Upstash Redis | `upstash-account` + `upstash-redis` | A separate Redis database; run the repository's seeds, if any. |
 | Upstash Redis with development data worth copying | `upstash-account` + `upstash-redis-branch` | A branch of the selected global, paid parent database: its keys at creation, billed as Pay as You Go. |
-| Temporal | `temporal-server` + `temporal-namespace`, or the local dev server as a process | A namespace, or a development store of its own. |
+| Temporal | `temporal-server` (one you run, or the development server this host runs: `sbx servers up temporal --package temporal-server`) + `temporal-namespace`, or the local dev server as a process | A namespace, or a development store of its own. |
+| Langfuse | `langfuse-server` (one you run or Langfuse Cloud, or the one this host runs: `sbx servers up langfuse --package langfuse-server`) + `langfuse-tracing` | The server's address and project keys as `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`; every sandbox traces into the same project. A Langfuse 4 made new takes traces over OpenTelemetry only. |
 | Redis with a native client | A `processes:` entry in the app sandbox | Its own data directory; enable persistence if the app needs it. |
 | SQLite, uploads, local files | The sandbox filesystem | Files created by normal setup. |
 | AWS SDKs or AWS secret loaders | `aws-role` + `aws-profile` | A named profile with renewable role credentials ([AWS role access](../catalog/aws-role/README.md)). |

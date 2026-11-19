@@ -3,7 +3,7 @@ import { enc, postForm, repoPath as r, request } from './client'
 import type {
   AddEndpoint, AttachBody, Attachment, AvailableRuntime, CatalogEntry, CatalogPackage, CheckResult, Connection, ConnectionChange, CreateSandbox, Endpoint, Endpoints, EnvChange, EnvView,
   RuntimeChange, RuntimeValues,
-  GitHubRepository, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
+  GitHubRepository, ManagedServer, Me, RecipeFiles, RepoDetail, RepoInspection, Runtimes, RepoReadiness, RepoSummary, Sandbox,
   SandboxDetail, SandboxInspection, SandboxList, SandboxResources, SandboxScope, SetVariable, Settings, SetupPr, SharedConnection,
   SetupState, TemplateProgress, TemplateState, Updates, Audience, Users, PasswordLink, SecretRequest, SecretSubmitResult,
 } from './types'
@@ -109,6 +109,14 @@ export const api = {
     connect: (body: { package: string; key: string; inputs: Record<string, string> }) => post<SharedConnection>('/api/catalog/connections', body),
     checkConnection: (key: string) => post<{ key: string; ok: boolean; detail: string }>(`/api/catalog/connections/${enc(key)}/check`),
     removeConnection: (key: string) => del<{ key: string; removed: boolean }>(`/api/catalog/connections/${enc(key)}`),
+  },
+
+  servers: {
+    list: () => get<{ servers: ManagedServer[]; packages: { name: string; title: string }[] }>('/api/servers'),
+    /** 202: recorded; GET follows it until ready or failed. The same name and package starts a stopped or failed one again. */
+    start: (body: { name: string; package: string }) => post<ManagedServer>('/api/servers', body),
+    /** Stops it, removes its connection and deletes its data. */
+    remove: (name: string) => del<{ name: string; stopped: boolean; data_deleted: boolean }>(`/api/servers/${enc(name)}`),
   },
 
   connections: {

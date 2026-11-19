@@ -190,6 +190,63 @@ const agent = (kind: string, title: string, state: Connection['state'], extra: P
   fields: [{ name: 'token', label: 'Token', secret: true, set: state !== 'not_connected', value: null, help: '' }], ...extra,
 })
 
+describe('servers this host runs', () => {
+  const RUNNABLE = { ...SERVER, server: true }
+  const MANAGED = { name: 'dev-pg', kind: 'postgres', package: 'postgres-server', status: 'ready', error: '', address: '172.29.50.10', port: 5432, used_by: [] }
+  const catalog = { 'GET /api/catalog': { packages: [RUNNABLE], problems: [] } }
+
+  it('runs a package\'s server here by default, asking only for its name', async () => {
+    const calls = stubApi(base({ ...catalog, 'GET /api/servers': { servers: [], packages: [] }, 'POST /api/servers': { ...MANAGED, status: 'preparing' } }))
+    renderApp(<ServicesPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(isChecked(within(dialog).getByRole('radio', { name: /Run it on this server/ }))).toBe(true)
+    expect(within(dialog).queryByLabelText('URL')).toBeNull()
+    await user.click(within(dialog).getByRole('button', { name: 'Run' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(calls.find(c => c.method === 'POST')?.body).toEqual({ name: 'postgres', package: 'postgres-server' })
+  })
+
+  it('still connects one the owner runs, with the package\'s inputs', async () => {
+    stubApi(base({ ...catalog, 'GET /api/servers': { servers: [], packages: [] } }))
+    renderApp(<ServicesPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Add Postgres server' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('radio', { name: /Connect one you run/ }))
+    expect(await within(dialog).findByLabelText('URL')).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Connect' })).toBeTruthy()
+  })
+
+  it('shows one that failed to start with why, to start again or remove', async () => {
+    const calls = stubApi(base({ ...catalog, 'GET /api/servers': { servers: [{ ...MANAGED, status: 'failed', error: 'docker compose up failed (exit 1)' }], packages: [] }, 'POST /api/servers': { ...MANAGED, status: 'preparing' } }))
+    renderApp(<ServicesPage />)
+    const row = (await (await group('Connected')).findByText('dev-pg')).closest('li')!
+    expect(within(row).getByText('Failed to start')).toBeTruthy()
+    expect(within(row).getByText('docker compose up failed (exit 1)')).toBeTruthy()
+    await menu(userEvent.setup(), 'Actions for dev-pg', 'Start again')
+    await waitFor(() => expect(calls.find(c => c.method === 'POST')?.body).toEqual({ name: 'dev-pg', package: 'postgres-server' }))
+  })
+
+  it('removes a server with its connection, saying that its data goes', async () => {
+    const saved = { ...SAVED, key: 'dev-pg', package: 'postgres-server', title: 'Postgres server', managed: { kind: 'postgres', status: 'ready' } }
+    const calls = stubApi(base({ ...catalog, 'GET /api/catalog/connections': { connections: [saved] }, 'GET /api/servers': { servers: [MANAGED], packages: [] },
+      'DELETE /api/servers/dev-pg': { name: 'dev-pg', stopped: true, data_deleted: true } }))
+    renderApp(<ServicesPage />)
+    const user = userEvent.setup()
+    const row = (await (await group('Connected')).findByText('dev-pg')).closest('li')!
+    expect(within(row).getByText(/Runs on this server/)).toBeTruthy()
+    await user.click(within(row).getByRole('button', { name: 'Actions for dev-pg' }))
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull()   // its address and credentials are the server's
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }))
+    expect(await screen.findByText(/stops the server and deletes its data/)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Stop and delete' }))
+    await waitFor(() => expect(calls.some(c => c.method === 'DELETE' && c.url === '/api/servers/dev-pg')).toBe(true))
+    expect(calls.some(c => c.url.startsWith('/api/catalog/connections/'))).toBe(false)
+  })
+})
+
 describe('agents and GitHub', () => {
   it('lists every agent with its state: one chosen without its key asks for it, one not set up offers Set up', async () => {
     stubApi(base({ 'GET /api/connections': { connections: [

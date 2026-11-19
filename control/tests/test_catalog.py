@@ -2,6 +2,7 @@
 operator's catalog), real scripts that log what they were run with, the
 connections and attachments tables, and the HTTP API."""
 import base64
+import contextlib
 import json
 import os
 import shutil
@@ -527,6 +528,286 @@ class ManagedServerTests(Server):
             with self.assertRaisesRegex(ValueError, "not a managed server"):
                 self.hosted.up("taken", "clickhouse")
 
+    def bring_up(self, server, details):
+        """_up for a recorded server whose container docker inspect describes
+        (None: it has none); returns the docker calls it made."""
+        network = {"Labels": {self.hosted.LABEL: "true"}, "IPAM": {"Config": [{"Subnet": self.hosted.CIDR}]}, "Containers": {}}
+        calls = []
+
+        def docker(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("network", "inspect"):
+                return Mock(returncode=0, stdout=json.dumps([network]))
+            if args[:2] == ("volume", "inspect"):
+                return Mock(returncode=0, stdout=json.dumps({self.hosted.LABEL: server.name}))
+            if args[0] == "inspect":
+                return Mock(returncode=0 if details else 1, stdout=json.dumps([details]))
+            return Mock(returncode=0, stdout="")
+        with patch.object(self.hosted, "docker", side_effect=docker), patch.object(self.hosted.connections, "save"):
+            self.hosted._finish(server, self.hosted._record(server.name)[1], self.hosted._details(server))
+        return calls
+
+    def test_a_new_server_keeps_a_bounded_log(self):
+        # Docker keeps a container's log forever otherwise, and a server failing on a full disk fills it again.
+        server = self.hosted.Server("ch-new", "clickhouse")
+        self.record("ch-new", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})
+        run = next(c for c in self.bring_up(server, None) if c[0] == "run")
+        self.assertIn(("--log-opt", "max-size=50m", "--log-opt", "max-file=5"),
+                      [run[i:i + 4] for i in range(len(run))])
+        self.assertLess(run.index("--log-opt"), run.index(server.image))   # an option of the container, not its command
+
+    def test_a_server_made_without_a_log_limit_is_made_again_around_its_data(self):
+        server = self.hosted.Server("ch-old", "clickhouse")
+        self.record("ch-old", "clickhouse", {"address": "172.29.50.11", "password": "fixture"})
+        labels = {"Config": {"Labels": {self.hosted.LABEL: "ch-old"}}}
+        unlimited = {**labels, "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {}}}}
+        calls = self.bring_up(server, unlimited)
+        kinds = [c[0] for c in calls]
+        self.assertLess(calls.index(("rm", "-f", server.container)), kinds.index("run"))
+        self.assertNotIn(("volume", "rm", server.volume), calls)
+        limited = {**labels, "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "50m"}}}}
+        calls = self.bring_up(server, limited)
+        self.assertNotIn("rm", [c[0] for c in calls])
+        self.assertNotIn("run", [c[0] for c in calls])
+        self.assertIn(("start", server.container), calls)
+
+    def test_a_postgres_made_without_a_log_limit_is_stopped_by_its_unit_before_it_is_made_again(self):
+        server = self.hosted.Server("pg-old", "postgres")
+        with tempfile.TemporaryDirectory() as directory:
+            storage = {"path": f"{directory}/data"}
+            values = {"address": "172.29.50.10", "password": "fixture", "postgres_major": self.hosted.POSTGRES_MAJOR,
+                      "storage": storage}
+            self.record("pg-old", "postgres", values)
+            (Path(directory) / server.unit).touch()
+            details = {"Config": {"Labels": {self.hosted.LABEL: "pg-old"}, "Image": server.image},
+                       "Mounts": [{"Source": storage["path"], "Destination": server.data_path}],
+                       "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {}}}}
+            order = []
+            with patch.object(self.cow, "UNITS", Path(directory)), \
+                    patch.object(self.cow, "prepare", return_value="fixture.mount"), \
+                    patch.object(self.cow, "run", side_effect=lambda *a: order.append(a)), \
+                    patch.object(self.cow, "start", side_effect=lambda *a: order.append(("start unit",))), \
+                    patch.object(self.hosted, "_check", return_value=values):
+                calls = self.bring_up(server, details)
+        self.assertEqual(order, [("systemctl", "stop", server.unit), ("start unit",)])
+        create = next(c for c in calls if c[0] == "create")
+        self.assertLess(calls.index(("rm", "-f", server.container)), calls.index(create))
+        self.assertIn("max-size=50m", create)
+
+    LIMITS = "    mem_limit: 256m\n    cpus: 1\n"
+    COMPOSE = ("services:\n  app:\n    image: example/app:1\n    volumes: [data:/data]\n" + LIMITS +
+               "  worker:\n    image: example/app:1\n    restart: 'no'\n" + LIMITS + "volumes:\n  data:\n")
+    SERVER = ("server:\n  compose: compose.yaml\n  service: app\n  port: 8080\n  storage_gb: 3\n"
+              "  secrets: [APP_TOKEN]\n"
+              "  inputs: {url: 'http://${address}:${port}', token: '${secrets.APP_TOKEN}'}\n")
+
+    def server_package(self, name="fixture-app", compose=COMPOSE, server=SERVER):
+        """A connection package that runs its server; returns its files."""
+        from sbx_control import paths
+        folder = paths.packages() / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "compose.yaml").write_text(compose)
+        (folder / "package.yaml").write_text(
+            "kind: connection\ninputs: {url: {required: true}, token: {secret: true}}\n" + server)
+        return {"package.yaml": (folder / "package.yaml").read_text(), "compose.yaml": compose}
+
+    @contextlib.contextmanager
+    def docker_without_containers(self):
+        """The host's boundaries with the managed network and nothing on it:
+        docker, and the storage tools that make and remove a server's disk
+        (self.prepared, self.removed)."""
+        network = {"Labels": {self.hosted.LABEL: "true"}, "IPAM": {"Config": [{"Subnet": self.hosted.CIDR}]}, "Containers": {}}
+
+        def docker(*args, **kwargs):
+            if args[:2] == ("network", "inspect"):
+                return Mock(returncode=0, stdout=json.dumps([network]))
+            return Mock(returncode=1, stdout="")
+        with patch.object(self.hosted, "docker", side_effect=docker), \
+                patch.object(self.cow, "volume_prepare", side_effect=lambda name, storage, volumes: {
+                    volume: f"{storage['path']}/{volume}" for volume in volumes}) as self.prepared, \
+                patch.object(self.cow, "volume_remove") as self.removed:
+            yield
+
+    def test_a_package_runs_its_server_and_removing_it_leaves_nothing(self):
+        from sbx_control.catalog import connections
+        self.server_package()
+        compose = self.hosted.hosted_compose
+        with self.docker_without_containers(), patch.object(compose, "exists", return_value=False), \
+                patch.object(compose, "up") as up, patch.object(compose, "down") as down:
+            started = self.hosted.up("app", package="fixture-app")
+            name, package, values = up.call_args.args[:3]
+            self.assertEqual((name, package.name), ("app", "fixture-app"))
+            # Its volumes are directories on a disk of its own, of the size its package says.
+            self.assertEqual(values["storage"]["size_gb"], 3)
+            self.assertEqual(up.call_args.args[5], {"data": values["storage"]["path"] + "/data"})
+            self.assertEqual(self.prepared.call_args.args, ("app", values["storage"], ["data"]))
+            self.assertRegex(values["secrets"]["APP_TOKEN"], "^[0-9a-f]{64}$")
+            self.assertEqual(started["status"], "ready")
+            self.assertEqual(self.hosted.target("app"), f"{values['address']}:8080")
+            saved = connections.listing()[0]
+            self.assertEqual((saved["key"], saved["package"]), ("app", "fixture-app"))
+            self.assertEqual(saved["inputs"], {"url": f"http://{values['address']}:8080", "token": "(set)"})
+            listed = self.hosted.records()
+            self.assertEqual([(r["name"], r["kind"], r["package"], r["status"], r["port"]) for r in listed],
+                             [("app", "package", "fixture-app", "ready", 8080)])
+            self.assertNotIn(values["secrets"]["APP_TOKEN"], json.dumps(listed))
+            with self.assertRaisesRegex(ValueError, "keeps the secrets"):
+                self.hosted.up("app", package="fixture-app", presets={"APP_TOKEN": "other"})
+            with self.assertRaisesRegex(ValueError, "this server runs fixture-app"):
+                self.server_package("other-app")
+                self.hosted.up("app", package="other-app")
+            with self.assertRaisesRegex(ValueError, "disk cannot change size"):
+                self.hosted.up("app", package="fixture-app", storage_gb=9)
+            self.hosted.down("app")
+            self.removed.assert_not_called()   # stopped: its disk stays
+            self.hosted.up("app", package="fixture-app")
+            self.assertEqual(self.hosted.down("app", delete_data=True)["data_deleted"], True)
+            self.assertEqual(down.call_args.kwargs, {"delete_data": True})
+            self.removed.assert_called_once_with(values["storage"])
+        self.assertEqual(self.hosted.records(), [])
+        self.assertEqual(connections.listing(), [])
+
+    def test_a_package_server_takes_given_secrets_only_ones_it_declares(self):
+        self.server_package()
+        compose = self.hosted.hosted_compose
+        with self.docker_without_containers(), patch.object(compose, "exists", return_value=False), \
+                patch.object(compose, "up") as up:
+            with self.assertRaisesRegex(ValueError, "no secret OTHER"):
+                self.hosted.up("app", package="fixture-app", presets={"OTHER": "x"})
+            self.hosted.up("app", package="fixture-app", presets={"APP_TOKEN": "kept-from-before"}, storage_gb=7)
+            self.assertEqual(up.call_args.args[2]["secrets"], {"APP_TOKEN": "kept-from-before"})
+            self.assertEqual(up.call_args.args[2]["storage"]["size_gb"], 7)
+
+    def test_a_server_that_does_not_start_says_why_and_starts_again(self):
+        self.server_package()
+        compose = self.hosted.hosted_compose
+        with self.docker_without_containers(), patch.object(compose, "exists", return_value=False), \
+                patch.object(compose, "up", side_effect=RuntimeError("docker compose up failed (exit 1)")) as up:
+            self.assertEqual(self.hosted.begin("app", package="fixture-app")["status"], "preparing")
+            with self.assertRaises(RuntimeError):
+                self.hosted.finish("app")
+            failed = self.hosted.records()[0]
+            self.assertEqual((failed["status"], failed["error"]), ("failed", "docker compose up failed (exit 1)"))
+            up.side_effect = None
+            self.hosted.begin("app", package="fixture-app")   # the same name and package: again
+            self.hosted.finish("app")
+            again = self.hosted.records()[0]
+            self.assertEqual((again["status"], again["error"]), ("ready", ""))
+
+    def test_a_name_with_containers_but_no_record_is_not_adopted_by_a_package(self):
+        self.server_package()
+        with self.docker_without_containers(), patch.object(self.hosted.hosted_compose, "exists", return_value=True):
+            with self.assertRaisesRegex(ValueError, "without a managed record"):
+                self.hosted.up("app", package="fixture-app")
+        self.assertEqual(self.hosted.records(), [])
+
+    def test_a_package_that_runs_no_server_and_one_of_the_two_built_in(self):
+        from sbx_control import catalog
+        self.server_package("plain", server="")
+        with self.docker_without_containers():
+            with self.assertRaisesRegex(ValueError, "somebody else runs"):
+                self.hosted.up("app", package="plain")
+            with self.assertRaisesRegex(ValueError, "kind .* or the connection package"):
+                self.hosted.up("app")
+        self.assertTrue(self.hosted.runs(catalog.get("postgres-server")))   # built in: no server: of its own
+        self.assertFalse(self.hosted.runs(catalog.get("plain")))
+
+    def test_what_a_package_server_may_not_ask_of_the_host(self):
+        from sbx_control import catalog
+        files = self.server_package()
+        self.assertEqual(catalog.parse("fixture-app", files, "operator").server["port"], 8080)
+        refused = {
+            "sets mem_limit and cpus": self.COMPOSE.replace(self.LIMITS, "    mem_limit: 256m\n", 1),
+            "sets ports": self.COMPOSE.replace("    volumes: [data:/data]\n", "    ports: ['8080:8080']\n"),
+            "sets network_mode, privileged": self.COMPOSE.replace("    restart: 'no'\n", "    privileged: true\n    network_mode: host\n"),
+            "not one of its volumes": self.COMPOSE.replace("[data:/data]", "['/etc:/host-etc']"),
+            "services and volumes only": self.COMPOSE + "networks:\n  other: {}\n",
+        }
+        for why, compose in refused.items():
+            with self.subTest(why=why), self.assertRaisesRegex(catalog.PackageError, why):
+                catalog.parse("fixture-app", {**files, "compose.yaml": compose}, "operator")
+        with self.assertRaisesRegex(catalog.PackageError, "only a connection of the installation's catalog"):
+            catalog.parse("fixture-app", files, "repo", "owner/app")
+        with self.assertRaisesRegex(catalog.PackageError, "names secrets.OTHER"):
+            catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("secrets.APP_TOKEN", "secrets.OTHER")}, "operator")
+        with self.assertRaisesRegex(catalog.PackageError, "server.storage_gb is the size"):
+            catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("  storage_gb: 3\n", "")}, "operator")
+        with self.assertRaisesRegex(catalog.PackageError, "server.service is one of"):
+            catalog.parse("fixture-app", {**files, "package.yaml": files["package.yaml"].replace("service: app", "service: web")}, "operator")
+
+    def test_the_shipped_packages_that_run_a_server_declare_all_their_compose_files_read(self):
+        import re
+        from sbx_control import catalog
+        runs = {p.name: p for p in catalog.shipped() if p.server}
+        self.assertEqual(sorted(runs), ["langfuse-server", "temporal-server"])
+        self.assertEqual((runs["temporal-server"].server["service"], runs["temporal-server"].server["port"]),
+                         ("temporal", 7233))
+        for name, package in runs.items():
+            # A variable Compose finds unset is an empty value: a password of nothing, or a refused start.
+            read = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", package.files[package.server["compose"]]))
+            self.assertEqual(read - set(package.server["secrets"]) - {"SBX_ADDRESS", "SBX_NAME"}, set(), name)
+            self.assertEqual(set(package.server["secrets"]) - read, set(), name)   # and none made for nothing
+        inputs = catalog.render_server_inputs(runs["langfuse-server"], "172.29.50.20",
+                                              {key: "0" * 64 for key in runs["langfuse-server"].server["secrets"]})
+        self.assertEqual((inputs["url"], inputs["public_key"]), ("http://172.29.50.20:3000", "pk-lf-" + "0" * 64))
+        tracing = next(p for p in catalog.shipped() if p.name == "langfuse-tracing")
+        self.assertEqual(tracing.requires["server"]["kind"], "langfuse-server")
+
+    def test_this_host_adds_the_address_the_log_limit_and_its_label_to_a_package_server(self):
+        import yaml
+        from sbx_control import catalog
+        package = catalog.parse("fixture-app", self.server_package(), "operator")
+        added = self.hosted.hosted_compose.override("app", package.server, yaml.safe_load(self.COMPOSE), "172.29.50.20",
+                                                    self.hosted.NETWORK, self.hosted.LABEL, {"data": "/srv/app/data"})
+        app, worker = added["services"]["app"], added["services"]["worker"]
+        self.assertEqual(app["networks"], {"default": {}, self.hosted.NETWORK: {"ipv4_address": "172.29.50.20"}})
+        self.assertNotIn("networks", worker)   # only the service sandboxes reach is on their network
+        self.assertEqual(app["restart"], "unless-stopped")
+        self.assertNotIn("restart", worker)    # what the package chose stays
+        for service in (app, worker):
+            self.assertEqual(service["logging"]["options"], {"max-size": "50m", "max-file": "5"})
+            self.assertEqual(service["labels"], {self.hosted.LABEL: "app"})
+        # A volume is a directory on the server's own disk: what fills it fills that disk only.
+        self.assertEqual(added["volumes"], {"data": {"labels": {self.hosted.LABEL: "app"}, "driver": "local", "driver_opts": {
+            "type": "none", "o": "bind", "device": "/srv/app/data"}}})
+        self.assertEqual(added["networks"], {self.hosted.NETWORK: {"external": True}})
+
+    def test_servers_api_starts_one_behind_its_answer_and_removes_it_with_its_connection(self):
+        self.repo_admin()
+        self.server_package()
+        compose = self.hosted.hosted_compose
+
+        class Now:   # the thread's work, done before the answer: what follows the 202
+            def __init__(self, target, args, **kwargs):
+                self.run = lambda: target(*args)
+
+            def start(self):
+                self.run()
+        from sbx_control import servers_api
+        with self.docker_without_containers(), patch.object(compose, "exists", return_value=False), \
+                patch.object(compose, "up"), patch.object(compose, "down") as down, \
+                patch.object(servers_api.threading, "Thread", Now):
+            self.assertIn("fixture-app", [p["name"] for p in self.client.get("/api/servers").json()["packages"]])
+            refused = self.client.post("/api/servers", json={"name": "Bad Name", "package": "fixture-app"})
+            self.assertEqual(refused.status_code, 400, refused.text)
+            started = self.client.post("/api/servers", json={"name": "app", "package": "fixture-app"})
+            self.assertEqual((started.status_code, started.json()["status"]), (202, "preparing"))
+            listed = self.client.get("/api/servers").json()["servers"]
+            self.assertEqual([(s["name"], s["status"], s["package"]) for s in listed], [("app", "ready", "fixture-app")])
+            connection = self.client.get("/api/catalog/connections").json()["connections"][0]
+            self.assertEqual((connection["key"], connection["managed"]["status"]), ("app", "ready"))
+            orphaning = self.client.delete("/api/catalog/connections/app")   # would leave the server running unseen
+            self.assertEqual(orphaning.status_code, 409)
+            self.assertIn("sbx servers rm app", orphaning.json()["detail"])
+            removed = self.client.delete("/api/servers/app")
+            self.assertEqual((removed.status_code, removed.json()["data_deleted"]), (200, True))
+            self.assertEqual(down.call_args.kwargs, {"delete_data": True})
+            self.assertEqual(self.client.get("/api/servers").json()["servers"], [])
+            self.assertEqual(self.client.get("/api/catalog/connections").json()["connections"], [])
+            self.assertEqual(self.client.delete("/api/servers/app").status_code, 404)
+        self.assertTrue(next(p for p in self.client.get("/api/catalog").json()["packages"]
+                             if p["name"] == "fixture-app")["server"])
+
     def test_sql_streams_into_the_owned_container_and_its_failure_is_returned(self):
         import io
         self.record("seed-exec", "postgres", {})
@@ -566,6 +847,37 @@ class ManagedServerTests(Server):
                 self.assertEqual(self.cow.shared_bytes(a, b), 0)
             with patch.object(self.cow, "extents", side_effect=[[(4096, 4096, 0x2000)], [(4096, 4096, 0x2000)]]):
                 self.assertEqual(self.cow.shared_bytes(a, b), 4096)
+
+    def test_a_package_servers_disk_is_mounted_before_docker_and_removed_only_once_unmounted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = {"mode": "xfs-image", "image": str(root / "v/volume.xfs"), "path": str(root / "v/data"), "size_gb": 3}
+            ran = []
+
+            def run(*args):
+                ran.append(args)
+                if args[0] == "mkfs.xfs":
+                    self.assertEqual(Path(args[-1]).stat().st_size, 3 * 1024 ** 3)   # all of it reserved
+                return {"blkid": "xfs", "systemd-escape": "fixture.mount"}.get(args[0], "")
+            with patch.object(self.cow, "UNITS", root), patch.object(self.cow, "run", side_effect=run), \
+                    patch.object(self.cow.os, "posix_fallocate", create=True,   # Linux's; not on every developer's machine
+                                 side_effect=lambda fd, start, size: os.ftruncate(fd, size)), \
+                    patch.object(self.cow.shutil, "disk_usage", return_value=Mock(free=10 * 1024 ** 3)), \
+                    patch("os.path.ismount", return_value=True):
+                found = self.cow.volume_prepare("app", storage, ["data", "logs"])
+                self.assertEqual(found, {"data": f"{storage['path']}/data", "logs": f"{storage['path']}/logs"})
+                unit = (root / "fixture.mount").read_text()
+                self.assertIn("Before=docker.service", unit)   # a container never starts on the host's own disk
+                self.assertIn(f"What={storage['image']}\nWhere={storage['path']}\nType=xfs", unit)
+                self.assertIn(("systemctl", "enable", "--now", "fixture.mount"), ran)
+                with self.assertRaisesRegex(RuntimeError, "still mounted"):
+                    self.cow.volume_remove(storage)
+                self.assertTrue(Path(storage["image"]).exists())
+            with patch.object(self.cow, "UNITS", root), patch.object(self.cow, "run", side_effect=run), \
+                    patch.object(self.cow.shutil, "disk_usage", return_value=Mock(free=4 * 1024 ** 3)):
+                with self.assertRaisesRegex(ValueError, "not enough disk"):
+                    self.cow.volume_prepare("other", {**storage, "image": str(root / "o/volume.xfs"), "path": str(root / "o/data")}, [])
+            self.assertFalse((root / "o/volume.xfs").exists())
 
     def test_a_mounted_image_is_never_unlinked(self):
         with tempfile.TemporaryDirectory() as directory:

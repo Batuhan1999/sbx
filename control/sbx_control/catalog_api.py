@@ -19,7 +19,8 @@ router = APIRouter()
 @router.get("/api/catalog")
 def api_catalog(kind: str | None = None, email: str = Depends(api_user)):
     used = attachments.used_by()
-    return {"packages": [p.as_dict(sorted(used.get(p.name, ()))) for p in catalog.listing(kind)],
+    return {"packages": [{**p.as_dict(sorted(used.get(p.name, ()))), "server": hosted_services.runs(p)}
+                         for p in catalog.listing(kind)],
             "problems": catalog.problems()}
 
 
@@ -60,6 +61,10 @@ async def api_connection_check(key: str, email: str = Depends(admin_user)):
 
 @router.delete("/api/catalog/connections/{key}")
 def api_connection_remove(key: str, email: str = Depends(admin_user)):
+    if any(server["name"] == key for server in hosted_services.records()):
+        # Its connection alone would leave the server running with nothing showing it.
+        raise HTTPException(409, f"{key} is a managed server: remove the server (DELETE /api/servers/{key}, "
+                                 f"sbx servers rm {key}), which removes its connection")
     try:
         if not connections.remove(key):
             raise HTTPException(404, f"no connection {key}")

@@ -1,0 +1,19 @@
+# Temporal's development server (the temporal CLI's `server start-dev`): one
+# process with its store in one SQLite file, for development namespaces, not
+# for workflows that must survive. Its web UI is on port 8233 of the same
+# address. It runs as root because a new volume is root's.
+services:
+  temporal:
+    image: temporalio/temporal:1.10.1
+    user: root
+    command: [server, start-dev, --ip, 0.0.0.0, --ui-ip, 0.0.0.0, --db-filename, /data/temporal.db, --log-level, warn]
+    volumes: [data:/data]
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: [CMD, temporal, operator, cluster, health, --address, "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+volumes:
+  data:

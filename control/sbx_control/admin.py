@@ -28,7 +28,9 @@
   sbx-admin runtime default KIND     the runtime new sandboxes run on unless asked otherwise
   sbx-admin runtime apply-pending    the change the web app queued (sbx-apply runtime-change runs it)
   sbx-admin preview NAME [--port N] [--listen N] [--preserve-host]  serve an app on host loopback for SSH forwarding
-  sbx-admin server up NAME --kind postgres|clickhouse  run a private shared development server as a connection
+  sbx-admin server up NAME --kind postgres|clickhouse | --package PACKAGE
+                                    run a private shared development server as a connection (sbx servers does
+                                    the same over the API)
   sbx-admin server check NAME                   verify populated Postgres clones share physical blocks
   sbx-admin server exec NAME [--database DB] < seed.sql  import or prepare development base data
   sbx-admin server down NAME [--delete-data]     stop a managed server; optionally remove its owned data
@@ -427,7 +429,10 @@ def main(argv: list) -> int:
     server_down.add_argument('--delete-data', action='store_true')
     server_up = server.add_parser("up")
     server_up.add_argument("name")
-    server_up.add_argument("--kind", choices=["postgres", "clickhouse"], required=True)
+    server_up.add_argument("--kind", choices=["postgres", "clickhouse"])
+    server_up.add_argument("--package", help="a connection package that runs its server (server: in its package.yaml)")
+    server_up.add_argument("--secrets-stdin", action="store_true",
+                           help="a new package server: NAME=VALUE lines on stdin for secrets it would otherwise make")
     server_up.add_argument('--data-root', type=pathlib.Path, help='existing XFS root; otherwise create an owned XFS image')
     server_up.add_argument('--storage-gb', type=int, help='new Postgres XFS image size (default: 32 GiB)')
     sub.add_parser("network").add_argument("action", choices=["apply"])
@@ -475,7 +480,10 @@ def main(argv: list) -> int:
                 elif a.action == 'down':
                     result = hosted_services.down(a.name, delete_data=a.delete_data)
                 else:
-                    result = hosted_services.up(a.name, a.kind, data_root=a.data_root, storage_gb=a.storage_gb)
+                    presets = dict(line.split("=", 1) for line in sys.stdin.read().splitlines()
+                                   if "=" in line) if a.secrets_stdin else None
+                    result = hosted_services.up(a.name, a.kind, package=a.package, data_root=a.data_root,
+                                                storage_gb=a.storage_gb, presets=presets)
             else:
                 result = runtime.apply_network()
             print(json.dumps(result))

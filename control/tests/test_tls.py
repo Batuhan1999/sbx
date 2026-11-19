@@ -216,8 +216,9 @@ path.write_text(path.read_text().replace(before, after))
         self.assertIn("default 127.0.0.1:8442;", front)
         self.assertIn("real_ip_header proxy_protocol;", (self.root / "tls/nginx.conf").read_text())
         launcher = (self.bin / "sbx-tls-nginx").read_text()
-        self.assertIn("--label sbx.nginx-layout=2", launcher)
-        self.assertIn('[ "$(docker inspect -f \'{{index .Config.Labels "sbx.nginx-layout"}}\' sbx-tls-nginx)" != 2 ]',
+        self.assertIn("--label sbx.nginx-layout=3", launcher)
+        self.assertIn("--log-opt max-size=50m --log-opt max-file=5", launcher)   # Docker keeps a log forever otherwise
+        self.assertIn('[ "$(docker inspect -f \'{{index .Config.Labels "sbx.nginx-layout"}}\' sbx-tls-nginx)" != 3 ]',
                       launcher)
         self.assertIn("/live/203.0.113.10/fullchain.pem", bootstrap)
         self.assertGreater(sum("certonly" in c for c in self.commands()), ip_requests)   # the domain's renewal renews the IP's too

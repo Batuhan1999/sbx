@@ -1,0 +1,70 @@
+kind: connection
+name: langfuse-server
+title: Langfuse
+description: >
+  A Langfuse server sandboxes send their traces to: the one this host runs
+  for them, with a Postgres, ClickHouse, Redis and S3 store of its own, or
+  one you run.
+docs: https://langfuse.com/self-hosting
+inputs:
+  url:
+    type: url
+    label: URL
+    help: "Such as https://cloud.langfuse.com; http:// only on a private network, such as http://10.0.0.5:3000"
+    required: true
+  public_key:
+    label: Public key
+    help: "pk-lf-…, of the project sandboxes trace into."
+    required: true
+  secret_key:
+    label: Secret key
+    secret: true
+    required: true
+check: |
+  python3 - <<'CHECK'
+  import base64, ipaddress, os, socket, sys
+  from urllib.parse import urlsplit
+  from urllib.request import HTTPRedirectHandler, Request, build_opener
+  base = os.environ['INPUT_URL'].rstrip('/')
+  parsed = urlsplit(base)
+  if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+      sys.exit('the Langfuse URL must be an HTTP(S) address')
+  if parsed.scheme == 'http':
+      # The secret key goes in every request: plain HTTP only where every address is private or loopback.
+      private = [ipaddress.ip_network(n) for n in ('127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+                 '169.254.0.0/16', '100.64.0.0/10', '::1/128', 'fc00::/7', 'fe80::/10')]
+      try:
+          found = {ipaddress.ip_address(info[4][0].split('%')[0]) for info in socket.getaddrinfo(parsed.hostname, None)}
+      except (OSError, UnicodeError, ValueError):
+          found = set()
+      found = {getattr(a, 'ipv4_mapped', None) or a for a in found}
+      if not found or not all(any(a in n for n in private) for a in found):
+          sys.exit('the Langfuse URL must use https:// unless it reaches a private address; '
+                   'plain HTTP would send the secret key unencrypted')
+  class NoRedirects(HTTPRedirectHandler):
+      def redirect_request(self, *args):
+          return None   # a redirect would resend the secret key, maybe over plain HTTP
+  keys = base64.b64encode((os.environ['INPUT_PUBLIC_KEY'] + ':' + os.environ['INPUT_SECRET_KEY']).encode()).decode()
+  try:
+      with build_opener(NoRedirects).open(Request(base + '/api/public/health'), timeout=10) as response:
+          response.read()
+  except Exception:
+      sys.exit('no Langfuse answered at that URL (/api/public/health)')
+  try:
+      request = Request(base + '/api/public/projects', headers={'Authorization': 'Basic ' + keys})
+      with build_opener(NoRedirects).open(request, timeout=10) as response:
+          response.read()
+  except Exception:
+      sys.exit('Langfuse refused those keys; check the public and secret key of the project')
+  CHECK
+server:
+  compose: compose.yaml
+  service: web
+  port: 3000
+  storage_gb: 20
+  secrets: [POSTGRES_PASSWORD, CLICKHOUSE_PASSWORD, REDIS_PASSWORD, MINIO_PASSWORD, SALT, ENCRYPTION_KEY,
+            NEXTAUTH_SECRET, PUBLIC_KEY, SECRET_KEY, ADMIN_PASSWORD]
+  inputs:
+    url: http://${address}:${port}
+    public_key: pk-lf-${secrets.PUBLIC_KEY}
+    secret_key: sk-lf-${secrets.SECRET_KEY}

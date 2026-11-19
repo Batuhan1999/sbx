@@ -24,6 +24,7 @@ export const keys = {
   catalog: ['catalog'] as const,
   catalogEntry: (name: string) => ['catalog', name] as const,
   sharedConnections: ['catalog-connections'] as const,
+  servers: ['servers'] as const,
   connections: ['connections'] as const,
   setup: ['setup'] as const,
   setupChecks: ['setup', 'checks'] as const,
@@ -127,6 +128,11 @@ export const useCatalogEntry = (name: string | null) => useQuery({
 })
 export const useSharedConnections = (enabled = true) => useQuery({
   queryKey: keys.sharedConnections, queryFn: () => api.catalog.connections().then(d => d.connections), enabled,
+})
+/** The servers this host runs; every 3 s while one is starting. */
+export const useServers = (enabled = true) => useQuery({
+  queryKey: keys.servers, queryFn: () => api.servers.list().then(d => d.servers), enabled,
+  refetchInterval: q => (q.state.data?.some(s => s.status === 'preparing' || s.status === 'checking') ? 3_000 : false),
 })
 export const useConnections = (enabled = true) => useQuery({ queryKey: keys.connections, queryFn: () => api.connections.list().then(d => d.connections), enabled })
 
