@@ -125,5 +125,6 @@ pscale service-token add-access TOKEN_ID \
 Enter the token as a connection value in sbx, never in a recipe or chat.
 `create_branch_password` is an endpoint permission label, not a grant name.
 
-After choosing, verify isolation with the
-[acceptance checklist](agent-install.md#acceptance-checklist).
+After choosing, the first sandbox (`sbx up`) shows that the services work.
+When isolation between sandboxes needs proof, the
+[acceptance checklist](agent-install.md#acceptance-checklist) checks it.

@@ -16,41 +16,34 @@ Each sandbox is a VM on a runtime the installation enables. Built in are
 server, and two hosted ones for a server without KVM: E2B Cloud and
 [Boat](https://docs.boat.dev).
 
-## Quick start with your coding agent
+## Quick start
 
-Copy this into Claude Code, Codex, Amp or any coding agent that can run shell
-commands, and fill in the two values in angle brackets:
+1. **Install** on an Ubuntu 24.04 server ([what it needs](#host-requirements)):
+   download a release and run `sudo sh install.sh` ([Install](#install)). Its
+   last line is your onboarding link:
+   `==> Open the onboarding: https://IP/app/setup#t=...`
+2. **Open the link** and follow the setup page's four steps
+   ([the owner's guide](docs/howto/setup.md)):
+   - **Domain**: type a domain and add three DNS records;
+   - **Sandboxes**: E2B Embed on this server when it has `/dev/kvm`, else
+     E2B Cloud or Boat with their API key;
+   - **Account**: your email and password; this finishes the setup;
+   - **GitHub**: create sbx's GitHub App, or skip it for now.
+3. **Connect a repository**: pick it, copy the prompt and paste it into your
+   coding agent (Claude Code, Codex, Amp or any agent that runs shell
+   commands) in a checkout of that repository. The agent writes the `.sbx/`
+   recipe, starts one sandbox and gives you its preview link.
 
-```text
-Set up sbx (https://github.com/Batuhan1999/sbx) for me.
+A coding agent can do step 1 for you, and the whole setup without a browser:
+point it at the [installation guide](docs/agent-install.md).
 
-Server: <ssh user@host of an Ubuntu 24.04 machine, sudo without a password>
-Repository to run in sandboxes: <owner/name on GitHub>
+What you and your agent read along the way, if you want the details:
 
-1. Read docs/agent-install.md in the sbx repository's latest release and
-   follow it step by step: check the server first (install.sh --check), then
-   decide the runtime and the address from what it reports. Ask me only for
-   what the server can't tell you (an API key as a file, a domain, my email),
-   and never for a key or password in the chat.
-2. Install sbx on the server with its normal installer; don't change its code.
-3. Connect my repository: find out how it is built and started and which services
-   and secrets it needs, from the repository itself. Choose services with
-   docs/service-selection.md, write the .sbx/ recipe in the format of
-   docs/reference.md (examples/ has complete ones), and size it with
-   control/sbx_control/template_files/resource-guide.md. Declare every value my
-   mode of the app needs that you can't generate as a secret, and ask me for
-   those values instead of guessing.
-4. Use only the sbx CLI/API and the documented sbx-admin host commands.
-5. Finish with the acceptance checklist in docs/agent-install.md: two independent
-   sandboxes, their own data, a restart, and cleanup of everything they created.
-   Report what passed and what you could not verify.
-```
-
-What the agent reads along the way, if you want the details yourself:
-
-- [Installation guide](docs/agent-install.md): the install and onboarding
-  steps, and the [acceptance checklist](docs/agent-install.md#acceptance-checklist)
-  that decides when the setup is done.
+- [Your first-run setup](docs/howto/setup.md): the setup page, step by step.
+- [Installation guide](docs/agent-install.md): installing as an agent, the
+  setup without a browser, and the
+  [acceptance checklist](docs/agent-install.md#acceptance-checklist) for
+  changes to sbx itself.
 - [Service selection](docs/service-selection.md): how to work out what the
   repository depends on and pick a catalog package or local service for each.
 - [Reference](docs/reference.md): the [recipe](docs/reference.md#recipe),
@@ -63,8 +56,6 @@ What the agent reads along the way, if you want the details yourself:
 - [Claude Code](docs/claude-code.md), [Amp](docs/amp-orbs.md) and
   [Extensions](docs/extensions.md): optional agent connectors, and how to add
   your own connector or catalog package.
-- [Your first-run setup](docs/howto/setup.md): what the owner sees when
-  their agent sends the setup link and the keys page.
 - How-to pages for what you set up outside sbx: [DNS
   records](docs/howto/cloudflare.md) (a Cloudflare token where port 53 can't open), [E2B Cloud](docs/howto/e2b.md) and
   [Boat](docs/howto/boat.md) API keys, the [GitHub App](docs/howto/github.md)
@@ -118,7 +109,7 @@ Running them at E2B Cloud or Boat (any small VPS, no KVM):
 - Ubuntu 24.04, about 2 GiB RAM and 10 GiB free disk: the server runs only
   sbx-control, nginx and the secret store.
 - An E2B API key (E2B's dashboard) or a Boat API key (Boat's dashboard),
-  added in the setup's "Sandbox runtime" step. Sandboxes then run within the
+  added in the setup's **Sandboxes** step. Sandboxes then run within the
   plan's limits (E2B Hobby: one hour before a sandbox pauses, renewed while
   it is used; 8 vCPUs, 8 GiB, 10 GiB disk each; 10 at once). Boat's trial
   saves no snapshots, and sbx's templates are snapshots: use a paid plan.
@@ -131,13 +122,16 @@ Sandbox runtimes, or with `sbx runtimes add KIND --plan PLAN --secret KEY <
 key-file` (KEY is the runtime's key name, such as `E2B_CLOUD_API_KEY`; `sbx
 runtimes available` lists each runtime's keys and plans). For every server:
 
-- Inbound SSH and HTTPS (443). Validating a certificate for a bare IP also needs
-  inbound TCP 80. A domain is optional.
-- With a domain `D`: A records for `D` and `*.D` pointing at the server. The
-  default certificate mode (`--dns delegated`) also needs the record
-  `_acme-challenge.D NS D.` and inbound UDP and TCP 53, because the server
-  answers the certificate's DNS challenge itself. Open the same ports in any
-  cloud firewall.
+- Inbound SSH and HTTPS (443), and TCP 80 for the installer's trusted
+  certificate for the server's IP (the first visit's; without it the browser
+  warns once).
+- A domain `D`, which the setup page asks for: A records for `D` and `*.D`
+  pointing at the server, and `_acme-challenge.D NS D.` with inbound UDP and
+  TCP 53, because the server answers the certificate's DNS challenge itself.
+  Open the same ports in any cloud firewall. Where port 53 can't open, a
+  Cloudflare or Route 53 token replaces the `NS` record; an Embed-only server
+  can also stay on its IP. Both are set
+  [without a browser](docs/agent-install.md#without-a-browser-automation).
 
 Everyone signs in with their own email and password by default. Admins add
 people under **Settings → People** (or `sbx-admin user add EMAIL`) and hand
@@ -149,9 +143,8 @@ the emails `allowed_emails` names (`*` for anyone the provider admits).
 
 ## Install
 
-A coding agent follows the [installation guide](docs/agent-install.md),
-which runs these same steps from its own machine and finishes the setup
-without a browser. By hand, on the server:
+On the server (a coding agent runs the same steps over ssh with the
+[installation guide](docs/agent-install.md)):
 
 1. Download a [release](https://github.com/Batuhan1999/sbx/releases), the
    latest one unless you need another, check it against its checksum and
@@ -187,11 +180,13 @@ without a browser. By hand, on the server:
    The link holds a one-time token: keep it out of shared logs and chats.
    Without the IP certificate, the line before it says so: your browser warns
    once, until you set a domain.
-4. Open the link and do the rest in the browser: your domain (three DNS
-   records), the sandbox runtime (a provider's API key, when Embed can't run
-   here), your admin account, then GitHub. Templates build as soon as the
-   domain and the runtime are set, while you go on.
-   `sudo sbx-admin setup-link` prints the link again if it is lost.
+4. Open the link and do the rest in the browser
+   ([the setup page](docs/howto/setup.md)): your domain (three DNS records),
+   where sandboxes run (a provider's API key, when Embed can't run here),
+   your account, then GitHub. Templates build as soon as the domain and the
+   runtime are set, while you go on. `sudo sbx-admin setup-link` prints the
+   link again if it is lost; running the installer again during the setup
+   prints the same link.
 
 Admins see a newer release in the web app (**Settings → Updates**: what
 changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host
@@ -199,10 +194,12 @@ changed, then **Update** and its progress), or use `sbx-admin upgrade` on the ho
 
 ## Connect a repository
 
-The intended path is agent-first: give your coding agent the prompt under
-[Quick start](#quick-start-with-your-coding-agent). The agent follows the [installation guide](docs/agent-install.md): it connects
-GitHub, chooses services from evidence, writes `.sbx/`, and finishes with the
-[acceptance checklist](docs/agent-install.md#acceptance-checklist).
+In the web app, **Connect a repository**: pick it, then **Copy prompt** and
+paste it into your coding agent in a checkout of the repository (the same
+text as `sbx repo brief`). The agent chooses services from evidence, writes
+`.sbx/`, starts one sandbox (`sbx up check-a`) and gives you its preview
+link; once that sandbox is healthy, the GitHub App opens a pull request with
+the recipe.
 
 From a repository checkout on your own machine, install the desktop CLI from the
 server's **CLI & access** page, then:
@@ -257,7 +254,8 @@ examples, not a compatibility guarantee.
 
 | Guide | Use it for |
 | --- | --- |
-| [Installation guide](docs/agent-install.md) | Fresh server to a working first repository, and the acceptance checklist. |
+| [First-run setup](docs/howto/setup.md) | The setup page, step by step, and connecting the first repository. |
+| [Installation guide](docs/agent-install.md) | Installing as a coding agent, the setup without a browser, and the acceptance checklist for changes to sbx. |
 | [Service selection](docs/service-selection.md) | Matching what a repository uses to catalog packages. |
 | [Reference](docs/reference.md) | Recipe format, env and secrets, services, lifecycle, templates, previews, limits. |
 | [Extensions](docs/extensions.md) | Writing an agent connector or a catalog package. |
