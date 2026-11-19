@@ -131,12 +131,6 @@ def learn_access(repos):
             note_public(repo, found)
 
 
-def git_url(repo: str) -> str:
-    """SSH with the deploy key, else HTTPS: with the App's tokens through the
-    credential helper, or anonymously."""
-    return f"git@github.com:{repo}.git" if access(repo) == "key" else f"https://github.com/{repo}.git"
-
-
 @contextlib.contextmanager
 def git_access(repo: str):
     """(url, env) for git on this host to reach the repo as access() says:

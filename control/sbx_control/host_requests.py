@@ -58,12 +58,6 @@ def requested(key: str) -> bool:
     return request_file(key).exists()
 
 
-def pending() -> list[str]:
-    """The effects asked for and not taken yet."""
-    folder = paths.run() / "apply"
-    return sorted(p.name for p in folder.glob("*") if not p.name.startswith(".")) if folder.exists() else []
-
-
 @contextlib.contextmanager
 def lock(key: str, *, blocking: bool = True):
     """The effect's lock: held by run() while the effect applies. Not

@@ -7,8 +7,6 @@ from urllib.parse import urlencode, urlsplit
 
 from . import platform, preview_proxy, settings, state
 
-FIRST_PORT = 21000
-LAST_PORT = 21255
 STALE_GRACE_SECONDS = 300
 
 

@@ -19,8 +19,8 @@ import uuid
 from . import (addressing, contributions, extensions, ip_previews, lifecycle, paths, platform, recipes,
                runtime, sandbox_layers, secret_store, settings, state, variables)
 # The runtime's half (sandbox_runtime): writing it, putting it back, the guest helper, the recipe's scripts.
-from .sandbox_runtime import (ENV_SPLIT, GUEST, GUEST_SOURCE, SETUP_LOCK, _envs, app_env_values,  # noqa: F401
-                              app_script, ensure_started, guest, has_app_script, initialize_ssh_identity,
+from .sandbox_runtime import (ENV_SPLIT, _envs, app_env_values, app_script, ensure_started,  # noqa: F401
+                              guest, has_app_script, initialize_ssh_identity,
                               restore_runtime, runtime_layer,
                               runtime_values, ship_guest, write_env, write_runtime, written_env)
 from .template_files import sbx_guest

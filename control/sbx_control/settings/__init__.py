@@ -395,11 +395,6 @@ def request_effects(*units: str):
             print(f"settings: could not request {unit}: {error}", file=sys.stderr, flush=True)
 
 
-def pending_effects() -> list[str]:
-    from .. import host_requests
-    return host_requests.pending()
-
-
 def _with(s: Settings, changes: dict) -> Settings:
     """A new Settings with the next revision, validated whole (model_copy
     would skip the validators)."""
