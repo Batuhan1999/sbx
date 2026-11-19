@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# Python 3.12 venv with the dev requirements, the web app's bundle, and the dev
-# installation's own state directory and database. Safe to repeat.
+# Python 3.12 venv for the control service, the web app built into
+# control/sbx_control/web_dist, and the dev installation's runtime.env.
+# Safe to repeat: installs are skipped while their lockfiles are unchanged.
 set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+cd "$SBX_WORKDIR"
+export PATH="/usr/local/bin:$PATH"   # the base template's Node 22, ahead of an image's own
+dev="$HOME/.sbx-dev"
+mkdir -p "$dev/etc" "$dev/state" "$dev/run" "$dev/systemd"
 
-if ! command -v uv >/dev/null; then
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+python3 -c 'import sys; assert sys.version_info[:2] >= (3, 12), sys.version'
+stamp=$(sha256sum control/requirements.txt | cut -c1-16)
+if [ ! -x "$dev/venv/bin/uvicorn" ] || [ "$(cat "$dev/venv/.stamp" 2>/dev/null)" != "$stamp" ]; then
+  python3 -m venv "$dev/venv"
+  "$dev/venv/bin/pip" install --quiet --disable-pip-version-check -r control/requirements.txt
+  echo "$stamp" > "$dev/venv/.stamp"
 fi
-[ -x .venv/bin/python ] && .venv/bin/python -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' \
-  || uv venv --clear --python 3.12 .venv
-uv pip install --python .venv/bin/python -q -r requirements-dev.txt
 
-echo "node $(node -v)"
-npm --prefix web ci --no-audit --no-fund
+echo "node $(node -v), npm $(npm -v)"
+stamp=$(sha256sum web/package-lock.json | cut -c1-16)
+if [ ! -d web/node_modules ] || [ "$(cat web/node_modules/.sbx-stamp 2>/dev/null)" != "$stamp" ]; then
+  npm --prefix web ci --no-audit --no-fund
+  echo "$stamp" > web/node_modules/.sbx-stamp
+fi
 npm --prefix web run build
 
-mkdir -p "$SBX_ETC" "$SBX_STATE_DIR" "$SBX_RUN_DIR"
-chmod 700 "$SBX_ETC"
-# runtime.env, as install.sh writes it: Boat with the repository's key, or no runtime.
+# The dev installation's sandbox runtime: Boat with the owner's key, else none yet.
+umask 077
 if [ -n "${BOAT_API_KEY:-}" ]; then
-  .venv/bin/python -m sbx_control.runtime env --enable boat BOAT_API_KEY
+  printf 'SBX_RUNTIMES=boat\nSBX_RUNTIME_DEFAULT=boat\nBOAT_API_KEY=%s\n' "$BOAT_API_KEY" > "$dev/etc/runtime.env.new"
 else
-  [ -f "$SBX_ETC/runtime.env" ] || printf 'SBX_RUNTIMES=\n' > "$SBX_ETC/runtime.env"
-  echo "BOAT_API_KEY is not set: the dev installation runs without a sandbox runtime"
+  echo "BOAT_API_KEY is not set: the dev installation starts without a sandbox runtime"
+  printf 'SBX_RUNTIMES=\n' > "$dev/etc/runtime.env.new"
 fi
-chmod 600 "$SBX_ETC/runtime.env"
-.venv/bin/python -m sbx_control.admin migrate
-echo "sbx dev installation ready"
+mv "$dev/etc/runtime.env.new" "$dev/etc/runtime.env"
+echo "sbx dev installation ready in $dev"

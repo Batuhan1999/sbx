@@ -1,21 +1,9 @@
-# sbx's own control service (FastAPI + the web app) as a development
-# installation of its own: its settings, sbx.db and local secret store live in
-# this sandbox (SBX_ETC, SBX_STATE_DIR, SBX_RUN_DIR), and its sandbox runtime is
-# Boat, with the repository's BOAT_API_KEY.
-resources: {swap_mb: 2048}
+# sbx developing sbx: the control service serving the built web app, with its
+# own state under ~/.sbx-dev and Boat as its sandbox runtime (BOAT_API_KEY).
 previews:
   "": 8080
-env:
-  SBX_ETC: /home/user/.sbx-dev/etc
-  SBX_STATE_DIR: /home/user/.sbx-dev/state
-  SBX_STATE: /home/user/.sbx-dev/state/sbx.db
-  SBX_RUN_DIR: /home/user/.sbx-dev/run
-  PYTHONPATH: /home/user/sbx/control
-  # The dev installation's first admin (verify.py makes it with sbx-admin user add).
-  SBX_DEV_ADMIN_EMAIL: dev-admin@example.com
 secrets: [BOAT_API_KEY]
 processes:
-  control: .venv/bin/uvicorn sbx_control.app:app --app-dir control --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'
+  control: cd control && SBX_ETC=$HOME/.sbx-dev/etc SBX_STATE_DIR=$HOME/.sbx-dev/state SBX_RUN_DIR=$HOME/.sbx-dev/run SBX_SYSTEMD_DIR=$HOME/.sbx-dev/systemd exec $HOME/.sbx-dev/venv/bin/uvicorn sbx_control.app:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'
 health:
-  - http://127.0.0.1:8080/dist/version
-health_timeout: 180
+  - http://127.0.0.1:8080/app/setup
