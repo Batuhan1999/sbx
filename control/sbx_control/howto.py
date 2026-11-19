@@ -14,6 +14,7 @@ PAGES = {
     "cloudflare": ("dns-records", "api-token", "why-sbx-needs-the-token", "delegated-dns", "check-the-records"),
     "e2b": ("api-key", "plan", "add-it-to-sbx"),
     "boat": ("api-key", "plan", "add-it-to-sbx"),
+    "beam": ("api-token", "what-beam-cannot-do", "add-it-to-sbx", "check-it-with-a-real-token"),
     "github": ("create-the-app", "select-repositories", "check-it"),
     "amp": ("create-the-provider", "from-the-amp-cli", "give-the-token-to-sbx", "check-the-connection"),
 }
@@ -31,6 +32,7 @@ DELEGATED_DNS = url("cloudflare", "delegated-dns")
 E2B_KEY = url("e2b", "api-key")
 BOAT_KEY = url("boat", "api-key")
 BOAT_PLAN = url("boat", "plan")
+BEAM_KEY = url("beam", "api-token")
 GITHUB_APP = url("github", "create-the-app")
 GITHUB_REPOS = url("github", "select-repositories")
 AMP_PROVIDER = url("amp", "create-the-provider")

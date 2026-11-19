@@ -101,7 +101,7 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn(KEY, response.text)
         found = {r["kind"]: r for r in response.json()}
-        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "fake"})
+        self.assertEqual(set(found), {"embed", "e2b-cloud", "boat", "beam", "fake"})
         embed, cloud, fake = found["embed"], found["e2b-cloud"], found["fake"]
         self.assertEqual((embed["enabled"], embed["host"], embed["managed_by"]), (True, True, "install.sh"))
         self.assertEqual(embed["facts"], {"kvm": True, "memory_gb": 125, "disk_free_gb": 1618})
@@ -115,6 +115,14 @@ class Web(TwoRuntimes, Server):
         self.assertEqual([p["name"] for p in boat["presets"]], ["trial", "20", "100", "500", "2000"])
         self.assertIn("templates need the first payment", boat["presets"][0]["note"])
         self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
+        beam = found["beam"]   # added with no line of core or web code: its declared settings are its form
+        self.assertEqual((beam["enabled"], beam["can_run"], beam["title"], beam["presets"]), (False, True, "Beam", []))
+        self.assertEqual([s["key"] for s in beam["settings"]],
+                         ["BEAM_API_KEY", "BEAM_API_URL", "BEAM_MAX_TIMEOUT", "BEAM_MAX_CPU", "BEAM_MAX_MEMORY_MB",
+                          "BEAM_MAX_SANDBOXES"])
+        self.assertTrue(beam["settings"][0]["secret"])
+        self.assertFalse(beam["capabilities"]["pause"])                  # said to the web app, CLI and API alike
+        self.assertTrue(boat["capabilities"]["pause"])
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
         self.assertEqual((fake["sandboxes"], fake["remove_blocker"]), ([], None))
@@ -198,6 +206,29 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(code, 1)
         self.assertIn("HTTP 401", said)
         self.assertEqual(self.store, {})
+
+    def test_beam_is_added_through_the_same_api_once_beam_takes_its_token(self):
+        # AGENTS.md rule 6: no Beam code in the API, the CLI or the web app; its declared settings and its own
+        # connection test are all they use (the fake stands in for Beam's HTTP API).
+        from fake_beam import TOKEN, FakeBeam
+        from sbx_control.runtime.beam import api
+        fake = FakeBeam()
+        with patch.object(api, "_open", fake):
+            refused = self.call("POST", "/api/runtimes", {"kind": "beam", "values": {"BEAM_API_KEY": "wrong-token"}})
+            self.assertGreaterEqual(refused.status_code, 400)
+            self.assertIn("Invalid token", refused.text)
+            self.assertIn("howto/beam.md#api-token", refused.text)
+            self.assertFalse(self.request_file.exists())
+            response = self.call("POST", "/api/runtimes", {"kind": "beam", "values": {
+                "BEAM_API_KEY": TOKEN, "BEAM_MAX_SANDBOXES": "5"}})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertNotIn(TOKEN, response.text)
+        request = json.loads(self.request_file.read_text())
+        self.assertNotIn(TOKEN, self.request_file.read_text())
+        self.assertEqual((request["operation"], request["kind"], request["values"]["BEAM_MAX_SANDBOXES"]),
+                         ("add", "beam", "5"))
+        self.assertEqual(self.store[request["values"]["BEAM_API_KEY"]], TOKEN)
+        self.assertIn(("POST", "/auth/authorize"), [(method, path) for method, path, _, _ in fake.calls])
 
     def test_the_local_store_refuses_adding_and_changing_but_not_removing(self):
         self.sealing.return_value = False
