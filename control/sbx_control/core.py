@@ -35,6 +35,7 @@ APP_SCRIPTS = platform.APP_SCRIPTS
 # not too soon.
 TIMEOUT_SECONDS = 2 * 60 * 60
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
+FULL_COMMIT = r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})"   # a whole SHA-1 or SHA-256 commit hash, never a prefix
 
 
 class SandboxError(Exception):
@@ -360,7 +361,7 @@ def create(name: str, slug: str, owner: str, branch: str, public_keys: str, repo
     a = recipes.load(repo)
     metadata = {**(metadata or {}), "template": template}
     if source_commit is not None:
-        if not a.repo or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source_commit):
+        if not a.repo or not re.fullmatch(FULL_COMMIT, source_commit):
             raise SandboxError("source_commit requires a repository and a full Git commit hash")
         source_commit = source_commit.lower()
     # The VM is the template's size: with memory_mb, a template built at
@@ -815,7 +816,7 @@ def prepare_workspace(sbx, a: recipes.App, branch: str, *, checkout: bool, force
     root, ref = shlex.quote(a.workdir), shlex.quote(branch)
     if checkout:
         ensure_checkout(sbx, a)
-        if source_commit is not None and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", source_commit):
+        if source_commit is not None and not re.fullmatch(FULL_COMMIT, source_commit):
             raise SandboxError("source_commit must be a full Git commit hash")
         target = "--detach" if source_commit is None and (re.fullmatch(r"[0-9a-fA-F]{40,64}", branch) or branch.startswith("refs/")) else f"-B {ref}"
         selected = shlex.quote(source_commit or branch)

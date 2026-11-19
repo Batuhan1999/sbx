@@ -24,7 +24,7 @@ class CreateSandbox(BaseModel):
     public_keys: str = ""  # SSH public keys for the sandbox's user: authorized_keys text, or a list of keys
     slug: str | None = None  # defaults to the name
     repo: str | None = None  # owner/repo; defaults to the installation's first
-    source_commit: str | None = Field(default=None, pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    source_commit: str | None = Field(default=None, pattern=f"^{core.FULL_COMMIT}$")
     runtime: str | None = None  # the runtime's kind; defaults to the repo's setting, else the installation's
 
     @field_validator("repo")
