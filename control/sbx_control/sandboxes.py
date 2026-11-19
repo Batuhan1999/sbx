@@ -11,8 +11,8 @@ import time
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import (addressing, core, delivery, lifecycle, recipes, repo_path, routing, runtime, runtimes, sandbox_layers,
-               settings, state, template_builds, variables)
+from . import (addressing, core, delivery, endpoints, lifecycle, recipes, repo_path, routing, runtime, runtimes,
+               sandbox_layers, settings, state, template_builds, variables)
 from .state import db
 
 SLUG_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -67,7 +67,6 @@ def register(name: str, owner: str, branch: str, slug: str, metadata: dict | Non
         if core.find(name):
             raise lifecycle.Conflict(f"{name} still has a sandbox; prepare or delete it before creating again")
         unregister(name)
-    from . import endpoints
     try:
         with endpoints.lock():   # an endpoint is added under it: its name and this slug checked against each other
             _no_endpoint_at(slug)
@@ -117,7 +116,6 @@ def check_slug(slug: str, name: str = "") -> str:
 
 
 def _no_endpoint_at(slug: str) -> None:
-    from . import endpoints
     if slug and (found := endpoints.slug_taken(slug)):
         raise core.SandboxError(f"{slug} is taken: {found}.<domain> is an endpoint (sbx endpoints), which a "
                                 f"preview host of {slug} would be; choose another name or slug")
@@ -285,7 +283,6 @@ def advise_endpoints(name: str, repo: str | None, kind: str):
     """An internal address in the recipe's env that its sandboxes on this
     runtime won't reach (no endpoint, or not granted to the repo): not a
     refusal, an event that says what would make it reachable."""
-    from . import endpoints, runtime
     if not repo or runtime.capabilities(kind).private_networks:
         return
     try:
