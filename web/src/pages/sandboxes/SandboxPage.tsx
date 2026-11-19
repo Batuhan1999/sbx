@@ -192,9 +192,8 @@ function Logs({ s }: { s: SandboxDetail }) {
   const allowed = s.actions.logs
   return <Panel title="Logs" description={data ? `Last ${data.lines} lines of each. Known secret values are masked.` : 'The app logs the recipe names.'}
     actions={allowed && <Button size="sm" busy={inspect.isPending} onClick={() => inspect.mutate()}><FileText />{data ? 'Reload' : 'Load logs'}</Button>}>
-    {!data && !inspect.error && <p className="text-[13px] text-muted">
-      {status.key === 'paused' ? 'Loading logs resumes this paused sandbox.' : allowed ? 'Not loaded.' : 'No logs to read yet.'}
-      {' '}From your terminal: <Code>sbx logs {s.name}</Code>
+    {!data && !inspect.error && (status.key === 'paused' || !allowed) && <p className="text-[13px] text-muted">
+      {status.key === 'paused' ? 'Loading logs resumes this paused sandbox.' : 'No logs to read yet.'}
     </p>}
     <ErrorState error={inspect.error} compact />
     {data && <div className="space-y-3">
@@ -215,8 +214,6 @@ function Logs({ s }: { s: SandboxDetail }) {
 function Details({ s }: { s: SandboxDetail }) {
   return <Panel title="Details">
     <Facts items={[
-      ['Repository', s.app ? <Link to={`/app/repos/${s.app}`} className="hover:underline">{s.app}</Link> : '—'],
-      ['Branch', s.branch || 'default branch'],
       ['Owner', s.owner ?? '—'],
       ['Cleanup', s.paused_days > 0 ? `Deleted after ${plural(s.paused_days, 'day')} paused` : 'Kept while paused'],
     ]} />
