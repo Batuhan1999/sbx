@@ -143,7 +143,8 @@ class Embed(Compute):
         if not facts.get("kvm"):
             return "needs /dev/kvm: bare metal, or a VM with nested virtualization enabled"
         if facts.get("memory_gb") is not None and facts["memory_gb"] < MIN_MEMORY_GB:
-            return f"needs 16 GiB of memory; this server has {facts['memory_gb']} GiB"
+            return ("needs 16 GiB of memory: 12 for the host and 4 for one sandbox; "
+                    f"this server has {facts['memory_gb']} GiB")
         if facts.get("disk_free_gb") is not None and facts["disk_free_gb"] < MIN_DISK_GB:
             return f"needs {MIN_DISK_GB} GiB of free disk; this server has {facts['disk_free_gb']} GiB"
         return ""

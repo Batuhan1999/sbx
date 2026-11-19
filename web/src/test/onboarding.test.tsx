@@ -144,13 +144,25 @@ describe('server setup', () => {
       'POST /api/runtimes': () => ({ status: 400, body: { detail: 'Boat refused the key: 401 Unauthorized.' } }),
     })
     renderApp(<SetupPage />)
-    expect(await screen.findByText(/This server can’t run sandboxes itself/)).toBeTruthy()
+    expect(await screen.findByText(/This server can’t run sandboxes itself \(E2B Embed needs \/dev\/kvm\), so they run at a provider/)).toBeTruthy()
     expect(screen.getAllByRole('radio').map(r => (r as HTMLInputElement).value)).toEqual(['boat', 'e2b'])
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
     await user.type(screen.getByLabelText('Boat API key'), 'test-only-bad')
     await user.click(screen.getByRole('button', { name: 'Check key' }))
     expect((await screen.findByRole('alert')).textContent).toContain('Boat refused the key')
     expect(document.body.textContent).not.toContain('test-only')
+  })
+
+  it('says why a server with too little memory runs its sandboxes at a provider', async () => {
+    const why = 'needs 16 GiB of memory: 12 for the host and 4 for one sandbox; this server has 8 GiB'
+    stubApi({
+      'GET /api/setup': state(['address'], {}, SAVED),
+      'GET /api/runtimes/available': [{ ...NO_KVM, why_not: why, facts: { kvm: true, memory_gb: 8 } }, runtime('boat', 'Boat')],
+      'GET /api/runtimes/change': IDLE,
+    })
+    renderApp(<SetupPage />)
+    expect((await screen.findByText(/This server can’t run sandboxes itself/)).textContent).toContain(`(E2B Embed ${why})`)
+    expect(document.body.textContent).not.toContain('no /dev/kvm')
   })
 
   it('creates the account and finishes from the button under the form', async () => {

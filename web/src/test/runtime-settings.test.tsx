@@ -263,7 +263,7 @@ describe('first-run setup without a runtime', () => {
     renderApp(<SetupPage />, '/app/setup')
     const user = userEvent.setup()
     expect(await screen.findByRole('heading', { name: 'Where will sandboxes run?' })).toBeTruthy()
-    expect(await screen.findByText(/it has no \/dev\/kvm/)).toBeTruthy()
+    expect(await screen.findByText(/\(E2B Embed needs \/dev\/kvm: bare metal, or a VM with nested virtualization enabled\)/)).toBeTruthy()
     // The key and nothing else: no plan to pick, no limits to set.
     expect(screen.queryByRole('radio')).toBeNull()
     expect(screen.queryByText('Hobby')).toBeNull()
