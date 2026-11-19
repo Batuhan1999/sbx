@@ -1,26 +1,17 @@
 """/api/runtimes: the sandbox runtimes this installation runs, for the web
-app (and its first-run wizard, before anyone can sign in) and `sbx runtimes`;
-and, for admins (the setup token too while the first-run setup is open),
+app (its onboarding page too) and `sbx runtimes`; and, for admins,
 adding, changing, removing one and making one the default. Those are checked
 here and queued for the root side (runtime_changes), which applies them and
 restarts sbx-control; GET /api/runtimes/change follows it."""
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import auth, runtime, runtime_changes, runtime_settings, runtimes, setup
-from .setup_api import setup_or_admin
+from . import auth, runtime, runtime_changes, runtime_settings, runtimes
+from .setup_api import admin_or_first
 
 router = APIRouter()
-
-
-def signed_in_or_setup(request: Request) -> str:
-    """Anyone signed in, or the holder of the first-run setup's token while it is open."""
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("setup ") and setup.token_ok(header[6:].strip()):
-        return "setup"
-    return auth.api_user(request)
 
 
 def _refused(error: runtimes.Refused) -> HTTPException:
@@ -30,14 +21,14 @@ def _refused(error: runtimes.Refused) -> HTTPException:
 
 
 @router.get("/api/runtimes")
-async def api_runtimes(who: str = Depends(signed_in_or_setup)):
+async def api_runtimes(who: str = Depends(auth.api_user)):
     """{default, runtimes: [{kind, title, default, host, capabilities, limits, status: {state, summary},
     limit_hit}]}; with no runtime set up yet, {default: "", runtimes: []}."""
     return await run_in_threadpool(runtimes.describe)
 
 
 @router.get("/api/runtimes/available")
-async def api_available(who: str = Depends(setup_or_admin)):
+async def api_available(who: str = Depends(admin_or_first)):
     """Every runtime an installed package provides: [{kind, title, host, enabled, default, can_run, why_not,
     managed_by, edit_blocker, settings, presets, plan, values, secrets_set, facts, sandboxes, remove_blocker,
     limit_hit}], a blocker {code, message, sandboxes} or null. Secrets are only named as set, never shown."""
@@ -45,7 +36,7 @@ async def api_available(who: str = Depends(setup_or_admin)):
 
 
 @router.get("/api/runtimes/change")
-def api_change(who: str = Depends(setup_or_admin)):
+def api_change(who: str = Depends(admin_or_first)):
     """The last change: {state: idle|queued|applying|done|failed, operation, kind, message, at, restarting,
     unchanged}."""
     return runtime_changes.status()
@@ -75,7 +66,7 @@ def _queue(operation: str, kind: str, who: str, check) -> dict:
 
 
 @router.post("/api/runtimes", status_code=202)
-def api_add(body: Added, who: str = Depends(setup_or_admin)):
+def api_add(body: Added, who: str = Depends(admin_or_first)):
     """Enable a provider's runtime with a plan and its settings (the secret store must be Infisical: 409
     otherwise)."""
     return _queue("add", body.kind, who,
@@ -83,7 +74,7 @@ def api_add(body: Added, who: str = Depends(setup_or_admin)):
 
 
 @router.put("/api/runtimes/default", status_code=202)
-def api_default(body: Default, who: str = Depends(setup_or_admin)):
+def api_default(body: Default, who: str = Depends(admin_or_first)):
     """202 with the queued change; 200, done and unchanged, for the runtime that is the default already."""
     if body.kind in runtime.enabled() and runtime.default() == body.kind:
         return JSONResponse({"state": "done", "operation": "default", "kind": body.kind,
@@ -93,14 +84,14 @@ def api_default(body: Default, who: str = Depends(setup_or_admin)):
 
 
 @router.put("/api/runtimes/{kind}", status_code=202)
-def api_change_settings(kind: str, body: Values, who: str = Depends(setup_or_admin)):
+def api_change_settings(kind: str, body: Values, who: str = Depends(admin_or_first)):
     """New settings (and plan) for an enabled provider's runtime; a secret left out (or empty) keeps its value."""
     return _queue("change", kind, who,
                   lambda: runtime_settings.prepare(kind, body.values, adding=False, plan=body.plan))
 
 
 @router.post("/api/runtimes/{kind}/test")
-async def api_test(kind: str, who: str = Depends(setup_or_admin)):
+async def api_test(kind: str, who: str = Depends(admin_or_first)):
     """An enabled runtime's checks: {kind, ok, checks: [{name, ok, detail, fix, runtime, help_url}]}; 400 when not enabled."""
     try:
         checks = await run_in_threadpool(runtimes.test, kind)
@@ -110,6 +101,6 @@ async def api_test(kind: str, who: str = Depends(setup_or_admin)):
 
 
 @router.delete("/api/runtimes/{kind}", status_code=202)
-def api_remove(kind: str, who: str = Depends(setup_or_admin)):
+def api_remove(kind: str, who: str = Depends(admin_or_first)):
     """Refused (409) while sandboxes run on it, naming them, when it is the last one or install.sh's."""
     return _queue("remove", kind, who, lambda: runtime_settings.refuse(runtime_settings.remove_blocker(kind)))

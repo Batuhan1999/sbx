@@ -51,7 +51,9 @@ class Schema(Installation):
 
 class Web(TwoRuntimes, Server):
     """Embed (a stand-in) and the fake enabled; E2B Cloud offered, its
-    provider calls stood in for."""
+    provider calls stood in for. self.call asks as the admin, with the API
+    token a client without a browser gets with the account; self.client
+    alone is nobody."""
 
     def setUp(self):
         super().setUp()
@@ -65,6 +67,11 @@ class Web(TwoRuntimes, Server):
         self.enterContext(patch.object(Cloud, "sandboxes", side_effect=lambda *_: []))
         self.builds = self.enterContext(patch.object(template_scheduler, "start_detached",
                                                      return_value=("unit", True)))
+        made = self.client.post("/api/setup/admin", json={
+            "email": "operator@example.com", "password": "test-only-password-123", "token": True})
+        self.assertEqual(made.status_code, 200, made.text)
+        self.bearer = {"Authorization": f"Bearer {made.json()['token']}"}
+        self.client.cookies.clear()
         settings.update("domain", {**settings.current().domain.model_dump(), "name": "sbx.example.com"}, by="test")
         # The managed store, as references: sealing makes one per value.
         self.store, made = {}, iter(range(1, 1000))
@@ -87,7 +94,7 @@ class Web(TwoRuntimes, Server):
         self.effects()
 
     def call(self, method, url, body=None):
-        return self.client.request(method, url, headers=self.headers, json=body)
+        return self.client.request(method, url, headers=self.bearer, json=body)
 
     def apply(self):
         from sbx_control import runtime_changes
@@ -116,6 +123,9 @@ class Web(TwoRuntimes, Server):
         self.assertEqual([p["name"] for p in boat["presets"]], ["trial", "20", "100", "500", "2000"])
         self.assertIn("templates need the first payment", boat["presets"][0]["note"])
         self.assertEqual([s["key"] for s in boat["settings"]][:3], ["BOAT_API_KEY", "BOAT_API_URL", "BOAT_ORG"])
+        # Each provider's key says where to get it.
+        self.assertEqual(boat["settings"][0]["help_url"], "https://boat.dev/dashboard")
+        self.assertEqual(cloud["settings"][0]["help_url"], "https://e2b.dev/dashboard")
         self.assertEqual(fake["secrets_set"], ["FAKE_RUNTIME_TOKEN"])
         self.assertEqual(fake["values"], {})
         self.assertEqual((fake["sandboxes"], fake["remove_blocker"]), ([], None))
@@ -268,11 +278,10 @@ class Web(TwoRuntimes, Server):
         self.assertEqual(response.status_code, 409)
         self.assertIn("connect a domain first", response.json()["detail"])
 
-    def test_the_setup_page_runs_every_step_before_the_account_with_the_setup_token_alone(self):
-        """Domain → sandboxes → coding agents → the account last (which finishes): no session until then."""
-        from sbx_control import settings, vault
+    def test_the_onboarding_runs_every_step_as_the_admin_and_none_without_one(self):
+        """The account first; then sandboxes → coding agents → finish, here with the admin's API token alone."""
+        from sbx_control import vault
         from sbx_control.connectors.amp import orbs
-        self.assertFalse(settings.current().admins)
         self.assertFalse(self.client.cookies)
         steps = [("GET", "/api/setup", None), ("GET", "/api/runtimes/available", None),
                  ("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {"E2B_CLOUD_API_KEY": KEY}}),
@@ -291,23 +300,20 @@ class Web(TwoRuntimes, Server):
             self.assertEqual(put.status_code, 200, put.text)
             self.assertNotIn(token, put.text)
             self.assertEqual(vault.get(orbs.TOKEN), token)
-        self.assertIn("runtimes", self.call("GET", "/api/templates").json())   # the setup token reads the builds
-        self.assertFalse(self.client.cookies)                                 # still nobody signed in
+        self.assertIn("runtimes", self.call("GET", "/api/templates").json())   # the admin reads the builds
+        self.assertFalse(self.client.cookies)                                 # no browser session at any point
         with patch("sbx_control.setup.address_ready", return_value=True):
-            self.create_admin()                                              # the account, last
-            # It finishes as that admin (the browser by its new session; here by their password).
-            done = self.call("POST", "/api/setup/complete", {"email": "operator@example.com",
-                                                             "password": "test-only-password-123"})
+            done = self.call("POST", "/api/setup/complete")                  # no body: the token says who
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
-        # Set up: admins only; the token is spent.
+        # Set up: admins only, and no second first account.
         from fastapi.testclient import TestClient
         with TestClient(self.app.app, base_url="https://203.0.113.10") as fresh:
-            for method, url, body in steps[1:] + [("PUT", "/api/connections/amp", {"values": {}}),
-                                                  ("POST", "/api/setup/admin", {"email": "x@example.com",
-                                                                                "password": "test-only-password-9"})]:
+            for method, url, body in steps[1:] + [("PUT", "/api/connections/amp", {"values": {}})]:
                 with self.subTest(after=url):
-                    self.assertEqual(fresh.request(method, url, headers=self.headers, json=body).status_code, 401)
+                    self.assertEqual(fresh.request(method, url, json=body).status_code, 401)
+            again = fresh.post("/api/setup/admin", json={"email": "x@example.com", "password": "test-only-password-9"})
+            self.assertEqual(again.status_code, 409)
 
     def test_boat_key_sets_the_plan_from_boat_and_a_trial_key_is_refused(self):
         from fake_boat import FakeBoat
@@ -352,13 +358,17 @@ class Web(TwoRuntimes, Server):
         with self.assertRaisesRegex(runtimes.Refused, "then save the key again"):
             runtime_settings.add("boat", {"BOAT_API_KEY": "boat_test-only"})
 
-    def test_admins_only_once_set_up(self):
-        from sbx_control import settings
-        settings.update("domain", {**settings.current().domain.model_dump(), "name": ""}, by="test")
-        self.repo_admin()
-        self.assertEqual(self.client.get("/api/runtimes/available").status_code, 200)   # the signed-in admin
-        self.client.cookies.clear()
-        self.assertEqual(self.call("GET", "/api/runtimes/available").status_code, 401)  # the token is spent
+    def test_admins_only_during_the_onboarding_and_once_set_up(self):
+        from sbx_control import auth, setup, users
+        users.set_password("dev@example.com", "test-only-password-456", by="test")   # a person, not an admin
+        person = {"Authorization": f"Bearer {auth.mint_token('dev@example.com', 'cli')}"}
+        for complete in (False, True):
+            with self.subTest(complete=complete):
+                if complete:
+                    setup.mark_complete("test")
+                self.assertEqual(self.call("GET", "/api/runtimes/available").status_code, 200)
+                self.assertEqual(self.client.get("/api/runtimes/available", headers=person).status_code, 403)
+                self.assertEqual(self.client.get("/api/runtimes/available").status_code, 401)
 
     def test_a_remove_is_applied_by_a_root_process_that_configured_nothing_yet(self):
         from sbx_control.runtime.fake import Fake
@@ -563,7 +573,7 @@ class Web(TwoRuntimes, Server):
         refused = self.call("POST", "/api/runtimes/e2b-cloud/test")
         self.assertEqual(refused.status_code, 400)
         self.assertIn("not enabled", refused.json()["detail"])
-        self.assertEqual(self.client.post("/api/runtimes/fake/test").status_code, 401)   # admins (and the setup link)
+        self.assertEqual(self.client.post("/api/runtimes/fake/test").status_code, 401)   # admins
 
     def test_a_change_that_stopped_part_way_is_failed_not_waited_for(self):
         from sbx_control import runtime_changes
@@ -726,7 +736,8 @@ class NoRuntimeYet(Server):
     def test_sbx_control_runs_and_says_what_to_do(self):
         from sbx_control import jobs, preview_proxy, runtimes
         self.assertEqual((self.runtime.enabled(), self.runtime.default()), ([], ""))
-        self.assertEqual(self.client.get("/api/runtimes", headers=self.headers).json(), {"default": "", "runtimes": []})
+        self.create_admin()
+        self.assertEqual(self.client.get("/api/runtimes").json(), {"default": "", "runtimes": []})
         with self.assertRaisesRegex(runtimes.Refused, "no sandbox runtime is set up: add one in Settings"):
             runtimes.choose("owner/app")
         with self.assertRaises(self.runtime.NoRuntime):
@@ -769,8 +780,8 @@ class NoRuntimeYet(Server):
 
     def repo_admin_without_runtime(self):
         from sbx_control import setup
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         setup.mark_complete("test")
 
     def test_doctor_and_the_cli_report_it(self):
@@ -783,16 +794,16 @@ class NoRuntimeYet(Server):
 
     def test_the_wizard_needs_a_runtime_before_it_finishes(self):
         from sbx_control import setup
-        self.choose_ip()
         self.create_admin()
-        state = self.client.get("/api/setup", headers=self.headers).json()
+        self.choose_ip()
+        state = self.client.get("/api/setup").json()
         step = next(s for s in state["steps"] if s["step"] == "runtime")
         self.assertFalse(step["done"])
         self.assertFalse(state["can_complete"])
-        response = self.client.post("/api/setup/complete", headers=self.headers)
+        response = self.client.post("/api/setup/complete")
         self.assertEqual(response.status_code, 400)
         self.assertIn("sandbox runtime", response.text)
-        self.assertFalse(setup.configured())                             # install-report keeps the link open
+        self.assertFalse(setup.configured())                             # install-report keeps the onboarding open
 
     def test_the_first_runtime_is_added_from_none(self):
         from sbx_control import runtime_changes, runtime_settings, secret_store, settings, vault
@@ -809,32 +820,6 @@ class NoRuntimeYet(Server):
             runtime_changes.perform("add", "e2b-cloud", values)
         self.assertEqual(self.runtime.enabled(), ["e2b-cloud"])
         self.assertEqual(runtime_settings.remove_blocker("e2b-cloud").code, "last_runtime")
-
-
-class SetupWithoutABrowser(Server):
-    """sbx setup finish --admin: the last step with the setup link and the admin's password, no session."""
-
-    def test_finish_with_the_admin_s_password_instead_of_a_session(self):
-        from fastapi.testclient import TestClient
-        self.choose_ip()
-        self.create_admin()
-        self.choose_agents()
-        fresh = TestClient(self.app.app, base_url="https://203.0.113.10")   # no session cookie: an agent's CLI
-        self.addCleanup(fresh.close)
-        wrong = fresh.post("/api/setup/complete", headers=self.headers,
-                           json={"email": "operator@example.com", "password": "not-the-password"})
-        self.assertEqual(wrong.status_code, 403)
-        from sbx_control import users
-        users.set_password("dev@example.com", "test-only-password-456", by="test")   # a person, not an admin
-        not_admin = fresh.post("/api/setup/complete", headers=self.headers,
-                               json={"email": "dev@example.com", "password": "test-only-password-456"})
-        self.assertEqual(not_admin.status_code, 403)
-        self.assertEqual(fresh.post("/api/setup/complete", headers=self.headers).status_code, 400)   # nobody signed in
-        done = fresh.post("/api/setup/complete", headers=self.headers,
-                          json={"email": "Operator@example.com", "password": "test-only-password-123"})
-        self.assertEqual(done.status_code, 200, done.text)
-        self.assertTrue(done.json()["complete"])
-        self.assertNotIn("test-only-password-123", done.text)
 
 
 class InstallerWithoutARuntime(Installation):

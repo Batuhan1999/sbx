@@ -20,7 +20,13 @@ expected=$(curl -fsSL "$control/dist/sbx.tgz.sha256")
 mkdir -p "$root/$version"
 tar -xzf "$tarball" -C "$root/$version"
 ln -sfn "$root/$version" "$root/current"
+# A CLI that used another server: say so, and keep that address to go back to by hand.
+previous=$(cat "$root/control" 2>/dev/null || true)
 echo "$control" > "$root/control"
+if [ -n "$previous" ] && [ "$previous" != "$control" ]; then
+  echo "$previous" > "$root/control.previous"
+  echo "sbx used $previous; it now uses $control (the old address is kept in $root/control.previous)"
+fi
 
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/sbx" <<WRAPPER

@@ -62,6 +62,13 @@ def inline(text: str) -> str:
     return f"echo {base64.b64encode(text.encode()).decode()} | base64 -d > /tmp/sbx-step && bash /tmp/sbx-step"
 
 
+def retried(command: str, tries: int = 3, wait: int = 30) -> str:
+    """command, run again (up to tries, wait seconds apart) when it fails: for
+    steps that read package mirrors, which are now and then mid-update."""
+    return (f"for try in $(seq {tries}); do ({command}) && break; [ $try -lt {tries} ] || exit 1; "
+            f"echo \"failed; trying again in {wait} s\" >&2; sleep {wait}; done")
+
+
 def base_steps() -> list:
     """The platform layer as data, in order: (what, value)."""
     apt = ("openssh-server sudo curl ca-certificates gnupg git xz-utils unzip jq ripgrep less vim-tiny iptables "
@@ -70,8 +77,8 @@ def base_steps() -> list:
     return [
         ("image", "ubuntu:24.04"),
         ("user", "root"),
-        ("run", f"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {apt} "
-                "&& apt-get clean && rm -rf /var/lib/apt/lists/*"),
+        ("run", retried(f"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {apt}")
+                + " && apt-get clean && rm -rf /var/lib/apt/lists/*"),
         # noVNC as static files: Ubuntu's novnc package pulls in nodejs.
         ("run", f"curl -fsSL https://github.com/novnc/noVNC/archive/refs/tags/v{NOVNC_VERSION}.tar.gz | tar -xz -C /opt "
                 f"&& mv /opt/noVNC-{NOVNC_VERSION} /opt/novnc && ln -s vnc.html /opt/novnc/index.html"),
@@ -85,7 +92,7 @@ def base_steps() -> list:
         # every user. Not Google's Chrome .deb: dl.google.com stalls on large
         # downloads from some networks.
         ("env", {"PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright", "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}),
-        ("run", f"npx -y playwright@{PLAYWRIGHT_VERSION} install --with-deps chromium && chmod -R a+rX /opt/ms-playwright "
+        ("run", retried(f"npx -y playwright@{PLAYWRIGHT_VERSION} install --with-deps chromium") + " && chmod -R a+rX /opt/ms-playwright "
                 "&& ln -sf \"$(ls -d /opt/ms-playwright/chromium-*/chrome-linux*/chrome | head -1)\" /usr/local/bin/chromium "
                 "&& apt-get clean && rm -rf /var/lib/apt/lists/*"),
         # macOS ssh sends LC_* = en_US.UTF-8.

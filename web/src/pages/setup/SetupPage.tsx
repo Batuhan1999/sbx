@@ -1,36 +1,34 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Check, Copy, Github, Globe, Server } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { ApiError, setSetupToken, setupToken } from '@/api/client'
+import { ApiError } from '@/api/client'
 import { api } from '@/api/endpoints'
-import { keys, useAvailableRuntimes, useConnections, useSetup } from '@/api/queries'
+import { keys, useAvailableRuntimes, useConnections, useSetup, useSetupOpen } from '@/api/queries'
 import type { AvailableRuntime, Check as CheckT, SetupState } from '@/api/types'
-import { CopyCommand, useCopy } from '@/components/CopyCommand'
+import { useCopy } from '@/components/CopyCommand'
 import { AppForm, SubmitButton, useAppForm, useStore } from '@/components/form'
 import { DetailText, ErrorState, Loading } from '@/components/states'
 import { TemplateProgressLine } from '@/components/TemplateProgressLine'
 import { AnchorButton, Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/primitives'
-import { markReady } from '@/lib/ready'
+import { browser } from '@/lib/browser'
 import { cn } from '@/lib/utils'
 import { domainError, emailError, passwordError } from '@/lib/validation'
 import { Checks } from '../extensions/ConnectionCard'
-import { ChangeStatus, useRuntimeChangeFlow, type ChangeFlow } from '../settings/RuntimeForms'
+import { ChangeStatus, KeyHelp, useRuntimeChangeFlow, type ChangeFlow } from '../settings/RuntimeForms'
 import { blockedText, RuntimeChoices } from '../settings/Runtimes'
 
-/** The steps in the order the owner meets them. The account comes third and finishes the setup; GitHub follows
- * and can be skipped. Coding agents are not a step: every template has their CLIs, and running an agent's cloud
- * sessions here is set up later, under Extensions. */
-type Step = 'address' | 'runtime' | 'account' | 'github'
+/** The steps in the order the owner meets them. The account comes first: until it exists, whoever opens the
+ * page may create it, and every step after it is a signed-in admin's. GitHub can be skipped; after it the control
+ * plane opens on a summary (pages/repos/ReadyDialog), and leaving that finishes the onboarding. Coding agents are
+ * not a step: every template has their CLIs, and running an agent's cloud sessions here is set up later, under
+ * Extensions. */
+type Step = 'account' | 'address' | 'runtime' | 'github'
 const STEPS: { step: Step; label: string }[] = [
-  { step: 'address', label: 'Domain' }, { step: 'runtime', label: 'Sandboxes' },
-  { step: 'account', label: 'Account' }, { step: 'github', label: 'GitHub' },
+  { step: 'account', label: 'Account' }, { step: 'address', label: 'Domain' },
+  { step: 'runtime', label: 'Sandboxes' }, { step: 'github', label: 'GitHub' },
 ]
-const isStep = (x: string | null): x is Step => STEPS.some(s => s.step === x)
-
-/** Whether a key, token or password is typed and not saved yet: a reload now would lose it. */
-const typing = () => [...document.querySelectorAll<HTMLInputElement>('main input')].some(i => i.type !== 'checkbox' && i.type !== 'radio' && i.name !== 'domain' && !!i.value)
 
 /** Origins that answered over HTTPS from this browser: the certificate is on the file system a moment before
  * nginx serves it, so the page moves only once its new address really answers (no certificate error). An
@@ -47,65 +45,112 @@ function askOrigin(origin: string, tries = 40) {
       () => { asking.delete(origin); if (tries > 1) setTimeout(() => askOrigin(origin, tries - 1), 3_000) })
 }
 
-/** Once the certificate is ready, carry on at the server's own address (with the setup token and the step):
- * one link, start to end. */
-function moveToOwnAddress(s: SetupState, step: Step) {
-  if (s.complete || !s.access.certificate_ready || !s.link) return false
+/** The server's own address once its domain's certificate is ready (the control plane's host under the
+ * domain, which the state's link names). Null while there is nowhere to move, or the page is there. */
+function ownAddress(s: SetupState) {
+  if (s.complete || s.access.mode !== 'domain' || !s.access.certificate_ready || !s.link) return null
   const target = new URL(s.link)
-  if (target.origin === location.origin) return false
-  if (!answering.has(target.origin)) { askOrigin(target.origin); return false }
-  const token = setupToken()
-  target.pathname = '/app/setup'
-  target.search = step === 'address' ? '' : `?step=${step}`
-  target.hash = token ? `t=${token}` : ''
-  location.assign(target.href)
-  return true
+  return target.origin === location.origin ? null : target
+}
+
+/** Go on at the server's own address, signed in there: the session cookie of the IP address does not reach
+ * the domain, so a one-time code carries the sign-in over. Without one the owner signs in there. */
+async function moveTo(target: URL) {
+  let code = ''
+  try { code = (await api.setup.handoff()).code } catch { /* signs in at the new address instead */ }
+  const to = new URL(target.href)
+  to.hash = code ? `h=${code}` : ''
+  browser.assign(to.href)
+}
+
+/** How long the page tries to move by itself before it also offers the address as a button. */
+const MOVE_PATIENCE_MS = 10_000
+
+/** The sign-in a move carried here (#h=CODE), taken out of the address: null when there is none. */
+function arrivingCode() {
+  const code = new URLSearchParams(location.hash.slice(1)).get('h')
+  if (code === null) return null
+  history.replaceState(null, '', location.pathname + location.search)
+  return /^[A-Za-z0-9_-]+$/.test(code) ? code : ''
 }
 
 export default function SetupPage() {
-  const setup = useSetup()
   const qc = useQueryClient()
-  const [step, setStep] = useState<Step | null>(() => { const asked = new URLSearchParams(location.search).get('step'); return isStep(asked) ? asked : null })
-  const s = setup.data
+  const navigate = useNavigate()
+  // A move from the IP address signs in here first; the page asks who it is only after.
+  const [entering, setEntering] = useState(() => new URLSearchParams(location.hash.slice(1)).has('h'))
+  useEffect(() => {
+    const code = arrivingCode()
+    if (code === null) return
+    const done = () => { void qc.invalidateQueries({ queryKey: keys.setup }); setEntering(false) }
+    if (!code) return done()
+    api.setup.enter(code).catch(() => { /* used or too old: the page asks to sign in */ }).finally(done)
+  }, [qc])
+  const open = useSetupOpen(!entering)
+  const signedIn = !!open.data?.signed_in
+  const setup = useSetup(signedIn && !open.data?.complete)
+  const s = signedIn ? setup.data : undefined
+  // A session that ended (or a password changed elsewhere): ask who this is again.
+  const refused = setup.error instanceof ApiError && setup.error.status === 401
+  useEffect(() => { if (refused) void qc.invalidateQueries({ queryKey: keys.setupOpen }) }, [refused, qc])
+  const complete = !!open.data?.complete || !!s?.complete
+  useEffect(() => { if (complete) navigate('/app/repos', { replace: true }) }, [complete, navigate])
+  const connections = useConnections(!!s)
+  const github = connections.data?.find(c => c.kind === 'github')?.state === 'connected'
+
+  const [step, setStep] = useState<Step | null>(null)
   const stepDone = (x: string) => !!s?.steps.find(st => st.step === x)?.done
-  // The domain step is done only with a domain: the installer may have set IP access for the first visit's certificate.
-  const addressSaved = !!s?.access.domain
-  const runtimeDone = stepDone('runtime')
+  const target = s ? ownAddress(s) : null
+  // The domain step is done only with a domain whose certificate is there, and with the page at it: the
+  // installer may have set IP access for the first visit's certificate.
   const done: Record<Step, boolean> = {
-    address: !!addressSaved, runtime: runtimeDone, account: !!s?.complete, github: false,
+    account: signedIn, address: !!s?.access.domain && !!s.access.certificate_ready && !target, runtime: stepDone('runtime'),
+    github,
   }
   const reached: Record<Step, boolean> = {
-    address: true, runtime: done.address, account: done.address && done.runtime, github: false,
+    account: !signedIn, address: signedIn, runtime: done.address, github: done.address && done.runtime,
   }
-  const first: Step = !done.address ? 'address' : !done.runtime ? 'runtime' : 'account'
-  const current: Step = s?.complete ? 'github' : step && step !== 'github' && reached[step] ? step : first
+  const first: Step = !done.account ? 'account' : !done.address ? 'address' : !done.runtime ? 'runtime' : 'github'
+  const current: Step = step && reached[step] ? step : first
   // The step shown stays until the owner leaves it: a check that passes shows its result, not the next step.
   useEffect(() => { if (s && !step) setStep(first) }, [s, step, first])
-  // The move waits while something is typed; it happens at the next step, or the next poll with nothing typed.
+  // The move: once the certificate is ready and the new address answers this browser.
   const [answers, setAnswers] = useState(0)
   useEffect(() => onAnswer(() => setAnswers(n => n + 1)), [])
-  useEffect(() => { if (s && (current === 'address' || !typing())) moveToOwnAddress(s, current) }, [s, current, answers])
+  const leaving = useRef(false)   // one move: the answer and the button may both ask for it
+  const move = () => { if (target && !leaving.current) { leaving.current = true; void moveTo(target) } }
+  useEffect(() => {
+    if (!target) return
+    if (answering.has(target.origin)) move()
+    else askOrigin(target.origin)
+  }, [target?.href, answers]) // eslint-disable-line react-hooks/exhaustive-deps
   // A runtime added anywhere (this page, the CLI, an agent): the lists and the builds follow.
+  const runtimeDone = done.runtime
   useEffect(() => {
     if (!runtimeDone) return
     for (const key of [keys.templates, keys.runtimesAvailable, keys.runtimes]) void qc.invalidateQueries({ queryKey: key })
   }, [runtimeDone, qc])
-  const go = (to: Step) => { if (!s || !moveToOwnAddress(s, to)) setStep(to) }
+
+  const version = s?.version ?? open.data?.version
   return <div className="flex min-h-dvh flex-col">
     <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-panel px-4 sm:px-8">
       <div className="flex items-center gap-2"><span aria-hidden className="grid size-6 place-items-center rounded-md bg-ink text-[11px] font-bold text-bg">sb</span><span className="font-semibold">sbx</span></div>
-      <span className="truncate text-[12.5px] text-muted">Server setup{s?.version ? ` · ${s.version}` : ''}</span>
+      <span className="truncate text-[12.5px] text-muted">Server setup{version ? ` · ${version}` : ''}</span>
     </header>
     <main className="mx-auto w-full max-w-[640px] px-4 pb-16 pt-8 sm:px-6 sm:pt-12">
-      {setup.isPending ? <Loading label="Checking this installation…" />
-        : setup.error || !s ? <NoToken error={setup.error} retry={() => setup.refetch()} />
+      {entering || open.isPending || complete ? <Loading label="Checking this installation…" />
+        : !open.data ? <div className="space-y-5"><ErrorState error={open.error} /><Button onClick={() => open.refetch()}>Try again</Button></div>
+        : !signedIn ? <>
+          <Steps current="account" done={{ account: false, address: false, runtime: false, github: false }} />
+          {open.data.account ? <SignInStep link={open.data.link} /> : <AccountStep />}
+        </>
+        : !s ? (setup.error && !refused ? <div className="space-y-5"><ErrorState error={setup.error} /><Button onClick={() => setup.refetch()}>Try again</Button></div>
+          : <Loading label="Checking this installation…" />)
         : <>
-          <Steps current={current} done={s.complete ? { address: true, runtime: true, account: true, github: false } : done}
-            onGo={s.complete ? undefined : x => reached[x] ? () => go(x) : undefined} />
-          {current === 'address' ? <AddressStep s={s} onNext={() => go('runtime')} />
-            : current === 'runtime' ? <RuntimeStep onBack={() => go('address')} onNext={() => go('account')} />
-            : current === 'account' ? <AccountStep s={s} onBack={() => go('runtime')} />
-            : <GitHubStep />}
+          <Steps current={current} done={done} onGo={x => x !== 'account' && reached[x] ? () => setStep(x) : undefined} />
+          {current === 'address' ? <AddressStep s={s} target={target} onMove={move} onNext={() => setStep('runtime')} />
+            : current === 'runtime' ? <RuntimeStep onBack={() => setStep('address')} onNext={() => setStep('github')} />
+            : <GitHubStep onBack={() => setStep('runtime')} onNext={() => navigate('/app/repos')} />}
         </>}
     </main>
   </div>
@@ -162,12 +207,15 @@ function Notice({ tone, children }: { tone: 'busy' | 'ok'; children: React.React
   </div>
 }
 
-function NoToken({ error, retry }: { error: unknown; retry: () => void }) {
-  return <div className="space-y-5">
-    <Heading title="Open your onboarding link" text="The installer printed it at the end. To see it again, run this on the server:" />
-    <CopyCommand command="sudo sbx-admin setup-link" />
-    <ErrorState error={error} compact />
-    <div className="flex flex-wrap gap-2"><Button onClick={retry}>Try again</Button><AnchorButton variant="ghost" href="/login?next=%2Fapp%2Fsetup">Sign in as an admin</AnchorButton></div>
+/** Someone can sign in already and this browser is not: sign in here, or go on where the page is now. */
+function SignInStep({ link }: { link: string }) {
+  const elsewhere = link && new URL(link).origin !== location.origin ? new URL(link) : null
+  return <div className="space-y-6">
+    <Heading title="Sign in to go on" text={elsewhere ? `This server already has an admin, and its setup goes on at ${elsewhere.host}.` : 'This server already has an admin.'} />
+    <Nav>
+      {elsewhere ? <AnchorButton variant="primary" href={elsewhere.href}>Open {elsewhere.host}<ArrowRight /></AnchorButton>
+        : <AnchorButton variant="primary" href="/login?next=%2Fonboarding">Sign in<ArrowRight /></AnchorButton>}
+    </Nav>
   </div>
 }
 
@@ -188,9 +236,9 @@ const checksOf = (e: unknown): CheckT[] => {
   return Array.isArray(found) ? found : []
 }
 
-/** The domain and its three records; nothing to choose. Saving checks the records and port 53, then the
- * certificate comes in the background while the owner goes on. */
-function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
+/** The domain and its three records; nothing to choose. Saving checks the records and port 53; the step then
+ * waits for the certificate and, opened at the server's IP address, moves the page to the domain (target). */
+function AddressStep({ s, target, onMove, onNext }: { s: SetupState; target: URL | null; onMove: () => void; onNext: () => void }) {
   const qc = useQueryClient()
   const [checks, setChecks] = useState<CheckT[] | null>(null)
   const [error, setError] = useState<unknown>(null)
@@ -214,9 +262,20 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
   const ip = s.host.address || 'this server’s IP address'
   const records: [string, string, string][] = [['A', name, ip], ['A', `*.${name}`, ip], ['NS', `_acme-challenge.${name}`, `${name}.`]]
   const failed = checks?.filter(c => !c.ok).length ?? 0
-  // The saved domain, untouched: its records passed, so the owner can go on whatever the certificate is doing.
+  // The saved domain, untouched: its records passed.
   const saved = !!s.access.domain && typed === s.access.domain.toLowerCase() && !failed
   const certificateError = saved ? s.access.certificate_error : ''
+  const waitUntil = certificateLimit(certificateError)?.at
+  const now = useNow()
+  // The page moves by itself once its new address answers this browser. One that doesn't (its DNS not there
+  // yet, say) is offered as a button, so the owner is never left watching a spinner.
+  const moving = saved && !certificateError && !!target
+  const [stalled, setStalled] = useState(false)
+  useEffect(() => {
+    if (!moving) return
+    const timer = setTimeout(() => setStalled(true), MOVE_PATIENCE_MS)
+    return () => { clearTimeout(timer); setStalled(false) }
+  }, [moving])
   return <AppForm form={form} className="space-y-6">
     <Heading title="Where will this server answer?" text="The control plane and every sandbox preview get an address under this domain." />
     <form.AppField name="domain" validators={{ onChange: ({ value }) => domainError(value) }}>
@@ -240,14 +299,17 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
       <p className="text-[12.5px] text-muted">New records can take a few minutes to show up. Fix what’s listed, then check again.</p>
     </section>}
     <ErrorState error={error} />
-    {saved && (certificateError ? <CertificateError error={certificateError} />
+    {saved && (certificateError ? <CertificateError error={certificateError} domain={s.access.domain} />
+      : moving ? <Notice tone="busy">Certificate ready. Moving to {target.host}…</Notice>
       : s.access.certificate_ready ? <Notice tone="ok">Certificate ready for {s.access.domain}.</Notice>
-      : <Notice tone="busy">Records found. The certificate is on its way in the background; you can continue.</Notice>)}
+      : <Notice tone="busy">Records found. Getting the certificate for {s.access.domain}, usually under a minute.</Notice>)}
     <Nav>
-      {saved ? <>
-        {certificateError && <SubmitButton form={form} variant="secondary">Try again</SubmitButton>}
-        <Button variant="primary" onClick={onNext}>Continue<ArrowRight /></Button>
-      </> : <SubmitButton form={form}>{checks ? 'Check again' : 'Check records'}</SubmitButton>}
+      {!saved ? <SubmitButton form={form}>{checks ? 'Check again' : 'Check records'}</SubmitButton>
+        : certificateError ? (waitUntil && now < waitUntil.getTime()
+          ? <Button variant="secondary" disabled>Try again at {clock(waitUntil)}</Button>
+          : <SubmitButton form={form} variant="secondary">Try again</SubmitButton>)
+        : moving ? stalled && <Button variant="primary" onClick={onMove}>Open {target.host}<ArrowRight /></Button>
+        : s.access.certificate_ready && <Button variant="primary" onClick={onNext}>Continue<ArrowRight /></Button>}
     </Nav>
   </AppForm>
 }
@@ -264,9 +326,11 @@ function RuntimeStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
   const hosted = all.filter(a => !a.enabled && !a.host && a.can_run)
   const host = all.find(a => a.host)
   const own = enabled.some(a => a.host)
-  const chosen = hosted.find(c => c.kind === kind) ?? hosted[0]
-  const offering = (!enabled.length || adding) && !!chosen
-  const count = enabled.length
+  // A key being checked and its runtime added: one step, its form busy until the server runs it (it restarts).
+  const pending = flow.busy ? all.find(a => a.kind === flow.change?.kind) : undefined
+  const chosen = pending ?? hosted.find(c => c.kind === kind) ?? hosted[0]
+  const offering = (!enabled.length || adding || !!pending) && !!chosen
+  const count = flow.busy ? -1 : enabled.length
   useEffect(() => setAdding(false), [count])   // the provider was added: back to what is chosen
   return <div className="space-y-6">
     <Heading title="Where will sandboxes run?"
@@ -275,25 +339,23 @@ function RuntimeStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
         : host && !host.can_run ? `This server can’t run sandboxes itself${host.why_not ? ` (${host.title} ${host.why_not})` : ''}, so they run at a provider, which bills you per second while one runs.`
         : 'Sandboxes run at a provider, which bills you per second while one runs.'} />
     {available.isPending ? <Spinner label="Looking at this server…" />
-      : available.error ? <ErrorState error={available.error} retry={() => available.refetch()} />
+      : available.error && !available.data ? <ErrorState error={available.error} retry={() => available.refetch()} />
       : <>
-        {enabled.length > 0 && <ul aria-label="Chosen" className="space-y-2">{enabled.map(r => <EnabledRuntime key={r.kind} r={r} />)}</ul>}
+        {!pending && enabled.length > 0 && <ul aria-label="Chosen" className="space-y-2">{enabled.map(r => <EnabledRuntime key={r.kind} r={r} />)}</ul>}
         {!enabled.length && !chosen && !flow.busy && <ErrorState error="No runtime can run here. Run the installer on a server with /dev/kvm, or on one that can reach a provider." />}
-        {flow.busy ? <Notice tone="busy">Checking the key and adding the runtime. This takes a moment.</Notice>
-          : flow.change?.state === 'failed' && <ChangeStatus flow={flow} />}
-        {/* Hidden, not gone, while a change applies: a key that fails is still there to correct. */}
-        {offering && <div hidden={flow.busy} className={cn('space-y-4', adding && 'rounded-lg border border-line bg-panel p-4')}>
+        {!flow.busy && flow.change?.state === 'failed' && <ChangeStatus flow={flow} />}
+        {offering && <div className={cn('space-y-4', adding && 'rounded-lg border border-line bg-panel p-4')}>
           {adding && <p className="font-medium">Add a provider</p>}
-          {hosted.length > 1 && <RuntimeChoices choices={hosted} value={chosen.kind} onChange={setKind} />}
+          {hosted.length > 1 && !pending && <RuntimeChoices choices={hosted} value={chosen.kind} onChange={setKind} />}
           {chosen.edit_blocker ? <>
             <ErrorState compact error={blockedText(chosen.edit_blocker, chosen.kind)} />
             {adding ? <div className="flex justify-end"><Button variant="ghost" onClick={() => setAdding(false)}>Cancel</Button></div> : <div className="pt-2"><Nav onBack={onBack} /></div>}
-          </> : <RuntimeKeyForm key={chosen.kind} r={chosen} flow={flow} onBack={adding ? undefined : onBack} onCancel={adding ? () => setAdding(false) : undefined} />}
+          </> : <RuntimeKeyForm key={chosen.kind} r={chosen} flow={flow} busy={!!pending} onBack={adding ? undefined : onBack} onCancel={adding ? () => setAdding(false) : undefined} />}
         </div>}
         {own && !adding && !flow.busy && hosted.length > 0 && <button type="button" onClick={() => setAdding(true)} className="rounded text-[13px] text-accent hover:underline">Also add a provider for more room</button>}
-        {enabled.length > 0 && <TemplateProgressLine />}
+        {!pending && enabled.length > 0 && <TemplateProgressLine />}
       </>}
-    {!(offering && !adding && !flow.busy) && <Nav onBack={onBack}><Button variant="primary" disabled={!enabled.length || flow.busy} onClick={onNext}>Continue<ArrowRight /></Button></Nav>}
+    {!(offering && !adding) && <Nav onBack={onBack}><Button variant="primary" disabled={!enabled.length || flow.busy} onClick={onNext}>Continue<ArrowRight /></Button></Nav>}
   </div>
 }
 
@@ -315,7 +377,7 @@ function EnabledRuntime({ r }: { r: AvailableRuntime }) {
 
 /** A hosted runtime's key, and nothing else: the server reads the plan from the key. With onBack it is the step's
  * own action; with onCancel, an extra beside a runtime already chosen. */
-function RuntimeKeyForm({ r, flow, onBack, onCancel }: { r: AvailableRuntime; flow: ChangeFlow; onBack?: () => void; onCancel?: () => void }) {
+function RuntimeKeyForm({ r, flow, busy, onBack, onCancel }: { r: AvailableRuntime; flow: ChangeFlow; busy?: boolean; onBack?: () => void; onCancel?: () => void }) {
   const secret = r.settings.find(x => x.secret)
   const [error, setError] = useState<unknown>(null)
   const form = useAppForm({
@@ -326,10 +388,10 @@ function RuntimeKeyForm({ r, flow, onBack, onCancel }: { r: AvailableRuntime; fl
       try { await flow.submit(() => api.runtimeSettings.add(r.kind, { values: secret ? { [secret.key]: value.key.trim() } : {} })) } catch (e) { setError(e) }
     },
   })
-  const submit = <SubmitButton form={form} variant={onBack ? 'primary' : 'secondary'}>{onBack ? 'Check key' : `Add ${r.title}`}</SubmitButton>
+  const submit = <SubmitButton form={form} busy={busy} variant={onBack ? 'primary' : 'secondary'}>{onBack ? 'Check key' : `Add ${r.title}`}</SubmitButton>
   return <AppForm form={form} aria-label={`${r.title} key`} className="space-y-4">
     {secret && <form.AppField name="key" validators={{ onChange: ({ value }) => !value.trim() ? `Paste your ${secret.label}.` : undefined }}>
-      {field => <field.TextField label={secret.label} type="password" autoComplete="off" spellCheck={false} help={secret.help || undefined} />}
+      {field => <field.TextField label={secret.label} type="password" autoComplete="off" spellCheck={false} disabled={busy} help={<KeyHelp setting={secret} />} />}
     </form.AppField>}
     <ErrorState error={error} compact />
     {onBack ? <div className="pt-2"><Nav onBack={onBack}>{submit}</Nav></div>
@@ -337,20 +399,11 @@ function RuntimeKeyForm({ r, flow, onBack, onCancel }: { r: AvailableRuntime; fl
   </AppForm>
 }
 
-/** The first admin's account, which also finishes the setup. On a private network nobody signs in: just finish. */
-function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
+/** The first admin's account, the first step: until it exists whoever opens the page may make it, so nothing
+ * comes before it. Every later step is this admin's. */
+function AccountStep() {
   const qc = useQueryClient()
   const [error, setError] = useState<unknown>(null)
-  const [busy, setBusy] = useState(false)
-  const existing = !!s.steps.find(x => x.step === 'sign_in')?.done
-  const signedIn = s.signed_in || (existing && s.open_access)
-  const complete = async () => {
-    const result = await api.setup.complete()
-    markReady()
-    setSetupToken(null)
-    qc.setQueryData(keys.setup, result)
-    void qc.invalidateQueries({ queryKey: keys.me })
-  }
   const form = useAppForm({
     defaultValues: { email: '', password: '', confirm: '' },
     onSubmit: async ({ value }) => {
@@ -358,30 +411,16 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
       try {
         qc.setQueryData(keys.setup, await api.setup.admin(value.email.trim(), value.password))
         form.reset()
-        await complete()
-      } catch (e) { setError(e) }
+        await qc.invalidateQueries({ queryKey: keys.setupOpen })
+      } catch (e) {
+        setError(e)
+        void qc.invalidateQueries({ queryKey: keys.setupOpen })   // someone else made it first: the page says so
+      }
     },
   })
-  const finish = async () => { setBusy(true); setError(null); try { await complete() } catch (e) { setError(e) } finally { setBusy(false) } }
-  const create = !signedIn && !existing
-  // The account is created at the server's own address, so the owner signs in where they stay (the session
-  // cookie is the domain's): the form waits until the page is there, nothing typed is lost on the way.
-  const domain = s.access.mode === 'domain' ? s.access.domain : ''
-  const waiting = create && !!domain && (!s.access.certificate_ready || location.hostname !== domain)
-  const certificateError = waiting ? s.access.certificate_error : ''
-  const [retrying, setRetrying] = useState(false)
-  const retry = async () => {
-    setRetrying(true); setError(null)
-    try {
-      await api.connections.save('domain', { name: domain, address: s.host.address, acme: 'delegated' })
-      await qc.invalidateQueries({ queryKey: keys.setup })
-    } catch (e) { setError(e) } finally { setRetrying(false) }
-  }
   return <div className="space-y-6">
-    <Heading title={create ? 'Create your account' : signedIn ? 'Finish the setup' : 'Sign in to finish'}
-      text={s.signed_in ? `You’re signed in as ${s.email}.` : signedIn ? 'Nobody signs in on this private network.'
-        : existing ? 'This server already has an admin.' : 'You’re the first admin. You can add people and single sign-on later, under Settings.'} />
-    {create && <AppForm form={form} id="setup-account"><fieldset disabled={waiting} className="min-w-0 space-y-4 disabled:opacity-60">
+    <Heading title="Create your account" text="You’re the first admin. You can add people and single sign-on later, under Settings." />
+    <AppForm form={form} id="setup-account" className="space-y-4">
       <form.AppField name="email" validators={{ onChange: ({ value }) => emailError(value) }}>{field => <field.TextField label="Email" type="email" autoComplete="username" />}</form.AppField>
       <div className="grid gap-4 sm:grid-cols-2 sm:gap-3">
         <form.AppField name="password" validators={{ onChange: ({ value }) => passwordError(value) }}>{field => <field.TextField label="Password" type="password" autoComplete="new-password" help="At least 8 characters." />}</form.AppField>
@@ -389,36 +428,27 @@ function AccountStep({ s, onBack }: { s: SetupState; onBack: () => void }) {
           {field => <field.TextField label="Repeat password" type="password" autoComplete="new-password" />}
         </form.AppField>
       </div>
-    </fieldset></AppForm>}
-    {certificateError && <CertificateError error={certificateError} domain={domain} />}
-    <TemplateProgressLine />
+    </AppForm>
     <ErrorState error={error} />
-    <Nav onBack={onBack}>
-      {certificateError ? <Button busy={retrying} onClick={retry}>Try again</Button>
-        : waiting ? <Spinner label={s.access.certificate_ready ? `Moving to ${domain}…` : `Waiting for the certificate for ${domain}, usually under a minute`} />
-        : create ? <SubmitButton form={form} formId="setup-account">Create account and finish<ArrowRight /></SubmitButton>
-        : signedIn ? <Button variant="primary" busy={busy} onClick={finish}>Finish setup<ArrowRight /></Button>
-        : <AnchorButton variant="primary" href="/login?next=%2Fapp%2Fsetup">Sign in<ArrowRight /></AnchorButton>}
-    </Nav>
+    <Nav><SubmitButton form={form} formId="setup-account">Create account<ArrowRight /></SubmitButton></Nav>
   </div>
 }
 
-/** After the setup: GitHub, for cloning private repositories and opening the recipe pull request. Skippable;
- * either way the owner lands in the control plane, which says the server is ready. */
-function GitHubStep() {
-  const navigate = useNavigate()
+/** GitHub, for cloning private repositories and opening the recipe pull request: the App is created on GitHub,
+ * which brings the browser to the control plane and its summary. It can be skipped (Extensions has it later);
+ * either way the control plane's summary comes next. */
+function GitHubStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
   const connections = useConnections()
   const [error, setError] = useState<unknown>(null)
-  const connected = connections.data?.find(c => c.kind === 'github')?.state === 'connected'
-  const enter = () => { markReady(); navigate('/app/repos', { replace: true }) }
-  useEffect(() => { if (connected) enter() }, [connected]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [forOrg, setForOrg] = useState(false)
+  const github = connections.data?.find(c => c.kind === 'github')
+  const connected = github?.state === 'connected'
   const form = useAppForm({
     defaultValues: { owner: '' },
     onSubmit: async ({ value }) => {
       setError(null)
       try {
-        const { action_url, manifest } = await api.connections.githubManifest(value.owner.trim(), '/app/repos')
-        markReady()
+        const { action_url, manifest } = await api.connections.githubManifest(forOrg ? value.owner.trim() : '', '/app/repos')
         // GitHub's App manifest flow: the browser posts a form to GitHub, which shows the App for confirmation.
         const f = document.createElement('form')
         f.method = 'post'
@@ -433,28 +463,59 @@ function GitHubStep() {
       } catch (e) { setError(e) }
     },
   })
-  if (connected) return <Loading label="Opening your control plane…" />
   return <div className="space-y-6">
-    <Heading title="Connect GitHub" text="Your account is ready. sbx clones your repositories and opens pull requests through a GitHub App of its own, which you create now. GitHub then asks which repositories it may use." />
-    <AppForm form={form} id="setup-github" className="space-y-4">
-      <form.AppField name="owner" validators={{ onChange: ({ value }) => value.trim() && !/^[A-Za-z0-9-]+$/.test(value.trim()) ? 'Enter the organization’s name as in its GitHub address.' : undefined }}>
-        {field => <field.TextField label="GitHub organization" optional autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} help="Leave it empty for repositories under your own account." />}
-      </form.AppField>
+    <Heading title="Connect GitHub" text="To clone your repositories and open pull requests." />
+    <AppForm form={form} id="setup-github" className="rounded-lg border border-line bg-panel">
+      <div className="flex items-center gap-3 p-3">
+        <span className="grid size-8 shrink-0 place-items-center rounded-md border border-line bg-sunken"><Github className="size-4" /></span>
+        <div className="min-w-0 grow text-[13px]">
+          <p className="font-medium">GitHub</p>
+          <p className="text-muted">{connected ? github.summary || 'Connected' : 'Not connected'}</p>
+        </div>
+        {connected ? <Check className="size-4 shrink-0 text-ok" aria-label="connected" />
+          : <SubmitButton form={form} formId="setup-github" variant="secondary">Connect GitHub</SubmitButton>}
+      </div>
+      {!connected && (forOrg
+        ? <div className="border-t border-line p-3">
+          <form.AppField name="owner" validators={{ onChange: ({ value }) => !/^[A-Za-z0-9-]+$/.test(value.trim()) ? 'Enter the organization’s name as in its GitHub address.' : undefined }}>
+            {field => <field.TextField label="Organization" placeholder="acme" autoFocus autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} />}
+          </form.AppField>
+        </div>
+        : <button type="button" onClick={() => setForOrg(true)} className="block w-full border-t border-line px-3 py-2 text-left text-[12.5px] text-muted hover:text-ink">For an organization?</button>)}
     </AppForm>
     <ErrorState error={error} />
-    <Nav>
-      <Button variant="ghost" onClick={enter}>Skip for now</Button>
-      <SubmitButton form={form} formId="setup-github"><Github />Create the app on GitHub</SubmitButton>
+    <TemplateProgressLine />
+    <Nav onBack={onBack}>
+      {connected ? <Button variant="primary" onClick={onNext}>Continue<ArrowRight /></Button>
+        : <Button variant="ghost" onClick={onNext}>Skip for now</Button>}
     </Nav>
   </div>
 }
 
-/** Why the certificate failed, with the fix in plain sight: a closed port 53 says where to open it (the server's
- * own probe: "port 53: ...; fix: ..."); anything else is Let's Encrypt's error, whose text is the detail. */
+/** Let's Encrypt's refusal for too many certificates for the same names (5 a week): how many, and when it allows
+ * the next. Null for any other error. */
+export function certificateLimit(error: string): { count: string; at: Date } | null {
+  const found = /too many certificates \((\d+)\).*?retry after (\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) UTC/s.exec(error)
+  return found ? { count: found[1], at: new Date(`${found[2]}T${found[3]}Z`) } : null
+}
+
+const clock = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+/** Now, again every 30 seconds: what a wait until a given time needs. */
+function useNow() {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(t) }, [])
+  return now
+}
+
 export function CertificateError({ error, domain }: { error: string; domain?: string }) {
   const port = /^port 53:\s*(.*?)(?:;\s*fix:\s*(.*))?$/s.exec(error.trim())
+  const limit = certificateLimit(error)
   return <div role="alert" className="rounded-lg border border-bad/25 bg-bad-soft px-4 py-3 text-[13px]">
-    {port ? <>
+    {limit ? <>
+      <p className="font-medium text-bad">Let’s Encrypt’s weekly limit is reached</p>
+      <p className="mt-1">It issued {limit.count} certificates for {domain ?? 'this domain'} this week. Try again after {clock(limit.at)}, or use another subdomain.</p>
+    </> : port ? <>
       <p className="font-medium text-bad">Port 53 is blocked</p>
       <p className="mt-1">Nothing from outside reached this server on port 53, so it can’t answer the certificate’s DNS check{domain ? ` for ${domain}` : ''}.</p>
       <p className="mt-1.5">Allow inbound <span className="font-medium">TCP and UDP port 53</span> in your provider’s firewall, then try again.</p>

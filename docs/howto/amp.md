@@ -37,7 +37,7 @@ either way, under the provider in Settings → Orbs.
 ## Give the token to sbx
 
 Every sandbox template already contains Amp, so adding the token rebuilds
-nothing. Paste it in one of these places, after the first-run setup:
+nothing. Paste it in one of these places, after the onboarding:
 
 - **The keys page** your agent sends you (`https://app.<domain>/keys/…`),
   next to any other keys it needs. Amp stays on and its provider starts.

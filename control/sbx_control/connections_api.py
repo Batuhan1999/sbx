@@ -8,9 +8,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from . import connections, extensions, github_app, setup, template_builds, template_scheduler
-from .auth import admin_user, api_user
-from .setup_api import setup_or_admin
+from . import connections, extensions, github_app, template_builds, template_scheduler
+from .auth import admin_user
+from .setup_api import admin_or_first
 
 router = APIRouter()
 
@@ -27,12 +27,12 @@ def _connection(kind: str) -> connections.Connection:
 
 
 @router.get("/api/connections")
-def api_connections(email: str = Depends(setup_or_admin)):
+def api_connections(email: str = Depends(admin_or_first)):
     return {"connections": connections.listed()}
 
 
 @router.post("/api/connections/{kind}/test")
-async def api_connection_test(kind: str, body: Values | None = None, email: str = Depends(setup_or_admin)):
+async def api_connection_test(kind: str, body: Values | None = None, email: str = Depends(admin_or_first)):
     checks = await run_in_threadpool(_connection(kind).test, (body.values if body else None))
     return {"ok": connections.checks_ok(checks), "checks": [c.__dict__ for c in checks]}
 
@@ -57,7 +57,7 @@ def _view(connection, status, report) -> dict:
 
 
 @router.put("/api/connections/{kind}")
-async def api_connection_put(kind: str, body: Values, email: str = Depends(setup_or_admin)):
+async def api_connection_put(kind: str, body: Values, email: str = Depends(admin_or_first)):
     connection = _connection(kind)
     try:
         status, report = await run_in_threadpool(
@@ -79,11 +79,10 @@ async def api_connection_delete(kind: str, email: str = Depends(admin_user)):
 
 
 @router.get("/api/templates")
-def api_templates(email: str = Depends(setup_or_admin)):
+def api_templates(email: str = Depends(admin_or_first)):
     """Every template sandboxes start from, per enabled runtime, and where its
     build stands (template_builds.progress): what `sbx templates --wait` and
-    `sbx extensions ... --wait` follow, and the setup page (the setup token
-    while the setup is open, before any account exists)."""
+    `sbx extensions ... --wait` follow, and the onboarding page."""
     return template_builds.progress()
 
 
@@ -97,7 +96,7 @@ class ManifestStart(BaseModel):
 
 
 @router.post("/api/connections/github/manifest")
-def api_github_manifest(request: Request, body: ManifestStart, email: str = Depends(setup_or_admin)):
+def api_github_manifest(request: Request, body: ManifestStart, email: str = Depends(admin_or_first)):
     """What the browser posts to GitHub (a form, so GitHub shows the App for
     confirmation); GitHub comes back to /connections/github/callback."""
     owner = body.owner.strip()
@@ -116,10 +115,9 @@ def api_github_manifest(request: Request, body: ManifestStart, email: str = Depe
 @router.get("/connections/github/callback")
 def github_callback(request: Request, code: str, state: str):
     """GitHub's return: the nonce in the session proves the manifest was
-    started here (by an admin, or by the setup token's holder)."""
+    started here, by an admin."""
     if not secrets.compare_digest(state, request.session.pop("github_state", "") or ""):
         raise HTTPException(400, "this link is stale; start again in Extensions")
-    if setup.complete():
-        admin_user(api_user(request))
+    admin_or_first(request)
     created = github_app.convert(code)
     return RedirectResponse(f"https://github.com/apps/{created['slug']}/installations/new")

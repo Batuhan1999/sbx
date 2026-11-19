@@ -25,14 +25,14 @@ else:
 '''
 
 # The release's Python: the settings for the report of a set-up server, and
-# the onboarding link (setup.main) while the setup is open; a marker records
-# that a link (a token) was made.
+# the onboarding page's address (setup.main) while the setup is open; a
+# marker records that it was asked for.
 SETTINGS = '''
 import os, shlex, sys
 from pathlib import Path
 if sys.argv[1:] == ['-m', 'sbx_control.setup', 'onboarding']:
-    Path(os.environ['SBX_TEST_LINK_REQUESTED']).touch()
-    print('link=' + shlex.quote('https://203.0.113.10/app/setup#t=test-only'))
+    Path(os.environ['SBX_TEST_ONBOARDING_ASKED']).touch()
+    print('link=' + shlex.quote('https://203.0.113.10/onboarding'))
     print('trusted=' + os.environ['SBX_TEST_TRUSTED'])
     print('domain=' + shlex.quote(os.environ['SBX_TEST_DOMAIN']))
     sys.exit(0)
@@ -42,7 +42,9 @@ for name in ('domain', 'login'):
     print(name + '=' + shlex.quote(os.environ['SBX_TEST_' + name.upper()]))
 '''
 
-ONBOARDING = '==> Open the onboarding: https://203.0.113.10/app/setup#t=test-only'
+ONBOARDING = '==> Open the onboarding: https://203.0.113.10/onboarding'
+# What the owner does there: the account first.
+ACCOUNT = ['  Create your admin account, then set your domain and the sandbox runtime.']
 WARNING = 'Your browser will warn once: the certificate is self-signed until the domain is set.'
 
 
@@ -63,11 +65,11 @@ class InstallReportTests(unittest.TestCase):
             shutil.copy(REPORT, release / 'install-report.sh')
             executable(release / 'venv/bin/python', SETTINGS)
             executable(root / 'bin/sbx-admin', SBX_ADMIN)
-            marker = root / 'setup-link-requested'
+            marker = root / 'onboarding-requested'
             result = subprocess.run(['sh', str(release / 'install-report.sh')], capture_output=True, text=True, timeout=10,
                                     env={**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'],
                                          'SBX_TEST_STATE': state, 'SBX_TEST_DOMAIN': domain, 'SBX_TEST_LOGIN': login,
-                                         'SBX_TEST_LINK_REQUESTED': str(marker), 'SBX_PASSWORD': password,
+                                         'SBX_TEST_ONBOARDING_ASKED': str(marker), 'SBX_PASSWORD': password,
                                          'SBX_TEST_TRUSTED': trusted})
             return result, marker.exists()
 
@@ -75,32 +77,35 @@ class InstallReportTests(unittest.TestCase):
         for domain, login in (('', '203.0.113.10'), ('', '[2001:db8::10]'),
                               ('sbx.example.com', 'app.sbx.example.com')):
             with self.subTest(login=login):
-                result, link_requested = self.report(state=self.SET_UP, domain=domain, login=login)
+                result, asked = self.report(state=self.SET_UP, domain=domain, login=login)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f'Done: https://{login}', result.stdout)
                 self.assertIn(f'curl -fsSL https://{login}/install', result.stdout)
-                self.assertNotIn('onboarding', result.stdout)   # a reinstall or upgrade: never a setup link
-                self.assertNotIn('#t=', result.stdout)
+                self.assertNotIn('onboarding', result.stdout)   # a reinstall or upgrade: never the onboarding
                 self.assertNotIn('password', result.stdout)
-                self.assertFalse(link_requested)
+                self.assertFalse(asked)
 
     def test_a_generated_password_is_shown_with_the_url(self):
         result, _ = self.report(state=self.SET_UP, password='operator@example.com: generated-once')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("  operator@example.com: generated-once", result.stdout)
 
-    def test_an_open_setup_ends_with_the_onboarding_link_after_the_generated_password(self):
-        result, link_requested = self.report(state=self.OPEN, password='operator@example.com: generated-once',
+    def test_an_open_setup_ends_with_the_onboarding_address_after_the_generated_password(self):
+        result, asked = self.report(state=self.OPEN, password='operator@example.com: generated-once',
                                              trusted='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.rstrip('\n').splitlines()
-        self.assertEqual(lines[-1], ONBOARDING)   # the last line, and the only one with the token
-        self.assertEqual(result.stdout.count('#t='), 1)
+        self.assertEqual(lines[-1], ONBOARDING)   # the last line: the page's address, no credential in it
+        self.assertEqual(result.stdout.count('/onboarding'), 1)
+        self.assertNotIn('#t=', result.stdout)
+        self.assertNotIn('setup-link', result.stdout)   # no link to lose: the address is all there is
+        said = lines.index('==> Installed: the rest of the setup is in your browser')
+        self.assertEqual(lines[said + 1:said + 2], ACCOUNT)   # the account first
         self.assertIn("  operator@example.com: generated-once", result.stdout)
         self.assertNotIn('warn', result.stdout)   # a trusted certificate: no warning
-        self.assertTrue(link_requested)
+        self.assertTrue(asked)
 
-    def test_a_self_signed_first_visit_says_so_on_the_line_before_the_link(self):
+    def test_a_self_signed_first_visit_says_so_on_the_line_before_the_address(self):
         result, _ = self.report(state=self.OPEN)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.rstrip('\n').splitlines()[-2:], [WARNING, ONBOARDING])
@@ -109,12 +114,12 @@ class InstallReportTests(unittest.TestCase):
                          ["Your browser will warn once: the certificate is self-signed until sbx.example.com's "
                           "certificate is issued.", ONBOARDING])
 
-    def test_unreadable_setup_state_fails_without_minting_a_setup_link(self):
-        result, link_requested = self.report(state=self.ERROR)
+    def test_unreadable_setup_state_fails_without_an_onboarding_address(self):
+        result, asked = self.report(state=self.ERROR)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('could not read installation setup state', result.stderr)
         self.assertNotIn('Done:', result.stdout)
-        self.assertFalse(link_requested)
+        self.assertFalse(asked)
 
 
 ENABLE = Path(__file__).parents[2] / 'infisical/enable.sh'
@@ -443,22 +448,14 @@ class SetupInferTests(Installation):
     def test_open_until_configured_then_set_up(self):
         from sbx_control import settings, setup, users
         self.assertEqual(self.infer(), 3)
-        settings.update('domain', {'address': '203.0.113.10'}, by='test')
         settings.update('access', {'admins': ['operator@example.com']}, by='test')
         users.set_password('operator@example.com', 'test-only-password', by='test')
+        self.assertEqual(self.infer(), 3)   # the account, the page's first step: the owner is still on it
+        self.assertFalse(setup.complete())
+        settings.update('domain', {'address': '203.0.113.10'}, by='test')
         self.assertEqual(self.infer(), 0)   # choosing coding agents is optional
         self.assertTrue(setup.complete())
         self.assertEqual(self.infer(), 0)
-
-    def test_an_open_setup_page_is_left_for_the_owner_to_finish(self):
-        from sbx_control import settings, setup, users
-        setup.mint_token()   # the onboarding link the owner has open
-        settings.update('domain', {'address': '203.0.113.10'}, by='test')
-        settings.update('access', {'admins': ['operator@example.com']}, by='test')
-        users.set_password('operator@example.com', 'test-only-password', by='test')
-        self.assertEqual(self.infer(), 3)
-        self.assertFalse(setup.complete())
-        self.assertTrue(setup.current_token())
 
 
 class ImportTests(unittest.TestCase):

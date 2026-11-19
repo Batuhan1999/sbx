@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { envNameError, nameFromBranch, repoError, sandboxNameError } from './validation'
+import { envNameError, nameFromBranch, repoError, repoName, sandboxNameError } from './validation'
 
 describe('sandbox names', () => {
   it('follows the server rule: a letter, then 1–30 of a-z 0-9 -', () => {
@@ -27,5 +27,8 @@ describe('other names', () => {
     expect(repoError('usememos/memos')).toBeUndefined()
     expect(repoError('https://github.com/usememos/memos.git')).toBeUndefined()
     expect(repoError('memos')).toBeDefined()
+    expect(repoName('https://github.com/UseMemos/Memos.git/')).toBe('usememos/memos')
+    expect(repoName('github.com/usememos/memos')).toBe('usememos/memos')
+    expect(repoName('memos')).toBeNull()
   })
 })

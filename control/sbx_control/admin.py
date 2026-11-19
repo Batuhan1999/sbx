@@ -10,9 +10,8 @@
   sbx-admin restore FILE --key KEY   on a freshly installed host
   sbx-admin doctor                   every connection: its state and live checks
   sbx-admin catalog ls|connections|install DIR   the packages; the saved connections; an operator's package
-  sbx-admin setup-link [--new]       the link that opens the first-run setup: the same one each call until
-                                     the setup finishes; --new replaces it (the old link stops working)
-  sbx-admin setup-reset [--sign-in]  back to 'being set up' (keeps the domain and connections; --sign-in clears the sign-in and admins)
+  sbx-admin setup-reset [--sign-in]  back to 'being set up': the onboarding page opens again, and its address is printed
+                                     (keeps the domain and connections; --sign-in clears the sign-in and admins)
   sbx-admin jobs [run ID]            what runs on its own (timers, the keeper, builds), and start one now
   sbx-admin token create EMAIL --label L   an API token for EMAIL, printed once (Linux, CI: no sbx login)
   sbx-admin token ls [EMAIL]         API tokens: id, email, label, when made and last used; never values
@@ -385,7 +384,6 @@ def main(argv: list) -> int:
     catalog_cmd = sub.add_parser("catalog")
     catalog_cmd.add_argument("what", choices=["ls", "connections", "install"])
     catalog_cmd.add_argument("directory", nargs="?", type=pathlib.Path)
-    sub.add_parser("setup-link").add_argument("--new", action="store_true")
     sub.add_parser("setup-infer")
     sub.add_parser("setup-reset").add_argument("--sign-in", action="store_true")
     jobs = sub.add_parser("jobs"); jobs.add_argument("verb", nargs="?", choices=["run"]); jobs.add_argument("id", nargs="?")
@@ -571,19 +569,13 @@ def main(argv: list) -> int:
         return 0
     if a.cmd == "setup-reset":
         from . import setup
-        print(setup.link(setup.reset(sign_in=a.sign_in)))
+        setup.reset(sign_in=a.sign_in)
+        print(setup.link())
         return 0
     if a.cmd == "setup-infer":  # exit 0: set up (marked now, or before); SETUP_OPEN: the wizard is still open
         from . import setup
         print("marked complete" if setup.infer_complete() else ("complete" if setup.complete() else "not configured yet"))
         return 0 if setup.complete() else SETUP_OPEN
-    if a.cmd == "setup-link":
-        from . import setup
-        if setup.complete():
-            print("the setup is complete; connections are managed in Settings (or sbx-admin connect)")
-            return 0
-        print(setup.link(("" if a.new else setup.current_token()) or setup.mint_token()))
-        return 0
     if a.cmd == "catalog":
         from . import catalog
         from .catalog import connections as saved

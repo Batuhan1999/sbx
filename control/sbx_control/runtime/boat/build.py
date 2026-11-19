@@ -19,7 +19,7 @@ from ..base import CommandFailed, Failed, LimitRefused, Snapshot, TemplateGone, 
 from ..dockerfile import ShellWord, dockerfile_steps, export_line
 from ..listening import listening
 from .errors import POLL_SECONDS, BoatError
-from .plans import LIMITS, MACHINES, PLAN_CACHE_SECONDS, TRIAL_REFUSAL, machine
+from .plans import LIMITS, MACHINES, PLAN_CACHE_SECONDS, SNAPSHOTS_FULL, TRIAL_REFUSAL, machine
 from .sandbox import HOME, TEMPLATE_FILE, Handle
 
 INSTALL_LABEL, TEMPLATE_LABEL, BUILD_LABEL = "sbx_install", "sbx_template", "sbx_build"
@@ -111,6 +111,22 @@ class Builds:
         if self.plan() == "trial":
             raise LimitRefused(TRIAL_REFUSAL, field="plan")
 
+    def _snapshots_full(self, unpaid: bool = True) -> str:
+        """Why Boat has no room for one more saved snapshot: every free one on
+        the plan taken and, when unpaid, no money in the wallet for an extra.
+        "" when there is room, or Boat does not say."""
+        try:
+            allowance = self.call(lambda: self.api().list_saved_snapshots(), read=True).allowance
+            if not allowance or allowance.free is None or (allowance.used or 0) < allowance.free:
+                return ""
+            if unpaid:
+                wallet = self.call(lambda: self.api().limits(**self._org_args()), read=True).wallet
+                if wallet and (wallet.balance_dollars or 0) > 0:
+                    return ""
+        except Exception:   # the build goes on; Boat's own answer says what is wrong
+            return ""
+        return SNAPSHOTS_FULL.format(free=allowance.free, price=allowance.price_per_extra_monthly_dollars or 1.68)
+
     def delete_snapshot(self, snapshot_id):
         self.delete_template(snapshot_id)
 
@@ -134,6 +150,8 @@ class Builds:
         from boat_sdk.models import CreateSandboxRequest
         log = on_log or (lambda line: print(line, flush=True))
         self._refuse_on_trial()
+        if full := self._snapshots_full():   # before a builder is started for nothing
+            raise Failed(full)
         self._reclaim_builders(log)
         steps = []
         for what, value in spec.steps:
@@ -165,7 +183,12 @@ class Builds:
             self._ready(builder)
             self._replay(Handle(self, builder), steps, log)
             log(f"Boat: saving {alias}")
-            self._save(builder, alias)
+            try:
+                self._save(builder, alias)
+            except (BoatError, Failed) as error:
+                if full := self._snapshots_full(unpaid=False):
+                    raise Failed(f"{full} (Boat said: {error})") from error
+                raise
             log(f"Boat: {alias} is ready")
             return alias
         finally:

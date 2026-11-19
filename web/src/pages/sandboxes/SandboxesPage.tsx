@@ -1,7 +1,7 @@
 import { Boxes, Plus, Search } from 'lucide-react'
 import { Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { useMe, useRuntimeTitle, useSandboxes } from '@/api/queries'
+import { useMe, useRepos, useRuntimeTitle, useSandboxes } from '@/api/queries'
 import type { Capacity, SandboxList, SandboxScope } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState, ErrorState, SkeletonRows } from '@/components/states'
@@ -49,6 +49,27 @@ function LimitsNote({ limits }: { limits?: Capacity['limits'] }) {
   return <span>{text.charAt(0).toUpperCase() + text.slice(1)}</span>
 }
 
+/** An empty list says what would fill it. A server with no repository ready has nothing a sandbox could run,
+ * so the first step there is the repository, not "New sandbox". */
+function NoSandboxes({ scope, admin, onNew }: { scope: SandboxScope; admin: boolean; onNew: () => void }) {
+  const repos = useRepos()
+  if (scope === 'previews') return <EmptyState icon={Boxes} title="No PR previews">A pull request’s preview shows up here while it runs.</EmptyState>
+  if (scope === 'sessions') return <EmptyState icon={Boxes} title="No agent sessions">A coding agent’s session that runs in a sandbox here shows up while it runs.</EmptyState>
+  if (scope === 'all') return <EmptyState icon={Boxes} title="No sandboxes">Nobody has a sandbox right now.</EmptyState>
+  if (repos.isPending) return <EmptyState icon={Boxes} title="No sandboxes yet" />   // what to say next depends on the repositories
+  const ready = (repos.data ?? []).filter(r => r.configured)
+  if (repos.data && !ready.length) return <EmptyState icon={Boxes} title="No sandboxes yet"
+    action={admin && <LinkButton variant="primary" size="sm" to={repos.data.length ? '/app/repos' : '/app/repos/new'}><Plus />{repos.data.length ? 'Finish a repository' : 'Connect a repository'}</LinkButton>}>
+    {repos.data.length ? 'A sandbox runs one of your repositories, and none has its recipe yet. Its coding agent writes the recipe and starts the first sandbox.'
+      : admin ? 'A sandbox runs one of your repositories. Connect one first: its coding agent writes the recipe and starts the first sandbox.'
+      : 'A sandbox runs one of this server’s repositories, and none is connected yet. Ask an admin to connect one.'}
+  </EmptyState>
+  return <EmptyState icon={Boxes} title="No sandboxes yet"
+    action={<><Button variant="primary" size="sm" onClick={onNew}><Plus />New sandbox</Button><LinkButton size="sm" to="/app/cli">Use the CLI</LinkButton></>}>
+    Start one here, or run <code>sbx up NAME</code> in a repository’s checkout. Each gets its own preview link.
+  </EmptyState>
+}
+
 export default function SandboxesPage() {
   const me = useMe()
   const [params, setParams] = useSearchParams()
@@ -85,7 +106,7 @@ export default function SandboxesPage() {
       : filtered.length ? <SandboxTable sandboxes={filtered} />
       : <div className="rounded-lg border border-dashed border-line">
         {query ? <EmptyState title="No sandboxes match" action={<Button size="sm" onClick={() => setQuery('')}>Clear filter</Button>} />
-          : <EmptyState icon={Boxes} title="No sandboxes" action={scope === 'mine' && <><Button variant="primary" size="sm" onClick={() => setCreating(true)}><Plus />New sandbox</Button><LinkButton size="sm" to="/app/cli">Use the CLI</LinkButton></>} />}
+          : <NoSandboxes scope={scope} admin={!!me.data?.admin} onNew={() => setCreating(true)} />}
       </div>}
   </>
 }

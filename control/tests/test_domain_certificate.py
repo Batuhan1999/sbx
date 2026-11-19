@@ -1,6 +1,6 @@
 """A domain's certificate in the setup: delegated DNS's port 53 probe,
 records that send the challenge elsewhere, an optional certificate email,
-the certificate's error in /api/setup, and the setup link that stays the same."""
+and the certificate's error in /api/setup."""
 import contextlib
 import io
 import struct
@@ -197,10 +197,11 @@ class DomainSetup(Server):
         self.enterContext(patch.object(domain, "_ns", return_value=[f"{DOMAIN}."]))
         self.probe = self.enterContext(patch("sbx_control.acme_dns.probe", return_value=(True, "reached", "")))
         self.error = self.tls / "certificate-error"
+        self.create_admin()   # the page's first step: the domain is the admin's to set
 
     def save(self):
-        """What the setup page sends: the domain, the address, delegated, no email."""
-        return self.client.put("/api/connections/domain", headers=self.headers, json={
+        """What the onboarding page sends: the domain, the address, delegated, no email."""
+        return self.client.put("/api/connections/domain", json={
             "values": {"name": DOMAIN, "address": "203.0.113.10", "acme": "delegated"}})
 
     def test_the_first_save_needs_no_email_and_the_first_failed_issuance_shows_in_the_setup(self):
@@ -210,10 +211,10 @@ class DomainSetup(Server):
         self.assertEqual(settings.current().domain.acme_email, "")
         self.probe.assert_not_called()   # nothing answers for the name until tls.sh runs: it probes then
         self.assertIn(settings.HostUnit.HOST_GUARD, self.effects())   # 53 opens
-        self.assertEqual(self.client.get("/api/setup", headers=self.headers).json()["access"]["certificate_error"], "")
+        self.assertEqual(self.client.get("/api/setup").json()["access"]["certificate_error"], "")
         self.error.write_text("port 53: no public resolver (1.1.1.1, 8.8.8.8) reached this server on port 53 within "
                               "5 s; fix: allow TCP and UDP port 53 in your provider's firewall\n")
-        view = self.client.get("/api/setup", headers=self.headers).json()
+        view = self.client.get("/api/setup").json()
         self.assertIn("allow TCP and UDP port 53", view["access"]["certificate_error"])
         self.assertFalse(view["steps"][0]["done"])
         from sbx_control import connections
@@ -250,35 +251,7 @@ class DomainSetup(Server):
         self.assertEqual(self.save().status_code, 200)
         self.error.write_text("an old failure\n")
         self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
-        self.assertEqual(self.client.get("/api/setup", headers=self.headers).json()["access"]["certificate_error"], "")
-
-
-class SetupLink(Server):
-    def link(self, *argv):
-        from sbx_control import admin
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(admin.main(["setup-link", *argv]), 0)
-        return out.getvalue().strip()
-
-    def test_the_link_stays_the_same_until_a_new_one_is_asked_for(self):
-        from sbx_control import setup
-        first = self.link()
-        self.assertTrue(first.endswith(f"/setup#t={self.token}"))
-        self.assertEqual(self.link(), first)
-        self.assertTrue(setup.token_ok(self.token))
-        new = self.link("--new")
-        self.assertNotEqual(new, first)
-        self.assertFalse(setup.token_ok(self.token))   # the old link stops working
-        self.assertEqual(self.link(), new)
-
-    def test_a_missing_or_stale_token_file_gets_a_new_link(self):
-        from sbx_control import setup
-        setup.token_file().write_text("stale-token\n")
-        fresh = self.link()
-        self.assertNotIn("stale-token", fresh)
-        self.assertTrue(setup.token_ok(fresh.split("#t=")[1]))
-        setup.token_file().unlink()
-        self.assertNotEqual(self.link(), fresh)
+        self.assertEqual(self.client.get("/api/setup").json()["access"]["certificate_error"], "")
 
 
 class DelegationFromTheParentZone(unittest.TestCase):

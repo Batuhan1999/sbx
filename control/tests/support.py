@@ -140,20 +140,20 @@ class Installation(unittest.TestCase):
 
 
 class Server(Installation):
-    """An installation with the HTTP app: self.client, and the first-run
-    setup's token in self.headers."""
+    """An installation with the HTTP app: self.client, a browser at the
+    server's IP address that nobody is signed in on. create_admin() makes the
+    first admin as the onboarding page does and signs the client in (it keeps
+    the session's cookie); another client signs in with a Bearer API token."""
 
     def setUp(self):
         super().setUp()
         from fastapi.testclient import TestClient
-        from sbx_control import app, setup
+        from sbx_control import app
         from sbx_control.connections import Check
         self.app = app
         # sbx-control started afresh for this test's installation: the session cookie's domain is read
         # on the first request (auth.Sessions), and an earlier test's domain must not carry over.
         app.app.middleware_stack = None
-        self.token = setup.mint_token()
-        self.headers = {"Authorization": f"Setup {self.token}"}
         self.client = TestClient(app.app, base_url="https://203.0.113.10")
         self.addCleanup(self.client.close)
         self.enterContext(patch("sbx_control.connections.domain.public_ip", return_value="203.0.113.10"))
@@ -171,26 +171,27 @@ class Server(Installation):
         self.real_kick = template_scheduler.kick
         self.kick = self.enterContext(patch.object(template_scheduler, "kick", return_value=True))
 
-    def choose_ip(self):
-        response = self.client.post("/api/setup/address", headers=self.headers, json={"address": "203.0.113.10"})
-        self.assertEqual(response.status_code, 200, response.text)
-        return response.json()
-
     def create_admin(self):
-        response = self.client.post("/api/setup/admin", headers=self.headers, json={
+        """The onboarding's first step, open to whoever asks first: operator@example.com, signed in on self.client."""
+        response = self.client.post("/api/setup/admin", json={
             "email": "Operator@example.com", "password": "test-only-password-123"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn("test-only-password-123", response.text)
         return response.json()
 
+    def choose_ip(self):
+        response = self.client.post("/api/setup/address", json={"address": "203.0.113.10"})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
     def choose_agents(self, *kinds):
-        response = self.client.put("/api/setup/agents", headers=self.headers, json={"agents": list(kinds)})
+        response = self.client.put("/api/setup/agents", json={"agents": list(kinds)})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def repo_admin(self):
         """Set up, with operator@example.com the signed-in admin."""
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents()
-        self.assertEqual(self.client.post('/api/setup/complete', headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.post('/api/setup/complete').status_code, 200)

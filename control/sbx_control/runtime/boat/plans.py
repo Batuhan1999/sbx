@@ -29,7 +29,8 @@ LIMITS = (
     LimitSpec("sandboxes", "BOAT_MAX_SANDBOXES", 100, "Sandboxes at once", "", 1, 2000, 1),
 )
 SETTINGS = (
-    SettingField(API_KEY, "API key", secret=True, help="From Boat's dashboard: API keys (boat_…)."),
+    SettingField(API_KEY, "API key", secret=True, help="From Boat's dashboard: API keys, with the scope full-sandbox (boat_…).",
+                 help_url="https://boat.dev/dashboard"),
     SettingField(API_URL_KEY, "API URL", default=DEFAULT_API_URL, optional=True, kind="url", rekey=True, hidden=True,
                  help="Only for another Boat API."),
     SettingField(ORG_KEY, "Organization", optional=True, help="Bill an organization's wallet instead of yours."),
@@ -48,6 +49,14 @@ SETTINGS = (
 # and a template build on it is refused before it starts a builder.
 _PLAN_SOURCE = "https://docs.boat.dev/pricing.md"
 SOURCE = "your Boat plan"   # what sets the limits, as messages name it
+
+
+# Saved snapshots past the plan's free ones are paid from the wallet, daily
+# (NamedSnapshotAllowance, read 2026-11-19); a save that has neither fails.
+SNAPSHOTS_FULL = ("Boat's free saved snapshots are used up: your plan keeps {free}, and all are taken. sbx's "
+                  "templates are saved snapshots, and old ones from other servers on this Boat account count too. "
+                  "Delete the ones you don't need in Boat's dashboard (Snapshots), or add money to your Boat wallet "
+                  "(an extra one costs ${price:.2f} a month), then build again.")
 
 
 TRIAL_NOTE = "Trial: templates need the first payment (Boat saves no snapshots during the trial)."

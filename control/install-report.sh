@@ -1,8 +1,9 @@
 #!/bin/sh
 # install.sh's last step, from the installed release: while the first-run
-# setup is open, its last line is the onboarding link (a one-time token in
-# the fragment), after a line that says when the browser will warn; else the
-# server's address and what to do next, never a link. An installation whose
+# setup is open, its last line is the onboarding page's address (no
+# credential: the page's first step makes the first admin's account), after
+# a line that says when the browser will warn; else the server's address
+# and what to do next. An installation whose
 # settings are complete counts as set up (sbx-admin setup-infer: exit 0 set
 # up, 3 still open).
 #   SBX_PASSWORD=... install-report.sh   ("EMAIL: PASSWORD" lines install.sh generated, shown once)
@@ -25,17 +26,14 @@ sbx-admin setup-infer >/dev/null || status=$?
 case "$status" in
   0) ;;
   3)
-    # The onboarding link: the current one-time token while it works (a rerun
-    # keeps the page the owner has open), else a new one; its
-    # last line is the link, on this terminal only.
-    found=$(cd "$here" && venv/bin/python -m sbx_control.setup onboarding) || die "could not make the onboarding link (above)"
+    # The onboarding page's address, the last line.
+    found=$(cd "$here" && venv/bin/python -m sbx_control.setup onboarding) || die "could not read the onboarding address (above)"
     link="" trusted="" domain=""
     eval "$found"
-    [ -n "$link" ] || die "could not make the onboarding link"
+    [ -n "$link" ] || die "could not read the onboarding address"
     say "Installed: the rest of the setup is in your browser"
-    echo "  Set your domain and the sandbox runtime, then create your admin account."
+    echo "  Create your admin account, then set your domain and the sandbox runtime."
     password
-    echo "  Lost the link? sudo sbx-admin setup-link"
     echo
     if [ -z "$trusted" ] && [ -n "$domain" ]; then
       echo "Your browser will warn once: the certificate is self-signed until $domain's certificate is issued."

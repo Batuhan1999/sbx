@@ -43,7 +43,8 @@ LIMITS = (
     LimitSpec("sandboxes", "E2B_CLOUD_MAX_SANDBOXES", 10, "Sandboxes at once", "", 1, 100, 1),
 )
 SETTINGS = (
-    SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys."),
+    SettingField(API_KEY, "API key", secret=True, help="From E2B's dashboard: Team → API keys.",
+                 help_url="https://e2b.dev/dashboard"),
     SettingField(DOMAIN_KEY, "Domain", default=DEFAULT_DOMAIN, optional=True, kind="hostname", rekey=True, hidden=True,
                  help="Only for a self-hosted E2B."),
     *limit_settings(LIMITS),

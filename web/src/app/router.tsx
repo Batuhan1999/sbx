@@ -5,7 +5,7 @@ import { Shell } from './Shell'
 const page = (load: () => Promise<{ default: React.ComponentType }>) => async () => ({ Component: (await load()).default })
 
 export const routes = [
-  { path: '/app/setup', HydrateFallback: Loading, lazy: page(() => import('@/pages/setup/SetupPage')) },
+  { path: '/onboarding', HydrateFallback: Loading, lazy: page(() => import('@/pages/setup/SetupPage')) },
   { path: '/login', HydrateFallback: Loading, lazy: page(() => import('@/pages/SignInPage')) },
   { path: '/app/keys/:id', HydrateFallback: Loading, lazy: page(() => import('@/pages/KeysPage')) },
   { path: '/app/set-password', HydrateFallback: Loading, lazy: page(() => import('@/pages/SetPasswordPage')) },

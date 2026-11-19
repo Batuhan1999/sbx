@@ -104,8 +104,9 @@ class Domain(Installation):
 class DomainApi(Server):
     def test_a_refused_domain_sends_help_url_with_each_check(self):
         from sbx_control.connections import domain
+        self.create_admin()
         with patch.object(domain, "_resolve", return_value=[]), patch.object(domain, "_host_ips", return_value=set()):
-            r = self.client.put("/api/connections/domain", headers=self.headers,
+            r = self.client.put("/api/connections/domain",
                                 json={"values": {"name": "sbx.example.com", "acme": "cloudflare"}})
         self.assertEqual(r.status_code, 400, r.text)
         sent = {c["name"]: c for c in r.json()["detail"]["checks"]}

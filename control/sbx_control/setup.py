@@ -1,7 +1,9 @@
-"""First-run control-plane setup: an address, a sandbox runtime (added here
-when install.sh enabled none), the admin account last, and live runtime
-checks. Repository and provider connections follow after the server is
-ready.
+"""First-run control-plane setup (the onboarding page): the admin account
+first, then an address, a sandbox runtime (added here when install.sh
+enabled none) and live runtime checks. Nothing but the first admin's account
+is open without signing in, and that only while nobody can sign in; every
+later step is an admin's. Repository and provider connections follow after
+the server is ready.
 
 Templates build as soon as there is a runtime and an address, during the
 setup too: every template has every coding agent's layer (Amp's in the
@@ -17,18 +19,17 @@ import pathlib
 import secrets
 import sqlite3
 import sys
+import time
 
-from . import paths, runtime, settings, users, vault
+from . import runtime, settings, users, vault
 from .state import Setting
 
 COMPLETE = Setting("setup_complete")
-TOKEN_HASH = Setting("setup_token_hash")
+# The page's move from the IP address to the domain: one sign-in carried over (handoff, enter).
+HANDOFF = Setting("setup_handoff", encoded=True)
+HANDOFF_SECONDS = 120
 # The coding agents chosen (optional): a list of extension kinds ([]: none); unset: not chosen.
 AGENTS = Setting("setup_agents", encoded=True)
-
-
-def token_file():
-    return paths.etc() / "setup-token"
 
 
 def complete() -> bool:
@@ -49,11 +50,10 @@ def configured() -> bool:
 
 def infer_complete() -> bool:
     """sbx-admin setup-infer (host-install.sh on every deploy, and
-    install-report.sh): an installation that is configured counts as set
-    up (the admin account, which needs a way to sign in, is the setup's last
-    step), unless a setup is open (its token works): the owner finishes it.
-    Returns whether it marked anything."""
-    if complete() or not configured() or current_token():
+    install-report.sh): an installation that is configured (an address, a
+    way to sign in, a runtime) counts as set up; what the onboarding page
+    has left then is optional. Returns whether it marked anything."""
+    if complete() or not configured():
         return False
     mark_complete("infer")
     return True
@@ -88,14 +88,14 @@ def choose_agents(kinds, by: str) -> list:
 
 def mark_complete(by: str):
     COMPLETE.set("1")
-    revoke_token()
+    HANDOFF.delete()
 
 
 def reset(sign_in: bool = False, by: str = "sbx-admin"):
-    """Back to 'being set up': the gate closes, a new link opens the wizard.
-    The domain, its certificate and the connections stay; with sign_in the
-    sign-in (back to passwords, nobody listed), the people and the admins
-    are cleared too, so the wizard names the admin again."""
+    """Back to 'being set up': the onboarding page opens again. The domain,
+    its certificate and the connections stay; with sign_in the sign-in (back
+    to passwords, nobody listed), the people and the admins are cleared too,
+    so the page asks for the first admin again."""
     COMPLETE.delete()
     if sign_in:
         s = settings.current()
@@ -103,69 +103,68 @@ def reset(sign_in: bool = False, by: str = "sbx-admin"):
         settings.update("access", {**s.access.model_dump(), "admins": []}, by=by)
         users.clear(by=by)
         vault.delete(vault.OIDC_CLIENT_SECRET, by=by)
-    return mint_token()
 
 
-def mint_token() -> str:
-    """A new one-time token: its hash in the DB, the token in the file for
-    `sbx-admin setup-link`; the old one stops working."""
-    token = secrets.token_urlsafe(32)
-    TOKEN_HASH.set(hashlib.sha256(token.encode()).hexdigest())
-    token_file().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    token_file().write_text(token + "\n")
-    token_file().chmod(0o600)
-    return token
+def handoff(email: str) -> str:
+    """A one-time code that signs email in once more, within two minutes:
+    the onboarding page takes it from the server's IP address to its domain,
+    where the IP address's session cookie does not reach. Its hash is kept,
+    and a new one replaces the last."""
+    code = secrets.token_urlsafe(32)
+    HANDOFF.set({"hash": hashlib.sha256(code.encode()).hexdigest(), "email": email,
+                 "expires": time.time() + HANDOFF_SECONDS})
+    return code
 
 
-def current_token() -> str:
-    """The token in the file while it still works, else "" (`sbx-admin
-    setup-link` prints its link again rather than replacing it)."""
-    try:
-        token = token_file().read_text().strip()
-    except OSError:
+def enter(code: str) -> str:
+    """Whom handoff()'s code signs in, once ("" when it is not the current
+    one, is used or is too old). A wrong guess does not spend the real one."""
+    found = HANDOFF.get()
+    if not found or not code:
         return ""
-    return token if token_ok(token) else ""
+    if time.time() > found["expires"]:
+        HANDOFF.delete()
+        return ""
+    if not hmac.compare_digest(found["hash"], hashlib.sha256(code.encode()).hexdigest()):
+        return ""
+    HANDOFF.delete()
+    return found["email"]
 
 
-def revoke_token():
-    TOKEN_HASH.delete()
-    token_file().unlink(missing_ok=True)
-
-
-def token_ok(token: str) -> bool:
-    if complete() or not token:
-        return False
-    found = TOKEN_HASH.get()
-    return bool(found) and hmac.compare_digest(found, hashlib.sha256(token.encode()).hexdigest())
-
-
-def link(token: str | None = None, address: str = "") -> str:
-    """Where the operator finishes the setup, the web app's setup page: the
+def link(address: str = "") -> str:
+    """Where the owner does the onboarding, the web app's onboarding page: the
     domain's sign-in host once the certificate is there, else the address
-    (its trusted IP certificate once issued, else self-signed). The token
-    goes in the fragment, which the browser keeps to itself."""
+    (its trusted IP certificate once issued, else self-signed). It carries
+    no credential: the page's first step makes the first admin's account."""
     from .connections import domain
     s = settings.current()
     host = f"{s.domain.login_host}.{s.domain.name}" if s.domain.name and domain.certificate_ready() else (
         s.domain.address or ip_address(address) or domain.public_ip())
     if ":" in host:
         host = f"[{host}]"
-    return f"https://{host}/app/setup" + (f"#t={token}" if token else "")
+    return f"https://{host}/onboarding"
 
 
 def onboarding() -> dict:
     """install.sh's last line while the setup is open (install-report.sh):
-    the onboarding link with the current one-time token while it works (a
-    rerun keeps the page the owner has open), else a new one, and whether the browser trusts the certificate it opens on.
-    Shown on the installer's terminal only, never written to a file."""
+    the onboarding page's address, and whether the browser trusts the
+    certificate it opens on."""
     from .connections import domain
     if complete():
         raise RuntimeError("the setup is complete")
-    return {"link": link(current_token() or mint_token()), "trusted": domain.certificate_ready(),
-            "domain": settings.current().domain.name}
+    return {"link": link(), "trusted": domain.certificate_ready(), "domain": settings.current().domain.name}
 
 
-# install.sh waits this long for the IP certificate before it prints the link.
+def open_state(signed_in: bool, address: str = "") -> dict:
+    """What anyone may know before signing in (GET /api/setup/open): whether
+    the onboarding is done, whether someone can sign in yet (else the page's
+    first step makes the first admin), and where the page is now."""
+    from .connections import sign_in
+    return {"complete": complete(), "account": sign_in.ready(), "signed_in": signed_in,
+            "link": link(address), "version": version()}
+
+
+# install.sh waits this long for the IP certificate before it prints the onboarding address.
 IP_CERTIFICATE_SECONDS = 300
 
 
@@ -189,7 +188,7 @@ def _port_free(port: int) -> bool:
 
 
 def first_certificate(timeout: float = IP_CERTIFICATE_SECONDS, *, sleep=None, clock=None) -> tuple[bool, str]:
-    """install.sh, before it prints the onboarding link of a server with no
+    """install.sh, before it prints the onboarding address of a server with no
     address yet: IP access with its trusted certificate, as the setup's
     "IP access" choice makes it (the address in the settings; tls.sh has
     Certbot validate it over HTTP on port 80), so the first visit opens
@@ -299,11 +298,10 @@ def readiness() -> dict:
     return {"ok": all(c.ok for c in checks), "checks": [c.__dict__ for c in checks]}
 
 
-# What finishing says while a step is not done, in the setup page's order:
-# the admin account last (creating it is what finishes the setup there).
-NEEDED = {"address": "Choose the server address first.",
-          "runtime": "Add a sandbox runtime first: sandboxes need one to run on.",
-          "sign_in": "Create the admin account first."}
+# What finishing says while a step is not done, in the onboarding page's order.
+NEEDED = {"sign_in": "Create the admin account first.",
+          "address": "Choose the server address first.",
+          "runtime": "Add a sandbox runtime first: sandboxes need one to run on."}
 
 
 def missing(found: dict) -> str:

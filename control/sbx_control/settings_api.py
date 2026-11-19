@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from . import extensions, reach, settings, setup, variables
 from .auth import api_user, is_admin
-from .setup_api import setup_or_admin
+from .setup_api import admin_or_first
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ def api_me(email: str = Depends(api_user)):
 
 
 @router.get("/api/settings")
-def api_settings(email: str = Depends(setup_or_admin)):
+def api_settings(email: str = Depends(admin_or_first)):
     """The settings, and which of them the runtime can enforce (offered): a
     client offers no other."""
     s = settings.current()
@@ -36,7 +36,7 @@ class SectionIn(BaseModel):
 
 
 @router.put("/api/settings/{section}")
-def api_settings_put(section: str, body: SectionIn, email: str = Depends(setup_or_admin)):
+def api_settings_put(section: str, body: SectionIn, email: str = Depends(admin_or_first)):
     if section not in settings.SECTIONS:
         raise HTTPException(404, f"no section {section}")
     try:

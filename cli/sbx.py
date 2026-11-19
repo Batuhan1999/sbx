@@ -72,31 +72,73 @@ def tls_or_loopback(url):
     return url.scheme == "https" or (url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1"))
 
 
+TOKEN_FILE_ENV = "SBX_TOKEN_FILE"
+SIGN_IN = f"run `sbx login`, or name a file that holds an API token (--token-file FILE, or {TOKEN_FILE_ENV})"
+
+
+def token_path(named=None):
+    """The file an API token is read from instead of the Keychain (a client without one: Linux,
+    automation, a server being set up): the named one (--token-file), else SBX_TOKEN_FILE's; None when
+    neither names one. A token itself is never on the command line."""
+    named = named or os.environ.get(TOKEN_FILE_ENV, "").strip()
+    return pathlib.Path(named).expanduser() if named else None
+
+
+def api_token(file=None):
+    """The API token requests are signed with: the one in file when one is named, else the session's
+    from the Keychain (sbx login); None when not signed in."""
+    if file is None:
+        try:
+            return keychain_get(API_TOKEN_SERVICE) or None
+        except FileNotFoundError:   # no Keychain on this machine (not a Mac): only a token file signs in
+            return None
+    try:
+        token = file.read_text().strip()
+    except OSError as error:
+        raise Refused(f"no API token in {file}: {error.strerror or error}") from None
+    if not token:
+        raise Refused(f"no API token in {file}: it is empty")
+    return token
+
+
+def unverified_context():
+    """--insecure: TLS without checking the certificate, for the self-signed one a server answers with
+    before its own."""
+    import ssl
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 class Client:
-    """sbx-control at base, signed in with the session's API token from the
-    Keychain, or with a first-run setup link's token (Authorization: Setup)
-    over that link's own TLS context (its certificate may be the self-signed
-    one the installer made: --insecure)."""
+    """sbx-control at base, signed in with an API token: the one in the
+    file token_file or SBX_TOKEN_FILE names, else the session's from the
+    Keychain. context: the TLS context (--insecure: unverified_context());
+    insecure_hint: the command takes --insecure, so an unreachable server's
+    message offers it."""
 
-    def __init__(self, base, setup_token=None, context=None):
-        self.base, self.setup_token, self.context = base, setup_token, context
+    def __init__(self, base, token_file=None, context=None, insecure_hint=False):
+        self.base, self.token_file, self.context = base, token_path(token_file), context
+        self.insecure_hint = insecure_hint
 
-    def _authorization(self):
-        if not tls_or_loopback(self.base):   # a token never crosses a network in plain text
+    def _headers(self, signed_in):
+        if not tls_or_loopback(self.base):   # neither a token nor a password crosses a network in plain text
             raise Refused(f"{self.base} is neither https nor this machine: sbx sends no token to it" if self.base
                           else "no server: set SBX_CONTROL to its https address")
-        if self.setup_token:
-            return f"Setup {self.setup_token}"
-        token = keychain_get(API_TOKEN_SERVICE)
-        if not token:
-            raise Refused("not signed in: run `sbx login`")
-        return f"Bearer {token}"
+        headers = {"Content-Type": "application/json"}
+        if signed_in:
+            token = api_token(self.token_file)
+            if not token:
+                raise Refused(f"not signed in: {SIGN_IN}")
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
-    def request(self, method, path, body=None, raw=False, timeout=600):
+    def request(self, method, path, body=None, raw=False, timeout=600, signed_in=True):
+        """signed_in=False sends no Authorization: the one request open to anyone (sbx setup admin)."""
         call = urllib.request.Request(f"{self.base}{path}", method=method,
                                       data=json.dumps(body).encode() if body is not None else None,
-                                      headers={"Authorization": self._authorization(),
-                                               "Content-Type": "application/json"})
+                                      headers=self._headers(signed_in))
         try:
             with urllib.request.urlopen(call, timeout=timeout, context=self.context) as response:
                 server = response.headers.get("X-Sbx-Version")
@@ -115,16 +157,15 @@ class Client:
                 detail = "; ".join([message, *(check_line(c) for c in detail.get("checks") or []
                                                if not c.get("ok") and c.get("detail") != message)])
             if error.code == 401:
-                raise Refused("the setup link was refused: it is used up or replaced (sbx-admin setup-link prints the "
-                              "current one)" if self.setup_token else "session expired: run `sbx login`", 401) from None
+                raise Refused(f"sign-in refused or expired: {SIGN_IN}", 401) from None
             raise Refused(f"sbx-control: {detail}", error.code) from None
 
-    def api(self, method, path, body=None, raw=False, timeout=600, late=None):
+    def api(self, method, path, body=None, raw=False, timeout=600, late=None, signed_in=True):
         """request(), exiting with the refusal or why the server could not be reached (request() itself
         raises OSError, which follow() retries while sbx-control restarts); with late, when the request
         was sent but no answer came (a timeout or a dropped connection): never sent again."""
         try:
-            return self.request(method, path, body, raw, timeout)
+            return self.request(method, path, body, raw, timeout, signed_in)
         except Refused as error:
             sys.exit(str(error))
         except (OSError, http.client.HTTPException) as error:
@@ -132,8 +173,14 @@ class Client:
             if late and not isinstance(error, urllib.error.URLError):
                 sys.exit(late)
             reason = getattr(error, "reason", None) or error
-            hint = "; add --insecure for a self-signed certificate" if self.setup_token and self.context is None else ""
+            hint = "; add --insecure for a self-signed certificate" if self.insecure_hint and self.context is None else ""
             sys.exit(f"cannot reach {self.base}: {reason}{hint}")
+
+
+def client_for(args):
+    """The server's client for a command that takes --token-file and --insecure (sbx setup, templates,
+    secrets)."""
+    return Client(CONTROL, args.token_file, unverified_context() if args.insecure else None, insecure_hint=True)
 
 
 def request(method, path, body=None, raw=False, timeout=600):
@@ -825,7 +872,8 @@ def runtimes_available(args, client):
         for s in r.get("settings") or []:
             if s.get("secret"):
                 now = "set" if s["key"] in (r.get("secrets_set") or []) else "not set"
-                print(f"  --secret {s['key']} ({s['label']}: {now}; the value on stdin)")
+                where = f"; get it at {s['help_url']}" if s.get("help_url") else ""
+                print(f"  --secret {s['key']} ({s['label']}: {now}; the value on stdin{where})")
                 continue
             span = f"; {s['min']}..{s['max']}" if s.get("min") is not None and s.get("max") is not None else ""
             unit = f" {s['unit']}" if s.get("unit") else ""
@@ -1019,19 +1067,9 @@ def duration(text):
     return int(found.group(1)) * DURATION_UNITS[found.group(2)]
 
 
-def secrets_client(args):
-    """The first-run setup link's client when one is given (an agent setting up a fresh server), else the
-    signed-in session's."""
-    if getattr(args, "link_file", None) or os.environ.get("SBX_SETUP_LINK"):
-        return setup_client(args)
-    return Client(CONTROL)
-
-
 def secrets_cmd(args):
-    """sbx secrets request | status | ls | cancel | submit (admins; request, status, ls and cancel also with
-    the setup link)."""
-    # Submitting takes an admin signed in as themselves; the setup link is refused there.
-    client = Client(CONTROL) if args.action == "submit" else secrets_client(args)
+    """sbx secrets request | status | ls | cancel | submit (admins)."""
+    client = client_for(args)
     if args.action == "request":
         return secrets_request(args, client)
     if args.action == "ls":
@@ -1248,7 +1286,7 @@ def wait_rebuilds(report, timeout, interval=10):
                 if row is None:   # nothing starts from it any more
                     continue
                 if row["phase"] == "stuck":
-                    return None, f"the {key} template failed on {kind}: {row.get('error') or 'sbx templates shows it'}"
+                    return None, f"the {key} template failed on {kind}: {row.get('reason') or row.get('error') or 'sbx templates shows it'}"
                 if row["phase"] == "unplanned":
                     return None, f"the {key} template on {kind} can't be planned: sbx templates shows it"
                 left += row["phase"] != "current"
@@ -1280,24 +1318,25 @@ def templates_verdict(found):
     rows = [(kind, t) for kind, listed in found["runtimes"].items() for t in listed]
     for kind, t in rows:
         if t["phase"] == "stuck":
-            return None, f"the {t['key']} template failed on {kind}: {(t.get('error') or 'sbx templates shows it')[-300:]}"
+            why = t.get("reason") or (t.get("error") or "sbx templates shows it")[-300:]
+            return None, f"the {t['key']} template failed on {kind}: {why}"
         if t["phase"] == "unplanned":
             return None, f"the {t['key']} template on {kind} can't be planned: sbx templates shows it"
     left = [(kind, t) for kind, t in rows if t["phase"] != "current"]
     if not left:
         return None, True
     building = [template_step(kind, t) for kind, t in left if t["phase"] == "building"]
-    progress = f"templates: {len(rows) - len(left)} of {len(rows)} built" + (f"; building {'; '.join(building)}"
-                                                                             if building else "; waiting to build")
+    retrying = [f"{t['key']} on {kind} failed ({t.get('reason') or 'sbx templates shows why'}); building it again at "
+                f"{(t.get('retry_at') or '')[11:16]} UTC" for kind, t in left if t["phase"] == "retrying"]
+    progress = f"templates: {len(rows) - len(left)} of {len(rows)} built" + (
+        f"; building {'; '.join(building)}" if building else "; " + "; ".join(retrying) if retrying else "; waiting to build")
     return progress, False
 
 
 def templates_cmd(args):
-    """sbx templates (admins; the setup link while the setup is open): every template sandboxes start from,
-    per runtime, and where its build stands; with --wait, followed until all are built."""
-    signed_in = CONTROL and keychain_get(API_TOKEN_SERVICE)
-    link = args.link_file or (not signed_in and os.environ.get("SBX_SETUP_LINK"))
-    client = setup_client(args) if link else Client(CONTROL)
+    """sbx templates (admins): every template sandboxes start from, per runtime, and where its build
+    stands; with --wait, followed until all are built."""
+    client = client_for(args)
     fetch = lambda: client.request("GET", "/api/templates", timeout=60)   # noqa: E731
     if args.wait:
         found = follow(fetch, templates_verdict, args.timeout, interval=5, retry_statuses=RETRIED,
@@ -1312,55 +1351,17 @@ def templates_cmd(args):
         for t in listed:
             step = f"  step {t.get('step') or 0}/{t['steps']}" if t["phase"] == "building" and t.get("steps") else ""
             print(f"{kind:<10} {t['key']:<32} {t['phase']:<10} {t.get('template') or '-'}{step}"
-                  + (f"  ({t['error'][-200:]})" if t.get("error") else ""))
+                  + (f"  ({t.get('reason') or t['error'][-200:]})" if t.get("error") else "")
+                  + (f"; building again at {t['retry_at'][11:16]} UTC" if t.get("retry_at") else ""))
 
 
-# sbx setup: a fresh installation's first-run setup, without a browser, through the setup link
-
-
-def _setup_link(args):
-    if args.link_file:
-        return pathlib.Path(args.link_file).expanduser().read_text().strip()
-    return os.environ.get("SBX_SETUP_LINK", "").strip()
-
-
-def signed_in_client(args):
-    """For sbx setup finish without --admin: the admin `sbx login` signed in (its API token), so neither a
-    password nor the setup link is needed; None when not signed in, or signed in to another server than
-    the link's."""
-    if args.admin or not CONTROL or not keychain_get(API_TOKEN_SERVICE):
-        return None
-    link = _setup_link(args)
-    if link and urllib.parse.urlsplit(link)[:2] != urllib.parse.urlsplit(CONTROL)[:2]:   # scheme and authority
-        return None
-    return Client(CONTROL)
-
-
-def setup_client(args):
-    """sbx-control as the setup link names it, from SBX_SETUP_LINK or --link-file (never argv: it is a
-    credential, and stdin is the secrets'), signed in with its token."""
-    link = _setup_link(args)
-    if not link:
-        sys.exit("the onboarding link install.sh printed last (or sbx-admin setup-link): in SBX_SETUP_LINK, or a file named "
-                 "by --link-file; never on the command line")
-    url = urllib.parse.urlsplit(link)
-    token = urllib.parse.parse_qs(url.fragment).get("t", [""])[0]
-    # http only to this machine itself (a tunnel): the token never crosses a network in plain text.
-    if not tls_or_loopback(link) or not url.netloc or not token:
-        sys.exit("that is not a setup link: https://HOST/app/setup#t=TOKEN")
-    context = None
-    if args.insecure:
-        import ssl
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-    return Client(f"{url.scheme}://{url.netloc}", token, context)
+# sbx setup: a fresh installation's first-run setup, without a browser. The first step (admin) is open
+# to whoever reaches the server first; every later one is that admin's.
 
 
 def setup_cmd(args):
-    client = (args.step == "finish" and signed_in_client(args)) or setup_client(args)
     {"status": setup_status, "address": setup_address, "runtime": setup_runtime, "admin": setup_admin,
-     "agents": setup_agents, "finish": setup_finish}[args.step](args, client)
+     "agents": setup_agents, "finish": setup_finish}[args.step](args, client_for(args))
 
 
 def _steps(state):
@@ -1375,14 +1376,14 @@ def setup_status(args, client):
     if state.get("complete"):
         print(f"set up: {state['access']['url']} (sign in, then: sbx login)")
         return
-    names = {"address": "address", "runtime": "runtime", "sign_in": "admin", "agents": "agents"}
-    for step in ("address", "sign_in", "runtime", "agents"):
+    names = {"sign_in": "admin", "address": "address", "runtime": "runtime", "agents": "agents"}
+    for step, name in names.items():   # the onboarding page's order
         found = _steps(state).get(step)
         if found:
-            print(f"{'done' if found['done'] else 'todo':<5} {names[step]:<8} {found['summary']}")
-    print(f"server address: {state['host'].get('address') or 'unknown'}; link: {state.get('link', '')}")
+            print(f"{'done' if found['done'] else 'todo':<5} {name:<8} {found['summary']}")
+    print(f"server address: {state['host'].get('address') or 'unknown'}; onboarding page: {state.get('link', '')}")
     print("ready to finish: sbx setup finish" if state.get("can_complete") else
-          "next: sbx setup address | runtime add | admin, then sbx setup finish")
+          "next: sbx setup admin | address | runtime add, then sbx setup finish")
 
 
 def setup_agents(args, client):
@@ -1437,8 +1438,13 @@ def setup_address(args, client):
                    late=lambda state: f"HTTPS is not ready after {args.timeout} s "
                                       f"({state['access'].get('certificate_error') or 'no certificate yet'}); "
                                       "sbx setup status")
-    print(f"address ready: {state['access']['url']}" + (
-        f"; the setup page is now at {state['link']} (the link's token still works)" if args.domain else ""))
+    said = f"address ready: {state['access']['url']}"
+    if args.domain:
+        said += f"; the onboarding page is now at {state['link']}"
+        base = state["link"].removesuffix("/onboarding")
+        if base != CONTROL.rstrip("/"):   # the server answers at its domain from here on
+            said += f" (for the next steps: SBX_CONTROL={base})"
+    print(said)
 
 
 def setup_runtime(args, client):
@@ -1448,30 +1454,44 @@ def setup_runtime(args, client):
 
 
 def setup_admin(args, client):
-    """The first admin's own account: the email, their password on stdin."""
+    """The first admin's own account: the email, their password on stdin. Open to whoever asks while
+    nobody can sign in, so it is sent without a token. With a token file named, the answer's API token
+    for that admin goes into it (never printed), and the next steps sign in with it."""
     password = _read_secret(f"password for {args.email}")
     if len(password) < 8:
         sys.exit("the password comes on stdin: at least 8 characters")
-    client.api("POST", "/api/setup/admin", {"email": args.email, "password": password})
-    print(f"{args.email} has an account and is an admin; next: sbx login as them, then sbx setup "
-          f"finish (or sbx setup finish --admin {args.email}, their password on stdin again)")
+    body = {"email": args.email, "password": password}
+    if not client.token_file:
+        client.api("POST", "/api/setup/admin", body, signed_in=False)
+        print(f"{args.email} has an account and is an admin; next: sbx login as them, then the other steps")
+        return
+    try:   # opened before asking: the token is shown once, so its file has to be writable by then
+        client.token_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(client.token_file, os.O_CREAT | os.O_WRONLY, 0o600)
+    except OSError as error:
+        sys.exit(f"cannot write {client.token_file}: {error.strerror or error}; nothing changed")
+    try:
+        token = client.api("POST", "/api/setup/admin", {**body, "token": True}, signed_in=False).get("token")
+        if not token:
+            sys.exit(f"{args.email} has an account and is an admin, but the server sent no API token: sbx login "
+                     "as them")
+        os.fchmod(fd, 0o600)   # a file that was there keeps its mode otherwise
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{token}\n".encode())
+    finally:
+        os.close(fd)
+    print(f"{args.email} has an account and is an admin; their API token is in {client.token_file} (mode 0600): "
+          f"give the next steps the same --token-file (or {TOKEN_FILE_ENV})")
 
 
 def setup_finish(args, client):
-    """Finish the setup: as the admin `sbx login` signed in (no password), or with the setup link and
-    --admin, as that admin (their own password on stdin)."""
-    body = None
-    if args.admin:
-        password = _read_secret(f"password for {args.admin}")
-        if not password:
-            sys.exit("the admin's password comes on stdin")
-        body = {"email": args.admin, "password": password}
-    state = client.api("POST", "/api/setup/complete", body)
+    """Finish the setup, as the signed-in admin."""
+    state = client.api("POST", "/api/setup/complete")
     if args.json:
         print(json.dumps(state))
         return
-    print(f"set up: {state['access']['url']}; the setup link no longer works. Templates build on their own "
-          "(about 10 minutes the first time; sbx templates). Next, if not signed in yet: sbx login")
+    print(f"set up: {state['access']['url']}. Templates build on their own (about 10 minutes the first time; "
+          "sbx templates). Next, if not signed in yet: sbx login")
 
 
 def ls(args):
@@ -1480,8 +1500,9 @@ def ls(args):
         print(json.dumps(found))
         return
     for info in found:
-        print(f"sbx-{info['name']:<24} {info['branch']:<36} {info.get('readiness', '-'):<15} "
-              f"{info['urls'].get('web', '-')}")
+        # A paused sandbox is not "not ready": it wakes on its next use.
+        shown = "paused" if info.get("state") == "paused" else info.get("readiness", "-")
+        print(f"sbx-{info['name']:<24} {info['branch']:<36} {shown:<15} {info['urls'].get('web', '-')}")
 
 
 def urls_cmd(args):
@@ -1757,7 +1778,42 @@ def scaffold(checkout, repo, prebuild):
     return r
 
 
+def github_line(status):
+    """How the server reaches the repository on GitHub, in words. The fields alone (an install link and
+    "anonymous: True" beside "app") read as if the App were missing."""
+    how = status.get("github") or "-"
+    if how == "app":
+        return "app (the GitHub App is installed on it)"
+    install = status.get("github_app_install")
+    hint = f"; for pushes and the recipe pull request, install the GitHub App on it: {install}" if install else ""
+    return f"{how}{' (public: cloned without credentials)' if status.get('github_anonymous') else ''}{hint}"
+
+
+def repo_search(name, as_json):
+    """The repositories the GitHub App can see whose name has NAME, then public ones on GitHub (GitHub allows a
+    few searches a minute), as the web app's connect page lists them."""
+    q = name.strip().lower()
+    app = [r for r in api("GET", "/api/github/repositories")["repositories"] if q in r["repo"]]
+    seen = {r["repo"] for r in app}
+    public = [r for r in api("GET", f"/api/github/search?q={urllib.parse.quote(name.strip())}")["repositories"]
+              if r["repo"] not in seen]
+    if as_json:
+        print(json.dumps({"app": app, "public": public}))
+        return
+    for r in app:
+        print(f"{r['repo']:<44} GitHub App{', private' if r['private'] else ''}")
+    for r in public:
+        print(f"{r['repo']:<44} public")
+    if not app and not public:
+        sys.exit(f"no repository named like {name.strip()!r}")
+    print("connect one: sbx repo connect --repo OWNER/NAME")
+
+
 def repo_cmd(args):
+    if args.action == "search":
+        if not args.query:
+            sys.exit("usage: sbx repo search NAME")
+        return repo_search(args.query, args.json)
     repo = this_repo(args.repo)
     if args.action == "status":
         found = api("GET", f"/api/repos/{repo}")
@@ -1765,6 +1821,10 @@ def repo_cmd(args):
             print(json.dumps(found))
             return
         for key, value in found.items():
+            if key in ("github_app_install", "github_anonymous"):
+                continue   # said in the github line (--json has them as they are)
+            if key == "github":
+                value = github_line(found)
             if key == "recipe_pr":
                 value = recipe_pr_line(value) + ("" if not value or value["current"] or value.get("problem")
                                                  else "; the recipe changed since")
@@ -2049,6 +2109,14 @@ def detach_cmd(args):
     print(f"{args.key}: {'disabled (declared in .sbx/sbx.yaml; remove it there)' if r.get('disabled') else 'removed'}")
 
 
+def sign_in_flags(p):
+    """--token-file and --insecure, for the commands of a server's first-run setup (client_for)."""
+    p.add_argument("--token-file", metavar="FILE", help="sign in with the API token in this file (sbx setup admin "
+                   f"writes it there), not sbx login's session; else the file {TOKEN_FILE_ENV} names")
+    p.add_argument("--insecure", action="store_true",
+                   help="accept the self-signed certificate the server answers with before its own")
+
+
 def change_flags(p):
     """The flags of a runtime change (sbx runtimes add | set | remove | default, sbx setup runtime add)."""
     p.add_argument("--plan", help="add, set: a plan from sbx runtimes available (hobby, pro), or custom; add "
@@ -2125,17 +2193,14 @@ def parser():
                    help="set, disconnect: wait until the templates the change rebuilds are built; non-zero when one fails")
     p.add_argument("--timeout", type=seconds, default=3600, help="seconds to wait for the rebuilds (default 3600)")
     p.add_argument("--json", action="store_true", help="as the API answers (with --wait: and the templates then)")
-    p = command("templates", templates_cmd, "admins (or the setup link while the setup is open): every template "
-                "sandboxes start from, per runtime, and where its build stands")
+    p = command("templates", templates_cmd, "admins: every template sandboxes start from, per runtime, and "
+                "where its build stands")
     p.add_argument("--wait", action="store_true", help="follow the builds, a line each time their progress changes "
                    "(step k of n), until every template is built; non-zero when one fails or none may build yet")
     p.add_argument("--timeout", type=int, default=1800, help="seconds --wait waits in all (default 1800); non-zero "
                    "past it")
     p.add_argument("--json", action="store_true", help="as the API answers (with --wait: once all are built)")
-    p.add_argument("--link-file", metavar="FILE", help="during the setup: a file holding the setup link (else "
-                   "SBX_SETUP_LINK when not signed in)")
-    p.add_argument("--insecure", action="store_true", help="with the setup link: accept the server's self-signed "
-                   "certificate")
+    sign_in_flags(p)
 
     p = command("secrets", secrets_cmd, "ask the owner for keys: a page on the server they sign in to, where each "
                 "key goes straight to where it is used; and follow the request (admins)",
@@ -2145,9 +2210,7 @@ def parser():
                        "    (SOURCE: runtime:KIND[:KEY], dns:cloudflare, repo:OWNER/NAME:VAR, or another target)\n"
                        "sbx secrets status ID [--wait]       which keys are in (never a value)\n"
                        "sbx secrets ls | cancel ID\n"
-                       "sbx secrets submit ID [TARGET ...]   the keys yourself, one line of stdin each\n"
-                       "With SBX_SETUP_LINK or --link-file, request, status, ls and cancel use the first-run\n"
-                       "setup link; keys are always submitted by a signed-in admin.",
+                       "sbx secrets submit ID [TARGET ...]   the keys yourself, one line of stdin each",
                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("action", choices=["request", "status", "ls", "cancel", "submit"])
     p.add_argument("args", nargs="*", metavar="ARG")
@@ -2160,19 +2223,17 @@ def parser():
     p.add_argument("--help-url", action="append", metavar="TARGET=URL",
                    help="request: where the owner learns to get that key (default: sbx's guide for it)")
     p.add_argument("--json", action="store_true", help="as the API answers")
-    p.add_argument("--link-file", metavar="FILE", help="the first-run setup link's file (else SBX_SETUP_LINK)")
-    p.add_argument("--insecure", action="store_true", help="with the setup link: accept a self-signed certificate")
+    sign_in_flags(p)
 
-    p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, through the onboarding link "
-                "install.sh printed last (in SBX_SETUP_LINK or a --link-file, never argv); secrets on stdin")
+    p = command("setup", setup_cmd, "a fresh server's first-run setup without a browser, on the server SBX_CONTROL "
+                "names: admin makes the first account, then each other step signs in as that admin (sbx login, or "
+                "the API token admin writes to --token-file); secrets on stdin")
     steps = p.add_subparsers(dest="step", required=True, metavar="STEP")
-    link = argparse.ArgumentParser(add_help=False)
-    link.add_argument("--link-file", metavar="FILE", help="a file holding the setup link (else SBX_SETUP_LINK)")
-    link.add_argument("--insecure", action="store_true",
-                      help="accept the self-signed certificate the server answers with before its own")
-    s = steps.add_parser("status", parents=[link], help="each step and what is left")
+    flags = argparse.ArgumentParser(add_help=False)
+    sign_in_flags(flags)
+    s = steps.add_parser("status", parents=[flags], help="each step and what is left")
     s.add_argument("--json", action="store_true")
-    s = steps.add_parser("address", parents=[link], help="IP access, or a domain whose certificate follows; waits "
+    s = steps.add_parser("address", parents=[flags], help="IP access, or a domain whose certificate follows; waits "
                          "until HTTPS works")
     s.add_argument("--ip", nargs="?", const="", metavar="ADDRESS", help="this server's IP (default: the one it sees)")
     s.add_argument("--domain", metavar="D", help="previews at <name>.D, the server at app.D")
@@ -2185,19 +2246,20 @@ def parser():
                    help="the DNS provider's credential (cloudflare_api_token, aws_access_key_id, ...) on stdin")
     s.add_argument("--no-wait", action="store_true")
     s.add_argument("--timeout", type=seconds, default=900, help="seconds to wait for HTTPS (default 900)")
-    s = steps.add_parser("runtime", parents=[link], help="what can run here, and add the first sandbox runtime")
+    s = steps.add_parser("runtime", parents=[flags], help="what can run here, and add the first sandbox runtime")
     s.add_argument("action", choices=["available", "add"])
     s.add_argument("kind", nargs="?")
     change_flags(s)
-    s = steps.add_parser("admin", parents=[link], help="the first admin's own account: the email, their password on stdin")
+    admin_help = ("the first step, open until someone can sign in: the first admin's own account, their password "
+                  f"on stdin; with --token-file (or {TOKEN_FILE_ENV}), that admin's API token is written there for "
+                  "the next steps, never printed")
+    s = steps.add_parser("admin", parents=[flags], help=admin_help, description=admin_help)
     s.add_argument("email")
-    s = steps.add_parser("agents", parents=[link], help="optional: the coding agents whose connections to "
+    s = steps.add_parser("agents", parents=[flags], help="optional: the coding agents whose connections to "
                          "suggest: KIND ... or none (every template has every agent); without one, what is offered")
     s.add_argument("kinds", nargs="*", metavar="KIND")
     s.add_argument("--json", action="store_true")
-    s = steps.add_parser("finish", parents=[link], help="finish: as the admin sbx login signed in, or with the "
-                         "setup link and --admin, as that admin (their own password on stdin)")
-    s.add_argument("--admin", metavar="EMAIL")
+    s = steps.add_parser("finish", parents=[flags], help="finish, once there is an admin, an address and a runtime")
     s.add_argument("--json", action="store_true")
     p = command("down", down, "delete the sandbox and what was provisioned for it, after the recipe's "
                 ".sbx/cleanup")
@@ -2233,14 +2295,16 @@ def parser():
     p.add_argument("--remove", action="store_true", help="take all of it out again")
     p = command("repo", repo_cmd, "status: what the server knows about the repo; connect: set it up for sandboxes "
                 "(an admin adds it to the server; drafts .sbx/ from the checkout); brief: print the setup brief "
-                "an agent follows")
-    p.add_argument("action", choices=["status", "connect", "brief"])
+                "an agent follows; search NAME: the GitHub App's repositories and public ones on GitHub by name "
+                "(admins)")
+    p.add_argument("action", choices=["status", "connect", "brief", "search"])
+    p.add_argument("query", nargs="?", help="search: a name, or part of one")
     p.add_argument("--repo", help=repo_help)
     p.add_argument("--dir", help="connect: the checkout (default: the one you are in)")
     p.add_argument("--agent", nargs="?", const="claude", metavar="COMMAND",
                    help="connect: let this agent CLI (default claude; codex, ...) finish and verify the recipe")
     p.add_argument("--prebuild", action="store_true", help="connect: draft a recipe with a template of its own")
-    p.add_argument("--json", action="store_true", help="status: as the API answers")
+    p.add_argument("--json", action="store_true", help="status, search: as the API answers")
     p = command("recipe", recipe_cmd, "apply: install the checkout's .sbx/ on the server (admins); "
                 "rm: remove what apply installed (admins); pr: propose it as a draft PR through the GitHub App, "
                 "or update the open one (the server opens it on its own once a sandbox comes up healthy from an "

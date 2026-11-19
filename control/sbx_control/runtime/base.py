@@ -253,6 +253,7 @@ class SettingField:
     secret: bool = False
     default: str = ""          # what it is when not set ("": nothing)
     help: str = ""
+    help_url: str = ""         # where to get it (a provider's page for its API key)
     kind: str = "text"         # "text", "int" (a whole number, at least 1), "hostname" or "url" (http or https)
     optional: bool = False     # may stay empty (its default applies)
     limit: str = ""            # the Limits field it sets, for an int limit

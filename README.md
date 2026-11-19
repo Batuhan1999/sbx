@@ -20,16 +20,19 @@ server, and two hosted ones for a server without KVM: E2B Cloud and
 
 1. **Install** on an Ubuntu 24.04 server ([what it needs](#host-requirements)):
    download a release and run `sudo sh install.sh` ([Install](#install)). Its
-   last line is your onboarding link:
-   `==> Open the onboarding: https://IP/app/setup#t=...`
-2. **Open the link** and follow the setup page's four steps
+   last line is the onboarding page's address:
+   `==> Open the onboarding: https://IP/onboarding`
+2. **Open it** and follow the onboarding page's steps
    ([the owner's guide](docs/howto/setup.md)):
+   - **Account**: your email and password; you are the first admin;
    - **Domain**: type a domain and add three DNS records;
    - **Sandboxes**: E2B Embed on this server when it has `/dev/kvm`, else
-     E2B Cloud or Boat with their API key;
-   - **Account**: your email and password; this finishes the setup;
+     E2B Cloud or Boat with their API key (the page links to where to get it);
    - **GitHub**: create sbx's GitHub App, or skip it for now.
-3. **Connect a repository**: pick it, copy the prompt and paste it into your
+
+   The control plane then opens on a summary of the server; choosing what's
+   next there finishes the onboarding.
+3. **Connect a repository**: find it by name, copy the prompt and paste it into your
    coding agent (Claude Code, Codex, Amp or any agent that runs shell
    commands) in a checkout of that repository. The agent writes the `.sbx/`
    recipe, starts one sandbox and gives you its preview link.
@@ -47,8 +50,9 @@ Server: <ssh user@host of an Ubuntu 24.04 machine, sudo without a password>
 Follow docs/agent-install.md from sbx's latest release, step by step:
 1. Check the server (install.sh --check) and install sbx with its normal
    installer; don't change sbx's code.
-2. Give me the onboarding link the installer prints last, as it is, and wait
-   while I do the setup page in my browser (domain, sandboxes, account, GitHub).
+2. Give me the onboarding address the installer prints last, as it is, and
+   wait while I do the onboarding page in my browser (account, domain,
+   sandboxes, GitHub).
 3. Then connect this repository with the server's setup brief: write the .sbx/
    recipe, start one sandbox and give me its preview link.
 Use only the sbx CLI/API and the documented sbx-admin host commands. Never ask
@@ -56,14 +60,14 @@ me for a key or password in the chat: I type those into sbx's own pages.
 Report what worked and what you could not verify.
 ```
 
-The agent can also do the whole setup without a browser; the
+The agent can also do the whole onboarding without a browser; the
 [installation guide](docs/agent-install.md) has that path.
 
 What you and your agent read along the way, if you want the details:
 
-- [Your first-run setup](docs/howto/setup.md): the setup page, step by step.
+- [Your onboarding](docs/howto/setup.md): the onboarding page, step by step.
 - [Installation guide](docs/agent-install.md): installing as an agent, the
-  setup without a browser, and the
+  onboarding without a browser, and the
   [acceptance checklist](docs/agent-install.md#acceptance-checklist) for
   changes to sbx itself.
 - [Service selection](docs/service-selection.md): how to work out what the
@@ -100,10 +104,10 @@ What you and your agent read along the way, if you want the details:
   (`control/sbx_control/runtime`) and pluggable. An installation runs the
   runtimes `/etc/sbx/runtime.env` enables: a fresh install enables E2B Embed
   on this server where it has `/dev/kvm` and the resources, and a provider's
-  runtime (E2B Cloud, Boat) once its API key is given in the setup or later
-  (`sbx runtimes add KIND`). Each sandbox runs on one of them, chosen for the
-  sandbox, for its repository or by the installation's default. Embed, E2B
-  Cloud and Boat are built in; other runtimes plug in as packages.
+  runtime (E2B Cloud, Boat) once its API key is given in the onboarding or
+  later (`sbx runtimes add KIND`). Each sandbox runs on one of them, chosen
+  for the sandbox, for its repository or by the installation's default.
+  Embed, E2B Cloud and Boat are built in; other runtimes plug in as packages.
 - **Secrets** stay out of recipes and templates, in the installation's secret
   store (a private Infisical on the host by default).
 - **Templates** are composed from the platform layer, each enabled extension's
@@ -131,10 +135,12 @@ Running them at E2B Cloud or Boat (any small VPS, no KVM):
 - Ubuntu 24.04, about 2 GiB RAM and 10 GiB free disk: the server runs only
   sbx-control, nginx and the secret store.
 - An E2B API key (E2B's dashboard) or a Boat API key (Boat's dashboard),
-  added in the setup's **Sandboxes** step. Sandboxes then run within the
+  added in the onboarding's **Sandboxes** step. Sandboxes then run within the
   plan's limits (E2B Hobby: one hour before a sandbox pauses, renewed while
   it is used; 8 vCPUs, 8 GiB, 10 GiB disk each; 10 at once). Boat's trial
-  saves no snapshots, and sbx's templates are snapshots: use a paid plan.
+  saves no snapshots, and sbx's templates are snapshots: use a paid plan,
+  whose free saved snapshots fit a few servers' templates
+  ([Boat](docs/howto/boat.md#saved-snapshots)).
 - A domain: the provider's sandboxes call the server back at `app.D` on 443
   (repository bundles, git credentials). They reach managed servers and
   private hosts only through [endpoints](docs/reference.md#endpoints).
@@ -147,7 +153,7 @@ runtimes available` lists each runtime's keys and plans). For every server:
 - Inbound SSH and HTTPS (443), and TCP 80 for the installer's trusted
   certificate for the server's IP (the first visit's; without it the browser
   warns once).
-- A domain `D`, which the setup page asks for: A records for `D` and `*.D`
+- A domain `D`, which the onboarding page asks for: A records for `D` and `*.D`
   pointing at the server, and `_acme-challenge.D NS D.` with inbound UDP and
   TCP 53, because the server answers the certificate's DNS challenge itself.
   Open the same ports in any cloud firewall. Where port 53 can't open, a
@@ -190,25 +196,23 @@ On the server (a coding agent runs the same steps over ssh with the
    with an API key and a domain).
 3. Install: `sudo sh install.sh`. It installs the control service, the
    secret store, and Embed where the server can run it. Without Embed it
-   installs with no sandbox runtime yet; the setup adds one. With inbound
-   TCP 80 open and a public IP, it also gets a trusted certificate for that
-   IP, so the first visit has no browser warning. Its last line is your
-   onboarding link:
+   installs with no sandbox runtime yet; the onboarding adds one. With
+   inbound TCP 80 open and a public IP, it also gets a trusted certificate
+   for that IP, so the first visit has no browser warning. Its last line is
+   the onboarding page's address:
 
    ```text
-   ==> Open the onboarding: https://203.0.113.10/app/setup#t=...
+   ==> Open the onboarding: https://203.0.113.10/onboarding
    ```
 
-   The link holds a one-time token: keep it out of shared logs and chats.
    Without the IP certificate, the line before it says so: your browser warns
    once, until you set a domain.
-4. Open the link and do the rest in the browser
-   ([the setup page](docs/howto/setup.md)): your domain (three DNS records),
-   where sandboxes run (a provider's API key, when Embed can't run here),
-   your account, then GitHub. Templates build as soon as the domain and the
-   runtime are set, while you go on. `sudo sbx-admin setup-link` prints the
-   link again if it is lost; running the installer again during the setup
-   prints the same link.
+4. Open it and do the rest in the browser
+   ([the onboarding page](docs/howto/setup.md)): your account, your domain
+   (three DNS records), where sandboxes run (a provider's API key, when
+   Embed can't run here), then GitHub. Templates build as soon as the domain
+   and the runtime are set, while you go on. Running the installer again
+   during the onboarding prints the address again.
 
 Admins see a newer release in the web app (**Settings → Updates**: what
 changed, then **Update** and its progress), or use `sbx-admin upgrade` on the host
@@ -216,7 +220,8 @@ changed, then **Update** and its progress), or use `sbx-admin upgrade` on the ho
 
 ## Connect a repository
 
-In the web app, **Connect a repository**: pick it, then **Copy prompt** and
+In the web app, **Connect a repository**: search your GitHub repositories (or
+public ones on GitHub, or paste a URL), choose **Connect**, then **Copy prompt** and
 paste it into your coding agent in a checkout of the repository (the same
 text as `sbx repo brief`). The agent chooses services from evidence, writes
 `.sbx/`, starts one sandbox (`sbx up check-a`) and gives you its preview
@@ -229,6 +234,7 @@ server's **CLI & access** page, then:
 ```sh
 sbx login
 sbx ssh-config           # once: ssh, VS Code, Cursor and Zed reach sbx-NAME
+sbx repo search NAME     # the GitHub App's repositories and public ones by name
 sbx repo connect --agent # starts your agent with the server's setup brief
 sbx up my-feature        # prints the preview links when the app is healthy
 sbx logs my-feature
@@ -276,8 +282,8 @@ examples, not a compatibility guarantee.
 
 | Guide | Use it for |
 | --- | --- |
-| [First-run setup](docs/howto/setup.md) | The setup page, step by step, and connecting the first repository. |
-| [Installation guide](docs/agent-install.md) | Installing as a coding agent, the setup without a browser, and the acceptance checklist for changes to sbx. |
+| [Onboarding](docs/howto/setup.md) | The onboarding page, step by step, and connecting the first repository. |
+| [Installation guide](docs/agent-install.md) | Installing as a coding agent, the onboarding without a browser, and the acceptance checklist for changes to sbx. |
 | [Service selection](docs/service-selection.md) | Matching what a repository uses to catalog packages. |
 | [Reference](docs/reference.md) | Recipe format, env and secrets, services, lifecycle, templates, previews, limits. |
 | [Extensions](docs/extensions.md) | Writing an agent connector or a catalog package. |

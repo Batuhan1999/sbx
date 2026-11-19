@@ -32,10 +32,13 @@ export const envNameError = (value: string) =>
 export const keyError = (value: string) =>
   /^[a-z0-9][a-z0-9_-]*$/.test(value) ? undefined : 'Use lowercase letters, digits, underscores or hyphens.'
 
-export const repoError = (value: string) => {
-  const v = value.trim().replace(/\/+$/, '').replace(/\.git$/, '').replace(/^https:\/\/github\.com\//, '')
-  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(v) ? undefined : 'Use owner/repo or a github.com URL.'
+/** owner/repo from owner/repo or a github.com URL, lowercased as sbx names repositories; null when it is neither. */
+export const repoName = (value: string): string | null => {
+  const v = value.trim().replace(/\/+$/, '').replace(/\.git$/, '').replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//, '')
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(v) ? v.toLowerCase() : null
 }
+
+export const repoError = (value: string) => repoName(value) ? undefined : 'Use owner/repo or a github.com URL.'
 
 export const domainError = (value: string) =>
   /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(value.trim()) ? undefined : 'Enter a domain such as sbx.example.com.'

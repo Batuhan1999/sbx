@@ -63,28 +63,26 @@ class SetupTests(Server):
             self.assertEqual(archive.read_bytes(), previous)
             self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ['backup.tgz'])
 
-    def test_ip_setup_signs_in_and_retires_token_without_repo_connections(self):
-        initial = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual([s["step"] for s in initial["steps"]], ["address", "sign_in", "runtime", "agents"])
-        self.assertFalse(initial["can_complete"])
+    def test_ip_setup_signs_in_without_repo_connections(self):
+        self.assertEqual(self.client.get("/api/setup").status_code, 401)   # nothing but the account is open
         self.assertEqual(self.settings.current().sign_in.method, "password")
         self.assertEqual(self.settings.current().domain.acme, "delegated")
-        self.assertEqual(self.choose_ip()["access"]["url"], "https://203.0.113.10")
+        admin = self.create_admin()                                         # the page's first step
+        self.assertEqual([s["step"] for s in admin["steps"]], ["address", "sign_in", "runtime", "agents"])
+        self.assertTrue(admin["signed_in"])
+        self.assertFalse(admin["can_complete"])                             # no address yet
+        chosen = self.choose_ip()
+        self.assertEqual(chosen["access"]["url"], "https://203.0.113.10")
+        self.assertTrue(chosen["can_complete"])   # choosing coding agents is optional
         self.assertIn(80, self.settings.opened_ports(self.settings.current()))
         self.assertNotIn(80, self.settings.current().network.public_ports)
         effects = self.effects()
         self.assertIn(self.settings.HostUnit.TLS, effects)
         self.assertIn(self.settings.HostUnit.HOST_GUARD, effects)
-        admin = self.create_admin()
-        self.assertTrue(admin["signed_in"])
-        self.assertTrue(admin["can_complete"])   # choosing coding agents is optional
-        # The setup header must not hide the session established on the same origin.
-        self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
-        done = self.client.post("/api/setup/complete", headers=self.headers)
+        self.assertTrue(self.client.get("/api/setup").json()["signed_in"])
+        done = self.client.post("/api/setup/complete")
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
-        self.assertFalse(self.setup.token_ok(self.token))
-        self.assertFalse(self.setup.token_file().exists())
         me = self.client.get("/api/me").json()
         self.assertTrue(me["admin"])
         self.assertEqual(me["email"], "operator@example.com")
@@ -92,7 +90,7 @@ class SetupTests(Server):
         self.assertEqual(me["repos"], [])
         from fastapi.testclient import TestClient
         with TestClient(self.app.app, base_url="https://203.0.113.10") as outsider:
-            self.assertEqual(outsider.get("/api/setup", headers=self.headers).status_code, 401)
+            self.assertEqual(outsider.get("/api/setup").status_code, 401)
             self.assertEqual(outsider.get("/api/me").status_code, 401)
         self.client.get("/logout")
         login = self.client.post("/login", content="email=operator%40example.com&password=test-only-password-123",
@@ -101,64 +99,67 @@ class SetupTests(Server):
         self.assertEqual(login.status_code, 303, login.text)
         self.assertEqual(self.client.get("/api/me").json()["email"], "operator@example.com")
 
-    def test_runtime_failure_keeps_progress_and_can_be_retried(self):
+    def test_finishing_does_not_wait_for_the_checks_which_still_say_what_fails(self):
         from sbx_control.connections import Check
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents()
         self.runtime.return_value = [Check("Embed API", False, "Offline", "Restart the runtime.")]
-        response = self.client.post("/api/setup/complete", headers=self.headers)
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(self.setup.complete())
-        self.assertTrue(self.setup.token_ok(self.token))
-        self.assertTrue(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
-        self.runtime.return_value = [Check("Embed API", True)]
-        self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
+        checks = self.client.get("/api/setup/checks").json()
+        self.assertFalse(checks["ok"])
+        self.assertIn("Offline", str(checks["checks"]))
+        self.runtime.reset_mock()
+        self.assertTrue(self.client.post("/api/setup/complete").json()["complete"])
+        self.runtime.assert_not_called()
 
     def test_ip_setup_waits_for_the_active_certificate_and_allows_retry(self):
         self.ip_expiry.return_value = None
+        self.create_admin()
         initial = self.choose_ip()
         self.assertFalse(initial["access"]["certificate_ready"])
         self.assertFalse(initial["steps"][0]["done"])
-        response = self.client.post("/api/setup/admin", headers=self.headers, json={
-            "email": "operator@example.com", "password": "test-only-password-123",
-        })
-        self.assertEqual(response.status_code, 400)
+        self.assertFalse(initial["can_complete"])
+        refused = self.client.post("/api/setup/complete")
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(refused.json()["detail"], "Choose the server address first.")
         with patch("sbx_control.connections.domain.ip_certificate_error", return_value="HTTP validation timed out"):
-            view = self.client.get("/api/setup", headers=self.headers).json()
+            view = self.client.get("/api/setup").json()
             self.assertIn("timed out", view["access"]["certificate_error"])
         self.ip_expiry.return_value = datetime.now(timezone.utc) + timedelta(hours=160)
         self.assertTrue(self.choose_ip()["access"]["certificate_ready"])
         from sbx_control import connections
         self.assertIn(f"valid until {self.ip_expiry.return_value:%Y-%m-%d}", connections.get("domain").status().summary)
-        self.create_admin()
         self.choose_agents()
-        self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
+        self.assertTrue(self.client.post("/api/setup/complete").json()["complete"])
 
-    def test_the_onboarding_link_opens_the_setup_page_and_a_rerun_keeps_it(self):
+    def test_the_onboarding_address_is_the_page_s_and_carries_no_credential(self):
         self.ip_expiry.return_value = None
         found = self.setup.onboarding()
-        self.assertTrue(found["link"].startswith("https://203.0.113.10/app/setup#t="))
-        token = found["link"].split("#t=", 1)[1]
-        self.assertTrue(self.setup.token_ok(token))
-        self.assertEqual(token, self.token)                  # the page the owner has open keeps working
-        self.assertEqual(self.setup.onboarding()["link"], found["link"])   # an installer rerun prints the same
-        self.setup.revoke_token()
-        fresh = self.setup.onboarding()["link"].split("#t=", 1)[1]   # none left: a new one
-        self.assertTrue(self.setup.token_ok(fresh))
-        token = fresh
-        self.assertEqual((found["trusted"], found["domain"]), (False, ""))
-        self.headers = {"Authorization": f"Setup {token}"}
+        self.assertEqual(found, {"link": "https://203.0.113.10/onboarding", "trusted": False, "domain": ""})
+        self.assertEqual(self.setup.onboarding(), found)   # an installer rerun prints the same
+        self.assertEqual(self.client.get("/api/setup/open").json()["link"], found["link"])
         self.ip_expiry.return_value = datetime.now(timezone.utc) + timedelta(hours=160)
-        self.choose_ip()
-        found = self.setup.onboarding()
-        self.assertTrue(found["trusted"])
-        self.headers = {"Authorization": f"Setup {found['link'].split('#t=', 1)[1]}"}
         self.create_admin()
+        self.choose_ip()
+        self.assertEqual(self.setup.onboarding(), {**found, "trusted": True})   # the same page once someone signed in
         self.choose_agents()
-        self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
-        with self.assertRaises(RuntimeError):   # a set-up server prints no link
+        self.assertTrue(self.client.post("/api/setup/complete").json()["complete"])
+        with self.assertRaises(RuntimeError):   # a set-up server prints no onboarding address
             self.setup.onboarding()
+
+    def test_the_installer_reads_the_onboarding_address_as_shell_lines(self):
+        import contextlib
+        import io
+        def said():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = self.setup.main(["onboarding"])   # install-report.sh evals what this prints
+            return code, out.getvalue().splitlines()
+        self.assertEqual(said(), (0, ["link=https://203.0.113.10/onboarding", "trusted=", "domain=''"]))
+        self.settings.update("domain", {"address": "203.0.113.10"}, by="test")   # its IP certificate is there
+        self.assertEqual(said(), (0, ["link=https://203.0.113.10/onboarding", "trusted=1", "domain=''"]))
+        self.setup.mark_complete("test")
+        self.assertEqual(said(), (3, []))
 
     def first_certificate(self, *, issued=True, error="", public=True, port_free=True):
         """setup.first_certificate with the host's tls effect played by its sleep: it takes the request
@@ -178,9 +179,9 @@ class SetupTests(Server):
         self.assertTrue(trusted, said)
         self.assertEqual(self.settings.current().domain.address, "203.0.113.10")
         self.assertIn(80, self.settings.opened_ports(self.settings.current()))
-        self.assertTrue(self.setup.onboarding()["link"].startswith("https://203.0.113.10/app/setup#t="))
-        view = self.client.get("/api/setup", headers={"Authorization": f"Setup {self.setup.mint_token()}"}).json()
-        self.assertTrue(view["steps"][0]["done"])   # the page opens on the account step
+        self.assertEqual(self.setup.onboarding(), {"link": "https://203.0.113.10/onboarding", "trusted": True,
+                                                   "domain": ""})
+        self.assertTrue(self.create_admin()["steps"][0]["done"])   # the address is there before the account
 
     def test_without_the_certificate_the_setup_keeps_the_address_step_and_certbots_error(self):
         trusted, said = self.first_certificate(issued=False, error="Certbot failed\nTimeout during connect")
@@ -220,16 +221,14 @@ class SetupTests(Server):
     def test_validation_and_existing_admin_cannot_be_overwritten(self):
         from sbx_control import users
         body = {"email": "operator@example.com", "password": "test-only-password-123"}
-        self.assertEqual(self.client.post("/api/setup/admin", headers=self.headers, json=body).status_code, 400)
-        self.assertEqual(self.client.post("/api/setup/address", headers=self.headers,
-                                          json={"address": "example.com/path"}).status_code, 400)
-        self.choose_ip()
         for invalid in ({**body, "email": "invalid"}, {**body, "password": "short"}):
-            response = self.client.post("/api/setup/admin", headers=self.headers, json=invalid)
+            response = self.client.post("/api/setup/admin", json=invalid)
             self.assertEqual(response.status_code, 400)
             self.assertFalse(users.any_password())
+        self.assertEqual(self.client.get("/api/setup").status_code, 401)   # a refused account signs nobody in
         self.create_admin()
-        self.assertEqual(self.client.post("/api/setup/admin", headers=self.headers, json=body).status_code, 409)
+        self.assertEqual(self.client.post("/api/setup/address", json={"address": "example.com/path"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/setup/admin", json=body).status_code, 409)
         self.assertEqual(self.settings.current().access.admins, ("operator@example.com",))
 
     def password_login(self, email):
@@ -242,10 +241,10 @@ class SetupTests(Server):
         from sbx_control import platform
         # The session middleware reads the key once per process; this test's installation has its own.
         self.app.app.middleware_stack = None
-        self.choose_ip()
         self.create_admin()
+        self.choose_ip()
         self.choose_agents()
-        done = self.client.post("/api/setup/complete", headers=self.headers)
+        done = self.client.post("/api/setup/complete")
         self.assertEqual(done.status_code, 200, done.text)
         self.assertTrue(done.json()["complete"])
         self.assertEqual(self.password_login("operator%40example.com"), 200)
@@ -263,13 +262,14 @@ class SetupTests(Server):
     def test_admins_the_installer_named_get_a_login_through_a_link(self):
         from sbx_control import users
         self.settings.update("access", {"admins": ["named@example.com"]}, by="install.sh")
-        self.choose_ip()
-        response = self.client.post("/api/setup/admin", headers=self.headers, json={
+        self.assertFalse(self.client.get("/api/setup/open").json()["account"])   # named, but nobody can sign in
+        response = self.client.post("/api/setup/admin", json={
             "email": "Operator@example.com", "password": "test-only-password-123"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.settings.current().access.admins, ("named@example.com", "operator@example.com"))
+        self.choose_ip()
         self.choose_agents()
-        self.assertTrue(self.client.post("/api/setup/complete", headers=self.headers).json()["complete"])
+        self.assertTrue(self.client.post("/api/setup/complete").json()["complete"])
         self.assertEqual(self.password_login("named%40example.com"), 401)  # no password of their own yet
         users.use_link(users.mint_link("named@example.com", by="test"), "test-only-password-123")
         self.assertEqual(self.password_login("named%40example.com"), 200)
@@ -347,10 +347,9 @@ class SetupTests(Server):
         self.assertIsNotNone(users.check_password("operator@example.com", generated))
         installed = self.settings.current().sign_in
         self.assertEqual(installed.method, "password")
-        self.headers = {"Authorization": f"Setup {self.setup.reset(sign_in=True)}"}
+        self.setup.reset(sign_in=True)
         self.assertFalse(users.any_password())
         self.settings.update("access", {"admins": ["named@example.com"]}, by="install.sh")
-        self.choose_ip()
         self.create_admin()
         self.assertEqual(self.settings.current().sign_in, installed)
 
@@ -498,23 +497,21 @@ class SetupTests(Server):
 
     def test_admin_password_boundary_is_eight_characters(self):
         from sbx_control import users
-        self.choose_ip()
         for password in ("1234567", "x" * 1025):
-            response = self.client.post("/api/setup/admin", headers=self.headers,
+            response = self.client.post("/api/setup/admin",
                                         json={"email": "operator@example.com", "password": password})
             self.assertEqual(response.status_code, 400)
             self.assertFalse(users.any_password())
-        response = self.client.post("/api/setup/admin", headers=self.headers,
+        response = self.client.post("/api/setup/admin",
                                     json={"email": "operator@example.com", "password": "12345678"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["signed_in"])
         self.assertNotIn("12345678", response.text)
 
     def test_react_password_sign_in_preserves_destination_and_errors(self):
-        self.choose_ip()
         self.create_admin()
         self.client.get("/logout")
-        response = self.client.get("/login?next=/app/setup", follow_redirects=False)
+        response = self.client.get("/login?next=/onboarding", follow_redirects=False)
         self.assertNotIn("location", response.headers)   # the web app's sign-in page, at /login itself
         self.assertIn("content-security-policy", response.headers)
         headers = {"content-type": "application/x-www-form-urlencoded", "accept": "application/json",
@@ -523,15 +520,15 @@ class SetupTests(Server):
                                  content="email=operator%40example.com&password=wrong")
         self.assertEqual(wrong.status_code, 401)
         self.assertIn("incorrect", wrong.json()["detail"])
-        self.assertFalse(self.client.get("/api/setup", headers=self.headers).json()["signed_in"])
+        self.assertFalse(self.client.get("/api/setup/open").json()["signed_in"])
+        self.assertEqual(self.client.get("/api/setup").status_code, 401)
         correct = self.client.post("/login", headers=headers,
                                    content="email=operator%40example.com&password=test-only-password-123")
         self.assertEqual(correct.status_code, 200)
-        self.assertEqual(correct.json(), {"next": "/app/setup"})
-        self.assertEqual(self.client.get("/api/setup", headers=self.headers).json()["email"], "operator@example.com")
+        self.assertEqual(correct.json(), {"next": "/onboarding"})   # back to the page, to go on where it was
+        self.assertEqual(self.client.get("/api/setup").json()["email"], "operator@example.com")
 
     def test_sign_in_rejects_protocol_relative_redirect(self):
-        self.choose_ip()
         self.create_admin()
         self.client.get("/logout")
         self.client.get("/login?next=//example.org")
@@ -541,14 +538,17 @@ class SetupTests(Server):
         self.assertEqual(response.json(), {"next": "/"})
 
     def test_domain_is_not_ready_until_certificate_exists(self):
+        self.create_admin()   # the account comes first, whatever the address's state
         self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
         self.assertFalse(self.setup.address_ready())
-        self.assertEqual(self.client.post("/api/setup/admin", headers=self.headers,
-                                          json={"email": "operator@example.com", "password": "test-only-password-123"}).status_code, 400)
+        view = self.client.get("/api/setup").json()
+        self.assertEqual(view["link"], "https://203.0.113.10/onboarding")   # at the IP address until then
+        refused = self.client.post("/api/setup/complete")
+        self.assertEqual((refused.status_code, refused.json()["detail"]), (400, "Choose the server address first."))
         self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
         self.assertTrue(self.setup.address_ready())
-        view = self.client.get("/api/setup", headers=self.headers).json()
-        self.assertEqual(view["link"], "https://app.sbx.example.com/app/setup")
+        view = self.client.get("/api/setup").json()
+        self.assertEqual(view["link"], "https://app.sbx.example.com/onboarding")
         self.assertEqual(view["access"]["needs_ports"], [80, 53])  # delegated DNS answers here, on 53
         self.assertEqual(view["host"]["address"], "203.0.113.10")
         self.expiry.return_value = datetime.now(timezone.utc) - timedelta(days=1)
@@ -568,11 +568,288 @@ class SetupTests(Server):
         self.assertFalse(self.vault.facts(self.vault.CLOUDFLARE_API_TOKEN).set)
         self.assertEqual(self.settings.current().domain.name, "")
 
-    def test_setup_requires_token_and_foreign_origin_cannot_write(self):
-        self.assertEqual(self.client.get("/api/setup").status_code, 401)
-        self.assertEqual(self.client.post("/api/setup/address", json={"address": "203.0.113.10"}).status_code, 401)
+    def test_nothing_but_the_first_account_is_open_before_signing_in(self):
+        found = self.client.get("/api/setup/open")
+        self.assertEqual(found.status_code, 200, found.text)
+        self.assertEqual(found.json(), {"complete": False, "account": False, "signed_in": False,
+                                        "link": "https://203.0.113.10/onboarding", "version": self.setup.version()})
+        for method, url, body in (("GET", "/api/setup", None), ("GET", "/api/setup/checks", None),
+                                  ("POST", "/api/setup/address", {"address": "203.0.113.10"}),
+                                  ("PUT", "/api/setup/agents", {"agents": []}),
+                                  ("POST", "/api/setup/complete", None), ("POST", "/api/setup/handoff", None),
+                                  ("GET", "/api/connections", None),
+                                  ("PUT", "/api/connections/domain", {"values": {"name": "sbx.example.com"}}),
+                                  ("GET", "/api/runtimes", None), ("GET", "/api/runtimes/available", None),
+                                  ("POST", "/api/runtimes", {"kind": "e2b-cloud", "values": {}}),
+                                  ("GET", "/api/settings", None), ("GET", "/api/templates", None),
+                                  ("GET", "/api/secret-requests", None)):
+            with self.subTest(url=f"{method} {url}"):
+                refused = self.client.request(method, url, json=body)
+                self.assertEqual(refused.status_code, 401, refused.text)
+        self.assertIn("the onboarding page's first step", self.client.get("/api/setup").json()["detail"])
+        # The retired credential is nothing: not a way in, and no exemption from the cross-origin rule.
+        retired = {"Authorization": "Setup anything"}
+        self.assertEqual(self.client.get("/api/setup", headers=retired).status_code, 401)
         self.assertEqual(self.client.post("/api/setup/address", json={"address": "203.0.113.10"},
-                                          headers={"Origin": "https://unrelated.example"}).status_code, 403)
+                                          headers={**retired, "Origin": "https://unrelated.example"}).status_code, 403)
+        self.assertEqual(self.settings.current().domain.address, "")
+
+    def test_the_first_account_needs_no_credential_and_no_address_and_is_made_once(self):
+        from fastapi.testclient import TestClient
+        self.assertEqual(self.settings.current().domain.address, "")
+        self.assertFalse(self.client.cookies)
+        made = self.client.post("/api/setup/admin", json={"email": "Operator@example.com",
+                                                          "password": "test-only-password-123"})
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertNotIn("token", made.json())           # only a client without a browser asks for one
+        self.assertEqual((made.json()["signed_in"], made.json()["email"]), (True, "operator@example.com"))
+        self.assertEqual(self.settings.current().access.admins, ("operator@example.com",))
+        self.assertEqual(self.client.get("/api/setup").json()["email"], "operator@example.com")   # the browser is signed in
+        opened = self.client.get("/api/setup/open").json()
+        self.assertEqual((opened["account"], opened["signed_in"], opened["complete"]), (True, True, False))
+        with TestClient(self.app.app, base_url="https://203.0.113.10") as other:
+            opened = other.get("/api/setup/open").json()
+            self.assertEqual((opened["account"], opened["signed_in"]), (True, False))
+            again = other.post("/api/setup/admin", json={"email": "other@example.com",
+                                                         "password": "test-only-password-456"})
+            self.assertEqual(again.status_code, 409)
+            self.assertIn("already has an admin", again.json()["detail"])
+            self.assertEqual(other.get("/api/setup").status_code, 401)
+        self.assertEqual(self.settings.current().access.admins, ("operator@example.com",))
+
+    def test_a_client_without_a_browser_gets_an_api_token_with_the_account(self):
+        from fastapi.testclient import TestClient
+        from sbx_control import auth
+        made = self.client.post("/api/setup/admin", json={"email": "operator@example.com",
+                                                          "password": "test-only-password-123", "token": True})
+        self.assertEqual(made.status_code, 200, made.text)
+        token = made.json()["token"]
+        self.assertEqual(auth.token_email(token), "operator@example.com")
+        bearer = {"Authorization": f"Bearer {token}"}
+        with TestClient(self.app.app, base_url="https://203.0.113.10") as agent:   # no cookie: the token alone
+            self.assertEqual(agent.get("/api/setup", headers=bearer).json()["email"], "operator@example.com")
+            chosen = agent.post("/api/setup/address", headers=bearer, json={"address": "203.0.113.10"})
+            self.assertEqual(chosen.status_code, 200, chosen.text)
+            done = agent.post("/api/setup/complete", headers=bearer)
+            self.assertEqual(done.status_code, 200, done.text)
+            self.assertTrue(done.json()["complete"])
+            self.assertEqual(agent.get("/api/setup").status_code, 401)
+
+    def test_finishing_takes_no_body_and_names_the_step_that_is_missing(self):
+        from fastapi.testclient import TestClient
+        anonymous = TestClient(self.app.app, base_url="https://203.0.113.10")
+        self.addCleanup(anonymous.close)
+        self.assertEqual(anonymous.post("/api/setup/complete").status_code, 401)
+        self.create_admin()
+        with_password = anonymous.post("/api/setup/complete", json={
+            "email": "operator@example.com", "password": "test-only-password-123"})
+        self.assertEqual(with_password.status_code, 401)   # a password in the body signs nobody in
+        refused = self.client.post("/api/setup/complete")
+        self.assertEqual((refused.status_code, refused.json()["detail"]), (400, "Choose the server address first."))
+        self.assertFalse(self.setup.complete())
+        self.choose_ip()
+        with patch("sbx_control.runtime.enabled", return_value=[]):
+            refused = self.client.post("/api/setup/complete")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("Add a sandbox runtime first", refused.json()["detail"])
+        done = self.client.post("/api/setup/complete")   # no body: whoever is signed in finishes
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual((done.json()["complete"], done.json()["email"]), (True, "operator@example.com"))
+        self.assertEqual(self.setup.missing({"steps": [{"step": s, "done": False} for s in
+                                                       ("address", "sign_in", "runtime", "agents")]}),
+                         "Create the admin account first.")   # the page's order: the account first
+
+    def domain_client(self):
+        """A browser at the server's domain, after sbx-control restarted for it (the session cookie then covers
+        the domain: auth.Sessions)."""
+        from fastapi.testclient import TestClient
+        self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
+        self.app.app.middleware_stack = None
+        client = TestClient(self.app.app, base_url="https://app.sbx.example.com")
+        self.addCleanup(client.close)
+        return client
+
+    def handoff(self) -> str:
+        response = self.client.post("/api/setup/handoff", headers={"Origin": "https://203.0.113.10"})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["code"]
+
+    def enter(self, client, code):
+        return client.post("/api/setup/enter", json={"code": code}, headers={"Origin": "https://app.sbx.example.com"})
+
+    def test_the_move_to_the_domain_carries_the_sign_in_over_once(self):
+        self.create_admin()                      # at the IP address
+        there = self.domain_client()
+        self.assertEqual(there.get("/api/setup").status_code, 401)   # the IP address's cookie does not reach it
+        self.assertEqual(there.post("/api/setup/handoff").status_code, 401)   # nor does anyone get a code unasked
+        code = self.handoff()
+        self.assertNotIn(code, str(self.setup.HANDOFF.get()))                  # kept as a hash
+        self.assertEqual(self.enter(there, "not-the-code").status_code, 403)   # a guess, which leaves the code be
+        entered = self.enter(there, code)
+        self.assertEqual(entered.status_code, 200, entered.text)
+        self.assertEqual((entered.json()["signed_in"], entered.json()["complete"]), (True, False))
+        self.assertEqual(there.get("/api/setup").json()["email"], "operator@example.com")
+        again = self.domain_client()
+        refused = self.enter(again, code)        # used
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("expired", refused.json()["detail"])
+        self.assertEqual(again.get("/api/setup").status_code, 401)
+
+    def test_a_newer_handoff_replaces_the_last_and_an_old_one_is_refused(self):
+        from types import SimpleNamespace
+        import time
+        self.create_admin()
+        there = self.domain_client()
+        first, second = self.handoff(), self.handoff()
+        self.assertEqual(self.enter(there, first).status_code, 403)    # replaced
+        self.assertEqual(there.get("/api/setup").status_code, 401)
+        self.assertEqual(self.enter(there, second).status_code, 200)
+        there.get("/logout")
+        old = self.handoff()
+        later = time.time() + self.setup.HANDOFF_SECONDS + 1
+        with patch.object(self.setup, "time", SimpleNamespace(time=lambda: later)):
+            self.assertEqual(self.enter(there, old).status_code, 403)
+        self.assertEqual(self.enter(there, old).status_code, 403)      # and it is gone, not waiting for the clock
+        self.assertEqual(there.get("/api/setup").status_code, 401)
+        just = time.time() + self.setup.HANDOFF_SECONDS - 1
+        fresh = self.handoff()
+        with patch.object(self.setup, "time", SimpleNamespace(time=lambda: just)):
+            self.assertEqual(self.enter(there, fresh).status_code, 200)
+
+    def test_a_handoff_signs_in_only_someone_who_is_still_an_admin(self):
+        self.create_admin()
+        there = self.domain_client()
+        code = self.handoff()
+        self.settings.update("access", {"admins": ["other@example.com"]}, by="test")
+        self.assertEqual(self.enter(there, code).status_code, 403)
+        self.assertEqual(there.get("/api/me").status_code, 401)
+
+    def test_finishing_ends_the_handoff(self):
+        self.create_admin()
+        self.choose_ip()
+        code = self.handoff()
+        self.assertEqual(self.client.post("/api/setup/complete").status_code, 200)
+        self.assertEqual(self.setup.enter(code), "")
+
+    def page(self):
+        """The web app's page, as a release has it (this checkout may not have built it)."""
+        from sbx_control import spa
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (folder / "index.html").write_text("<!doctype html><html><head><title>sbx</title></head><body></body></html>")
+        self.enterContext(patch.object(spa, "DIST", folder))
+
+    def test_the_server_opens_on_the_onboarding_until_it_is_done_and_never_after(self):
+        self.page()
+        for path in ("/", "/app", "/app/"):
+            with self.subTest(path=path):
+                response = self.client.get(path, follow_redirects=False)
+                self.assertEqual((response.status_code, response.headers["location"]), (307, "/onboarding"))
+        page = self.client.get("/onboarding", follow_redirects=False)   # open to anyone: its first step is the account
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("<title>sbx</title>", page.text)
+        old = self.client.get("/setup", follow_redirects=False)         # the retired link's path
+        self.assertEqual(old.status_code, 503)
+        self.assertNotIn("location", old.headers)
+        self.assertIn("Finish at /onboarding", old.text)
+        gated = self.client.get("/api/sandboxes")                         # nothing but the onboarding
+        self.assertEqual((gated.status_code, gated.json()), (503, {"detail": "This installation is being set up. Finish at /onboarding."}))
+        self.repo_admin()
+        for path, target in (("/onboarding", "/app/repos"), ("/", "/app/repos")):
+            with self.subTest(after=path):
+                response = self.client.get(path, follow_redirects=False)
+                self.assertEqual((response.status_code, response.headers["location"]), (307, target))
+        old = self.client.get("/setup", follow_redirects=False)
+        self.assertEqual(old.status_code, 404)
+        self.assertNotIn("location", old.headers)
+
+    def test_the_onboarding_page_may_ask_its_new_address_whether_it_answers(self):
+        # The page loads at the IP address before any domain is chosen, and its policy is fixed then: it must
+        # already allow asking the address it will move to. Once the onboarding is complete, only this server.
+        self.page()
+        policy = self.client.get("/onboarding").headers["content-security-policy"]
+        self.assertIn("connect-src 'self' https:;", policy)
+        self.assertIn("script-src 'self';", policy)
+        from sbx_control import setup
+        setup.mark_complete("test")
+        policy = self.client.get("/app/repos").headers["content-security-policy"]
+        self.assertIn("connect-src 'self';", policy)
+
+    def test_the_page_still_at_the_ip_address_writes_there_until_the_onboarding_is_done(self):
+        self.create_admin()
+        ip, foreign = {"Origin": "https://203.0.113.10"}, {"Origin": "https://preview.elsewhere.example"}
+        self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
+        self.expiry.return_value = datetime.now(timezone.utc) + timedelta(days=90)
+
+        def write(headers):
+            return self.client.put("/api/setup/agents", json={"agents": []}, headers=headers)
+        passed = write(ip)                       # the web app's own origin is the domain's now
+        self.assertEqual(passed.status_code, 200, passed.text)
+        self.assertEqual(self.client.post("/api/setup/handoff", headers=ip).status_code, 200)
+        refused = write(foreign)
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("requests from https://preview.elsewhere.example are not accepted here", refused.text)
+        self.assertEqual(write({"Origin": "https://app.sbx.example.com"}).status_code, 200)   # the web app's own
+        done = self.client.post("/api/setup/complete", headers=ip)
+        self.assertEqual(done.status_code, 200, done.text)
+        refused = write(ip)                      # set up: the web app's own origin only
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("requests from https://203.0.113.10 are not accepted here", refused.text)
+
+    def test_a_host_name_is_never_the_ip_address_s_exception(self):
+        from fastapi.testclient import TestClient
+        self.create_admin()
+        self.settings.update("domain", {"name": "sbx.example.com", "address": "203.0.113.10"}, by="test")
+        with TestClient(self.app.app, base_url="https://preview.sbx.example.com") as preview:
+            refused = preview.put("/api/setup/agents", json={"agents": []},
+                                  headers={"Origin": "https://preview.sbx.example.com"})
+        self.assertEqual(refused.status_code, 403)
+
+    def admin(self, *argv):
+        import contextlib
+        import io
+        from sbx_control import admin
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = admin.main(list(argv))
+        return code, out.getvalue().strip()
+
+    def test_setup_reset_opens_the_onboarding_again_and_prints_its_address(self):
+        from sbx_control import users
+        self.repo_admin()
+        self.assertEqual(self.admin("setup-reset"), (0, "https://203.0.113.10/onboarding"))
+        self.assertFalse(self.setup.complete())
+        self.assertEqual(self.client.get("/", follow_redirects=False).headers["location"], "/onboarding")
+        opened = self.client.get("/api/setup/open").json()
+        self.assertEqual((opened["account"], opened["signed_in"]), (True, True))   # the account stays
+        self.assertEqual(self.client.post("/api/setup/admin", json={
+            "email": "other@example.com", "password": "test-only-password-456"}).status_code, 409)
+        self.assertEqual(self.admin("setup-reset", "--sign-in"), (0, "https://203.0.113.10/onboarding"))
+        self.assertFalse(users.any_password())
+        self.assertFalse(self.client.get("/api/setup/open").json()["account"])   # the first step is open again
+        self.create_admin()
+
+    def test_setup_link_is_no_longer_a_command(self):
+        import contextlib
+        import io
+        from sbx_control import admin
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said), self.assertRaises(SystemExit) as stopped:
+            admin.main(["setup-link"])
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("invalid choice: 'setup-link'", said.getvalue())
+        self.assertFalse((self.paths.etc() / "setup-token").exists())
+        for gone in ("mint_token", "current_token", "revoke_token", "token_ok", "token_file", "TOKEN_HASH"):
+            self.assertFalse(hasattr(self.setup, gone), gone)
+
+    def test_a_configured_installation_counts_as_set_up(self):
+        self.assertFalse(self.setup.infer_complete())          # nothing yet
+        self.create_admin()
+        self.assertFalse(self.setup.infer_complete())          # an account, no address
+        self.choose_ip()
+        self.assertTrue(self.setup.configured())
+        self.assertTrue(self.setup.infer_complete())           # an address, a way to sign in, a runtime
+        self.assertTrue(self.setup.complete())
+        self.assertFalse(self.setup.infer_complete())          # marked once
 
 
 class SettingsTests(Server):

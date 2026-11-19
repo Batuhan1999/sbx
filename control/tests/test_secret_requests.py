@@ -343,27 +343,35 @@ class Keys(TwoRuntimes, Server):
 
 
 class DuringSetup(Server):
-    """The first-run setup's agent asks with the setup link; the page waits for the admin's sign-in."""
+    """The onboarding's agent asks as the admin, with an API token; the keys page waits for the admin's sign-in."""
 
-    def test_the_setup_link_asks_and_follows_but_never_submits(self):
+    def test_an_agent_asks_and_follows_with_the_admin_s_token_and_the_owner_submits_signed_in(self):
+        from fastapi.testclient import TestClient
+        asking = {"items": [{"target": "dns:cloudflare", "label": "DNS token"}]}
+        self.assertEqual(self.client.post("/api/secret-requests", json=asking).status_code, 401)   # nobody yet
+        token = self.client.post("/api/setup/admin", json={
+            "email": "operator@example.com", "password": "test-only-password-123", "token": True}).json()["token"]
         self.choose_ip()
-        asked = self.client.post("/api/secret-requests", headers=self.headers,
-                                 json={"items": [{"target": "dns:cloudflare", "label": "DNS token"}]})
+        agent = TestClient(self.app.app, base_url="https://203.0.113.10",   # no browser: the API token alone
+                           headers={"Authorization": f"Bearer {token}"})
+        self.addCleanup(agent.close)
+        asked = agent.post("/api/secret-requests", json=asking)
         self.assertEqual(asked.status_code, 201, asked.text)
         found = asked.json()
-        self.assertEqual(found["created_by"], "setup")
+        self.assertEqual(found["created_by"], "operator@example.com")
         self.assertTrue(found["url"].startswith("https://203.0.113.10/keys/"))
-        self.assertEqual(self.client.get(f"/keys/{found['id']}", follow_redirects=False).status_code, 307)
-        refused = self.client.post(f"/api/secret-requests/{found['id']}/submit", headers=self.headers,
-                                   json={"values": {"dns:cloudflare": DNS_TOKEN}})
-        self.assertEqual(refused.status_code, 401, refused.text)
-        self.create_admin()   # signed in on self.client now
+        with TestClient(self.app.app, base_url="https://203.0.113.10") as stranger:   # the link alone opens nothing
+            self.assertEqual(stranger.get(f"/keys/{found['id']}", follow_redirects=False).status_code, 307)
+            refused = stranger.post(f"/api/secret-requests/{found['id']}/submit",
+                                    json={"values": {"dns:cloudflare": DNS_TOKEN}})
+            self.assertEqual(refused.status_code, 401, refused.text)
+            self.assertEqual(stranger.get(f"/api/secret-requests/{found['id']}").status_code, 401)
         with patch("sbx_control.secret_requests.verify_cloudflare", return_value=""):
-            done = self.client.post(f"/api/secret-requests/{found['id']}/submit",
+            done = self.client.post(f"/api/secret-requests/{found['id']}/submit",   # the owner, signed in
                                     json={"values": {"dns:cloudflare": DNS_TOKEN}})
         self.assertEqual(done.status_code, 200, done.text)
         self.assertEqual(done.json()["request"]["state"], "completed")
-        followed = self.client.get(f"/api/secret-requests/{found['id']}", headers=self.headers).json()
+        followed = agent.get(f"/api/secret-requests/{found['id']}").json()
         self.assertEqual(followed["state"], "completed")
 
 
