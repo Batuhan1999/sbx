@@ -508,9 +508,8 @@ def public_keys():
     return "\n".join(keys) + "\n" if keys else ""
 
 
-def find_repo(explicit=None):
-    if explicit:
-        return os.path.expanduser(explicit)
+def find_repo():
+    """The checkout this runs in, or None outside one."""
     here = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return here.stdout.strip() if here.returncode == 0 else None
 
@@ -1695,16 +1694,6 @@ def template_cmd(args):
     r.pop("log", None)
     print(json.dumps(r))
     sys.exit(1 if r["status"] == "failed" else 0)
-
-
-def read_dotenv(path):
-    values = {}
-    for line in pathlib.Path(path).read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, _, value = line.removeprefix("export ").partition("=")
-            values[key.strip()] = value.strip().strip("'\"")
-    return values
 
 
 def applied(r):
