@@ -551,6 +551,26 @@ class SettingsTests(Server):
         self.assertEqual(self.effects(), ["control", "host-guard", "runtime-env", "tls"])  # 53 for delegated DNS-01
         self.assertEqual(settings.opened_ports(settings.current()), (22, 443, 80, 53))
 
+    def test_what_tls_sh_writes_as_root_holds_no_shell_or_nginx_syntax(self):
+        """The certificate email goes into the renewal script, a proxied service into nginx's configuration."""
+        from sbx_control import settings
+        before = settings.current().revision
+        for section, value in (("domain", {"acme_email": "ops@example.com; touch /tmp/x #"}),
+                               ("domain", {"acme_email": "ops@example.com $(id)"}),
+                               ("domain", {"acme_email": "-x@example.com"}),
+                               ("proxied", {"services": {"grafana; x": "127.0.0.1:3000"}}),
+                               ("proxied", {"services": {"grafana": "127.0.0.1:3000;} server {"}}),
+                               ("proxied", {"services": {"grafana": "127.0.0.1"}})):
+            with self.assertRaises(settings.Invalid, msg=value):
+                settings.update(section, value, by="test")
+        self.assertEqual(settings.current().revision, before)
+        settings.update("domain", {"acme_email": "ops+sbx@example.com"}, by="test")
+        settings.update("proxied", {"services": {"grafana": "127.0.0.1:3000", "db-ui": "[::1]:8081",
+                                                 "wiki": "wiki.internal:80"}}, by="test")
+        lines = dict(line.split("=", 1) for line in settings.shell_lines(settings.current()))
+        self.assertEqual(lines["email"], "ops+sbx@example.com")
+        self.assertEqual(lines["services"], "'grafana:127.0.0.1:3000 db-ui:[::1]:8081 wiki:wiki.internal:80'")
+
     def test_a_section_is_written_whole_or_not_at_all_and_its_history_kept(self):
         from sbx_control import settings
         before = settings.current().revision

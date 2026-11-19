@@ -307,6 +307,31 @@ def _sign_in(before: SignIn, after: SignIn):
         raise ValueError(after.refusal())
 
 
+# tls.sh, as root, writes these into the renewal script and nginx's
+# configuration as they are: only what an address or a host holds is saved.
+# Checked when a value changes, so one stored before still loads.
+ACME_EMAIL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+SERVICE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+SERVICE_UPSTREAM = re.compile(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):\d{1,5}")
+
+
+@check("domain")
+def _certificate_email(before: Domain, after: Domain):
+    if after.acme_email and after.acme_email != before.acme_email and not ACME_EMAIL.fullmatch(after.acme_email):
+        raise ValueError("the certificate email is an address such as ops@example.com")
+
+
+@check("proxied")
+def _proxied_services(before: Proxied, after: Proxied):
+    for name, upstream in after.services.items():
+        if before.services.get(name) == upstream:
+            continue
+        if not SERVICE_NAME.fullmatch(name):
+            raise ValueError(f"a proxied service's name is a host name label (a-z, 0-9, -), not {name!r}")
+        if not SERVICE_UPSTREAM.fullmatch(upstream):
+            raise ValueError(f"the proxied service {name} needs an upstream host:port, not {upstream!r}")
+
+
 def current() -> Settings:
     """The settings now; cached by revision, looked at once a second."""
     now = time.monotonic()
