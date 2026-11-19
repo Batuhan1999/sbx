@@ -272,7 +272,7 @@ function RuntimeStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
     <Heading title="Where will sandboxes run?"
       text={!available.data ? undefined : own ? 'This server can run sandboxes itself, so it will.'
         : enabled.length ? 'Sandboxes run at your provider. It bills you per second while one runs.'
-        : host && !host.can_run ? 'This server can’t run sandboxes itself (it has no /dev/kvm), so they run at a provider, which bills you per second while one runs.'
+        : host && !host.can_run ? `This server can’t run sandboxes itself${host.why_not ? ` (${host.title} ${host.why_not})` : ''}, so they run at a provider, which bills you per second while one runs.`
         : 'Sandboxes run at a provider, which bills you per second while one runs.'} />
     {available.isPending ? <Spinner label="Looking at this server…" />
       : available.error ? <ErrorState error={available.error} retry={() => available.refetch()} />

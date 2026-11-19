@@ -37,7 +37,8 @@ class Schema(Installation):
         embed = Embed()
         self.assertEqual(embed.settings, ())
         self.assertIn("/dev/kvm", embed.can_run({"kvm": False}))
-        self.assertIn("memory", embed.can_run({"kvm": True, "memory_gb": 4}))
+        self.assertEqual(embed.can_run({"kvm": True, "memory_gb": 4}),
+                         "needs 16 GiB of memory: 12 for the host and 4 for one sandbox; this server has 4 GiB")
         self.assertIn("disk", embed.can_run({"kvm": True, "memory_gb": 64, "disk_free_gb": 20}))
         self.assertEqual(embed.can_run({"kvm": True, "memory_gb": 64, "disk_free_gb": 500}), "")
 

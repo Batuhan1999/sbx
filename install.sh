@@ -231,7 +231,7 @@ enables() { case " $installed " in *" $1 "*) return 0 ;; esac; return 1; }
 unfit=""
 [ -n "$kvm" ] || unfit="no /dev/kvm: use bare metal or a VM with nested virtualization enabled"
 [ -n "$unfit" ] || [ -n "$tun" ] || unfit="no /dev/net/tun"
-[ -n "$unfit" ] || [ "$mem_mib" -ge 15000 ] || unfit="16 GiB of memory at least, this has $mem_mib MiB"
+[ -n "$unfit" ] || [ "$mem_mib" -ge 15000 ] || unfit="16 GiB of memory at least, 12 for the host and 4 for one sandbox; this has $mem_mib MiB"
 # An upgrade keeps the count Embed runs with: a new one recreates its runtime.
 [ -n "$hugepages" ] || ! configured || hugepages=$(sed -n 's/^HUGEPAGES=//p' /opt/e2b/.env 2>/dev/null | tail -1)
 if [ -z "$unfit" ] && [ -z "$hugepages" ] && [ "$mem_mib" -lt 23000 ]; then
