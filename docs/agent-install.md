@@ -131,16 +131,10 @@ token. Running the installer again during the setup prints the same link, and
 so does `sudo sbx-admin setup-link` on the server (`--new` replaces it, and
 the old one stops working).
 
-The simplest hand-over keeps the link out of your transcript: the owner runs,
-in a terminal of their own,
-
-```sh
-ssh HOST sudo sbx-admin setup-link
-```
-
-and opens what it prints. If you give it to them yourself, do it only in a
-private conversation with the owner, never in a shared channel, log or
-commit. Send them the [owner's guide](howto/setup.md) with it. The page then
+Give the owner that link, with the [owner's guide](howto/setup.md), in your
+conversation with them: they open it and do the rest. It is a one-time
+credential for this setup, so never put it in a shared channel, an issue, a
+commit or a log; once the setup finishes it stops working. The page then
 takes them through:
 
 - **Domain**: they choose `D` and add `D A IP`, `*.D A IP` and

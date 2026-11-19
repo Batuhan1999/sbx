@@ -47,7 +47,7 @@ Server: <ssh user@host of an Ubuntu 24.04 machine, sudo without a password>
 Follow docs/agent-install.md from sbx's latest release, step by step:
 1. Check the server (install.sh --check) and install sbx with its normal
    installer; don't change sbx's code.
-2. Hand me the onboarding link the installer prints last, privately, and wait
+2. Give me the onboarding link the installer prints last, as it is, and wait
    while I do the setup page in my browser (domain, sandboxes, account, GitHub).
 3. Then connect this repository with the server's setup brief: write the .sbx/
    recipe, start one sandbox and give me its preview link.
