@@ -406,7 +406,10 @@ describe('the summary over the control plane, the onboarding’s last step', () 
       'GET /api/me': () => ({ status: 200, body: { ...ME, base_url: 'https://app.sbx.example.com', setup_complete: done } }),
       'GET /api/setup': () => ({ status: 200, body: { ...(over.setup ?? ready), complete: done } }),
       'POST /api/setup/complete': () => { const answer = complete(); done = answer.status < 400; return answer },
-      'GET /api/repos': { repos: [] }, 'GET /api/templates': TEMPLATES, 'GET /api/connections': GITHUB(over.github ?? 'not_connected'),
+      // As the server does: only the onboarding until it is finished.
+      'GET /api/repos': () => done ? { status: 200, body: { repos: [] } }
+        : { status: 503, body: { detail: 'This installation is being set up. Finish at /onboarding.' } },
+      'GET /api/templates': TEMPLATES, 'GET /api/connections': GITHUB(over.github ?? 'not_connected'),
       'GET /api/runtimes': { default: 'boat', runtimes: [{ kind: 'boat', title: 'Boat' }] },
       'GET /api/github/repositories': { repositories: [] },
     })
@@ -414,7 +417,7 @@ describe('the summary over the control plane, the onboarding’s last step', () 
   const finishes = () => ({ status: 200, body: { ...ready, complete: true } })
 
   it('sums up the server, with the optional agent sessions, until something is chosen', async () => {
-    stubs(finishes)
+    const calls = stubs(finishes)
     renderApp(<ReposPage />)
     const dialog = within(await screen.findByRole('dialog', { name: 'Your server is ready' }))
     expect(dialog.getByText('app.sbx.example.com')).toBeTruthy()
@@ -425,6 +428,9 @@ describe('the summary over the control plane, the onboarding’s last step', () 
     expect(sessions.getAllByRole('button').map(b => b.textContent)).toEqual([
       'Run Amp threads in sbx sandboxesSet up Amp', 'Run Claude Code cloud sessions hereSet up Claude Code'])
     expect(sessions.getByText('Codex is included: each developer uses their own login.')).toBeTruthy()
+    // The page behind it waits for the onboarding to finish rather than showing the server's refusal.
+    expect(calls.some(c => c.url === '/api/repos')).toBe(false)
+    expect(screen.queryByText(/being set up/)).toBeNull()
   })
 
   it('finishes the onboarding with Connect a repository, and goes there', async () => {
