@@ -51,7 +51,7 @@ function Version({ data }: { data: UpdatesView }) {
       ['Installed', <Code key="v">{data.installed}</Code>],
       ['Status', status],
       ['Last checked', data.check
-        ? (data.checked_at ? <span title={dateTime(data.checked_at)}>{ago(data.checked_at)}</span> : 'Not yet: a minute after sbx-control starts, then every 6 hours')
+        ? (data.checked_at ? <span title={dateTime(data.checked_at)}>{ago(data.checked_at)}</span> : 'Not yet; checked every 6 hours')
         : <>Off: turn it on with <Code>sbx-admin config set updates {'\'{"check": true}\''}</Code></>],
     ]} />
     {data.check_error && <p className="mt-3 text-[12.5px] text-warn">{data.check_error}</p>}
@@ -69,7 +69,7 @@ function Progress({ upgrade, reconnecting }: { upgrade: Upgrade; reconnecting: b
     <div className="space-y-4">
       <div className="space-y-1.5" role={running ? 'status' : undefined}>
         <div className="flex justify-between text-[12.5px]">
-          <span className="truncate text-muted">{reconnecting ? 'sbx-control restarts on the new release; reconnecting…'
+          <span className="truncate text-muted">{reconnecting ? 'sbx-control restarts; reconnecting…'
             : running ? (current?.title ?? 'Waiting for the host…') : upgrade.state === 'done' ? 'Done' : 'Stopped'}</span>
           <span className="tabular-nums">{upgrade.state === 'done' ? 100 : percent}%</span>
         </div>
@@ -114,12 +114,12 @@ function WhatsNew({ available, installed }: { available: NonNullable<UpdatesView
   const [read, setRead] = useState(false)
   const id = useId()
   const { latest, breaking, releases } = available
-  return <Panel title="What's new" description={<>{installed} → {latest}: {plural(releases.length, 'release')} with their changes, newest first.</>}
+  return <Panel title="What's new" description={<>{installed} → {latest}: {plural(releases.length, 'release')}, newest first.</>}
     actions={<Install latest={latest} disabled={breaking && !read} />}>
     <div className="space-y-6">
       {breaking && <div className="space-y-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2.5 text-[13px]">
         <div className="flex gap-2 text-warn"><TriangleAlert className="mt-0.5 size-4 shrink-0" />
-          <span>{releases.length > 1 ? 'These releases have' : 'This release has'} breaking changes. Read them and do the upgrade steps before you update.</span></div>
+          <span>{releases.length > 1 ? 'These releases have' : 'This release has'} breaking changes.</span></div>
         <div className="flex items-start gap-2.5 pl-6">
           <Checkbox id={id} className="mt-0.5" checked={read} onCheckedChange={v => setRead(v === true)} />
           <label htmlFor={id} className="cursor-pointer">I have read the breaking changes and done the upgrade steps</label>

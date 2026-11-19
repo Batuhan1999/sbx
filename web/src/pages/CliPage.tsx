@@ -9,12 +9,12 @@ import { Panel } from '@/components/ui/primitives'
 import { toast } from 'sonner'
 
 const daily = (agents: string[]): [string, string][] => [
-  ['sbx up my-feature', 'Start a sandbox for the branch you are on; prints its preview links when the app is healthy'],
+  ['sbx up my-feature', 'Start a sandbox for the current branch and print its preview links'],
   ['sbx ls', 'Your sandboxes'],
   ['sbx open my-feature code', `Open it in VS Code (also ${['cursor', 'zed', 'ssh', ...agents].join(', ')})`],
   ['sbx logs my-feature', 'Follow the app’s logs'],
-  ['sbx env ls', 'The repository’s env on the server, names and sources'],
-  ['sbx down my-feature', 'Delete it and the resources it owns'],
+  ['sbx env ls', 'The repository’s variables and their sources'],
+  ['sbx down my-feature', 'Delete it and its resources'],
 ]
 
 export default function CliPage() {

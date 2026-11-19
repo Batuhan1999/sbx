@@ -26,11 +26,11 @@ export function describeError(error: unknown): { message: string; checks: Check[
     const d = error.detail as { checks?: Check[] } | null
     const checks = Array.isArray(d?.checks) ? d!.checks.filter(c => !c.ok) : []
     const message = error.status === 403 && !messageOf(error.detail) ? 'You do not have access to this.'
-      : error.status >= 500 && !messageOf(error.detail) ? 'The server could not complete this request. Try again.'
+      : error.status >= 500 && !messageOf(error.detail) ? 'The server failed. Try again.'
       : error.message
     return { message, checks, status: error.status }
   }
-  if (error instanceof TypeError) return { message: 'Could not reach the server. Check your connection and try again.', checks: [] }
+  if (error instanceof TypeError) return { message: 'Could not reach the server.', checks: [] }
   return { message: error instanceof Error ? error.message : String(error), checks: [] }
 }
 

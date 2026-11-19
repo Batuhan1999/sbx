@@ -35,7 +35,7 @@ describe('describeError', () => {
 
   it('words errors without a message', () => {
     expect(describeError(new ApiError(403, null)).message).toBe('You do not have access to this.')
-    expect(describeError(new ApiError(502, null)).message).toMatch(/could not complete/)
+    expect(describeError(new ApiError(502, null)).message).toMatch(/server failed/)
     expect(describeError(new TypeError('Failed to fetch')).message).toMatch(/Could not reach the server/)
   })
 })
