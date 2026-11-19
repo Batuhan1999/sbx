@@ -37,7 +37,7 @@ export default function KeysPage() {
 
 const IN_PROGRESS = new Set(['queued', 'applying', 'restarting'])
 const APPLYING: Record<string, string> = {
-  queued: 'waiting for the server', applying: 'being applied on the server', restarting: 'applied; the server is restarting to use them',
+  queued: 'waiting for the server', applying: 'being applied on the server', restarting: 'applied; the server is restarting',
 }
 
 /** Where the server is with the runtime keys (one change for all of them), while it matters. */
@@ -45,7 +45,7 @@ function RuntimeProgress({ apply }: { apply: RuntimeApply }) {
   if (IN_PROGRESS.has(apply.state)) return <p className="flex items-center gap-2 text-[12.5px] text-muted">
     <Spinner className="size-3.5" />The runtime keys are {APPLYING[apply.state]}.
   </p>
-  if (apply.state === 'failed') return <ErrorState compact error={`The server could not apply a runtime key: ${apply.message || 'see Settings → Sandbox runtimes'}. Ask your agent for a new link to paste it again.`} />
+  if (apply.state === 'failed') return <ErrorState compact error={`The server could not apply a runtime key: ${apply.message || 'see Settings → Sandbox runtimes'}. Ask your agent for a new link.`} />
   return null
 }
 
@@ -54,13 +54,13 @@ function Finished({ request }: { request: SecretRequest }) {
     {request.runtime_changes.state !== 'failed' && <div className="flex items-start gap-2.5 text-[13.5px]">
       <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" />
       <p>All {request.items.length} keys are saved. {IN_PROGRESS.has(request.runtime_changes.state)
-        ? 'Your agent carries on once the server has applied them.' : 'You can close this page; your agent carries on.'}</p>
+        ? 'Your agent carries on once the server has applied them.' : 'You can close this page.'}</p>
     </div>}
     <RuntimeProgress apply={request.runtime_changes} />
   </div>
   return <ErrorState compact error={request.state === 'expired'
     ? 'This page has expired. Ask your agent for a new link.'
-    : 'Your agent cancelled this request. Ask it for a new link if it still needs keys.'} />
+    : 'Your agent cancelled this request.'} />
 }
 
 function KeysForm({ request }: { request: SecretRequest }) {

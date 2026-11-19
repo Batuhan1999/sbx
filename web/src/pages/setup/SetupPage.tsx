@@ -164,7 +164,7 @@ function AddressStep({ s, onNext }: { s: SetupState; onNext: () => void }) {
       </div>
     </div>}
     {waiting && !s.access.certificate_error && <div role="status" className="rounded-lg border border-line bg-panel px-4 py-3 text-[13px]"><Spinner label="Getting the certificate…" />{portsHint(s.access.needs_ports) && <p className="mt-1 text-muted">Needs {portsHint(s.access.needs_ports)} open.</p>}</div>}
-    {s.access.certificate_error && <ErrorState error={`HTTPS is not ready: ${s.access.certificate_error}.${portsHint(s.access.needs_ports) ? ` Make sure this server accepts ${portsHint(s.access.needs_ports)}, in any cloud firewall too, then retry.` : ' Retry once it is fixed.'}`} />}
+    {s.access.certificate_error && <ErrorState error={`HTTPS is not ready: ${s.access.certificate_error}.${portsHint(s.access.needs_ports) ? ` Open ${portsHint(s.access.needs_ports)} on this server and any cloud firewall, then retry.` : ' Retry once it is fixed.'}`} />}
     <div className="flex justify-end border-t border-line pt-5">
       <SubmitButton form={form} disabled={mode === 'ip' && !s.host.address}>{waiting || s.access.certificate_error ? 'Retry' : 'Continue'}<ArrowRight /></SubmitButton>
     </div>
@@ -317,7 +317,7 @@ function Done({ s }: { s: SetupState }) {
     <span className="grid size-10 place-items-center rounded-full bg-ok-soft text-ok"><Check className="size-5" /></span>
     <div>
       <h1 className="text-[24px] font-semibold tracking-tight">The server is ready</h1>
-      <p className="mt-1.5 text-muted">Templates are building (about 10 minutes). Next, connect a repository.</p>
+      <p className="mt-1.5 text-muted">Templates are building (about 10 minutes).</p>
     </div>
     <Facts className="rounded-lg border border-line bg-panel p-4" items={[['Address', <span className="break-all font-mono text-[12.5px]">{s.access.url}</span>], ['Admin', s.email ?? s.admins.join(', ')], ['Setup link', 'Disabled']]} />
     <LinkButton variant="primary" to="/app/repos/new">Connect a repository<ArrowRight /></LinkButton>

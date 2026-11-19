@@ -42,7 +42,7 @@ export function host(url: string): string {
 /** What a certificate needs open, in words, from the server's needs_ports
  * (settings.Domain.needs_ports): 80 for an IP's, 53 for delegated DNS. */
 export function portsHint(ports: number[] = []): string {
-  return ports.map(p => (p === 53 ? 'inbound UDP and TCP port 53 (it answers the _acme-challenge DNS queries)' : `inbound TCP port ${p}`)).join(' and ')
+  return ports.map(p => (p === 53 ? 'inbound UDP and TCP port 53 (DNS)' : `inbound TCP port ${p}`)).join(' and ')
 }
 
 /** A runtime's limits in words, exact (a rounded maximum would let a size just above it look allowed); "" when it states none. */
