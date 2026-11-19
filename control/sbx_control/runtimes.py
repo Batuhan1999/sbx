@@ -304,7 +304,12 @@ def verify(kind: str | None = None, say=print) -> bool:
             if found != runtime.PAUSED:
                 raise AssertionError(f"the runtime lists it {found}")
             return "paused"
-        step("pause", pause)
+        can_pause = runtime.capabilities(kind).pause
+        if can_pause:
+            step("pause", pause)
+        elif passed:   # not a failure: the runtime says so itself (capabilities.pause)
+            say(f"  --  pause and resume: {runtime.title(kind)} has no pause; its sandboxes run until their timeout "
+                "or until they are deleted")
 
         def resume():
             nonlocal handle
@@ -314,7 +319,8 @@ def verify(kind: str | None = None, say=print) -> bool:
             if handle.files.read(VERIFY_FILE) != token:
                 raise AssertionError(f"{VERIFY_FILE} did not survive the pause")
             return "running, its file kept"
-        step("resume", resume)
+        if can_pause:
+            step("resume", resume)
 
         def preview():
             handle.commands.run(f"cd {VERIFY_FILE.rsplit('/', 1)[0]} && python3 -m http.server {VERIFY_PORT} --bind 0.0.0.0 >/dev/null 2>&1",

@@ -169,6 +169,7 @@ def available() -> list:
         blocker = edit_blocker(kind, backend, on=on)
         entry = {"kind": kind, "title": backend.title, "host": backend.host, "enabled": on, "default": kind == first,
                  "can_run": not why_not, "why_not": why_not, "managed_by": "install.sh" if backend.host else "",
+                 "capabilities": dataclasses.asdict(backend.capabilities),
                  "edit_blocker": blocker.view() if blocker else None,
                  "settings": [f.view() for f in found.values()],
                  "presets": [p.view() for p in backend.presets],

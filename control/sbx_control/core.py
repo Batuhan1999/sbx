@@ -1100,7 +1100,11 @@ def _short_secrets(info, used: dict) -> set:
 
 def _pause_vm(info):
     """Pause the VM, retrying while the runtime says it is busy; the last
-    refusal when it never took the pause, else None."""
+    refusal when it never took the pause, else None. A runtime without
+    pause (capabilities.pause) is not asked: it never will."""
+    kind = runtime.kind_of(info)
+    if not runtime.capabilities(kind).pause:
+        return runtime.Failed(runtime.why_busy(getattr(info, "memory_mb", None), kind))
     for wait in (*PAUSE_RETRY_SECONDS, None):
         try:
             runtime.pause(info.sandbox_id)
@@ -1116,6 +1120,8 @@ def pause_refusal(info, error) -> str:
     tries = len(PAUSE_RETRY_SECONDS) + 1
     retries = f"{tries} tries over {sum(PAUSE_RETRY_SECONDS)} s" if tries > 1 else "once"
     cause = runtime.why_busy(getattr(info, "memory_mb", None), runtime.kind_of(info))
+    if not runtime.capabilities(runtime.kind_of(info)).pause:
+        return f"{cause} The sandbox keeps running."
     return (f"the runtime refused the pause ({retries}): {cause}. The sandbox keeps running. "
             f"Runtime: {str(error)[-300:]}")
 

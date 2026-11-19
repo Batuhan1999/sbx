@@ -152,6 +152,10 @@ class Capabilities:
     # A template builds from any container image (TemplateSpec.from_image),
     # not only from the runtime's own base system.
     image_import: bool = False
+    # A sandbox can be paused and later resumed as itself (its id, its files).
+    # False where the provider only runs or deletes one (Beam): pause is
+    # refused with the reason, and a sandbox's timeout deletes it.
+    pause: bool = True
 
 
 @dataclasses.dataclass(frozen=True)

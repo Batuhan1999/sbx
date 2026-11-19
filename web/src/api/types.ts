@@ -165,7 +165,7 @@ export type SandboxRuntime = {
   title: string
   default: boolean
   host: boolean
-  capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean }
+  capabilities: { snapshots: boolean; private_networks: boolean; egress_rules: boolean; image_import?: boolean; pause?: boolean }
   limits: RuntimeLimits
   /** running: how many of this installation's sandboxes run there, when it says. */
   status: { state: ConnectionState | string; summary: string; running?: number | null }

@@ -383,7 +383,7 @@ class Api(TwoRuntimes, Server):
         self.assertEqual({k: embed[k] for k in ("kind", "title", "default", "host")},
                          {"kind": "embed", "title": "E2B Embed", "default": True, "host": True})
         self.assertEqual(fake["capabilities"], {"snapshots": True, "private_networks": False, "egress_rules": False,
-                                                 "image_import": True})
+                                                 "image_import": True, "pause": True})
         self.assertEqual(fake["status"], {"state": "connected", "summary": "Fake · 0 running", "running": 0})
         self.assertEqual(fake["limits"], {})
         self.assertEqual((fake["host"], fake["default"]), (False, False))

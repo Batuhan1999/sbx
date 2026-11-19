@@ -186,6 +186,22 @@ class LifecycleTests(Installation):
         self.assertIn("still saving the template or snapshot", str(refused.exception))
         self.assertIn("pause refused", [kind for _, kind, _, _ in self.state.events("fixture")])
 
+    def test_a_runtime_without_pause_refuses_at_once_and_is_never_asked(self):
+        from sbx_control.runtime import Capabilities
+        why = "This provider can't pause a sandbox: it runs until its timeout or until it is deleted."
+        self.healthy()
+        with patch.object(self.core, "PAUSE_RETRY_SECONDS", (30, 30)), patch.object(time, "sleep") as slept, \
+                patch.object(self.core.runtime, "capabilities", return_value=Capabilities(pause=False)), \
+                patch.object(self.core.runtime, "why_busy", return_value=why), \
+                patch.object(self.core.runtime, "pause") as pause, \
+                patch.object(self.core, "find", return_value=self.info), \
+                self.assertRaisesRegex(self.core.PauseRefused, "can't pause a sandbox.* keeps running") as refused:
+            self.core.pause("fixture", self.info)
+        self.assertEqual((pause.call_count, slept.call_count), (0, 0))
+        self.assertNotIn("tries", str(refused.exception))
+        record = self.lifecycle.get("fixture")
+        self.assertEqual((record["phase"], record["runtime"], record["active"]), ("app_ready", "running", False))
+
     def test_a_refusal_for_disk_says_how_much_a_pause_needs(self):
         self.healthy()
         self.info.memory_mb = 4096
