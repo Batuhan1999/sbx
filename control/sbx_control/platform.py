@@ -19,7 +19,10 @@ NOVNC_PORT = 6080           # websockify in front of VNC, the desktop preview
 SSH_BRIDGE_PORT = 8081      # the CLI's SSH-over-WebSocket bridge (websocat in START)
 # Never a detected preview, even where the operator removed the preview that declares it.
 # The runtime adds its own (runtime.Runtime.ports), extensions theirs (extensions.Connector.ports).
-PLATFORM_PORTS = frozenset({SSH_PORT, *VNC_PORTS, NOVNC_PORT, SSH_BRIDGE_PORT})
+# epmd: Erlang's port mapper, which the template's Erlang packages start under systemd; it maps
+# Erlang nodes, it is never a page.
+EPMD_PORT = 4369
+PLATFORM_PORTS = frozenset({SSH_PORT, *VNC_PORTS, NOVNC_PORT, SSH_BRIDGE_PORT, EPMD_PORT})
 # On the host:
 CONTROL_PORT = 8080         # sbx-control, on loopback behind nginx
 # The platform's tmpfs in the sandbox: env, keys, the shipped recipe, the
