@@ -102,7 +102,7 @@ export const useEndpoints = (enabled = true) => useQuery({
   refetchInterval: q => (q.state.data?.endpoints.some(e => e.state === 'applying') ? 2_000 : false),
 })
 
-export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos) })
+export const useRepos = (enabled = true) => useQuery({ queryKey: keys.repos, queryFn: () => api.repos.list().then(d => d.repos), enabled })
 export const useRepoInfo = (repo: string, enabled = true) => useQuery({ queryKey: keys.repoInfo(repo), queryFn: () => api.repos.get(repo), enabled: enabled && !!repo, retry: false })
 export const useReadiness = (repo: string) => useQuery({ queryKey: keys.readiness(repo), queryFn: () => api.repos.readiness(repo), refetchInterval: 10_000 })
 export const useEnv = (repo: string, enabled = true) => useQuery({ queryKey: keys.env(repo), queryFn: () => api.env.view(repo), enabled, retry: false })

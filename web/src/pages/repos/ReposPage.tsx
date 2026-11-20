@@ -14,7 +14,10 @@ import { ago, plural } from '@/lib/format'
 
 export default function ReposPage() {
   const me = useMe()
-  const repos = useRepos()
+  // Until the onboarding is finished (its summary shows over this page) the server answers only the
+  // onboarding, and there are no repositories yet: ask for them once it is.
+  const setupOpen = me.data?.setup_complete === false
+  const repos = useRepos(!!me.data && !setupOpen)
   const admin = !!me.data?.admin
   const list = repos.data ?? []
   const needAgent = list.filter(r => r.trust && !r.configured)
@@ -22,8 +25,8 @@ export default function ReposPage() {
     <ReadyDialog />
     <PageHeader title="Repositories"
       actions={admin && <LinkButton variant="primary" to="/app/repos/new"><Plus />Connect repository</LinkButton>} />
-    {repos.error ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
-      : repos.isPending ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
+    {repos.error && !setupOpen ? <ErrorState error={repos.error} retry={() => repos.refetch()} />
+      : repos.isPending && !setupOpen ? <div className="rounded-lg border border-line bg-panel"><SkeletonRows /></div>
       : list.length === 0 ? <div className="space-y-4">
         {admin && <TemplateProgressLine quiet />}
         {admin ? <FirstRepository />
