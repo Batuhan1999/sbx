@@ -1,9 +1,10 @@
 """The GitHub App's values are the installation's own secrets, not env
-variables, and every module that keeps rows is migrated."""
+variables, a sandbox's token may work on pull requests, and every module
+that keeps rows is migrated."""
 import importlib
 import pkgutil
 
-from support import Installation
+from support import Installation, Server
 
 
 class GitHubAppValues(Installation):
@@ -37,6 +38,28 @@ class GitHubAppValues(Installation):
         self.assertNotIn("BEGIN KEY", out.getvalue())
         self.assertIn("not set", listed["OIDC_CLIENT_SECRET"])
 
+
+class SandboxCredential(Server):
+    SETTINGS = {"repos": ["owner/app"]}
+    SET_UP = True
+
+    def ask(self, credential: str):
+        return self.client.get("/api/sandbox/git-credential", headers={"Authorization": f"Bearer box:{credential}"})
+
+    def test_a_sandboxs_token_may_open_pull_requests(self):
+        """gh in a sandbox gets git's token (connections/github.py): without
+        pull requests, gh pr list, view and create are refused."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from sbx_control import core, github_app, platform
+        with patch.object(core, "find", return_value=SimpleNamespace(metadata={})), \
+                patch.object(core, "app_of", return_value=SimpleNamespace(repo="owner/app")), \
+                patch.object(github_app, "token", return_value="test-only-token") as token:
+            self.assertEqual(self.ask("not-this-sandboxs").status_code, 401)
+            response = self.ask(github_app.sandbox_credential("box", platform.session_key()))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.text, "username=x-access-token\npassword=test-only-token\n")
+        token.assert_called_once_with("owner/app", write=True, pull_requests=True)
 
 
 class SchemaOwners(Installation):
