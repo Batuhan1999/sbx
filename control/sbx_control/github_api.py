@@ -28,8 +28,10 @@ PREVIEW = {"connector": "github", "audience": "previews", "shared": "team"}
 
 @router.get("/api/sandbox/git-credential", response_class=PlainTextResponse)
 def sandbox_git_credential(request: Request):
-    """git's credential helper in a sandbox asks here (github_app.py): a token
-    for that sandbox's repo, if it is trusted and the App is installed on it."""
+    """git's credential helper in a sandbox asks here (github_app.py), and so
+    does gh (connections/github.py): a token for that sandbox's repo, if it is
+    trusted and the App is installed on it. It may push and open, read and
+    comment on pull requests."""
     name, _, credential = request.headers.get("authorization", "").removeprefix("Bearer ").partition(":")
     if not name or not hmac.compare_digest(credential, github_app.sandbox_credential(name, platform.session_key())):
         raise HTTPException(401)
@@ -37,7 +39,7 @@ def sandbox_git_credential(request: Request):
     if not info:
         raise HTTPException(404)
     repo = core.app_of(info).repo
-    found = github_app.token(repo, write=True) if settings.trust(repo) == "trusted" else None
+    found = github_app.token(repo, write=True, pull_requests=True) if settings.trust(repo) == "trusted" else None
     if not found:
         raise HTTPException(404, f"the GitHub App can't reach {repo}")
     return f"username=x-access-token\npassword={found}\n"

@@ -221,7 +221,9 @@ the base template, sees only the repository's secrets, and cannot have a
 GitHub is a platform connection built as an extension (`connections/github.py`,
 routes in `github_api.py`). It contributes `gh` to the template layer, and to
 trusted sandboxes either a deploy key or a GitHub App credential helper in the
-runtime layer; `$HOME/.config/gh` and `$HOME/.git-credentials` are scrubbed from
+runtime layer. The helper asks `/api/sandbox/git-credential` for a token scoped
+to the sandbox's repository (contents and pull requests: write), and `gh` reads
+its token from the same helper; `$HOME/.config/gh` and `$HOME/.git-credentials` are scrubbed from
 reusable snapshots. Through `git_access` it is how template builds clone a
 repository on the host. With the App installed, its webhook rebuilds templates
 on pushes that change `.sbx/` and runs PR previews: a pull request labelled

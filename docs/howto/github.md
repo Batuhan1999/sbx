@@ -1,7 +1,10 @@
 # GitHub for sbx
 
 sbx clones and pushes private repositories through a GitHub App of its own,
-which also gives sandboxes the `gh` CLI and pull-request previews. Each
+which also gives sandboxes the `gh` CLI and pull-request previews. In a
+sandbox, `git` and `gh` use a short-lived App token for its repository that
+may push and open, read and comment on pull requests; it opens them as the
+App's bot account. Each
 installation creates its own App from the web app; there is no shared App and
 no key to copy. GitHub's pages may differ a little from the labels below.
 
